@@ -74,6 +74,98 @@ error** the detector logs and yields no NER entities (structured PII still maske
 NER should instead **fail closed** (block the request); needs a detector→pipeline
 error channel. Tracked here so the reviewer can weigh it against the model choice.
 
+### M2 review findings — OPEN
+Verified independently: 57 tests green (default) with no warnings; `--features onnx`
+`check` + `build` link clean. The hybrid seam is sound — a deterministic match
+always outranks an NER guess, so no structured span is ever lost to the ML layer,
+and NER is inert in the shipped default build (no leak today). The findings below
+are latent for when a model lands, plus doc accuracy and tightening the two
+deferrals. **Verdict: M2 is sound enough to build model-selection on top of; no
+blockers.** Both deferrals (measured model selection; fail-closed-on-NER-error)
+are the right calls — model choice genuinely needs real files, and the error-policy
+decision needs a real error rate to tune — but the fail-closed one is
+under-specified (see M2-R1/R2).
+
+- [ ] **M2-R1 — load-time NER downgrade is silent (fail-open).** `build_detector` /
+  `load_onnx_ner` (`src/server.rs:78-100`) fall back to structured-only when a
+  *configured* NER fails to load: it logs at `error` but the server then runs with
+  weakened protection and forwards names upstream. The ROADMAP "Open" note above
+  only covers the *request-time* inference error, not this *load-time* case. **Fix:**
+  add a `NER_REQUIRED` (or fail-closed-by-default) switch so a configured-but-
+  unloadable NER is fatal at startup, and broaden the deferred fail-closed decision
+  to cover **both** the load path and the request path (one detector→pipeline error
+  channel serves both). **Test:** with `NER_REQUIRED` set and a bad model path,
+  `AppState::new` / `run` returns an error instead of a structured-only server.
+- [ ] **M2-R2 — NER inference error silently drops all names (fail-open leak).**
+  `OnnxNerDetector::detect` (`src/pii/onnx.rs:146-161`) returns `Vec::new()` on any
+  `infer` error, so unstructured PII in that request is forwarded raw (structured
+  PII is still masked). The `PiiDetector::detect` signature has no error channel, so
+  the pipeline can't fail closed. **Fix (the deferred decision, spelled out):** change
+  the trait to `fn detect(&self, input: &str) -> Result<Vec<PiiEntity>, DetectError>`
+  (or add a fallible method), and in `PrivacyStage::on_request` set `ctx.block` when a
+  *required* detector errors. **Test:** a stub detector that returns `Err` on a text
+  with a name → request is blocked (400), not forwarded.
+- [ ] **M2-R3 — `NER_LABELS` length/order not validated against the model.**
+  `infer` (`src/pii/onnx.rs:120-129`) does `id2label.get(best).unwrap_or("O")`, so if
+  the configured label list is shorter than (or misordered vs.) the model's real
+  output dimension, out-of-range class ids silently become `O` — a `Person` token is
+  dropped and the name leaks. Model selection sets `NER_LABELS` by hand, so this is
+  an easy misconfiguration. **Fix:** validate `id2label.len() == num_labels` on the
+  first inference (or at load); on mismatch fail closed / return an error rather than
+  silently degrading. **Test:** a detector built with a too-short `id2label` errors
+  instead of returning zero entities.
+- [ ] **M2-R4 — hardcoded model I/O couples the detector to one export shape.**
+  `outputs["logits"]` (`src/pii/onnx.rs:117`) **panics** (`no output named
+  \`logits\``) if the model's output node has another name; and `ort::inputs!`
+  (`onnx.rs:108-113`) supplies only `input_ids` + `attention_mask`, so a model that
+  requires `token_type_ids` fails **every** inference and (via M2-R2) silently falls
+  open. **Fix:** read the output by index or a configurable name and return a graceful
+  error instead of panicking; document the required-input/output contract and
+  constrain model selection to models matching it (or thread `token_type_ids` when
+  present). **Test:** decode against a tiny fixture whose output node isn't `logits`
+  → graceful `Err`, not a panic.
+- [ ] **M2-R5 — `is_begin` misses underscore BIO prefixes.** `label_to_kind`
+  (`src/pii/ner_decode.rs:22-30`) accepts both `-` and `_` separators, but `is_begin`
+  (`ner_decode.rs:32-35`) only recognises `b-`. A model using `B_PER`/`I_PER` labels
+  decodes kinds correctly yet never sees a "begin", so two adjacent same-type entities
+  (e.g. `New York` then `London`) glue into one span. **Fix:** make `is_begin` treat
+  the first `-`/`_`-separated segment `B` (case-insensitive) as a begin. **Test:** the
+  existing `adjacent_same_type_entities_are_split_by_begin` case, re-run with
+  `B_LOC`/`I_LOC`/`B_LOC`, still splits.
+- [ ] **M2-R6 — offset units unverified for non-ASCII (recall/robustness).**
+  `decode_entities` (`src/pii/ner_decode.rs:41-77`) treats tokenizer offsets as byte
+  offsets into the Rust `&str`. If the chosen tokenizer emits char offsets, non-ASCII
+  names (e.g. `Müller`) misalign; `text.get(start..end)` then returns `None` and the
+  entity is silently dropped (a name leak). **Fix (at model landing):** add a non-ASCII
+  NER case and assert an exact mask→restore round-trip, confirming byte-offset
+  alignment (or convert offsets if the tokenizer is char-based). **Test:** the new
+  non-ASCII corpus case round-trips exactly under `OnnxNerDetector`.
+- [ ] **M2-R7 — partial-overlap drops the NER remainder (recall, by-design).**
+  `resolve_overlaps` (`src/pii/overlap.rs:26-33`) discards a whole lower-priority NER
+  span when it overlaps a kept structured span — including the non-overlapping part,
+  which may be a real name (e.g. a `Person` span that happens to enclose an email
+  keeps only the email). Deterministic-wins is preserved (correct); the remainder loss
+  is an acceptable lean choice but should be a conscious, tested one. **Fix:** decide
+  keep-vs-trim when the model lands; if kept, document it. **Test:** an NER span that
+  strictly encloses a structured span asserts the intended remainder behaviour.
+- [ ] **M2-R8 — inference-error log may format input-derived text.** `detect`'s
+  `warn!(error = %err, …)` (`src/pii/onnx.rs:156`) prints the full `anyhow` error; the
+  `tokenize: {e}` variant (`onnx.rs:85-86`) could embed input text, which for a
+  "never log raw PII" tool is a leak vector. **Fix:** log the error *category* on the
+  tokenize path, not the formatted error. **Test:** n/a (hardening) — or assert the
+  warn payload contains no input substring.
+- [ ] **M2-R9 (minor, non-leak) — poisoned session mutex disables a pool slot.**
+  `self.sessions[idx].lock().expect("session mutex poisoned")` (`src/pii/onnx.rs:107`)
+  panics for the life of the process if an `ort` panic ever poisons that mutex,
+  permanently removing 1/`pool_size` of capacity. No leak (the panic precedes
+  forwarding), but an availability cliff. **Fix:** recover via `into_inner()` on a
+  poisoned lock. **Test:** n/a (robustness).
+
+**Doc follow-up (done in this review):** `docs/ARCHITECTURE.md` "Robustness &
+fail-closed" now records the known M2 gap that NER load/inference errors fail
+**open** for unstructured PII (cross-links M2-R1/R2), so the strong fail-closed
+posture there is no longer misleading.
+
 ## M3 — Streaming
 Goal: SSE token streaming with incremental de-anonymization.
 - [ ] Streaming passthrough of provider responses

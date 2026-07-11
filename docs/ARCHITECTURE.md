@@ -99,6 +99,14 @@ For a privacy proxy the failure mode *is* the product: anything unexpected must
   `Structural`). A structure-only IBAN (mod-97 fails) is still masked but tagged
   `Structural`; the signal is available to audit logging now and ML thresholds in
   M2.
+- **Known M2 gap — NER fails *open*.** Structured PII is always fail-closed, but the
+  M2 NER layer is not yet: when a configured model fails to *load* it falls back to
+  structured-only (`build_detector`), and when a per-request *inference* errors the
+  detector yields no NER entities (`OnnxNerDetector::detect`) — in both cases raw
+  **unstructured** PII (names/orgs/locations) is forwarded upstream. This is a
+  deliberate deferral (the `PiiDetector::detect` signature has no error channel, and
+  the right policy needs a real error rate to tune) tracked in ROADMAP M2-R1/R2; the
+  structured guarantees above are unaffected.
 
 ## Module layout
 
