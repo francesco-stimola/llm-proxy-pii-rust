@@ -1,0 +1,86 @@
+{
+  "_comment": "Concrete PII test corpus for llm-proxy-pii-rust, consumed by the Rust unit/property tests (serde_json). Detection cases assert the expected entity kind+text. Masking/roundtrip is asserted as invariants (raw value absent, a typed placeholder present, demask(mask(x)) == x), independent of the final placeholder format. Values are reused/adapted from the old llmproxy-extended tests.",
+
+  "recognizers": {
+    "email": {
+      "positive": [
+        { "id": "EMAIL-01", "input": "Contact me at john@example.com please", "entities": [ { "kind": "Email", "text": "john@example.com" } ] },
+        { "id": "EMAIL-02", "input": "Send to alice.smith@corp.co.uk today", "entities": [ { "kind": "Email", "text": "alice.smith@corp.co.uk" } ] },
+        { "id": "EMAIL-03", "input": "alice@a.com and bob@b.com", "entities": [ { "kind": "Email", "text": "alice@a.com" }, { "kind": "Email", "text": "bob@b.com" } ] },
+        { "id": "EMAIL-04", "input": "la mia email e' pinco.pallino@prova.invalid", "locale": "it", "entities": [ { "kind": "Email", "text": "pinco.pallino@prova.invalid" } ] }
+      ],
+      "negative": [
+        { "id": "EMAIL-NEG-01", "input": "The weather is nice today", "entities": [] },
+        { "id": "EMAIL-NEG-02", "input": "reach me on social @handle not email", "entities": [] }
+      ]
+    },
+
+    "phone": {
+      "positive": [
+        { "id": "PHONE-01", "input": "Call me at 555-867-5309", "locale": "us", "entities": [ { "kind": "Phone", "text": "555-867-5309" } ] },
+        { "id": "PHONE-02", "input": "il telefono e' +39 333 0000001", "locale": "it", "entities": [ { "kind": "Phone", "text": "+39 333 0000001" } ] }
+      ],
+      "negative": [
+        { "id": "PHONE-NEG-01", "input": "order 12 boxes of 34 units", "entities": [] }
+      ]
+    },
+
+    "ssn": {
+      "positive": [
+        { "id": "SSN-01", "input": "My SSN is 123-45-6789", "locale": "us", "entities": [ { "kind": "Ssn", "text": "123-45-6789" } ] }
+      ],
+      "negative": [
+        { "id": "SSN-NEG-01", "input": "reference 12-3456-78 in the invoice", "entities": [] }
+      ]
+    },
+
+    "credit_card": {
+      "positive": [
+        { "id": "CC-01", "input": "Card: 4111 1111 1111 1111", "entities": [ { "kind": "CreditCard", "text": "4111 1111 1111 1111" } ] },
+        { "id": "CC-02", "input": "pay with 4242 4242 4242 4242", "entities": [ { "kind": "CreditCard", "text": "4242 4242 4242 4242" } ] }
+      ],
+      "negative": [
+        { "id": "CC-NEG-01", "input": "tracking 1111 1111 1111 1111", "reason": "16 digits but fails the Luhn check", "entities": [] }
+      ]
+    },
+
+    "iban": {
+      "positive": [
+        { "id": "IBAN-01", "input": "Transfer to DE89 3704 0044 0532 0130 00 today", "locale": "de", "entities": [ { "kind": "Iban", "text": "DE89 3704 0044 0532 0130 00" } ] },
+        { "id": "IBAN-02", "input": "il mio IBAN e' IT60X0542811101000000123456", "locale": "it", "entities": [ { "kind": "Iban", "text": "IT60X0542811101000000123456" } ] },
+        { "id": "IBAN-03", "input": "IBAN sintetico IT00A0000000000000000000001 per i rimborsi", "locale": "it", "note": "IBAN-shaped though the checksum is synthetic; must still be masked (privacy > strict validation)", "entities": [ { "kind": "Iban", "text": "IT00A0000000000000000000001" } ] }
+      ],
+      "negative": [
+        { "id": "IBAN-NEG-01", "input": "the code IT is short for Italy", "entities": [] }
+      ]
+    },
+
+    "secret": {
+      "positive": [
+        { "id": "SECRET-01", "input": "APP_SECRET=sk-ant-api01-test0000000000000000000000000000000000000000000000000", "entities": [ { "kind": "Secret", "text": "sk-ant-api01-test0000000000000000000000000000000000000000000000000" } ] },
+        { "id": "SECRET-02", "input": "api_key = 'sk-secret-internal-key-000'", "entities": [ { "kind": "Secret", "text": "sk-secret-internal-key-000" } ] }
+      ],
+      "negative": [
+        { "id": "SECRET-NEG-01", "input": "the sky is clear and the task is done", "entities": [] }
+      ]
+    }
+  },
+
+  "validators": {
+    "luhn": {
+      "valid": [ "4111111111111111", "5500000000000004", "4242424242424242", "5105105105105100" ],
+      "invalid": [ "1111111111111111", "4111111111111112" ]
+    },
+    "iban_mod97": {
+      "valid": [ "DE89370400440532013000", "IT60X0542811101000000123456" ],
+      "invalid": [ "DE00370400440532013000" ]
+    }
+  },
+
+  "vault_roundtrip": [
+    { "id": "RT-01", "input": "My email is bob@test.com and my phone is 555-111-2222" },
+    { "id": "RT-02", "input": "Email: foo@bar.com, SSN: 123-45-6789, Phone: 555-123-4567" },
+    { "id": "RT-03", "input": "Hello world, no PII here", "no_pii": true },
+    { "id": "RT-04", "input": "Ti scrivo da pinco.pallino@prova.invalid, IBAN IT60X0542811101000000123456", "locale": "it" }
+  ]
+}

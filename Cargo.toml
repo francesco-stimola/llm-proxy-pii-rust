@@ -1,0 +1,32 @@
+[package]
+name = "llm-proxy-pii-rust"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "A fast, privacy-preserving LLM proxy that anonymizes PII locally before requests reach any provider."
+repository = "https://github.com/francesco-stimola/llm-proxy-pii-rust"
+readme = "README.md"
+
+# NOTE: dependency versions are a starting point and must be verified on the
+# first `cargo build` once the toolchain is installed (see docs/ROADMAP.md M0).
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+axum = "0.8"
+tower = "0.5"
+tower-http = { version = "0.6", features = ["trace"] }
+reqwest = { version = "0.12", features = ["json", "stream"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+regex = "1"
+once_cell = "1"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# ONNX inference deps (ort, tokenizers) are added at M2, when the model is chosen.
+# Kept out of M1 so the default build has no native dependencies. NOTE: `ort` 2.x
+# is currently prerelease only (e.g. 2.0.0-rc.x) and must be pinned explicitly.
+
+[features]
+default = []
+onnx = [] # M2: becomes ["dep:ort", "dep:tokenizers"] and re-adds those deps

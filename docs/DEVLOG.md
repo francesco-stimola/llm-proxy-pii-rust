@@ -1,0 +1,69 @@
+# Development log
+
+Newest first. One entry per meaningful change — note *what* and *why*, not just
+*what*. This is the running history so context is never lost between sessions.
+
+## 2026-07-11 — Toolchain up, first green build
+
+- **Rust + portable MSVC installed, no admin.** rustup per-user (`cargo`/`rustc`
+  1.97); MSVC linker via PortableBuildTools into `C:\Lavoro\Tools\MSVC` (`link.exe`,
+  Windows SDK 10.0.26100, VC 14.44) with `env=user` (HKCU). See `docs/SETUP.md`.
+- **First `cargo build` is green** — 177 deps, ~2 min, no warnings; even C-linking
+  crates (`ring`) build, confirming the MSVC C toolchain works.
+- **`ort`/`tokenizers` removed from M1**: `ort` 2.x is prerelease-only and not
+  needed until M2, so the `onnx` feature is now empty and re-adds them at M2.
+  Default build has zero native deps.
+- **Decisions locked**: placeholder format `[KIND_N]` (e.g. `[EMAIL_1]`), ASCII;
+  locale coverage IT + US. ARCHITECTURE and TESTING updated accordingly.
+
+## 2026-07-11 — Project bootstrap & scaffold
+
+- Created repo docs: `README.md` (EN, canonical) + `README.it.md` (IT).
+  Description kept generic (no ONNX) so the detection tech can change later.
+  Convention adopted: Italian docs are named `<basename>.it.md`.
+- Confirmed **MIT** license.
+- Masked the git identity repo-locally — commits must never use the real/work
+  email (global config was the Capgemini address).
+- Ported PII test cases from the old `llmproxy-extended` into
+  `tests/reference/old-proxy/` (PII only; "headroom" compression tests excluded).
+  Key lesson extracted: structured PII was regex/Luhn/IBAN-based; the ONNX model
+  (unreliable) only handled unstructured entities → adopted **hybrid detection**.
+- Locked decisions: modular pipeline, **CPU-first**, hybrid detection, stack
+  (tokio / axum / tower / reqwest / serde / ort / tokenizers). Roadmap M1→M4.
+- Wrote the Rust module scaffold — trait/type definitions with `todo!()` bodies.
+  ⚠️ **Unverified**: the Rust toolchain is not yet installed, nothing has been
+  compiled. First job once MSVC is in place: get `cargo build` green, fix any
+  scaffold errors, and verify the dependency versions in `Cargo.toml`.
+- **Doc policy**: internal docs stay English-only; only root-level files get an
+  Italian version (`README.it.md`). Removed the `docs/*.it.md` mirrors.
+- **Prompt augmentation decided**: the privacy stage will transparently inject a
+  system instruction so the model treats placeholders as typed real values and
+  uses them verbatim (incl. tool calls). This expands the round-trip to
+  `tool_calls` arguments and tool results, and requires deterministic placeholder
+  assignment — see ARCHITECTURE.md.
+- **Toolchain install started** — no admin rights on this PC. Rust core installs
+  per-user without admin; the MSVC linker does not (VS Build Tools needs admin),
+  so MSVC will come via portable extraction of the build tools + Windows SDK,
+  with the GNU toolchain as a fallback that unblocks M1 immediately.
+- **Rust installed** (per-user, no admin): `cargo`/`rustc` 1.97, host
+  `x86_64-pc-windows-msvc`. Confirmed the only missing piece is the **MSVC
+  linker** (`error: linker 'link.exe' not found`).
+- **MSVC linker plan**: portable Build Tools via PortableBuildTools v2.10.2
+  (`accept_license env=user target=x64 host=x64 path=<folder>` — writes
+  INCLUDE/LIB/Path to HKCU, no admin; `devcmd.ps1` sets the env per-session).
+  Awaiting the user's chosen install folder. Procedure in `docs/SETUP.md`.
+- **Testing doc added** (`docs/TESTING.md`) from the old `docs/guide/testing.md`
+  (TC-01…04 PII; headroom excluded) — captures the old proxy's real failures
+  (IBAN→PHONE, secrets missed, `anubi`→PERSON false positive) as explicit test
+  guards, and flags a new SECRET recognizer to add.
+- **Test battery drafted**: expanded `docs/TESTING.md` with a full test catalog
+  (unit / property / integration / e2e / regression) and added
+  `tests/corpus/pii_cases.json` (data-driven detection / validator / roundtrip
+  cases, reusing the old test values). Surfaced open decisions: locale scope
+  (IT + US), placeholder format, IBAN validation strictness, SECRET patterns.
+
+### Pending / next
+
+- User provides the MSVC install folder → run PortableBuildTools → `cargo build` green.
+- Then start M1: recognizers (incl. SECRET) + vault + privacy stage + prompt
+  injection + forwarding, validated against the ported tests.
