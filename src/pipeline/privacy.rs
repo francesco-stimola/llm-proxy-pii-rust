@@ -2,24 +2,31 @@
 //! model how to read the placeholders, and restore the originals in the incoming
 //! response. The only stage wired in the current milestone.
 //!
-//! ## What gets masked / restored
+//! ## What gets masked (request)
 //!
-//! On the way **out** (`on_request`) every text field of the OpenAI chat payload
-//! is scanned and masked with a shared per-request [`Vault`], so the same real
-//! value maps to the same `[KIND_N]` token everywhere it appears:
+//! Every text-bearing field of the OpenAI chat payload is masked with a shared
+//! per-request [`Vault`], so the same real value maps to the same `[KIND_N]`
+//! token everywhere it appears. Coverage (an unscanned text field is a leak):
 //!
-//! - `messages[].content` — string, or the `text` of each content part
-//! - `messages[].tool_calls[].function.arguments` — re-masked tool-call args
-//!   carried in the conversation history
+//! - `messages[].content` — a string, or the `text` of each content part
+//! - `messages[].name` — the author/participant name
+//! - `messages[].tool_calls[].function.arguments` and the legacy
+//!   `messages[].function_call.arguments`
+//! - `tools[].function.description` and every `description` inside
+//!   `tools[].function.parameters`
 //!
-//! If anything was masked, a system message is injected explaining the
-//! placeholders (see [`AUGMENTATION_PROMPT`]).
+//! **Fail closed**: if a `content` field has a shape we can't safely interpret
+//! (e.g. a bare object), or `messages` is missing/not an array, the stage marks
+//! the request blocked rather than forwarding it un-masked.
 //!
-//! On the way **back** (`on_response`) the same vault restores the originals in:
+//! If anything was masked, a system message is injected (or merged into the
+//! existing one) explaining the placeholders — see [`AUGMENTATION_PROMPT`].
 //!
-//! - `choices[].message.content`
-//! - `choices[].message.tool_calls[].function.arguments` — so the client runs
-//!   its tools with the real values
+//! ## What gets restored (response)
+//!
+//! `choices[].message.content`, `choices[].message.tool_calls[].function.arguments`,
+//! and the legacy `function_call.arguments` — so the client runs tools and reads
+//! text with the real values.
 
 use serde_json::{Value, json};
 
@@ -59,14 +66,23 @@ impl Stage for PrivacyStage {
     }
 
     fn on_request(&self, req: &mut ProxyRequest, ctx: &mut RequestContext) {
-        let detector = self.detector.as_ref();
-        let vault = &mut ctx.vault;
-        transform_request_texts(&mut req.body, &mut |text| {
-            let entities = detector.detect(text);
-            vault.mask(text, &entities)
-        });
+        // Scope the vault borrow so it's released before we re-read the vault.
+        let outcome = {
+            let detector = self.detector.as_ref();
+            let vault = &mut ctx.vault;
+            let mut mask = |text: &str| {
+                let entities = detector.detect(text);
+                vault.mask(text, &entities)
+            };
+            mask_request(&mut req.body, &mut mask)
+        };
 
-        // Only pollute the prompt when we actually masked something.
+        if let Err(reason) = outcome {
+            ctx.block(reason);
+            return;
+        }
+
+        // Only touch the prompt when we actually masked something.
         if !ctx.vault.is_empty() {
             inject_augmentation(&mut req.body);
         }
@@ -77,25 +93,99 @@ impl Stage for PrivacyStage {
             return;
         }
         let vault = &ctx.vault;
-        transform_response_texts(&mut resp.body, &mut |text| vault.demask(text));
+        demask_response(&mut resp.body, &mut |text| vault.demask(text));
     }
 }
 
-/// Apply `f` to every masked-relevant text field of an outgoing request.
-fn transform_request_texts(body: &mut Value, f: &mut dyn FnMut(&str) -> String) {
-    let Some(messages) = body.get_mut("messages").and_then(Value::as_array_mut) else {
-        return;
-    };
+// ── Request masking ────────────────────────────────────────────────────────
+
+/// Mask every text-bearing field of an outgoing request. Returns `Err(reason)`
+/// to fail closed on an unrecognized shape.
+fn mask_request(body: &mut Value, f: &mut dyn FnMut(&str) -> String) -> Result<(), String> {
+    let messages = body
+        .get_mut("messages")
+        .ok_or("request has no `messages` field")?
+        .as_array_mut()
+        .ok_or("`messages` is not an array")?;
+
     for message in messages {
         if let Some(content) = message.get_mut("content") {
-            transform_content(content, f);
+            mask_content(content, f)?;
+        }
+        if let Some(name) = message.get_mut("name") {
+            transform_string_value(name, f);
         }
         transform_tool_call_args(message, f);
+        if let Some(args) = message.pointer_mut("/function_call/arguments") {
+            transform_string_value(args, f);
+        }
+    }
+
+    // Tool/function definitions: free-text descriptions can carry example PII.
+    if let Some(tools) = body.get_mut("tools").and_then(Value::as_array_mut) {
+        for tool in tools {
+            if let Some(description) = tool.pointer_mut("/function/description") {
+                transform_string_value(description, f);
+            }
+            if let Some(parameters) = tool.pointer_mut("/function/parameters") {
+                mask_schema_descriptions(parameters, f);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Mask a message `content`: a string, or the `text` of each content part.
+/// Fails closed on an object/scalar we can't interpret as text.
+fn mask_content(content: &mut Value, f: &mut dyn FnMut(&str) -> String) -> Result<(), String> {
+    match content {
+        Value::String(s) => {
+            *s = f(s);
+            Ok(())
+        }
+        // Multimodal parts: mask any part that carries a `text` string (covers
+        // `{"type":"text"}` and future text-bearing parts); non-text parts
+        // (image_url, input_audio, …) have no `text` field and are skipped.
+        Value::Array(parts) => {
+            for part in parts {
+                if let Some(text) = part.get_mut("text") {
+                    transform_string_value(text, f);
+                }
+            }
+            Ok(())
+        }
+        Value::Null => Ok(()),
+        _ => Err("message `content` has an unrecognized shape".to_string()),
     }
 }
 
-/// Apply `f` to every restorable text field of an incoming response.
-fn transform_response_texts(body: &mut Value, f: &mut dyn FnMut(&str) -> String) {
+/// Recursively mask every `description` string inside a JSON-Schema value,
+/// leaving structural fields (`enum`, `const`, `default`, …) untouched.
+fn mask_schema_descriptions(schema: &mut Value, f: &mut dyn FnMut(&str) -> String) {
+    match schema {
+        Value::Object(map) => {
+            for (key, value) in map.iter_mut() {
+                if key == "description" {
+                    transform_string_value(value, f);
+                } else {
+                    mask_schema_descriptions(value, f);
+                }
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                mask_schema_descriptions(item, f);
+            }
+        }
+        _ => {}
+    }
+}
+
+// ── Response restoring ─────────────────────────────────────────────────────
+
+/// Restore placeholders in every text-bearing field of a response.
+fn demask_response(body: &mut Value, f: &mut dyn FnMut(&str) -> String) {
     let Some(choices) = body.get_mut("choices").and_then(Value::as_array_mut) else {
         return;
     };
@@ -104,29 +194,31 @@ fn transform_response_texts(body: &mut Value, f: &mut dyn FnMut(&str) -> String)
             continue;
         };
         if let Some(content) = message.get_mut("content") {
-            transform_content(content, f);
+            demask_content(content, f);
         }
         transform_tool_call_args(message, f);
+        if let Some(args) = message.pointer_mut("/function_call/arguments") {
+            transform_string_value(args, f);
+        }
     }
 }
 
-/// Message `content` is either a plain string or an array of typed parts; apply
-/// `f` to the string / each `text` part.
-fn transform_content(content: &mut Value, f: &mut dyn FnMut(&str) -> String) {
+/// Restore a response `content`: a string, or the `text` of each content part.
+fn demask_content(content: &mut Value, f: &mut dyn FnMut(&str) -> String) {
     match content {
         Value::String(s) => *s = f(s),
         Value::Array(parts) => {
             for part in parts {
-                if part.get("type").and_then(Value::as_str) == Some("text") {
-                    if let Some(text) = part.get_mut("text") {
-                        transform_string_value(text, f);
-                    }
+                if let Some(text) = part.get_mut("text") {
+                    transform_string_value(text, f);
                 }
             }
         }
         _ => {}
     }
 }
+
+// ── Shared helpers ─────────────────────────────────────────────────────────
 
 /// Apply `f` to each `tool_calls[].function.arguments` string on a message.
 fn transform_tool_call_args(message: &mut Value, f: &mut dyn FnMut(&str) -> String) {
@@ -147,12 +239,31 @@ fn transform_string_value(value: &mut Value, f: &mut dyn FnMut(&str) -> String) 
     }
 }
 
-/// Prepend the augmentation system message to the conversation.
+/// Prepend the augmentation system message — or merge it into an existing
+/// `system`/`developer` message so the upstream sees exactly one.
 fn inject_augmentation(body: &mut Value) {
-    if let Some(messages) = body.get_mut("messages").and_then(Value::as_array_mut) {
-        messages.insert(
-            0,
-            json!({ "role": "system", "content": AUGMENTATION_PROMPT }),
-        );
+    let Some(messages) = body.get_mut("messages").and_then(Value::as_array_mut) else {
+        return;
+    };
+
+    for message in messages.iter_mut() {
+        let role = message.get("role").and_then(Value::as_str);
+        if role == Some("system") || role == Some("developer") {
+            merge_augmentation(message);
+            return;
+        }
+    }
+
+    messages.insert(0, json!({ "role": "system", "content": AUGMENTATION_PROMPT }));
+}
+
+/// Append the augmentation to an existing system/developer message's content.
+fn merge_augmentation(message: &mut Value) {
+    match message.get_mut("content") {
+        Some(Value::String(s)) => *s = format!("{s}\n\n{AUGMENTATION_PROMPT}"),
+        Some(Value::Array(parts)) => {
+            parts.push(json!({ "type": "text", "text": AUGMENTATION_PROMPT }));
+        }
+        _ => message["content"] = json!(AUGMENTATION_PROMPT),
     }
 }

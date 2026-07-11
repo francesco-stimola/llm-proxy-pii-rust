@@ -3,6 +3,44 @@
 Newest first. One entry per meaningful change — note *what* and *why*, not just
 *what*. This is the running history so context is never lost between sessions.
 
+## 2026-07-11 — M1.5: robustness & fail-closed (+ M1 code-review fixes)
+
+Hardened M1 so the proxy fails *closed*, and folded in the M1 code-review items.
+
+- **Fail-closed pipeline.** `RequestContext` gained a `block: Option<String>`. The
+  privacy stage sets it on an unreadable `content` shape (bare object/scalar) or a
+  missing/!array `messages`; the handler returns 400 and never forwards. Unproxied
+  paths now 404 via a router `fallback` (only chat/completions + healthz are in
+  scope). Masking still runs before forwarding, so nothing leaks on later errors.
+- **Full field coverage** (`src/pipeline/privacy.rs`): added `messages[].name`,
+  legacy `function_call.arguments`, `tools[].function.description`, and recursive
+  `description`s inside `tools[].function.parameters`; content-array parts now mask
+  any part carrying a `text` string (robust to new part types). One shared vault →
+  a value split across fields still collapses to one token.
+- **Tolerant de-mask** (`src/pii/anonymizer.rs`): replaced the two-pass
+  contains+replace loop (code-review CR-4) with a single regex pass that also
+  tolerates model corruption — `[EMAIL 1]`, `[email-1]`, `[ EMAIL_1 ]`. An
+  unresolved but known-kind placeholder is `warn!`-logged, never silently shipped.
+- **IBAN over-match fixed** (code review): the regex now matches the two canonical
+  IBAN shapes (continuous / space-grouped-in-4s) instead of "optional space before
+  any char", so `IBAN IT60…456 EUR` no longer swallows `EUR`. Corpus `IBAN-04` +
+  unit test guard it.
+- **`iban_mod97` wired** (code review): used in `confidence_of` — a mod-97-valid
+  IBAN is `Verified`, a structure-only one `Structural` (still masked). New
+  `PiiEntity.confidence` + `Confidence` enum + `PiiKind::from_label`.
+- **Single system message** (code review): augmentation now merges into an existing
+  `system`/`developer` message instead of inserting a duplicate.
+- **Response headers forwarded** (code review): safe allowlist (`retry-after`,
+  `x-request-id`, `x-ratelimit-*`, `openai-*`, `anthropic-*`); content/hop-by-hop
+  dropped. `forward_chat_completions` now returns the upstream `HeaderMap`.
+- **Body-size limit**: `MAX_BODY_BYTES` (default 16 MiB) via `DefaultBodyLimit`.
+- **Broadened phone recognizers** (evasion recall): `(555) 867-5309`, `555.867.5309`,
+  `+1 …`, extra Italian grouping. Obfuscated emails documented as an accepted gap.
+- **Tests: 43 green, no warnings.** New `tests/adversarial.rs`; corpus `PHONE-03..05`,
+  `IBAN-04`; pipeline INT-07 + coverage/fail-closed/split-field cases; e2e header/
+  404/fail-closed cases; lib demask-tolerance + IBAN-span + phone-shape + confidence.
+- **Next: M2** — ONNX NER (see `docs/M2-NER-EVALUATION.md`).
+
 ## 2026-07-11 — M1 complete: pipeline, server, prompt-augmentation round-trip
 
 Finished the rest of M1 (Part A wiring + Part B, the ⭐ primary feature).

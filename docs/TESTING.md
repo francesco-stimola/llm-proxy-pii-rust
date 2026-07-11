@@ -115,6 +115,18 @@ false positive): `email`, `phone`, `ssn`, `credit_card`, `iban`, `secret`.
 - REG-03 — structured recognizers never mask a plain word / connection name (e.g. `anubi`) as a person; names come only from the ML NER (M2) with a threshold.
 - REG-04 — a 16-digit non-Luhn number is not masked as a credit card.
 
+### M1.5 — robustness & fail-closed
+- FC-01 — unreadable `content` shape (bare object) → request blocked (400), not forwarded (`fail_closed_on_unrecognized_content_shape`, e2e `…returns_400…`).
+- FC-02 — missing `messages` → blocked (`fail_closed_on_missing_messages`).
+- FC-03 — unproxied path/method → 404, never forwarded (`e2e_unproxied_endpoint_returns_404`).
+- COV-01 — `name`, `tools[].function` description + nested param descriptions, and legacy `function_call.arguments` are masked (`full_coverage_masks_name_tools_and_function_call`).
+- COV-02 — a value split across fields shares one token (`same_value_split_across_fields_shares_one_token`).
+- SYS-01 — augmentation merges into an existing system message; exactly one reaches the upstream (INT-07).
+- HDR-01 — safe upstream response headers are forwarded, arbitrary ones dropped (`e2e_forwards_safe_response_headers_only`).
+- DEM-01 — de-mask tolerates `[EMAIL 1]` / `[email-1]` / `[ EMAIL_1 ]`; unknown bracketed text is left as-is.
+- ADV-01 — evasion recall: broadened phone shapes + IBAN-before-word are caught; obfuscated emails are a **documented gap** (`tests/adversarial.rs`).
+- IBAN-04 — the IBAN span never absorbs a trailing ALL-CAPS word (code-review guard).
+
 ### Decisions & open points
 - **Locale coverage — DECIDED: IT + US.** Italian and US phone numbers; IBAN
   including Italian; US SSN. The corpus carries both.

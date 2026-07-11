@@ -65,6 +65,41 @@ This expands the round-trip scope:
   multi-turn (stateless) conversation where history is re-sent and re-masked on
   each request.
 
+## Robustness & fail-closed (M1.5)
+
+For a privacy proxy the failure mode *is* the product: anything unexpected must
+**fail closed** (block or scrub), never forward raw PII.
+
+- **Fail-closed request handling.** A stage can set `RequestContext.block` when it
+  hits something it can't safely mask — an unreadable `content` shape (a bare
+  object/scalar) or a missing/!array `messages`. The proxy then returns **400**
+  and never forwards. Masking always runs *before* forwarding, so a masked value
+  can't leak even on a later error.
+- **API scope.** Only `POST /v1/chat/completions` is proxied; `GET /healthz` is
+  served for liveness. Every other path/method returns **404** via the router
+  `fallback` and is never forwarded — we don't proxy schemas we don't model
+  (`/v1/responses`, `/v1/embeddings`, … are out of scope for now).
+- **Field coverage.** The masker scans *every* text-bearing field of the chat
+  schema — message `content` (string and the `text` of array parts, all roles),
+  `name`, `tool_calls[].function.arguments`, legacy `function_call.arguments`,
+  `tools[].function.description`, and every `description` inside
+  `tools[].function.parameters`. One shared per-request `Vault` means the same
+  value gets the same token even when it's split across fields.
+- **Body-size limit.** `MAX_BODY_BYTES` (default 16 MiB) is applied via
+  `DefaultBodyLimit`, above axum's 2 MiB default, so long-context requests aren't
+  silently rejected.
+- **Tolerant de-masking.** Restore accepts model-mangled placeholders
+  (`[EMAIL 1]`, `[email-1]`, `[ EMAIL_1 ]`) in one pass; a placeholder that looks
+  like ours but isn't in the vault is logged rather than silently shipped.
+- **Response headers.** Only a safe allowlist of upstream response headers is
+  forwarded (`retry-after`, `x-request-id`, `x-ratelimit-*`, `openai-*`,
+  `anthropic-*`); content/hop-by-hop headers are dropped because the body is
+  re-serialized after de-masking.
+- **Detection confidence.** `PiiEntity` carries a `Confidence` (`Verified` vs
+  `Structural`). A structure-only IBAN (mod-97 fails) is still masked but tagged
+  `Structural`; the signal is available to audit logging now and ML thresholds in
+  M2.
+
 ## Module layout
 
 | Path | Responsibility |

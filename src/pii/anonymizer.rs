@@ -9,7 +9,18 @@
 
 use std::collections::HashMap;
 
+use once_cell::sync::Lazy;
+use regex::{Captures, Regex};
+
 use super::{PiiEntity, PiiKind};
+
+/// Tolerant placeholder pattern used on the way back. It accepts the canonical
+/// `[EMAIL_1]` **and** the corruptions a model tends to introduce — a space or
+/// dash for the underscore, stray inner spaces, a lowercased label:
+/// `[EMAIL 1]`, `[email-1]`, `[ EMAIL_1 ]`. This keeps restore from silently
+/// failing when the model reformats a placeholder.
+static PLACEHOLDER_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"\[\s*([A-Za-z]+)[ _-]*([0-9]+)\s*\]").unwrap());
 
 /// Placeholder ↔ original-value store for one request.
 #[derive(Debug, Default)]
@@ -65,16 +76,30 @@ impl Vault {
 
     /// Restore placeholders in `text` back to their original values.
     ///
-    /// Order-independent: the `]` terminator means no placeholder is a prefix of
-    /// another (`[EMAIL_1]` never matches inside `[EMAIL_11]`).
+    /// A single tolerant pass (see [`PLACEHOLDER_RE`]): every placeholder-shaped
+    /// token is normalized to its canonical `[LABEL_N]` form and looked up. A
+    /// token that isn't in the vault is left untouched — and if it still looks
+    /// like one of our kinds (so the model probably mangled or invented it), a
+    /// warning is logged rather than silently shipping a broken placeholder.
     pub fn demask(&self, text: &str) -> String {
-        let mut out = text.to_string();
-        for (placeholder, original) in &self.to_original {
-            if out.contains(placeholder.as_str()) {
-                out = out.replace(placeholder.as_str(), original);
-            }
+        if self.to_original.is_empty() {
+            return text.to_string();
         }
-        out
+        PLACEHOLDER_RE
+            .replace_all(text, |caps: &Captures| {
+                let canonical = format!("[{}_{}]", caps[1].to_ascii_uppercase(), &caps[2]);
+                if let Some(original) = self.to_original.get(&canonical) {
+                    return original.clone();
+                }
+                if PiiKind::from_label(&caps[1]).is_some() {
+                    tracing::warn!(
+                        placeholder = %&caps[0],
+                        "unresolved PII placeholder in response; left as-is"
+                    );
+                }
+                caps[0].to_string()
+            })
+            .into_owned()
     }
 
     /// Look up (or mint) the placeholder for an entity's value.
@@ -135,5 +160,32 @@ mod tests {
         let entities = detector.detect(input);
         let masked = vault.mask(input, &entities);
         assert_eq!(masked, "write to [EMAIL_1], again [EMAIL_1]");
+    }
+
+    #[test]
+    fn demask_tolerates_model_corrupted_placeholders() {
+        // The model may reformat a token; restore must still work.
+        let detector = StructuredRecognizers::new();
+        let mut vault = Vault::new();
+        let entities = detector.detect("mail bob@test.com");
+        let _ = vault.mask("mail bob@test.com", &entities);
+
+        for corrupted in ["[EMAIL_1]", "[EMAIL 1]", "[email-1]", "[ EMAIL_1 ]"] {
+            assert_eq!(
+                vault.demask(&format!("sent to {corrupted}.")),
+                "sent to bob@test.com."
+            );
+        }
+    }
+
+    #[test]
+    fn demask_leaves_unknown_bracketed_text_untouched() {
+        let detector = StructuredRecognizers::new();
+        let mut vault = Vault::new();
+        let entities = detector.detect("mail bob@test.com");
+        let _ = vault.mask("mail bob@test.com", &entities);
+
+        // Not a known placeholder → passed through verbatim.
+        assert_eq!(vault.demask("see [TODO 3] and [EMAIL_1]"), "see [TODO 3] and bob@test.com");
     }
 }

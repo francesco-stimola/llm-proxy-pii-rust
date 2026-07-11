@@ -16,7 +16,14 @@ pub struct Config {
     /// Optional API key injected as `Authorization: Bearer …` when the client
     /// did not send its own `Authorization` header.
     pub upstream_api_key: Option<String>,
+    /// Maximum request body size in bytes. Tuned above axum's 2 MiB default so
+    /// long-context requests aren't silently rejected with 413.
+    pub max_body_bytes: usize,
 }
+
+/// Default max request body: 16 MiB — comfortably above long-context payloads
+/// without inviting unbounded memory use.
+pub const DEFAULT_MAX_BODY_BYTES: usize = 16 * 1024 * 1024;
 
 impl Config {
     /// Load configuration from environment variables, with sensible defaults:
@@ -38,10 +45,18 @@ impl Config {
             .ok()
             .filter(|k| !k.is_empty());
 
+        let max_body_bytes = match std::env::var("MAX_BODY_BYTES") {
+            Ok(raw) => raw
+                .parse()
+                .with_context(|| format!("invalid MAX_BODY_BYTES: {raw:?}"))?,
+            Err(_) => DEFAULT_MAX_BODY_BYTES,
+        };
+
         Ok(Self {
             listen,
             upstream_base_url,
             upstream_api_key,
+            max_body_bytes,
         })
     }
 }
@@ -57,6 +72,7 @@ impl fmt::Debug for Config {
                 "upstream_api_key",
                 &self.upstream_api_key.as_ref().map(|_| "<redacted>"),
             )
+            .field("max_body_bytes", &self.max_body_bytes)
             .finish()
     }
 }

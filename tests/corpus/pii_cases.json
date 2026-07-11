@@ -18,7 +18,10 @@
     "phone": {
       "positive": [
         { "id": "PHONE-01", "input": "Call me at 555-867-5309", "locale": "us", "entities": [ { "kind": "Phone", "text": "555-867-5309" } ] },
-        { "id": "PHONE-02", "input": "il telefono e' +39 333 0000001", "locale": "it", "entities": [ { "kind": "Phone", "text": "+39 333 0000001" } ] }
+        { "id": "PHONE-02", "input": "il telefono e' +39 333 0000001", "locale": "it", "entities": [ { "kind": "Phone", "text": "+39 333 0000001" } ] },
+        { "id": "PHONE-03", "input": "reach me at (555) 867-5309 anytime", "locale": "us", "note": "parenthesized area code", "entities": [ { "kind": "Phone", "text": "(555) 867-5309" } ] },
+        { "id": "PHONE-04", "input": "fax 555.867.5309 please", "locale": "us", "note": "dot separators", "entities": [ { "kind": "Phone", "text": "555.867.5309" } ] },
+        { "id": "PHONE-05", "input": "chiama +39 333 000 0001 domani", "locale": "it", "note": "extra Italian grouping", "entities": [ { "kind": "Phone", "text": "+39 333 000 0001" } ] }
       ],
       "negative": [
         { "id": "PHONE-NEG-01", "input": "order 12 boxes of 34 units", "entities": [] }
@@ -48,7 +51,8 @@
       "positive": [
         { "id": "IBAN-01", "input": "Transfer to DE89 3704 0044 0532 0130 00 today", "locale": "de", "entities": [ { "kind": "Iban", "text": "DE89 3704 0044 0532 0130 00" } ] },
         { "id": "IBAN-02", "input": "il mio IBAN e' IT60X0542811101000000123456", "locale": "it", "entities": [ { "kind": "Iban", "text": "IT60X0542811101000000123456" } ] },
-        { "id": "IBAN-03", "input": "IBAN sintetico IT00A0000000000000000000001 per i rimborsi", "locale": "it", "note": "IBAN-shaped though the checksum is synthetic; must still be masked (privacy > strict validation)", "entities": [ { "kind": "Iban", "text": "IT00A0000000000000000000001" } ] }
+        { "id": "IBAN-03", "input": "IBAN sintetico IT00A0000000000000000000001 per i rimborsi", "locale": "it", "note": "IBAN-shaped though the checksum is synthetic; must still be masked (privacy > strict validation)", "entities": [ { "kind": "Iban", "text": "IT00A0000000000000000000001" } ] },
+        { "id": "IBAN-04", "input": "IBAN IT60X0542811101000000123456 EUR", "locale": "it", "note": "adversarial: the span must not swallow the trailing ALL-CAPS word (M1 code review)", "entities": [ { "kind": "Iban", "text": "IT60X0542811101000000123456" } ] }
       ],
       "negative": [
         { "id": "IBAN-NEG-01", "input": "the code IT is short for Italy", "entities": [] }

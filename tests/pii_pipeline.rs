@@ -182,3 +182,111 @@ fn int06_response_text_is_deanonymized() {
     let content = resp.body["choices"][0]["message"]["content"].as_str().unwrap();
     assert_eq!(content, "I emailed bob@test.com for you.");
 }
+
+// ── M1.5 robustness ────────────────────────────────────────────────────────
+
+#[test]
+fn int07_augmentation_merges_into_existing_system_message() {
+    // CR-3: a client-supplied system message must not produce a second one.
+    let mut ctx = RequestContext::new();
+    let mut req = ProxyRequest {
+        body: json!({
+            "messages": [
+                { "role": "system", "content": "You are a helpful assistant." },
+                { "role": "user", "content": "mail bob@test.com" }
+            ]
+        }),
+    };
+    stage().on_request(&mut req, &mut ctx);
+
+    let messages = req.body["messages"].as_array().unwrap();
+    let systems: Vec<_> = messages.iter().filter(|m| m["role"] == "system").collect();
+    assert_eq!(systems.len(), 1, "exactly one system message must survive");
+    let content = systems[0]["content"].as_str().unwrap();
+    assert!(content.contains("You are a helpful assistant."));
+    assert!(content.to_lowercase().contains("placeholder"));
+}
+
+#[test]
+fn full_coverage_masks_name_tools_and_function_call() {
+    // RB-2: name, tool/function descriptions (incl. nested), and the legacy
+    // function_call arguments are all scanned.
+    let mut ctx = RequestContext::new();
+    let mut req = ProxyRequest {
+        body: json!({
+            "messages": [
+                { "role": "user", "name": "contact-me-at-a@b.com", "content": "hi" },
+                { "role": "assistant", "function_call": { "name": "f", "arguments": "{\"to\":\"c@d.com\"}" } }
+            ],
+            "tools": [{
+                "type": "function",
+                "function": {
+                    "name": "send",
+                    "description": "example: mail e@f.com",
+                    "parameters": {
+                        "type": "object",
+                        "properties": { "to": { "type": "string", "description": "like g@h.com" } }
+                    }
+                }
+            }]
+        }),
+    };
+    stage().on_request(&mut req, &mut ctx);
+
+    let whole = req.body.to_string();
+    for raw in ["a@b.com", "c@d.com", "e@f.com", "g@h.com"] {
+        assert!(!whole.contains(raw), "{raw} leaked in {whole}");
+    }
+    // and each was turned into an EMAIL placeholder
+    assert!(whole.contains("[EMAIL_"));
+}
+
+#[test]
+fn fail_closed_on_unrecognized_content_shape() {
+    // RB-1: content we can't interpret as text must block, not forward raw.
+    let mut ctx = RequestContext::new();
+    let mut req = ProxyRequest {
+        body: json!({
+            "messages": [{ "role": "user", "content": { "weird": "bob@test.com" } }]
+        }),
+    };
+    stage().on_request(&mut req, &mut ctx);
+    assert!(ctx.block.is_some(), "unrecognized content must fail closed");
+}
+
+#[test]
+fn fail_closed_on_missing_messages() {
+    let mut ctx = RequestContext::new();
+    let mut req = ProxyRequest {
+        body: json!({ "model": "gpt-x", "input": "no messages here" }),
+    };
+    stage().on_request(&mut req, &mut ctx);
+    assert!(ctx.block.is_some(), "missing `messages` must fail closed");
+}
+
+#[test]
+fn same_value_split_across_fields_shares_one_token() {
+    // RB-2/INT: one shared vault → the same value gets the same token whether it
+    // appears in a user message or a tool result.
+    let mut ctx = RequestContext::new();
+    let mut req = ProxyRequest {
+        body: json!({
+            "messages": [
+                { "role": "user", "content": "write to bob@test.com" },
+                { "role": "tool", "tool_call_id": "c1", "content": "cc bob@test.com too" }
+            ]
+        }),
+    };
+    stage().on_request(&mut req, &mut ctx);
+
+    let messages = req.body["messages"].as_array().unwrap();
+    let user = messages.iter().find(|m| m["role"] == "user").unwrap()["content"]
+        .as_str()
+        .unwrap();
+    let tool = messages.iter().find(|m| m["role"] == "tool").unwrap()["content"]
+        .as_str()
+        .unwrap();
+    assert!(user.contains("[EMAIL_1]"), "user: {user}");
+    assert!(tool.contains("[EMAIL_1]"), "tool: {tool}");
+    assert!(!user.contains("bob@test.com") && !tool.contains("bob@test.com"));
+}

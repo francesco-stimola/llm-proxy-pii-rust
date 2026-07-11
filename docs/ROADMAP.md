@@ -36,23 +36,23 @@ placeholders, especially in tool calls. A headline capability, not a nice-to-hav
 - [x] Integration tests INT-01…06 green (+ E2E-01/03 against a mock upstream)
 - [x] Binary smoke test (`tests/binary_smoke.rs`) — boots the real `.exe` end-to-end
 
-## M1.5 — Robustness & fail-closed  🔒
+## M1.5 — Robustness & fail-closed  🔒 ✅
 For a privacy tool the failure mode *is* the product: when anything is unexpected,
 it must **fail closed** (block / scrub), never forward raw PII. Hardens M1 before
 we broaden detection.
-- [ ] **Fail-closed policy**: unrecognized payload shapes, endpoints, or internal errors never pass PII through un-masked (block/scrub, never fail open)
-- [ ] **Full field coverage**: audit every text-bearing field of the chat schema (system/developer content, `name`, `tools[].function` description/params, array content parts) — an unscanned field is a leak
-- [ ] **API scope decision**: which endpoints are in scope (chat/completions only, or also `/v1/responses`, `/v1/embeddings`?); out-of-scope defaults to fail-closed
-- [ ] **Adversarial / evasion tests**: obfuscated emails, exotic phone shapes, PII split across fields — measure *recall* (a miss = a leak)
-- [ ] **Body-size limit** tuned for long-context requests (avoid silent 413 / OOM)
-- [ ] **Demask robustness**: tolerate or detect model-corrupted placeholders (`[EMAIL 1]`, translated/split tokens) so restore never silently fails
+- [x] **Fail-closed policy**: unrecognized payload shapes, endpoints, or internal errors never pass PII through un-masked. The privacy stage sets a `RequestContext.block` on an unreadable `content` shape or missing `messages`; the proxy then returns 400 and never forwards. Unproxied paths → 404 (`fallback`).
+- [x] **Full field coverage**: `messages[].content` (string + `text` of array parts), `messages[].name`, `tool_calls[].function.arguments`, legacy `function_call.arguments`, `tools[].function.description`, and every `description` inside `tools[].function.parameters`. All roles scanned (system/developer included).
+- [x] **API scope decision**: **chat/completions only** is proxied; `/healthz` is served; everything else 404s and is never forwarded (documented in `ARCHITECTURE.md` and `src/server.rs`).
+- [x] **Adversarial / evasion tests** (`tests/adversarial.rs` + corpus): broadened phone shapes ((555) 867-5309, dots, +1, extra IT grouping) and IBAN-before-word now caught; obfuscated emails pinned as a documented recall gap for NER/M2.
+- [x] **Body-size limit**: `MAX_BODY_BYTES` (default 16 MiB) via `DefaultBodyLimit`, above axum's 2 MiB default so long-context requests aren't silently 413'd.
+- [x] **Demask robustness**: a single tolerant pass restores `[EMAIL 1]`, `[email-1]`, `[ EMAIL_1 ]` etc.; an unresolved but known-kind placeholder is logged (never silently shipped).
 
 ### From the M1 code review — each item is fix (+ test where needed)
-- [ ] **IBAN over-match** (`src/pii/recognizers.rs`) — the IBAN regex greedily absorbs a trailing uppercase word: `"IBAN IT60X0542811101000000123456 EUR"` masks `…456 EUR`. **Fix**: tighten the pattern so a match can't extend into a following all-letter token. **Test**: adversarial case in `tests/corpus/pii_cases.json` + a recognizer unit test asserting the span is exactly the IBAN and `EUR` is left untouched.
-- [ ] **Wire `iban_mod97`** (`src/pii/recognizers.rs`) — defined but used only in tests. **Fix**: use it as a confidence signal on IBAN hits (valid vs structure-only), or document it as reserved for M2 — remove the dead-code ambiguity. Structure-only IBANs must stay masked (keep corpus `IBAN-03` green). **Test**: only if behaviour changes.
-- [ ] **Double `system` message** (`src/pipeline/privacy.rs`) — when the client already sent a `system` message, the augmentation inserts a second one at index 0. **Fix**: merge/append the augmentation into the existing system message (or place it deterministically). **Test**: integration test with a client-supplied `system` message asserting the agreed single-system-message shape reaches the upstream.
-- [ ] **`demask` double scan** (`src/pii/anonymizer.rs`) — drops a redundant pass. **Fix**: remove the `contains` guard and call `replace` directly (identical behaviour, one pass instead of two). **Test**: not needed — covered by existing round-trip tests.
-- [ ] **Upstream response headers** (`src/proxy.rs` / `src/server.rs`) — currently dropped. **Fix**: forward a safe subset of the upstream response headers (at least `content-type`; consider rate-limit headers). **Test**: e2e assertion that a header set by the mock upstream reaches the client.
+- [x] **IBAN over-match** (`src/pii/recognizers.rs`) — regex now matches the two canonical IBAN shapes (continuous / 4-groups) so a match can't extend into a trailing ALL-CAPS word. **Test**: corpus `IBAN-04` + `iban_does_not_absorb_a_following_word`.
+- [x] **Wire `iban_mod97`** (`src/pii/recognizers.rs`) — now used in the detection path via `confidence_of`: a mod-97-valid IBAN is `Verified`, a structure-only one `Structural` (still masked). `PiiEntity.confidence` carries the signal. **Test**: `structural_iban_is_masked_but_flagged`.
+- [x] **Double `system` message** (`src/pipeline/privacy.rs`) — the augmentation now merges into an existing `system`/`developer` message; only one reaches the upstream. **Test**: `int07_augmentation_merges_into_existing_system_message`.
+- [x] **`demask` double scan** (`src/pii/anonymizer.rs`) — replaced by a single regex pass (also the demask-robustness fix). Covered by round-trip + tolerance tests.
+- [x] **Upstream response headers** (`src/proxy.rs` / `src/server.rs`) — a safe allowlist (`retry-after`, `x-request-id`, `x-ratelimit-*`, `openai-*`, `anthropic-*`) is forwarded; content/hop-by-hop headers are dropped (body is re-serialized). **Test**: `e2e_forwards_safe_response_headers_only`.
 
 ## M2 — Unstructured entities (ONNX NER, CPU)
 Goal: add names / organizations / locations via a local ML model.

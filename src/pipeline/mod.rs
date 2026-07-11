@@ -21,12 +21,24 @@ use crate::proxy::{ProxyRequest, ProxyResponse};
 pub struct RequestContext {
     /// Placeholder ↔ original mapping for the privacy stage.
     pub vault: Vault,
+    /// Set by a stage to **fail closed**: the request must be rejected, not
+    /// forwarded, because it could otherwise leak PII (e.g. an unrecognized
+    /// payload shape a masker can't safely cover). The `String` is a
+    /// client-facing reason. The proxy stops the pipeline and returns 400.
+    pub block: Option<String>,
 }
 
 impl RequestContext {
     /// Create an empty per-request context.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Fail closed: record why the request must be blocked (first reason wins).
+    pub fn block(&mut self, reason: impl Into<String>) {
+        if self.block.is_none() {
+            self.block = Some(reason.into());
+        }
     }
 }
 

@@ -17,7 +17,7 @@
 
 use regex::Regex;
 
-use super::{PiiDetector, PiiEntity, PiiKind};
+use super::{Confidence, PiiDetector, PiiEntity, PiiKind};
 
 /// One compiled recognizer: a category, its pattern, a tie-break priority, and
 /// an optional validator applied to each raw match.
@@ -59,11 +59,18 @@ impl StructuredRecognizers {
             Recognizer {
                 kind: PiiKind::Iban,
                 priority: 5,
-                // Country (2 letters) + 2 check digits + BBAN, optionally
-                // space-grouped in blocks. mod-97 is a confidence signal only,
-                // not a hard gate, so synthetic-but-shaped IBANs are still
-                // masked (privacy > strict validation).
-                regex: Regex::new(r"\b[A-Z]{2}\d{2}(?:[ ]?[0-9A-Z]){11,30}\b").unwrap(),
+                // Country (2 letters) + 2 check digits + BBAN, in one of the two
+                // canonical shapes: continuous (`IT60X05428…`) or space-grouped
+                // in blocks of four (`DE89 3704 0044 …`). Matching the shapes
+                // explicitly — instead of "optional space before any char" —
+                // stops a match from bleeding into a following ALL-CAPS word
+                // (e.g. the `EUR` in `IBAN IT60…456 EUR`). mod-97 is a confidence
+                // signal only, not a gate, so synthetic-but-shaped IBANs are
+                // still masked (privacy > strict validation).
+                regex: Regex::new(
+                    r"\b[A-Z]{2}\d{2}(?:[A-Z0-9]{11,30}|(?: [A-Z0-9]{4}){2,7}(?: [A-Z0-9]{1,4})?)\b",
+                )
+                .unwrap(),
                 validate: None,
             },
             // Credit cards: 13–19 digits, either grouped in 4s or continuous,
@@ -87,12 +94,20 @@ impl StructuredRecognizers {
                 regex: Regex::new(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}").unwrap(),
                 validate: None,
             },
-            // Phone: US dashed (555-867-5309) or international grouped
-            // (+39 333 0000001).
+            // Phone, two families:
+            //  - US: 3-3-4 with `-`, `.`, space, or `(area)` grouping, optional
+            //    `+1` country code — 555-867-5309, (555) 867-5309, 555.867.5309,
+            //    +1 555-867-5309.
+            //  - International: `+CC` then 1–4 space-separated digit groups —
+            //    +39 333 0000001, +39 333 000 0001.
+            // US is tried first so `+1 …` isn't sliced by the international arm.
             Recognizer {
                 kind: PiiKind::Phone,
                 priority: 1,
-                regex: Regex::new(r"\+\d{1,3} \d{2,4} \d{5,8}|\b\d{3}-\d{3}-\d{4}\b").unwrap(),
+                regex: Regex::new(
+                    r"(?:\+1[ .-]?)?(?:\(\d{3}\)[ .-]?|\d{3}[ .-])\d{3}[ .-]\d{4}|\+\d{1,3}(?: \d{2,7}){1,4}",
+                )
+                .unwrap(),
                 validate: None,
             },
         ];
@@ -125,6 +140,7 @@ impl PiiDetector for StructuredRecognizers {
                         kind: rec.kind,
                         span: m.start()..m.end(),
                         text: text.to_string(),
+                        confidence: confidence_of(rec.kind, text),
                     },
                 ));
             }
@@ -157,6 +173,16 @@ fn resolve_overlaps(mut candidates: Vec<(u8, PiiEntity)>) -> Vec<PiiEntity> {
 
     kept.sort_by_key(|e| e.span.start);
     kept
+}
+
+/// Confidence for a raw match. Everything structured is `Verified` (format- or
+/// checksum-backed) except an IBAN whose mod-97 fails: that is still masked, but
+/// tagged `Structural` so downstream code knows it wasn't checksum-verified.
+fn confidence_of(kind: PiiKind, text: &str) -> Confidence {
+    match kind {
+        PiiKind::Iban if !iban_mod97(text) => Confidence::Structural,
+        _ => Confidence::Verified,
+    }
 }
 
 /// Accept a credit-card candidate only if it has 13–19 digits and passes Luhn.
@@ -240,6 +266,48 @@ mod tests {
             got,
             vec![(PiiKind::Iban, "DE89 3704 0044 0532 0130 00".to_string())]
         );
+    }
+
+    #[test]
+    fn iban_does_not_absorb_a_following_word() {
+        // M1 code review: the IBAN span must stop at the value; a trailing
+        // ALL-CAPS token (e.g. a currency) must be left untouched.
+        assert_eq!(
+            kinds("IBAN IT60X0542811101000000123456 EUR"),
+            vec![(PiiKind::Iban, "IT60X0542811101000000123456".to_string())]
+        );
+        assert_eq!(
+            kinds("Pay DE89 3704 0044 0532 0130 00 EUR now"),
+            vec![(PiiKind::Iban, "DE89 3704 0044 0532 0130 00".to_string())]
+        );
+    }
+
+    #[test]
+    fn structural_iban_is_masked_but_flagged() {
+        // Synthetic (mod-97-invalid) IBAN is still detected, tagged Structural.
+        let entities = StructuredRecognizers::new().detect("IT00A0000000000000000000001 ok");
+        assert_eq!(entities.len(), 1);
+        assert_eq!(entities[0].kind, PiiKind::Iban);
+        assert_eq!(entities[0].confidence, Confidence::Structural);
+    }
+
+    #[test]
+    fn phone_shape_variants_are_detected() {
+        for phone in [
+            "555-867-5309",
+            "(555) 867-5309",
+            "555.867.5309",
+            "+1 555-867-5309",
+            "+39 333 0000001",
+            "+39 333 000 0001",
+        ] {
+            let got = kinds(&format!("call {phone} please"));
+            assert_eq!(
+                got,
+                vec![(PiiKind::Phone, phone.to_string())],
+                "phone shape {phone:?}"
+            );
+        }
     }
 
     #[test]

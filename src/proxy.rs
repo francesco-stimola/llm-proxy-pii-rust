@@ -41,13 +41,13 @@ impl Upstream {
     }
 
     /// Forward an (already anonymized) chat-completions body upstream and return
-    /// the raw `(status, json)` response. The caller restores the response via
-    /// the pipeline before handing it back to the client.
+    /// the `(status, headers, json)` response. The caller restores the JSON via
+    /// the pipeline and forwards a safe subset of the headers to the client.
     pub async fn forward_chat_completions(
         &self,
         body: &Value,
         client_auth: Option<&str>,
-    ) -> anyhow::Result<(u16, Value)> {
+    ) -> anyhow::Result<(u16, reqwest::header::HeaderMap, Value)> {
         let url = format!(
             "{}/v1/chat/completions",
             self.base_url.trim_end_matches('/')
@@ -65,10 +65,11 @@ impl Upstream {
             .await
             .context("forwarding request to upstream failed")?;
         let status = response.status().as_u16();
+        let headers = response.headers().clone();
         let json = response
             .json::<Value>()
             .await
             .context("upstream response was not valid JSON")?;
-        Ok((status, json))
+        Ok((status, headers, json))
     }
 }
