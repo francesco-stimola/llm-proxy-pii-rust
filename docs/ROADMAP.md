@@ -62,6 +62,7 @@ Candidate models & evaluation plan: [docs/M2-NER-EVALUATION.md](M2-NER-EVALUATIO
 - [ ] Combine deterministic + ML detectors behind one `PiiDetector`
 - [ ] Extend the corpus with unstructured-entity cases
 - [ ] **NER concurrency**: model-instance pool / request queue so inference isn't a single-threaded bottleneck under load
+- [ ] *(micro, from M1.5 review)* **Symmetric response de-masking** (`src/pipeline/privacy.rs`, `demask_content`) — mirror `mask_content` so a bare-string element in a response `content` array is also de-masked, so a placeholder can't reach the client un-restored. Not a leak (safe direction); trivial.
 
 ## M3 — Streaming
 Goal: SSE token streaming with incremental de-anonymization.
