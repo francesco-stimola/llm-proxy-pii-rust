@@ -30,3 +30,8 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 [features]
 default = []
 onnx = [] # M2: becomes ["dep:ort", "dep:tokenizers"] and re-adds those deps
+
+[dev-dependencies]
+# Property-based testing — the faithful port of the old proxy's Hypothesis suite
+# (PROP-01/PROP-02 in docs/TESTING.md). Test-only; not in the shipped binary.
+proptest = "1"

@@ -19,13 +19,13 @@ Locales: **IT + US**. Placeholder format: **`[KIND_N]`** (e.g. `[EMAIL_1]`).
 
 ### Part A — Masking core
 Reproduce the old proxy's structured-PII behavior, better, in Rust.
-- [ ] `PiiDetector` trait + `PiiEntity` / `PiiKind` types
-- [ ] Deterministic recognizers: email, phone, SSN, credit card (Luhn), IBAN
-- [ ] SECRET recognizer (API keys / tokens, e.g. `sk-…`, `sk-ant-…`) — deterministic; the old ML model missed these
-- [ ] `Vault`: mask to `[KIND_N]` placeholders + exact-restore demask
+- [x] `PiiDetector` trait + `PiiEntity` / `PiiKind` types (incl. `Secret`)
+- [x] Deterministic recognizers: email, phone (IT/US), SSN, credit card (Luhn), IBAN, with priority-based overlap resolution
+- [x] SECRET recognizer (API keys / tokens, e.g. `sk-…`, `sk-ant-…`, `AKIA…`) — deterministic; the old ML model missed these
+- [x] `Vault`: mask to `[KIND_N]` placeholders + exact-restore demask (deterministic per value)
 - [ ] Privacy stage wired into the pipeline
 - [ ] axum server forwarding `/v1/chat/completions` upstream (non-streaming)
-- [ ] Port the reference tests to Rust; no false positives; multi-PII round-trip exact
+- [x] Port the reference tests to Rust; no false positives; multi-PII round-trip exact (corpus-driven + proptest, 16 tests green)
 
 ### Part B — Prompt augmentation & round-trip  ⭐ primary feature
 Make the masked data actually usable by the model — without this it mishandles

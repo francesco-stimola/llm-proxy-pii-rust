@@ -3,6 +3,35 @@
 Newest first. One entry per meaningful change — note *what* and *why*, not just
 *what*. This is the running history so context is never lost between sessions.
 
+## 2026-07-11 — M1 Part A: structured-PII masking core
+
+- **Recognizers implemented** (`src/pii/recognizers.rs`): email, phone (US dashed
+  + IT/international), US SSN, credit card (Luhn-gated), IBAN, and a deterministic
+  **SECRET** recognizer (`sk-…`, `sk-ant-…`, `AKIA…`) the old ML model missed.
+- **Overlap resolution** by priority (Secret > IBAN > CreditCard > SSN > Email >
+  Phone), then span length — this is what fixes the old proxy's REG-01 bug (IBAN
+  mis-masked as PHONE): IBAN outranks phone/card and wins the shared digits.
+- **Validators**: pure `luhn_valid` (checksum only; length enforced by the CC
+  regex) and `iban_mod97`. IBAN detection is **structure-based**; mod-97 is a
+  confidence signal only, so synthetic-but-shaped IBANs are still masked
+  (privacy > strict validation), matching corpus case IBAN-03.
+- **`Vault`** (`src/pii/anonymizer.rs`): `[KIND_N]` placeholders, numbered in
+  reading order, spliced right-to-left so byte offsets stay valid. Deterministic —
+  the same value reuses its token (VAULT-05). Exact `demask(mask(x)) == x`; the
+  `]` terminator prevents `[EMAIL_1]` matching inside `[EMAIL_11]`.
+- **`PiiKind`** gained a `Secret` variant, a `label()` for placeholders, and
+  serde derives so the JSON corpus deserializes straight into it.
+- **Tests green (16)**: inline unit tests + corpus-driven integration
+  (`tests/pii_corpus.rs`, all `recognizers`/`validators`/`vault_roundtrip` cases)
+  + property tests (`tests/pii_properties.rs`, proptest — PROP-01 detect+roundtrip
+  for generated email/phone/SSN, PROP-02 no false positives on alphabetic text).
+  Added `proptest` as a dev-dependency only. `cargo build --all-targets` clean, no
+  warnings.
+- **Next (Part B / rest of Part A)**: wire the privacy stage into the pipeline,
+  add the axum server + reqwest forwarding of `/v1/chat/completions`, then the
+  prompt-augmentation round-trip (system-prompt injection, tool_calls de-anon,
+  deterministic placeholders across turns) with INT-01…06.
+
 ## 2026-07-11 — Toolchain up, first green build
 
 - **Rust + portable MSVC installed, no admin.** rustup per-user (`cargo`/`rustc`

@@ -13,8 +13,14 @@ pub mod onnx;
 
 use std::ops::Range;
 
+use serde::{Deserialize, Serialize};
+
 /// A category of personally identifiable information.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+///
+/// `Serialize`/`Deserialize` use the variant names verbatim (e.g. `"Email"`,
+/// `"CreditCard"`), which is the encoding the JSON test corpus in
+/// `tests/corpus/pii_cases.json` relies on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum PiiKind {
     // Structured (deterministic recognizers — M1)
     Email,
@@ -22,10 +28,31 @@ pub enum PiiKind {
     Ssn,
     CreditCard,
     Iban,
+    /// API keys / tokens (e.g. `sk-…`, `sk-ant-…`, `AKIA…`). Deterministic —
+    /// the old ML model missed these, so they are treated as structured PII.
+    Secret,
     // Unstructured (ONNX NER — M2)
     Person,
     Organization,
     Location,
+}
+
+impl PiiKind {
+    /// The uppercase label used inside placeholders, e.g. `Email` → `"EMAIL"`
+    /// yields the `[EMAIL_1]` token. ASCII and tokenizer-friendly.
+    pub fn label(self) -> &'static str {
+        match self {
+            PiiKind::Email => "EMAIL",
+            PiiKind::Phone => "PHONE",
+            PiiKind::Ssn => "SSN",
+            PiiKind::CreditCard => "CARD",
+            PiiKind::Iban => "IBAN",
+            PiiKind::Secret => "SECRET",
+            PiiKind::Person => "PERSON",
+            PiiKind::Organization => "ORG",
+            PiiKind::Location => "LOCATION",
+        }
+    }
 }
 
 /// A detected span of PII within a text.

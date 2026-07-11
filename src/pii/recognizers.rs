@@ -1,21 +1,102 @@
 //! Deterministic recognizers for STRUCTURED PII (M1): email, phone, SSN,
-//! credit card (Luhn-validated), IBAN. High precision, no ML model.
+//! credit card (Luhn-validated), IBAN, and secrets/API keys. High precision,
+//! no ML model.
 //!
 //! These reproduce (and must pass) the ported reference cases in
-//! `tests/reference/old-proxy/`.
+//! `tests/reference/old-proxy/` and the data-driven corpus in
+//! `tests/corpus/pii_cases.json`.
+//!
+//! ## How detection works
+//!
+//! Each category is a compiled [`Regex`]. Every regex is run over the input,
+//! optional per-category validation is applied (Luhn for credit cards), and the
+//! resulting candidate spans are reconciled by [`resolve_overlaps`] so that a
+//! single stretch of text is never labelled twice. This directly fixes the old
+//! proxy's bug where an IBAN was mis-masked as a phone number: IBAN outranks
+//! phone, so it wins any overlap.
 
-use super::{PiiDetector, PiiEntity};
+use regex::Regex;
+
+use super::{PiiDetector, PiiEntity, PiiKind};
+
+/// One compiled recognizer: a category, its pattern, a tie-break priority, and
+/// an optional validator applied to each raw match.
+struct Recognizer {
+    kind: PiiKind,
+    /// Higher wins when two candidate spans overlap (see [`resolve_overlaps`]).
+    priority: u8,
+    regex: Regex,
+    /// Extra check on the matched text; `None` means "accept every match".
+    validate: Option<fn(&str) -> bool>,
+}
 
 /// The default set of structured-PII recognizers, run together over a text.
 pub struct StructuredRecognizers {
-    // TODO(M1): compiled `regex::Regex` patterns per category, built once.
+    recognizers: Vec<Recognizer>,
 }
 
 impl StructuredRecognizers {
-    /// Build the recognizer set (compiles the regexes once).
+    /// Build the recognizer set, compiling every pattern once.
+    ///
+    /// Locales covered: **IT + US** (Italian/US phone shapes, US SSN, IBAN
+    /// including Italian). The regexes are deliberately conservative — precision
+    /// matters more than recall for structured PII, and the ML NER (M2) picks up
+    /// the fuzzy cases.
     pub fn new() -> Self {
-        // TODO(M1): compile email / phone / SSN / credit-card / IBAN patterns.
-        todo!()
+        // Patterns are simple and readable on purpose; `regex` has no
+        // backreferences/lookarounds, and we don't need them here.
+        let recognizers = vec![
+            // Secrets outrank everything: an API key must never be re-read as
+            // something else, and the old ML model missed them entirely.
+            Recognizer {
+                kind: PiiKind::Secret,
+                priority: 6,
+                regex: Regex::new(r"\b(?:sk-[A-Za-z0-9_-]{6,}|AKIA[0-9A-Z]{16})\b").unwrap(),
+                validate: None,
+            },
+            // IBAN before phone/credit-card: its digit groups can otherwise be
+            // mistaken for a card or phone number.
+            Recognizer {
+                kind: PiiKind::Iban,
+                priority: 5,
+                // Country (2 letters) + 2 check digits + BBAN, optionally
+                // space-grouped in blocks. mod-97 is a confidence signal only,
+                // not a hard gate, so synthetic-but-shaped IBANs are still
+                // masked (privacy > strict validation).
+                regex: Regex::new(r"\b[A-Z]{2}\d{2}(?:[ ]?[0-9A-Z]){11,30}\b").unwrap(),
+                validate: None,
+            },
+            // Credit cards: 13–19 digits, either grouped in 4s or continuous,
+            // gated by the Luhn checksum to reject look-alikes.
+            Recognizer {
+                kind: PiiKind::CreditCard,
+                priority: 4,
+                regex: Regex::new(r"\b(?:\d{4}[ -]\d{4}[ -]\d{4}[ -]\d{4}|\d{13,19})\b").unwrap(),
+                validate: Some(credit_card_valid),
+            },
+            // US SSN: 3-2-4 digit groups.
+            Recognizer {
+                kind: PiiKind::Ssn,
+                priority: 3,
+                regex: Regex::new(r"\b\d{3}-\d{2}-\d{4}\b").unwrap(),
+                validate: None,
+            },
+            Recognizer {
+                kind: PiiKind::Email,
+                priority: 2,
+                regex: Regex::new(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}").unwrap(),
+                validate: None,
+            },
+            // Phone: US dashed (555-867-5309) or international grouped
+            // (+39 333 0000001).
+            Recognizer {
+                kind: PiiKind::Phone,
+                priority: 1,
+                regex: Regex::new(r"\+\d{1,3} \d{2,4} \d{5,8}|\b\d{3}-\d{3}-\d{4}\b").unwrap(),
+                validate: None,
+            },
+        ];
+        Self { recognizers }
     }
 }
 
@@ -26,16 +107,159 @@ impl Default for StructuredRecognizers {
 }
 
 impl PiiDetector for StructuredRecognizers {
-    fn detect(&self, _input: &str) -> Vec<PiiEntity> {
-        // TODO(M1): run each recognizer; validate credit-card candidates with
-        // `luhn_valid` and IBANs with the mod-97 checksum before accepting.
-        todo!()
+    fn detect(&self, input: &str) -> Vec<PiiEntity> {
+        // Collect every raw candidate (kind, span, text) with its priority,
+        // applying the per-category validator as we go.
+        let mut candidates: Vec<(u8, PiiEntity)> = Vec::new();
+        for rec in &self.recognizers {
+            for m in rec.regex.find_iter(input) {
+                let text = m.as_str();
+                if let Some(check) = rec.validate {
+                    if !check(text) {
+                        continue;
+                    }
+                }
+                candidates.push((
+                    rec.priority,
+                    PiiEntity {
+                        kind: rec.kind,
+                        span: m.start()..m.end(),
+                        text: text.to_string(),
+                    },
+                ));
+            }
+        }
+        resolve_overlaps(candidates)
     }
 }
 
+/// Reduce overlapping candidate spans to a non-overlapping set.
+///
+/// Sort by priority (desc) then span length (desc), then greedily keep a
+/// candidate only if it does not overlap one already kept. The result is sorted
+/// by start offset, i.e. reading order. This is what makes IBAN win over a phone
+/// or credit-card span covering the same digits.
+fn resolve_overlaps(mut candidates: Vec<(u8, PiiEntity)>) -> Vec<PiiEntity> {
+    candidates.sort_by(|a, b| {
+        b.0.cmp(&a.0)
+            .then_with(|| b.1.span.len().cmp(&a.1.span.len()))
+    });
+
+    let mut kept: Vec<PiiEntity> = Vec::new();
+    for (_, entity) in candidates {
+        let clashes = kept
+            .iter()
+            .any(|k| entity.span.start < k.span.end && k.span.start < entity.span.end);
+        if !clashes {
+            kept.push(entity);
+        }
+    }
+
+    kept.sort_by_key(|e| e.span.start);
+    kept
+}
+
+/// Accept a credit-card candidate only if it has 13–19 digits and passes Luhn.
+fn credit_card_valid(matched: &str) -> bool {
+    let digit_count = matched.chars().filter(|c| c.is_ascii_digit()).count();
+    (13..=19).contains(&digit_count) && luhn_valid(matched)
+}
+
 /// Luhn checksum validation for credit-card candidates (rejects false positives
-/// like arbitrary 16-digit numbers).
-pub fn luhn_valid(_digits: &str) -> bool {
-    // TODO(M1): standard Luhn algorithm over the numeric digits.
-    todo!()
+/// like arbitrary 16-digit numbers). Non-digit characters are ignored, so it
+/// works on both grouped (`4111 1111 …`) and continuous inputs.
+pub fn luhn_valid(input: &str) -> bool {
+    let digits: Vec<u32> = input.chars().filter_map(|c| c.to_digit(10)).collect();
+    if digits.is_empty() {
+        return false;
+    }
+    let mut sum = 0u32;
+    for (i, &d) in digits.iter().rev().enumerate() {
+        if i % 2 == 1 {
+            let doubled = d * 2;
+            sum += if doubled > 9 { doubled - 9 } else { doubled };
+        } else {
+            sum += d;
+        }
+    }
+    sum % 10 == 0
+}
+
+/// ISO 13616 IBAN mod-97 checksum. Whitespace is ignored and letters are folded
+/// to uppercase. Used as a *confidence signal* for IBAN detection, not a hard
+/// gate — see [`StructuredRecognizers::new`].
+pub fn iban_mod97(iban: &str) -> bool {
+    let compact: String = iban
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .map(|c| c.to_ascii_uppercase())
+        .collect();
+    if compact.len() < 4 {
+        return false;
+    }
+    // Move the first four characters (country + check digits) to the end.
+    let rearranged = format!("{}{}", &compact[4..], &compact[..4]);
+
+    // Fold letters to 10..35 and reduce mod 97 incrementally to avoid big ints.
+    let mut remainder: u32 = 0;
+    for c in rearranged.chars() {
+        let value = if c.is_ascii_digit() {
+            c as u32 - '0' as u32
+        } else if c.is_ascii_alphabetic() {
+            c as u32 - 'A' as u32 + 10
+        } else {
+            return false;
+        };
+        remainder = if value >= 10 {
+            (remainder * 100 + value) % 97
+        } else {
+            (remainder * 10 + value) % 97
+        };
+    }
+    remainder == 1
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn kinds(input: &str) -> Vec<(PiiKind, String)> {
+        StructuredRecognizers::new()
+            .detect(input)
+            .into_iter()
+            .map(|e| (e.kind, e.text))
+            .collect()
+    }
+
+    #[test]
+    fn iban_beats_phone_and_card() {
+        // Regression guard REG-01: the grouped IBAN must be a single IBAN span,
+        // never split into a phone or credit-card match.
+        let got = kinds("Transfer to DE89 3704 0044 0532 0130 00 today");
+        assert_eq!(
+            got,
+            vec![(PiiKind::Iban, "DE89 3704 0044 0532 0130 00".to_string())]
+        );
+    }
+
+    #[test]
+    fn non_luhn_16_digits_is_not_a_card() {
+        // REG-04.
+        assert!(kinds("tracking 1111 1111 1111 1111").is_empty());
+    }
+
+    #[test]
+    fn luhn_accepts_known_cards_rejects_near_misses() {
+        assert!(luhn_valid("4111111111111111"));
+        assert!(luhn_valid("5105105105105100"));
+        assert!(!luhn_valid("1111111111111111"));
+        assert!(!luhn_valid("4111111111111112"));
+    }
+
+    #[test]
+    fn iban_mod97_accepts_valid_rejects_invalid() {
+        assert!(iban_mod97("DE89370400440532013000"));
+        assert!(iban_mod97("IT60X0542811101000000123456"));
+        assert!(!iban_mod97("DE00370400440532013000"));
+    }
 }
