@@ -48,6 +48,9 @@ Development runs as a two-role loop:
   source + docs, and records findings back into `docs/ROADMAP.md` as new `[ ]`
   items with **fix + test each** — which the builder then closes. The reviewer
   edits docs, **not** source, and keeps the working tree clean.
+- **Findings lifecycle:** OPEN findings live in ROADMAP as `[ ]`; once a review's
+  findings are all closed, collapse them to a one-line `docs/DEVLOG.md` pointer so
+  ROADMAP stays forward-looking — the detail lives in DEVLOG.
 
 A milestone is done when: its ROADMAP items are checked, tests are green,
 DEVLOG and the affected docs (ARCHITECTURE/TESTING) reflect reality.

@@ -47,17 +47,12 @@ we broaden detection.
 - [x] **Body-size limit**: `MAX_BODY_BYTES` (default 16 MiB) via `DefaultBodyLimit`, above axum's 2 MiB default so long-context requests aren't silently 413'd.
 - [x] **Demask robustness**: a single tolerant pass restores `[EMAIL 1]`, `[email-1]`, `[ EMAIL_1 ]` etc.; an unresolved but known-kind placeholder is logged (never silently shipped).
 
-### From the M1 code review — each item is fix (+ test where needed)
-- [x] **IBAN over-match** (`src/pii/recognizers.rs`) — regex now matches the two canonical IBAN shapes (continuous / 4-groups) so a match can't extend into a trailing ALL-CAPS word. **Test**: corpus `IBAN-04` + `iban_does_not_absorb_a_following_word`.
-- [x] **Wire `iban_mod97`** (`src/pii/recognizers.rs`) — now used in the detection path via `confidence_of`: a mod-97-valid IBAN is `Verified`, a structure-only one `Structural` (still masked). `PiiEntity.confidence` carries the signal. **Test**: `structural_iban_is_masked_but_flagged`.
-- [x] **Double `system` message** (`src/pipeline/privacy.rs`) — the augmentation now merges into an existing `system`/`developer` message; only one reaches the upstream. **Test**: `int07_augmentation_merges_into_existing_system_message`.
-- [x] **`demask` double scan** (`src/pii/anonymizer.rs`) — replaced by a single regex pass (also the demask-robustness fix). Covered by round-trip + tolerance tests.
-- [x] **Upstream response headers** (`src/proxy.rs` / `src/server.rs`) — a safe allowlist (`retry-after`, `x-request-id`, `x-ratelimit-*`, `openai-*`, `anthropic-*`) is forwarded; content/hop-by-hop headers are dropped (body is re-serialized). **Test**: `e2e_forwards_safe_response_headers_only`.
-
-### From the M1.5 code review — follow-ups (review before M2) ✅
-- [x] **Array-content fail-closed gap** (`src/pipeline/privacy.rs`, `mask_content`) — array `content` now masks bare-string elements, masks the `text` of object parts (skips non-text parts like `image_url`), and **fails closed on any other element** (number/bool/null/nested array). **Test**: `content_array_bare_string_is_masked_not_leaked` + `content_array_scalar_element_fails_closed`.
-- [x] **Phone international over-match** (`src/pii/recognizers.rs`) — the international arm is now two canonical shapes (`+CC gg gg gggg` / `+CC gg ggggggg`) instead of `1–4` open groups, so it can't swallow a trailing number (`+39 333 0000001 12345` masks only the phone). **Test**: `phone_international_span_stops_at_the_number`.
-- [x] **`Confidence` consumed** (`src/pii/recognizers.rs`) — `detect` now emits a `debug` audit log for every `Structural` match (kind only, never the value), so the field is read, not write-only. Reserved for richer use (audit sink, ML thresholds) in M2.
+### Code-review findings — all closed ✅
+8 findings from the M1 and M1.5 reviews — IBAN over-match, `iban_mod97` wiring,
+single `system` message, response-header allowlist, tolerant de-mask; plus the
+array-content fail-closed gap, phone over-match, and `Confidence` consumed — all
+fixed with tests. Full detail in `docs/DEVLOG.md` (2026-07-11) / commits
+`bb68707`, `775945f`.
 
 ## M2 — Unstructured entities (ONNX NER, CPU)
 Goal: add names / organizations / locations via a local ML model.

@@ -37,6 +37,9 @@ first. Your job is to catch what the builder missed — not to re-implement.
   scenario, a concrete **fix**, and a **test** where one is warranted.
 - Record accepted findings into `docs/ROADMAP.md` as new `[ ]` items under the
   relevant milestone, phrased as **fix (+ test)**, so the builder can close them.
+- Once a review's findings are all closed, collapse them in ROADMAP to a one-line
+  pointer to `docs/DEVLOG.md` (+ commit) — ROADMAP stays forward-looking; the
+  detail lives in DEVLOG.
 - If nothing is wrong, say so plainly — never invent findings.
 
 ## Boundaries
