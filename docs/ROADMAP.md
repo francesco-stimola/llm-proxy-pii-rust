@@ -37,6 +37,7 @@ placeholders, especially in tool calls. A headline capability, not a nice-to-hav
 
 ## M2 — Unstructured entities (ONNX NER, CPU)
 Goal: add names / organizations / locations via a local ML model.
+Candidate models & evaluation plan: [docs/M2-NER-EVALUATION.md](M2-NER-EVALUATION.md).
 - [ ] `OnnxNerDetector` behind the `onnx` feature (CPU execution provider)
 - [ ] Evaluate candidate models against the corpus; pick the most reliable one
 - [ ] Combine deterministic + ML detectors behind one `PiiDetector`
