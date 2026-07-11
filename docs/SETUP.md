@@ -78,3 +78,14 @@ Note: ONNX Runtime (`ort`, milestone M2) links best against MSVC — switch back
 
 - No component here requires administrator rights.
 - `git` must be available for cloning and committing.
+
+## Optional: auto-load the MSVC env in Claude Code
+
+Each Claude Code tool call runs in a fresh shell that does not inherit the MSVC
+env until you log out/in. To avoid dot-sourcing `devcmd.ps1` on every command,
+capture the env once into `.claude/settings.local.json` (gitignored,
+machine-local) under an `"env"` object — `INCLUDE`, `LIB`, the full `PATH` (with
+the MSVC bins and `%USERPROFILE%\.cargo\bin`), plus the `VCToolsInstallDir` /
+`WindowsSDKDir` / `WindowsSDKVersion` helpers. Every tool shell then resolves
+`link.exe` and `cargo` automatically. Regenerate it if the MSVC or SDK version
+changes.
