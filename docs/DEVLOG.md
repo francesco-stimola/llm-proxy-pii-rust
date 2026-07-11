@@ -15,6 +15,11 @@ Newest first. One entry per meaningful change — note *what* and *why*, not jus
   Default build has zero native deps.
 - **Decisions locked**: placeholder format `[KIND_N]` (e.g. `[EMAIL_1]`), ASCII;
   locale coverage IT + US. ARCHITECTURE and TESTING updated accordingly.
+- **Roadmap refined** (session paused at baseline): prompt augmentation & round-trip
+  promoted to a highlighted **primary** sub-milestone (M1 · Part B, right after the
+  masking core) rather than a buried checkbox; kept in M1 because it is coupled to
+  masking. Added a future **M5 — broad locale & language coverage** (beyond IT + US),
+  relevant when we move off the OpenAI model.
 
 ## 2026-07-11 — Project bootstrap & scaffold
 
