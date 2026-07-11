@@ -144,13 +144,25 @@ fn mask_content(content: &mut Value, f: &mut dyn FnMut(&str) -> String) -> Resul
             *s = f(s);
             Ok(())
         }
-        // Multimodal parts: mask any part that carries a `text` string (covers
-        // `{"type":"text"}` and future text-bearing parts); non-text parts
-        // (image_url, input_audio, …) have no `text` field and are skipped.
+        // Multimodal content is an array of parts. Fail closed on anything we
+        // can't account for, so a stray element never smuggles PII past us.
         Value::Array(parts) => {
             for part in parts {
-                if let Some(text) = part.get_mut("text") {
-                    transform_string_value(text, f);
+                if let Value::String(s) = part {
+                    // A bare string element *is* text — mask it (skipping = leak).
+                    *s = f(s);
+                } else if part.is_object() {
+                    // A part object: mask any `text` it carries (covers
+                    // `{"type":"text"}` and future text-bearing parts); a part
+                    // with no `text` (image_url, input_audio, …) is non-text.
+                    if let Some(text) = part.get_mut("text") {
+                        transform_string_value(text, f);
+                    }
+                } else {
+                    // number / bool / null / nested array — uninterpretable.
+                    return Err(
+                        "message `content` array has an unrecognized element".to_string()
+                    );
                 }
             }
             Ok(())

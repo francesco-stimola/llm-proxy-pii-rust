@@ -290,3 +290,41 @@ fn same_value_split_across_fields_shares_one_token() {
     assert!(tool.contains("[EMAIL_1]"), "tool: {tool}");
     assert!(!user.contains("bob@test.com") && !tool.contains("bob@test.com"));
 }
+
+#[test]
+fn content_array_bare_string_is_masked_not_leaked() {
+    // M1.5 review follow-up: a bare-string element in a content array must be
+    // masked (skipping it would leak); text parts too; non-text parts untouched.
+    let mut ctx = RequestContext::new();
+    let mut req = ProxyRequest {
+        body: json!({
+            "messages": [{
+                "role": "user",
+                "content": [
+                    "mail bob@test.com",
+                    { "type": "text", "text": "and cc alice@a.com" },
+                    { "type": "image_url", "image_url": { "url": "http://example/x.png" } }
+                ]
+            }]
+        }),
+    };
+    stage().on_request(&mut req, &mut ctx);
+
+    assert!(ctx.block.is_none(), "well-formed array must not block");
+    let whole = req.body.to_string();
+    assert!(!whole.contains("bob@test.com"), "bare-string PII leaked: {whole}");
+    assert!(!whole.contains("alice@a.com"), "text-part PII leaked: {whole}");
+    assert!(whole.contains("[EMAIL_1]") && whole.contains("[EMAIL_2]"));
+    assert!(whole.contains("http://example/x.png"), "non-text part must be untouched");
+}
+
+#[test]
+fn content_array_scalar_element_fails_closed() {
+    // A non-object, non-string array element can't be interpreted → block.
+    let mut ctx = RequestContext::new();
+    let mut req = ProxyRequest {
+        body: json!({ "messages": [{ "role": "user", "content": [42] }] }),
+    };
+    stage().on_request(&mut req, &mut ctx);
+    assert!(ctx.block.is_some(), "scalar array element must fail closed");
+}

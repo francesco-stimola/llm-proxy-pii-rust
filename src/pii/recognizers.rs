@@ -98,14 +98,18 @@ impl StructuredRecognizers {
             //  - US: 3-3-4 with `-`, `.`, space, or `(area)` grouping, optional
             //    `+1` country code — 555-867-5309, (555) 867-5309, 555.867.5309,
             //    +1 555-867-5309.
-            //  - International: `+CC` then 1–4 space-separated digit groups —
-            //    +39 333 0000001, +39 333 000 0001.
+            //  - International: `+CC` then two canonical shapes — three groups
+            //    (+39 333 000 0001) or two groups (+39 333 0000001). Enumerating
+            //    the shapes (rather than "1–4 groups") stops the match from
+            //    swallowing an unrelated trailing number, e.g. the `12345` in
+            //    `+39 333 0000001 12345` — the same class of bug as the IBAN
+            //    over-match. Three-group is tried first so it isn't cut short.
             // US is tried first so `+1 …` isn't sliced by the international arm.
             Recognizer {
                 kind: PiiKind::Phone,
                 priority: 1,
                 regex: Regex::new(
-                    r"(?:\+1[ .-]?)?(?:\(\d{3}\)[ .-]?|\d{3}[ .-])\d{3}[ .-]\d{4}|\+\d{1,3}(?: \d{2,7}){1,4}",
+                    r"(?:\+1[ .-]?)?(?:\(\d{3}\)[ .-]?|\d{3}[ .-])\d{3}[ .-]\d{4}|\+\d{1,3} \d{2,4} \d{2,4} \d{3,4}|\+\d{1,3} \d{2,4} \d{5,8}",
                 )
                 .unwrap(),
                 validate: None,
@@ -145,7 +149,20 @@ impl PiiDetector for StructuredRecognizers {
                 ));
             }
         }
-        resolve_overlaps(candidates)
+
+        let kept = resolve_overlaps(candidates);
+        for entity in &kept {
+            if entity.confidence == Confidence::Structural {
+                // Auditability: a structure-only match (e.g. a mod-97-invalid
+                // IBAN) is masked anyway, but flagged. Log the KIND only —
+                // never the value.
+                tracing::debug!(
+                    kind = ?entity.kind,
+                    "structure-only PII match (checksum unverified)"
+                );
+            }
+        }
+        kept
     }
 }
 

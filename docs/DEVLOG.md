@@ -3,6 +3,29 @@
 Newest first. One entry per meaningful change — note *what* and *why*, not just
 *what*. This is the running history so context is never lost between sessions.
 
+## 2026-07-11 — M1.5 code-review follow-ups closed
+
+Three follow-ups from the M1.5 review (all in code from the previous session):
+
+- **Array-content fail-closed gap** (`src/pipeline/privacy.rs`, `mask_content`):
+  a content-array element that wasn't an object was silently skipped — a leak for
+  a bare-string element carrying PII. Now: bare strings are masked, object parts
+  have their `text` masked (non-text parts like `image_url` skipped), and any
+  other element (number/bool/null/nested array) **fails closed**. Consistent with
+  the top-level content rule.
+- **Phone international over-match** (`src/pii/recognizers.rs`): the open
+  `\+\d{1,3}(?: \d{2,7}){1,4}` swallowed a trailing number group
+  (`+39 333 0000001 12345` → masked `12345` too). Replaced with two canonical
+  shapes (three-group `+39 333 000 0001`, two-group `+39 333 0000001`), tried
+  three-group first — same fix pattern as the IBAN over-match.
+- **`Confidence` was write-only** (`src/pii/mod.rs` / `recognizers.rs`): now
+  consumed — `detect` emits a `debug` audit log for each `Structural` match (KIND
+  only, never the value). Field is read; richer use (audit sink, ML thresholds)
+  deferred to M2.
+- **Tests: 46 green, no warnings.** +`content_array_*` pipeline cases,
+  +`phone_international_span_stops_at_the_number` adversarial case.
+- **Next: M2** — ONNX NER.
+
 ## 2026-07-11 — M1.5: robustness & fail-closed (+ M1 code-review fixes)
 
 Hardened M1 so the proxy fails *closed*, and folded in the M1 code-review items.

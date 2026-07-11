@@ -46,6 +46,21 @@ fn caught_phone_and_iban_edge_shapes() {
 }
 
 #[test]
+fn phone_international_span_stops_at_the_number() {
+    // M1.5 review follow-up: the international arm must not swallow an unrelated
+    // trailing number group (same class as the fixed IBAN over-match).
+    assert_eq!(
+        detect("chiama +39 333 0000001 12345 subito"),
+        vec![(PiiKind::Phone, "+39 333 0000001".to_string())]
+    );
+    // The 3-group Italian shape still works and also stops cleanly.
+    assert_eq!(
+        detect("num +39 333 000 0001 99999 fine"),
+        vec![(PiiKind::Phone, "+39 333 000 0001".to_string())]
+    );
+}
+
+#[test]
 fn documented_gaps_obfuscated_email_not_yet_detected() {
     // ACCEPTED LIMITATION (structured detection): human-obfuscated emails are not
     // valid addresses, so masking them would explode false positives. Tracked for
