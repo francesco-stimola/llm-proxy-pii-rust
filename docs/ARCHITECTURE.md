@@ -107,7 +107,7 @@ For a privacy proxy the failure mode *is* the product: anything unexpected must
 | `src/main.rs` | binary entry: tracing, config, run server |
 | `src/config.rs` | runtime configuration |
 | `src/server.rs` | axum router + handlers |
-| `src/proxy.rs` | forwarding + pipeline application (streaming-capable) |
+| `src/proxy.rs` | request/response value objects + the upstream HTTP client (the pipeline is applied in `server.rs`) |
 | `src/pipeline/mod.rs` | `Stage` trait |
 | `src/pipeline/privacy.rs` | the privacy stage (only one wired) |
 | `src/pii/mod.rs` | `PiiDetector` trait, `PiiEntity` / `PiiKind` |
@@ -130,7 +130,7 @@ Runtime native library at M2.
 
 - **Placeholder format: `[KIND_N]`** (e.g. `[EMAIL_1]`) — ASCII, tokenizer-friendly.
 - **Locales: IT + US** — Italian and US phone numbers; IBAN including Italian; US SSN.
-- Open: exact `Stage` signature for threading the per-request `Vault` from request
-  to response (finalized in M1).
-- Open: which text fields of the OpenAI schema are scanned (messages, tool
-  results, `tool_calls` arguments…).
+- **Resolved (M1)**: the `Stage` signature threads a per-request `RequestContext`
+  (carrying the `Vault`) from request to response.
+- **Resolved (M1.5)**: the scanned text fields are fixed — see *Robustness &
+  fail-closed → Field coverage* above.
