@@ -58,15 +58,21 @@ fixed with tests. Full detail in `docs/DEVLOG.md` (2026-07-11) / commits
 Goal: add names / organizations / locations via a local ML model.
 Candidate models & evaluation plan: [docs/M2-NER-EVALUATION.md](M2-NER-EVALUATION.md).
 
-**Model-independent infrastructure landed first** (commit — see DEVLOG 2026-07-12):
-the hybrid combination seam, the labelled corpus, and the micro fix are done and
-tested without a model; the ONNX model itself is the remaining measured step.
-- [ ] `OnnxNerDetector` behind the `onnx` feature (CPU execution provider) — *in progress: session + tokenizer + pure BIO-decode; needs a chosen model to run*
-- [ ] Evaluate candidate models against the corpus; pick the most reliable one — *needs real model files (download + `ort` native runtime); measured, not guessed*
+**Infrastructure + the ONNX detector are built and compile** (`--features onnx`
+clean, native ORT + tokenizers); only the **measured model choice** remains, since
+that genuinely needs real model files (measure, don't guess). See DEVLOG 2026-07-12.
+- [x] `OnnxNerDetector` behind the `onnx` feature (CPU EP) — `src/pii/onnx.rs`: HF tokenizer + `ort` session, per-token argmax → BIO decode; `--features onnx` compiles clean. Runtime verification is gated on a chosen model.
+- [ ] Evaluate candidate models against the corpus; pick the most reliable one — **remaining measured step**: needs real model files (download + run through `OnnxNerDetector`), scored against `ner_cases.json` per `docs/M2-NER-EVALUATION.md`. Not guessed, not fabricated.
 - [x] Combine deterministic + ML detectors behind one `PiiDetector` — `CompositeDetector` fans out to N detectors and merges via the shared `overlap::resolve_overlaps` (structured PII outranks NER via `PiiKind::priority`)
 - [x] Extend the corpus with unstructured-entity cases — `tests/corpus/ner_cases.json` (Person/Org/Location, IT+EN, single-word names, REG-03 negatives, a DE multilingual preview)
-- [ ] **NER concurrency**: model-instance pool / request queue so inference isn't a single-threaded bottleneck under load
+- [x] **NER concurrency**: `OnnxNerDetector` holds a round-robin **pool of sessions** (`NER_POOL_SIZE`) so inference isn't a single-threaded bottleneck.
 - [x] *(micro, from M1.5 review)* **Symmetric response de-masking** — `demask_content` now mirrors `mask_content` (bare-string array elements restored too).
+
+**Open (surfaced during build), for review:** on a per-request NER **inference
+error** the detector logs and yields no NER entities (structured PII still masked)
+— i.e. fail-*open* for unstructured PII. Decide whether a configured-but-failing
+NER should instead **fail closed** (block the request); needs a detector→pipeline
+error channel. Tracked here so the reviewer can weigh it against the model choice.
 
 ## M3 — Streaming
 Goal: SSE token streaming with incremental de-anonymization.

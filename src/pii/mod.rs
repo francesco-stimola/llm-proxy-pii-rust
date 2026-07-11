@@ -7,6 +7,7 @@
 
 pub mod anonymizer;
 pub mod composite;
+pub mod ner_decode;
 pub mod overlap;
 pub mod recognizers;
 

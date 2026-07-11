@@ -23,13 +23,15 @@ anyhow = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
-# ONNX inference deps (ort, tokenizers) are added at M2, when the model is chosen.
-# Kept out of M1 so the default build has no native dependencies. NOTE: `ort` 2.x
-# is currently prerelease only (e.g. 2.0.0-rc.x) and must be pinned explicitly.
+# ONNX inference deps (M2), behind the optional `onnx` feature so the default
+# build stays native-dep-free. `ort` 2.x is prerelease-only → pinned exactly.
+# `tokenizers` uses default-features = false to avoid the C/C++ regex backends.
+ort = { version = "=2.0.0-rc.12", optional = true, features = ["download-binaries"] }
+tokenizers = { version = "0.23", optional = true, default-features = false, features = ["fancy-regex"] }
 
 [features]
 default = []
-onnx = [] # M2: becomes ["dep:ort", "dep:tokenizers"] and re-adds those deps
+onnx = ["dep:ort", "dep:tokenizers"]
 
 [dev-dependencies]
 # Property-based testing — the faithful port of the old proxy's Hypothesis suite

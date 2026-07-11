@@ -3,6 +3,36 @@
 Newest first. One entry per meaningful change — note *what* and *why*, not just
 *what*. This is the running history so context is never lost between sessions.
 
+## 2026-07-12 — M2 part 2: OnnxNerDetector behind the `onnx` feature (compiles)
+
+The ONNX NER detector is implemented and **`cargo build --features onnx` is
+green with no warnings** — `ort` 2.0.0-rc.12 (native ONNX Runtime, downloaded at
+build) + `tokenizers` 0.23 both build under MSVC here. The default build stays
+native-dep-free (feature off).
+
+- **Pure decode** (`src/pii/ner_decode.rs`, **not** feature-gated, unit-tested on
+  the default build): `label_to_kind` (strips `B-`/`I-`, maps PER/ORG/LOC + GPE),
+  and `decode_entities` (BIO merge → char spans via token offsets; a `B-` label
+  always starts a fresh entity so adjacent same-type entities don't glue). NER
+  hits are tagged `Confidence::Structural`.
+- **`OnnxNerDetector`** (`src/pii/onnx.rs`, `onnx` feature): HF fast tokenizer +
+  a **pool of `ort` sessions** (round-robin, `NER_POOL_SIZE`) so inference isn't
+  single-threaded (the M2 concurrency item). `detect` tokenizes with offsets,
+  runs the session, argmaxes per-token logits (`num_labels = logits.len()/seq`,
+  avoiding the Shape API), and hands off to `ner_decode`. ort's non-`Send`/`Sync`
+  builder errors are converted to strings before entering `anyhow`.
+- **Wiring** (`src/server.rs`): `build_detector()` composes the structured
+  recognizers with the NER when the feature is on and `NER_MODEL_PATH` /
+  `NER_TOKENIZER_PATH` / `NER_LABELS` (+ optional `NER_POOL_SIZE`) are set; a load
+  error logs and falls back to structured-only.
+- **Cargo**: `onnx = ["dep:ort", "dep:tokenizers"]`; `ort` pinned `=2.0.0-rc.12`
+  with `download-binaries`; `tokenizers` `default-features = false` + `fancy-regex`
+  (pure-Rust regex, no C regex backend).
+- **Still pending (needs a model file):** the *measured* model selection (#2) and
+  the fail-closed-on-NER-error decision (both noted in ROADMAP). No numbers are
+  fabricated.
+- **Tests: 57 green (default), no warnings; `--features onnx` compiles clean.**
+
 ## 2026-07-12 — M2 part 1: hybrid-detection infrastructure (model-independent)
 
 Landed the M2 architecture that doesn't depend on a specific model, so the ONNX

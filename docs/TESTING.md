@@ -133,6 +133,10 @@ false positive): `email`, `phone`, `ssn`, `credit_card`, `iban`, `secret`.
 - NER-CORPUS-01 — `tests/corpus/ner_cases.json` parses; every positive label is Person/Org/Location.
 - NER-REG-03 — the **deterministic layer never emits** Person/Org/Location over the whole NER corpus (structured recognizers never guess names; `anubi` stays untagged).
 - DEM-02 — response `content` array is de-masked symmetrically (bare-string elements too).
+- DEC-01 — `label_to_kind` strips `B-`/`I-` and maps PER/PERSON/ORG/LOC/GPE → the right `PiiKind`; `O`/unknown → `None` (`src/pii/ner_decode.rs`).
+- DEC-02 — `decode_entities` merges a multi-token entity into one span via offsets.
+- DEC-03 — a `B-` label splits two adjacent same-type entities (New York | London).
+- DEC-04 — `O`/unknown-only token streams yield no entities.
 - *(pending model)* NER recall/precision per entity type is measured behind the `onnx` feature once a model is wired — see `docs/M2-NER-EVALUATION.md`.
 
 ### Decisions & open points

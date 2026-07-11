@@ -110,16 +110,27 @@ For a privacy proxy the failure mode *is* the product: anything unexpected must
 | `src/proxy.rs` | request/response value objects + the upstream HTTP client (the pipeline is applied in `server.rs`) |
 | `src/pipeline/mod.rs` | `Stage` trait |
 | `src/pipeline/privacy.rs` | the privacy stage (only one wired) |
-| `src/pii/mod.rs` | `PiiDetector` trait, `PiiEntity` / `PiiKind` |
+| `src/pii/mod.rs` | `PiiDetector` trait, `PiiEntity` / `PiiKind` / `Confidence` |
 | `src/pii/recognizers.rs` | deterministic structured-PII recognizers (M1) |
+| `src/pii/overlap.rs` | shared span overlap resolution (`PiiKind::priority`) |
+| `src/pii/composite.rs` | `CompositeDetector` — combine detectors behind one trait |
 | `src/pii/anonymizer.rs` | `Vault`: mask / demask |
-| `src/pii/onnx.rs` | ONNX NER detector (M2, feature `onnx`) |
+| `src/pii/ner_decode.rs` | pure NER decode (label→kind, BIO→spans) — model-independent |
+| `src/pii/onnx.rs` | ONNX NER detector (M2, feature `onnx`) — tokenizer + `ort` session pool |
 
 ## Stack
 
 tokio (async runtime) · axum + tower (HTTP + modular layers) · reqwest (upstream,
 streaming) · serde / serde_json · regex + once_cell (recognizers) · `ort` (ONNX
-Runtime, added at M2) · `tokenizers` (M2).
+Runtime, M2, feature `onnx`) · `tokenizers` (M2, feature `onnx`).
+
+**Hybrid detection (M2).** `CompositeDetector` runs the deterministic recognizers
+and — when the `onnx` feature is on and the model env vars are set — the
+`OnnxNerDetector` over the same text, merging spans through `overlap`. NER config
+is env-driven: `NER_MODEL_PATH`, `NER_TOKENIZER_PATH`, `NER_LABELS` (comma-separated
+labels in class-id order), optional `NER_POOL_SIZE` (session pool for concurrency).
+A missing/failed model logs and falls back to structured-only. Choosing the model
+is a *measured* step (`docs/M2-NER-EVALUATION.md`); the code path is ready for it.
 
 **Toolchain:** Rust with the **MSVC** target on Windows. On a machine without
 admin rights, install rustup per-user and the MSVC linker via portable Build Tools

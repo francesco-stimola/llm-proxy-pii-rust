@@ -42,17 +42,59 @@ impl AppState {
             config.upstream_base_url.clone(),
             config.upstream_api_key.clone(),
         );
-        // Hybrid detector: deterministic structured recognizers now; the ONNX NER
-        // (M2, `onnx` feature) joins the composite once a model is wired.
-        let detector: Box<dyn PiiDetector> =
-            Box::new(CompositeDetector::new(vec![Box::new(
-                StructuredRecognizers::new(),
-            )]));
-        let stages: Vec<Box<dyn Stage>> = vec![Box::new(PrivacyStage::new(detector))];
+        let stages: Vec<Box<dyn Stage>> = vec![Box::new(PrivacyStage::new(build_detector()))];
         Self {
             upstream: Arc::new(upstream),
             stages: Arc::new(stages),
             max_body_bytes: config.max_body_bytes,
+        }
+    }
+}
+
+/// Build the hybrid detector: the deterministic structured recognizers, plus the
+/// ONNX NER (M2) when the `onnx` feature is on **and** the model env vars are set.
+fn build_detector() -> Box<dyn PiiDetector> {
+    let structured: Box<dyn PiiDetector> = Box::new(StructuredRecognizers::new());
+
+    #[cfg(feature = "onnx")]
+    let detectors = {
+        let mut detectors = vec![structured];
+        if let Some(ner) = load_onnx_ner() {
+            detectors.push(ner);
+        }
+        detectors
+    };
+    #[cfg(not(feature = "onnx"))]
+    let detectors = vec![structured];
+
+    Box::new(CompositeDetector::new(detectors))
+}
+
+/// Load the ONNX NER detector from env (`NER_MODEL_PATH`, `NER_TOKENIZER_PATH`,
+/// `NER_LABELS` = comma-separated labels in class-id order, optional
+/// `NER_POOL_SIZE`). Returns `None` (structured-only) if unconfigured or on a
+/// load error — logged, never fatal.
+#[cfg(feature = "onnx")]
+fn load_onnx_ner() -> Option<Box<dyn PiiDetector>> {
+    use crate::pii::onnx::OnnxNerDetector;
+
+    let model = std::env::var("NER_MODEL_PATH").ok()?;
+    let tokenizer = std::env::var("NER_TOKENIZER_PATH").ok()?;
+    let labels = std::env::var("NER_LABELS").ok()?;
+    let id2label: Vec<String> = labels.split(',').map(|s| s.trim().to_string()).collect();
+    let pool_size = std::env::var("NER_POOL_SIZE")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(2);
+
+    match OnnxNerDetector::load(&model, &tokenizer, id2label, pool_size) {
+        Ok(detector) => {
+            tracing::info!(model, pool_size, "ONNX NER detector loaded");
+            Some(Box::new(detector))
+        }
+        Err(err) => {
+            tracing::error!(error = %err, "failed to load ONNX NER; running structured-only");
+            None
         }
     }
 }
