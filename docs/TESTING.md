@@ -107,6 +107,7 @@ false positive): `email`, `phone`, `ssn`, `credit_card`, `iban`, `secret`.
 - E2E-02 (TC-02) — PII in a CSV `tool_result`.
 - E2E-03 (TC-03) — secret + email in a shell command output.
 - E2E-04 (TC-04) — all categories in a `SELECT … FROM DUAL` result.
+- E2E-BIN — `tests/binary_smoke.rs`: boots the **compiled binary** (`main` → `from_env` → `run`) against a mock upstream for one PII round-trip; the only test that exercises the real process (kept to a single case).
 
 ### Regression guards (the old proxy's real failures)
 - REG-01 — Italian IBAN masked as IBAN, not phone; country/check prefix does not leak.

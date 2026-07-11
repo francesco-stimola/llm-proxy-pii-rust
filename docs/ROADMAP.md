@@ -34,6 +34,18 @@ placeholders, especially in tool calls. A headline capability, not a nice-to-hav
 - [x] Round-trip covers `tool_calls` arguments (de-anon in responses) and tool results (re-anon in requests)
 - [x] Deterministic placeholder assignment (same value → same token across turns)
 - [x] Integration tests INT-01…06 green (+ E2E-01/03 against a mock upstream)
+- [x] Binary smoke test (`tests/binary_smoke.rs`) — boots the real `.exe` end-to-end
+
+## M1.5 — Robustness & fail-closed  🔒
+For a privacy tool the failure mode *is* the product: when anything is unexpected,
+it must **fail closed** (block / scrub), never forward raw PII. Hardens M1 before
+we broaden detection.
+- [ ] **Fail-closed policy**: unrecognized payload shapes, endpoints, or internal errors never pass PII through un-masked (block/scrub, never fail open)
+- [ ] **Full field coverage**: audit every text-bearing field of the chat schema (system/developer content, `name`, `tools[].function` description/params, array content parts) — an unscanned field is a leak
+- [ ] **API scope decision**: which endpoints are in scope (chat/completions only, or also `/v1/responses`, `/v1/embeddings`?); out-of-scope defaults to fail-closed
+- [ ] **Adversarial / evasion tests**: obfuscated emails, exotic phone shapes, PII split across fields — measure *recall* (a miss = a leak)
+- [ ] **Body-size limit** tuned for long-context requests (avoid silent 413 / OOM)
+- [ ] **Demask robustness**: tolerate or detect model-corrupted placeholders (`[EMAIL 1]`, translated/split tokens) so restore never silently fails
 
 ## M2 — Unstructured entities (ONNX NER, CPU)
 Goal: add names / organizations / locations via a local ML model.
@@ -42,16 +54,18 @@ Candidate models & evaluation plan: [docs/M2-NER-EVALUATION.md](M2-NER-EVALUATIO
 - [ ] Evaluate candidate models against the corpus; pick the most reliable one
 - [ ] Combine deterministic + ML detectors behind one `PiiDetector`
 - [ ] Extend the corpus with unstructured-entity cases
+- [ ] **NER concurrency**: model-instance pool / request queue so inference isn't a single-threaded bottleneck under load
 
 ## M3 — Streaming
 Goal: SSE token streaming with incremental de-anonymization.
 - [ ] Streaming passthrough of provider responses
 - [ ] Hold-back buffer that restores placeholders split across chunks
 
-## M4 — GPU optimization
-Goal: faster inference once the model is locked.
+## M4 — GPU optimization & load
+Goal: faster inference once the model is locked, and prove it holds under load.
 - [ ] GPU execution provider (CUDA / DirectML) behind config
 - [ ] Quantization tuning; benchmark against the CPU baseline
+- [ ] **Load / throughput harness** (concurrent connections, large bodies) — stability under load was the founding motivation; measure it, don't assume it
 
 ## M5 — Broad locale & language coverage (future)
 Goal: extend PII coverage beyond IT + US to a wide set of locales and languages,
@@ -64,5 +78,6 @@ traffic — priority can be pulled earlier if real usage demands it.
 - [ ] Provider-agnostic verification (not tied to OpenAI-specific behavior)
 
 ## Backlog / later
-Auth & rate-limiting stages, structured audit logging, config-file support,
+Auth & rate-limiting stages, **TLS / running behind a TLS terminator**, structured
+audit logging (**never log raw PII**), config-file support & container deployment,
 additional providers, metrics/observability.
