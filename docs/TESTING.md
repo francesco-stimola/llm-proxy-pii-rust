@@ -127,6 +127,14 @@ false positive): `email`, `phone`, `ssn`, `credit_card`, `iban`, `secret`.
 - ADV-01 — evasion recall: broadened phone shapes + IBAN-before-word are caught; obfuscated emails are a **documented gap** (`tests/adversarial.rs`).
 - IBAN-04 — the IBAN span never absorbs a trailing ALL-CAPS word (code-review guard).
 
+### M2 — hybrid detection (unstructured entities)
+- OVL-01 — shared overlap resolution: structured PII wins a span an ML entity overlaps; non-overlapping spans all survive in reading order (`src/pii/overlap.rs`).
+- CMP-01 — `CompositeDetector` merges structured + (fake) NER entities; the deterministic layer wins overlaps (`src/pii/composite.rs`).
+- NER-CORPUS-01 — `tests/corpus/ner_cases.json` parses; every positive label is Person/Org/Location.
+- NER-REG-03 — the **deterministic layer never emits** Person/Org/Location over the whole NER corpus (structured recognizers never guess names; `anubi` stays untagged).
+- DEM-02 — response `content` array is de-masked symmetrically (bare-string elements too).
+- *(pending model)* NER recall/precision per entity type is measured behind the `onnx` feature once a model is wired — see `docs/M2-NER-EVALUATION.md`.
+
 ### Decisions & open points
 - **Locale coverage — DECIDED: IT + US.** Italian and US phone numbers; IBAN
   including Italian; US SSN. The corpus carries both.

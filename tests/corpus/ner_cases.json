@@ -1,0 +1,41 @@
+{
+  "_comment": "Labelled UNSTRUCTURED-entity corpus for M2 (Person / Organization / Location), IT + EN. Positive recall is measured once an ONNX NER model is wired (feature `onnx`) — see docs/M2-NER-EVALUATION.md. The negatives are REG-03 guards enforced NOW against the deterministic layer: structured recognizers must never guess a name/org/location. Values reuse the old proxy's scenarios (Pinco Pallino, Futura Incognita, single-word Tizio/Caia, the `anubi` false positive).",
+
+  "entities": {
+    "person": {
+      "positive": [
+        { "id": "NER-PER-01", "input": "Please contact Mario Rossi tomorrow morning.", "entities": [ { "kind": "Person", "text": "Mario Rossi" } ] },
+        { "id": "NER-PER-02", "input": "Ho parlato con Pinco Pallino ieri sera.", "locale": "it", "entities": [ { "kind": "Person", "text": "Pinco Pallino" } ] },
+        { "id": "NER-PER-03", "input": "Scrivi a Tizio e a Caia quando puoi.", "locale": "it", "note": "single-word names the old NER dropped inconsistently", "entities": [ { "kind": "Person", "text": "Tizio" }, { "kind": "Person", "text": "Caia" } ] }
+      ],
+      "negative": [
+        { "id": "NER-PER-NEG-01", "input": "the connection anubi is down again", "note": "REG-03: a connection/host name must NOT be tagged Person", "entities": [] },
+        { "id": "NER-PER-NEG-02", "input": "please restart the service and retry", "entities": [] }
+      ]
+    },
+
+    "organization": {
+      "positive": [
+        { "id": "NER-ORG-01", "input": "She now works at Acme Corporation full time.", "entities": [ { "kind": "Organization", "text": "Acme Corporation" } ] },
+        { "id": "NER-ORG-02", "input": "La sede di Futura Incognita si trova a Roma.", "locale": "it", "entities": [ { "kind": "Organization", "text": "Futura Incognita" }, { "kind": "Location", "text": "Roma" } ] }
+      ],
+      "negative": [
+        { "id": "NER-ORG-NEG-01", "input": "open the file and save the report", "entities": [] }
+      ]
+    },
+
+    "location": {
+      "positive": [
+        { "id": "NER-LOC-01", "input": "I flew to Milano last week for a conference.", "entities": [ { "kind": "Location", "text": "Milano" } ] },
+        { "id": "NER-LOC-02", "input": "Let's meet in New York next month.", "entities": [ { "kind": "Location", "text": "New York" } ] }
+      ],
+      "negative": [
+        { "id": "NER-LOC-NEG-01", "input": "the weather is nice today", "entities": [] }
+      ]
+    }
+  },
+
+  "multilingual_preview": [
+    { "id": "NER-ML-01", "input": "Ruf bitte Herr Müller in Berlin an.", "locale": "de", "note": "M5 preview — not required to pass at M2", "entities": [ { "kind": "Person", "text": "Herr Müller" }, { "kind": "Location", "text": "Berlin" } ] }
+  ]
+}

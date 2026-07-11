@@ -6,6 +6,8 @@
 //! so the pipeline never depends on a concrete engine.
 
 pub mod anonymizer;
+pub mod composite;
+pub mod overlap;
 pub mod recognizers;
 
 #[cfg(feature = "onnx")]
@@ -51,6 +53,24 @@ impl PiiKind {
             PiiKind::Person => "PERSON",
             PiiKind::Organization => "ORG",
             PiiKind::Location => "LOCATION",
+        }
+    }
+
+    /// Overlap-resolution priority: higher wins when two detected spans overlap
+    /// (see [`overlap::resolve_overlaps`]). Deterministic **structured** PII
+    /// outranks the ML **NER** entities, so a checksum-backed email/IBAN always
+    /// beats an ML guess on the same span. Within structured PII the order is
+    /// Secret > Iban > CreditCard > Ssn > Email > Phone.
+    pub fn priority(self) -> u8 {
+        match self {
+            PiiKind::Secret => 6,
+            PiiKind::Iban => 5,
+            PiiKind::CreditCard => 4,
+            PiiKind::Ssn => 3,
+            PiiKind::Email => 2,
+            PiiKind::Phone => 1,
+            // NER entities (M2) sit below all structured PII.
+            PiiKind::Person | PiiKind::Organization | PiiKind::Location => 0,
         }
     }
 

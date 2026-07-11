@@ -3,6 +3,35 @@
 Newest first. One entry per meaningful change — note *what* and *why*, not just
 *what*. This is the running history so context is never lost between sessions.
 
+## 2026-07-12 — M2 part 1: hybrid-detection infrastructure (model-independent)
+
+Landed the M2 architecture that doesn't depend on a specific model, so the ONNX
+model becomes a drop-in — implementing it *before* the measured model choice, per
+`docs/M2-NER-EVALUATION.md` (measure, don't guess; don't fabricate an evaluation).
+
+- **Shared overlap resolution** (`src/pii/overlap.rs`): extracted `resolve_overlaps`
+  from the recognizers into a reusable function keyed on `PiiKind::priority()`.
+  Structured PII (Secret>Iban>Card>Ssn>Email>Phone) outranks NER
+  (Person/Org/Location = 0), so a deterministic email/IBAN always wins a span an
+  ML guess overlaps. Recognizers now delegate to it (behaviour unchanged).
+- **`CompositeDetector`** (`src/pii/composite.rs`): a `PiiDetector` that fans out
+  to N detectors and merges their spans through the shared resolver — the hybrid
+  seam. The server now builds one (structured-only today; the NER joins once
+  wired). Tested with the real recognizers + a fake NER: merge works and the
+  deterministic layer wins overlaps.
+- **NER corpus** (`tests/corpus/ner_cases.json` + `tests/ner_corpus.rs`):
+  labelled Person/Org/Location in IT+EN, single-word names (Tizio/Caia), REG-03
+  negatives (`anubi` must not be a Person), a DE multilingual preview. Positive
+  *recall* is measured once a model lands; the enforced-now guard is that the
+  **deterministic layer never emits an unstructured entity**.
+- **Symmetric response de-masking** (M1.5-review micro): `demask_content` now
+  mirrors `mask_content`, restoring a bare-string element in a response content
+  array too.
+- **Tests: 53 green, no warnings.**
+- **Next (M2 part 2):** `OnnxNerDetector` behind the `onnx` feature (`ort` +
+  `tokenizers`, CPU EP, session pool for concurrency, pure BIO-decode unit-tested)
+  — then the measured model selection with real files.
+
 ## 2026-07-11 — M1.5 code-review follow-ups closed
 
 Three follow-ups from the M1.5 review (all in code from the previous session):

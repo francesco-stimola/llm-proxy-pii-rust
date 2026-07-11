@@ -17,14 +17,14 @@
 
 use regex::Regex;
 
+use super::overlap::resolve_overlaps;
 use super::{Confidence, PiiDetector, PiiEntity, PiiKind};
 
-/// One compiled recognizer: a category, its pattern, a tie-break priority, and
-/// an optional validator applied to each raw match.
+/// One compiled recognizer: a category, its pattern, and an optional validator
+/// applied to each raw match. Overlap priority comes from the kind
+/// ([`PiiKind::priority`]).
 struct Recognizer {
     kind: PiiKind,
-    /// Higher wins when two candidate spans overlap (see [`resolve_overlaps`]).
-    priority: u8,
     regex: Regex,
     /// Extra check on the matched text; `None` means "accept every match".
     validate: Option<fn(&str) -> bool>,
@@ -50,7 +50,6 @@ impl StructuredRecognizers {
             // something else, and the old ML model missed them entirely.
             Recognizer {
                 kind: PiiKind::Secret,
-                priority: 6,
                 regex: Regex::new(r"\b(?:sk-[A-Za-z0-9_-]{6,}|AKIA[0-9A-Z]{16})\b").unwrap(),
                 validate: None,
             },
@@ -58,7 +57,6 @@ impl StructuredRecognizers {
             // mistaken for a card or phone number.
             Recognizer {
                 kind: PiiKind::Iban,
-                priority: 5,
                 // Country (2 letters) + 2 check digits + BBAN, in one of the two
                 // canonical shapes: continuous (`IT60X05428…`) or space-grouped
                 // in blocks of four (`DE89 3704 0044 …`). Matching the shapes
@@ -77,20 +75,17 @@ impl StructuredRecognizers {
             // gated by the Luhn checksum to reject look-alikes.
             Recognizer {
                 kind: PiiKind::CreditCard,
-                priority: 4,
                 regex: Regex::new(r"\b(?:\d{4}[ -]\d{4}[ -]\d{4}[ -]\d{4}|\d{13,19})\b").unwrap(),
                 validate: Some(credit_card_valid),
             },
             // US SSN: 3-2-4 digit groups.
             Recognizer {
                 kind: PiiKind::Ssn,
-                priority: 3,
                 regex: Regex::new(r"\b\d{3}-\d{2}-\d{4}\b").unwrap(),
                 validate: None,
             },
             Recognizer {
                 kind: PiiKind::Email,
-                priority: 2,
                 regex: Regex::new(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}").unwrap(),
                 validate: None,
             },
@@ -107,7 +102,6 @@ impl StructuredRecognizers {
             // US is tried first so `+1 …` isn't sliced by the international arm.
             Recognizer {
                 kind: PiiKind::Phone,
-                priority: 1,
                 regex: Regex::new(
                     r"(?:\+1[ .-]?)?(?:\(\d{3}\)[ .-]?|\d{3}[ .-])\d{3}[ .-]\d{4}|\+\d{1,3} \d{2,4} \d{2,4} \d{3,4}|\+\d{1,3} \d{2,4} \d{5,8}",
                 )
@@ -127,9 +121,9 @@ impl Default for StructuredRecognizers {
 
 impl PiiDetector for StructuredRecognizers {
     fn detect(&self, input: &str) -> Vec<PiiEntity> {
-        // Collect every raw candidate (kind, span, text) with its priority,
-        // applying the per-category validator as we go.
-        let mut candidates: Vec<(u8, PiiEntity)> = Vec::new();
+        // Collect every raw candidate, applying the per-category validator as we
+        // go; overlaps (and priority) are reconciled by the shared resolver.
+        let mut candidates: Vec<PiiEntity> = Vec::new();
         for rec in &self.recognizers {
             for m in rec.regex.find_iter(input) {
                 let text = m.as_str();
@@ -138,15 +132,12 @@ impl PiiDetector for StructuredRecognizers {
                         continue;
                     }
                 }
-                candidates.push((
-                    rec.priority,
-                    PiiEntity {
-                        kind: rec.kind,
-                        span: m.start()..m.end(),
-                        text: text.to_string(),
-                        confidence: confidence_of(rec.kind, text),
-                    },
-                ));
+                candidates.push(PiiEntity {
+                    kind: rec.kind,
+                    span: m.start()..m.end(),
+                    text: text.to_string(),
+                    confidence: confidence_of(rec.kind, text),
+                });
             }
         }
 
@@ -164,32 +155,6 @@ impl PiiDetector for StructuredRecognizers {
         }
         kept
     }
-}
-
-/// Reduce overlapping candidate spans to a non-overlapping set.
-///
-/// Sort by priority (desc) then span length (desc), then greedily keep a
-/// candidate only if it does not overlap one already kept. The result is sorted
-/// by start offset, i.e. reading order. This is what makes IBAN win over a phone
-/// or credit-card span covering the same digits.
-fn resolve_overlaps(mut candidates: Vec<(u8, PiiEntity)>) -> Vec<PiiEntity> {
-    candidates.sort_by(|a, b| {
-        b.0.cmp(&a.0)
-            .then_with(|| b.1.span.len().cmp(&a.1.span.len()))
-    });
-
-    let mut kept: Vec<PiiEntity> = Vec::new();
-    for (_, entity) in candidates {
-        let clashes = kept
-            .iter()
-            .any(|k| entity.span.start < k.span.end && k.span.start < entity.span.end);
-        if !clashes {
-            kept.push(entity);
-        }
-    }
-
-    kept.sort_by_key(|e| e.span.start);
-    kept
 }
 
 /// Confidence for a raw match. Everything structured is `Verified` (format- or

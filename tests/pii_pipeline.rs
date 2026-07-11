@@ -328,3 +328,30 @@ fn content_array_scalar_element_fails_closed() {
     stage().on_request(&mut req, &mut ctx);
     assert!(ctx.block.is_some(), "scalar array element must fail closed");
 }
+
+#[test]
+fn response_content_array_is_symmetrically_demasked() {
+    // M2 micro: a bare-string element in a response content array must be
+    // de-masked too, so a placeholder never reaches the client un-restored.
+    let s = stage();
+    let mut ctx = RequestContext::new();
+
+    let mut req = ProxyRequest {
+        body: json!({ "messages": [{ "role": "user", "content": "mail bob@test.com" }] }),
+    };
+    s.on_request(&mut req, &mut ctx);
+
+    let mut resp = ProxyResponse {
+        body: json!({
+            "choices": [{ "message": { "role": "assistant", "content": [
+                "sent to [EMAIL_1]",
+                { "type": "text", "text": "and again [EMAIL_1]" }
+            ] } }]
+        }),
+    };
+    s.on_response(&mut resp, &mut ctx);
+
+    let parts = resp.body["choices"][0]["message"]["content"].as_array().unwrap();
+    assert_eq!(parts[0].as_str().unwrap(), "sent to bob@test.com");
+    assert_eq!(parts[1]["text"].as_str().unwrap(), "and again bob@test.com");
+}

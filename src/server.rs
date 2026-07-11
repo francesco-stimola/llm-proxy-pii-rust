@@ -18,6 +18,8 @@ use serde_json::{Value, json};
 use tower_http::trace::TraceLayer;
 
 use crate::config::Config;
+use crate::pii::PiiDetector;
+use crate::pii::composite::CompositeDetector;
 use crate::pii::recognizers::StructuredRecognizers;
 use crate::pipeline::privacy::PrivacyStage;
 use crate::pipeline::{RequestContext, Stage};
@@ -40,9 +42,13 @@ impl AppState {
             config.upstream_base_url.clone(),
             config.upstream_api_key.clone(),
         );
-        let stages: Vec<Box<dyn Stage>> = vec![Box::new(PrivacyStage::new(Box::new(
-            StructuredRecognizers::new(),
-        )))];
+        // Hybrid detector: deterministic structured recognizers now; the ONNX NER
+        // (M2, `onnx` feature) joins the composite once a model is wired.
+        let detector: Box<dyn PiiDetector> =
+            Box::new(CompositeDetector::new(vec![Box::new(
+                StructuredRecognizers::new(),
+            )]));
+        let stages: Vec<Box<dyn Stage>> = vec![Box::new(PrivacyStage::new(detector))];
         Self {
             upstream: Arc::new(upstream),
             stages: Arc::new(stages),

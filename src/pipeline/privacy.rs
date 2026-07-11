@@ -216,12 +216,18 @@ fn demask_response(body: &mut Value, f: &mut dyn FnMut(&str) -> String) {
 }
 
 /// Restore a response `content`: a string, or the `text` of each content part.
+///
+/// Mirrors `mask_content` so a placeholder can't reach the client un-restored,
+/// including a bare-string element in a content array. De-masking is the safe
+/// direction, so an unrecognized element is left as-is rather than blocking.
 fn demask_content(content: &mut Value, f: &mut dyn FnMut(&str) -> String) {
     match content {
         Value::String(s) => *s = f(s),
         Value::Array(parts) => {
             for part in parts {
-                if let Some(text) = part.get_mut("text") {
+                if let Value::String(s) = part {
+                    *s = f(s);
+                } else if let Some(text) = part.get_mut("text") {
                     transform_string_value(text, f);
                 }
             }

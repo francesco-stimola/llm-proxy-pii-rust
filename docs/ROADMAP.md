@@ -57,12 +57,16 @@ fixed with tests. Full detail in `docs/DEVLOG.md` (2026-07-11) / commits
 ## M2 — Unstructured entities (ONNX NER, CPU)
 Goal: add names / organizations / locations via a local ML model.
 Candidate models & evaluation plan: [docs/M2-NER-EVALUATION.md](M2-NER-EVALUATION.md).
-- [ ] `OnnxNerDetector` behind the `onnx` feature (CPU execution provider)
-- [ ] Evaluate candidate models against the corpus; pick the most reliable one
-- [ ] Combine deterministic + ML detectors behind one `PiiDetector`
-- [ ] Extend the corpus with unstructured-entity cases
+
+**Model-independent infrastructure landed first** (commit — see DEVLOG 2026-07-12):
+the hybrid combination seam, the labelled corpus, and the micro fix are done and
+tested without a model; the ONNX model itself is the remaining measured step.
+- [ ] `OnnxNerDetector` behind the `onnx` feature (CPU execution provider) — *in progress: session + tokenizer + pure BIO-decode; needs a chosen model to run*
+- [ ] Evaluate candidate models against the corpus; pick the most reliable one — *needs real model files (download + `ort` native runtime); measured, not guessed*
+- [x] Combine deterministic + ML detectors behind one `PiiDetector` — `CompositeDetector` fans out to N detectors and merges via the shared `overlap::resolve_overlaps` (structured PII outranks NER via `PiiKind::priority`)
+- [x] Extend the corpus with unstructured-entity cases — `tests/corpus/ner_cases.json` (Person/Org/Location, IT+EN, single-word names, REG-03 negatives, a DE multilingual preview)
 - [ ] **NER concurrency**: model-instance pool / request queue so inference isn't a single-threaded bottleneck under load
-- [ ] *(micro, from M1.5 review)* **Symmetric response de-masking** (`src/pipeline/privacy.rs`, `demask_content`) — mirror `mask_content` so a bare-string element in a response `content` array is also de-masked, so a placeholder can't reach the client un-restored. Not a leak (safe direction); trivial.
+- [x] *(micro, from M1.5 review)* **Symmetric response de-masking** — `demask_content` now mirrors `mask_content` (bare-string array elements restored too).
 
 ## M3 — Streaming
 Goal: SSE token streaming with incremental de-anonymization.
