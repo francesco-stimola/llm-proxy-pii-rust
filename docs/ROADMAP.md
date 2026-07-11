@@ -47,6 +47,13 @@ we broaden detection.
 - [ ] **Body-size limit** tuned for long-context requests (avoid silent 413 / OOM)
 - [ ] **Demask robustness**: tolerate or detect model-corrupted placeholders (`[EMAIL 1]`, translated/split tokens) so restore never silently fails
 
+### From the M1 code review — each item is fix (+ test where needed)
+- [ ] **IBAN over-match** (`src/pii/recognizers.rs`) — the IBAN regex greedily absorbs a trailing uppercase word: `"IBAN IT60X0542811101000000123456 EUR"` masks `…456 EUR`. **Fix**: tighten the pattern so a match can't extend into a following all-letter token. **Test**: adversarial case in `tests/corpus/pii_cases.json` + a recognizer unit test asserting the span is exactly the IBAN and `EUR` is left untouched.
+- [ ] **Wire `iban_mod97`** (`src/pii/recognizers.rs`) — defined but used only in tests. **Fix**: use it as a confidence signal on IBAN hits (valid vs structure-only), or document it as reserved for M2 — remove the dead-code ambiguity. Structure-only IBANs must stay masked (keep corpus `IBAN-03` green). **Test**: only if behaviour changes.
+- [ ] **Double `system` message** (`src/pipeline/privacy.rs`) — when the client already sent a `system` message, the augmentation inserts a second one at index 0. **Fix**: merge/append the augmentation into the existing system message (or place it deterministically). **Test**: integration test with a client-supplied `system` message asserting the agreed single-system-message shape reaches the upstream.
+- [ ] **`demask` double scan** (`src/pii/anonymizer.rs`) — drops a redundant pass. **Fix**: remove the `contains` guard and call `replace` directly (identical behaviour, one pass instead of two). **Test**: not needed — covered by existing round-trip tests.
+- [ ] **Upstream response headers** (`src/proxy.rs` / `src/server.rs`) — currently dropped. **Fix**: forward a safe subset of the upstream response headers (at least `content-type`; consider rate-limit headers). **Test**: e2e assertion that a header set by the mock upstream reaches the client.
+
 ## M2 — Unstructured entities (ONNX NER, CPU)
 Goal: add names / organizations / locations via a local ML model.
 Candidate models & evaluation plan: [docs/M2-NER-EVALUATION.md](M2-NER-EVALUATION.md).
