@@ -3,6 +3,43 @@
 Newest first. One entry per meaningful change — note *what* and *why*, not just
 *what*. This is the running history so context is never lost between sessions.
 
+## 2026-07-11 — M1 complete: pipeline, server, prompt-augmentation round-trip
+
+Finished the rest of M1 (Part A wiring + Part B, the ⭐ primary feature).
+
+- **`Stage` trait finalized** (`src/pipeline/mod.rs`): resolved the open design
+  point — stages now share a per-request **`RequestContext`** that carries the
+  `Vault` from `on_request` to `on_response`. Stages run in order out, reverse
+  order back. (Added `Vault::is_empty`.)
+- **`PrivacyStage` implemented** (`src/pipeline/privacy.rs`): masks every text
+  field of the outgoing OpenAI payload with one shared vault — `messages[].content`
+  (string *or* `text` parts) and `messages[].tool_calls[].function.arguments` — so
+  the same value maps to the same `[KIND_N]` everywhere. On the way back it
+  restores `choices[].message.content` and `choices[].message.tool_calls[].function.arguments`
+  (INT-03: the client runs its tools with real values). Clean requests are left
+  byte-for-byte unchanged.
+- **Prompt augmentation** (Part B): when anything was masked, a system message is
+  prepended (`AUGMENTATION_PROMPT`) telling the model that `[KIND_N]` are typed
+  real values to use verbatim (incl. tool-call args), never altered — and that
+  they're auto-restored downstream. Injected only when PII is present, so clean
+  prompts aren't polluted.
+- **Determinism across turns** (INT-05): masking is a deterministic function of
+  value; re-sending the same history yields identical tokens, and a repeated
+  value reuses its token in reading order.
+- **Server + forwarding** (`src/server.rs`, `src/proxy.rs`, `src/config.rs`):
+  axum router (`POST /v1/chat/completions`, `GET /healthz`), `AppState` holding an
+  `Arc<Upstream>` (reqwest) + the stage list, `TraceLayer`. Streaming requests
+  get a clear 400 (M3). `Config::from_env` (`LISTEN_ADDR`, `UPSTREAM_BASE_URL`,
+  optional `UPSTREAM_API_KEY`) with a **secret-redacted `Debug`** so the key never
+  hits the logs. Upstream errors map to a JSON 502.
+- **Tests: 26 green, no warnings.** Added `tests/pii_pipeline.rs` (INT-01…06 +
+  clean-passthrough, stage-level, no network) and `tests/proxy_e2e.rs` (real
+  client → proxy → mock upstream: asserts the upstream saw only masked values +
+  the augmentation message, and the client got the originals back; plus a
+  clean-passthrough case). Smoke-tested the real binary: `/healthz` → 200,
+  chat vs a dead upstream → 502 JSON error.
+- **Next: M2** — ONNX NER for names/orgs/locations (see `docs/M2-NER-EVALUATION.md`).
+
 ## 2026-07-11 — M1 Part A: structured-PII masking core
 
 - **Recognizers implemented** (`src/pii/recognizers.rs`): email, phone (US dashed

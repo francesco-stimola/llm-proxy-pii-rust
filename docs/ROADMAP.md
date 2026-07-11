@@ -13,27 +13,27 @@ work lands. **This document is the single source of truth for "what's next".**
 - [x] MSVC linker via portable Build Tools (no admin) → `C:\Lavoro\Tools\MSVC`
 - [x] Decisions locked: hybrid detection, CPU-first, `[KIND_N]` placeholders, IT + US
 
-## M1 — Structured PII pipeline (CPU, no ML)
+## M1 — Structured PII pipeline (CPU, no ML) ✅
 
 Locales: **IT + US**. Placeholder format: **`[KIND_N]`** (e.g. `[EMAIL_1]`).
 
-### Part A — Masking core
+### Part A — Masking core ✅
 Reproduce the old proxy's structured-PII behavior, better, in Rust.
 - [x] `PiiDetector` trait + `PiiEntity` / `PiiKind` types (incl. `Secret`)
 - [x] Deterministic recognizers: email, phone (IT/US), SSN, credit card (Luhn), IBAN, with priority-based overlap resolution
 - [x] SECRET recognizer (API keys / tokens, e.g. `sk-…`, `sk-ant-…`, `AKIA…`) — deterministic; the old ML model missed these
 - [x] `Vault`: mask to `[KIND_N]` placeholders + exact-restore demask (deterministic per value)
-- [ ] Privacy stage wired into the pipeline
-- [ ] axum server forwarding `/v1/chat/completions` upstream (non-streaming)
-- [x] Port the reference tests to Rust; no false positives; multi-PII round-trip exact (corpus-driven + proptest, 16 tests green)
+- [x] Privacy stage wired into the pipeline (per-request `RequestContext` threads the `Vault` from request to response)
+- [x] axum server forwarding `/v1/chat/completions` upstream (non-streaming), `reqwest` client, `/healthz`, config from env
+- [x] Port the reference tests to Rust; no false positives; multi-PII round-trip exact (corpus-driven + proptest)
 
-### Part B — Prompt augmentation & round-trip  ⭐ primary feature
+### Part B — Prompt augmentation & round-trip  ⭐ primary feature ✅
 Make the masked data actually usable by the model — without this it mishandles
 placeholders, especially in tool calls. A headline capability, not a nice-to-have.
-- [ ] Transparent system-prompt injection: teach the model that `[KIND_N]` are typed real values, to be used verbatim (incl. tool-call arguments) and never altered
-- [ ] Round-trip covers `tool_calls` arguments (de-anon in responses) and tool results (re-anon in requests)
-- [ ] Deterministic placeholder assignment (same value → same token across turns)
-- [ ] Integration tests INT-01…06 green
+- [x] Transparent system-prompt injection: teach the model that `[KIND_N]` are typed real values, to be used verbatim (incl. tool-call arguments) and never altered
+- [x] Round-trip covers `tool_calls` arguments (de-anon in responses) and tool results (re-anon in requests)
+- [x] Deterministic placeholder assignment (same value → same token across turns)
+- [x] Integration tests INT-01…06 green (+ E2E-01/03 against a mock upstream)
 
 ## M2 — Unstructured entities (ONNX NER, CPU)
 Goal: add names / organizations / locations via a local ML model.

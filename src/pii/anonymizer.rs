@@ -28,6 +28,11 @@ impl Vault {
         Self::default()
     }
 
+    /// Whether anything has been masked yet — i.e. no placeholders exist.
+    pub fn is_empty(&self) -> bool {
+        self.to_original.is_empty()
+    }
+
     /// Replace each entity in `text` with a typed placeholder, recording the
     /// original in the vault. Returns the anonymized text.
     ///
