@@ -29,8 +29,12 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 ort = { version = "=2.0.0-rc.12", optional = true, features = ["download-binaries"] }
 tokenizers = { version = "0.23", optional = true, default-features = false, features = ["fancy-regex"] }
 # HuggingFace Hub client (M2.5): opt-in, revision-pinned model fetch into the
-# standard HF cache. Async API (default features), built on the `reqwest` already
-# in the tree — no extra native deps. Only pulled with the `onnx` feature.
+# standard HF cache. Async API. Only pulled with the `onnx` feature — so the
+# DEFAULT build stays native-dep-free. NOTE (M2.5-R1): under `--features onnx`
+# hf-hub 1.x drags in a heavier transitive footprint than a bare HTTP client — a
+# second `reqwest 0.13` + `hf-xet` + `rustls`/`aws-lc-rs` (native crypto). Kept on
+# 1.x deliberately (the `onnx` feature is already native via `ort`; the 0.4.x
+# alternative is unmaintained) — see docs/ROADMAP.md M2.5-R1.
 hf-hub = { version = "1", optional = true }
 
 [features]

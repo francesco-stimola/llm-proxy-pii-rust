@@ -17,7 +17,7 @@ use axum::{
 use serde_json::{Value, json};
 use tower_http::trace::TraceLayer;
 
-use crate::config::Config;
+use crate::config::{Config, env_flag};
 use crate::pii::PiiDetector;
 use crate::pii::composite::CompositeDetector;
 use crate::pii::recognizers::StructuredRecognizers;
@@ -63,13 +63,6 @@ impl AppState {
             debug_skip_demask: config.debug_skip_demask,
         })
     }
-}
-
-/// Read a boolean-ish env flag (`1` / `true` / `yes` / `on`, case-insensitive).
-fn env_flag(key: &str) -> bool {
-    std::env::var(key)
-        .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
-        .unwrap_or(false)
 }
 
 /// Build the hybrid detector: the deterministic structured recognizers, plus the
