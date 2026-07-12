@@ -339,6 +339,46 @@ hard-coded **IT + US** (the NER model does nothing for phone/national-ID/IBAN fo
 - [ ] Extend the test corpus with multi-language / multi-locale cases
 - [ ] Provider-agnostic verification (not tied to OpenAI-specific behavior)
 
+### M4 first-landing review (2026-07-12) — sound, no blockers
+Independently verified: **83 tests green (default) / 91 + 1 `#[ignore]`d (`--features onnx`),
+no warnings**; `cargo build --features onnx` links `ort` clean. The refactor holds — the
+universal recognizers (email/secret/card/IBAN/phone) are byte-identical to the pre-M4 set and
+US SSN stays active by default (via the `us` locale), so **no M1/M1.5 regression**: the
+IBAN-no-trailing-word, phone-no-over-match, Luhn, and mod-97 guards all still pass. The new
+national-ID regexes are **word-boundary anchored on both ends**, so a CF/NINO can't fire inside
+a longer alphanumeric token (API key / hash / UUID / base64) — no over-mask that mangles legit
+text, and no leak from over-anchoring on ordinary punctuation. `NationalId` shares priority
+tier 3 with `Ssn`, but the two are structurally disjoint (SSN has dashes; CF/NINO are
+contiguous) so they never overlap; `resolve_overlaps` ties fall through to span length
+deterministically. No raw PII in logs (kind / placeholder token only); fail-closed posture
+unchanged. **M3-R2 confirmed sound:** `demask_json_string` JSON-escapes the substituted value
+and is wired **only** to the `arguments` fields (buffered `demask_response` + streaming
+`ToolArg`); `content` keeps the plain `demask`; the round-trip is exact and
+`demask_json_string_keeps_inner_json_valid` is **non-vacuous** (it asserts the plain path *would*
+produce invalid JSON). Non-blocking follow-ups:
+- [ ] **M4-R1 (design decision — make it explicit).** Locale-gating **all** national IDs means a
+  GB NINO (or any non-active-locale ID) flows through **un-masked** under the default `it,us` — a
+  scoped recall gap (documented as deliberate, but not a fail-closed breach: it's coverage scope,
+  not unexpected-input handling). For a privacy tool (recall > precision), **decide + record
+  explicitly** whether very-specific, near-zero-FP national-ID recognizers (e.g. IT Codice Fiscale,
+  16-char interleaved) should run **regardless of locale** while looser ones (GB NINO) stay
+  locale-gated — vs keeping uniform gating.
+- [ ] **M4-R2 (precision — GB NINO over-match; fix + test).** `\b[A-Za-z]{2}\d{6}[A-Da-d]\b` masks
+  any 2-letter + 6-digit + A–D token (e.g. an order/reference code `PO123456A`) as `[NATID_N]` when
+  the `gb` locale is on — an over-mask on legit text (not a leak; GB is off by default). Tighten with
+  the real NINO prefix rules (invalid 1st letter D/F/I/Q/U/V; 2nd letter D/F/I/O/Q/U/V; disallowed
+  pairs BG/GB/KN/NK/NT/TN/ZZ) via a `validate` fn. Test: `PO123456A` (and a disallowed-prefix NINO)
+  not masked; a valid NINO still is.
+- [ ] **M4-R3 (precision — IT Codice Fiscale; optional).** The CF regex uses `[A-Za-z]` (accepts
+  lowercase) and skips the **check character** (the final letter is a checksum), so a wrong-checksum
+  or lowercase look-alike is still masked as `Verified`. FP risk is very low (anchored + highly
+  specific interleave), but a CF check-char `validate` fn (like the deferred IBAN per-country checks)
+  would raise precision and let a structure-only match be tagged `Structural`. Test: a valid CF stays
+  `Verified`; a checksum-broken one is `Structural` (or rejected).
+- [x] **M4-R4 (docs) — ARCHITECTURE mis-grouped US SSN under `NationalId`/`[NATID_N]`.** Fixed by the
+  reviewer: clarified that US SSN keeps `PiiKind::Ssn`/`[SSN_N]`; only IT CF + GB NINO are
+  `NationalId`/`[NATID_N]` (`docs/ARCHITECTURE.md`; `mod.rs` and `TESTING.md` were already correct).
+
 ## Backlog / later — documented, not scheduled
 
 ### GPU optimization & load  *(was M4 — deferred 2026-07-12; documented, not scheduled)*

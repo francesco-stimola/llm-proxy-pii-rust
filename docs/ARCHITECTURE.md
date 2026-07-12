@@ -35,8 +35,9 @@ unstructured-entity load.
 
 **Locale coverage (M4).** The structured recognizers split into **universal** ones
 (email, secret, credit card, IBAN — already any-country — and phone) plus per-locale
-**national-identifier** packs (US SSN, IT Codice Fiscale, GB NINO → `PiiKind::NationalId`,
-placeholder `[NATID_N]`). Active locales come from `PII_LOCALES` (default `it, us`,
+**national-identifier** packs: US SSN (keeps its own `PiiKind::Ssn` / `[SSN_N]`) plus
+IT Codice Fiscale and GB NINO (new `PiiKind::NationalId`, placeholder `[NATID_N]`).
+Active locales come from `PII_LOCALES` (default `it, us`,
 `StructuredRecognizers::with_locales`). The NER model is already multilingual (XLM-R,
 10 languages), so M4's remaining work is mostly widening this locale seam, not the ML side.
 
