@@ -60,6 +60,44 @@ cargo build      # links successfully now
 cargo test       # runs the suite — see docs/TESTING.md
 ```
 
+## 4. The NER model (M2 / M2.5, feature `onnx`)
+
+The default build is native-dep-free and structured-PII only. The unstructured-entity
+NER (names / orgs / locations) needs the `onnx` feature **and** a model. Two ways to
+provide it — pick one:
+
+**(A) Opt-in auto-download (M2.5, recommended).** Let `hf-hub` fetch the picked,
+revision-pinned model into the standard HF cache (`%USERPROFILE%\.cache\huggingface\hub`,
+shared/deduped with other tools). Only the repo is required; the rest default to the
+XLM-R int8 pick:
+
+```powershell
+$env:NER_MODEL_REPO = "jiting/xlm-roberta-base-ner-hrl_onnx"
+# optional overrides (these are the defaults):
+#   $env:NER_MODEL_REVISION = "478a2a3"
+#   $env:NER_MODEL_FILE     = "onnx/model_quantized.onnx"
+#   $env:NER_TOKENIZER_FILE = "tokenizer.json"
+cargo run --features onnx
+```
+
+The fetch is **one-time** (cached afterwards), **opt-in** (nothing downloads unless
+`NER_MODEL_REPO` is set), and pulls **model artifacts only — never user data**.
+`NER_LABELS` is derived from the model's `config.json`. Honors `HF_HOME` / `HF_HUB_CACHE`.
+
+**(B) Explicit local files (zero outbound calls).** Point the proxy at files you
+already have; nothing is fetched:
+
+```powershell
+$env:NER_MODEL_PATH      = "C:\path\model_quantized.onnx"
+$env:NER_TOKENIZER_PATH  = "C:\path\tokenizer.json"
+$env:NER_LABELS          = "O,B-DATE,I-DATE,B-PER,I-PER,B-ORG,I-ORG,B-LOC,I-LOC"  # class-id order
+cargo run --features onnx
+```
+
+Common knobs (both modes): `NER_POOL_SIZE` (session pool for concurrency),
+`NER_TOKEN_TYPE_IDS=1` (BERT-family models), `NER_REQUIRED=1` (fail closed if the model
+can't load — a missing NER then blocks startup instead of silently downgrading).
+
 ## Fallback: GNU toolchain (no MSVC, no admin)
 
 If MSVC is unavailable, the GNU toolchain bundles its own linker and builds M1

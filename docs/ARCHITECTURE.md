@@ -125,6 +125,7 @@ For a privacy proxy the failure mode *is* the product: anything unexpected must
 | `src/pii/anonymizer.rs` | `Vault`: mask / demask |
 | `src/pii/ner_decode.rs` | pure NER decode (label→kind, BIO→spans) — model-independent |
 | `src/pii/onnx.rs` | ONNX NER detector (M2, feature `onnx`) — tokenizer + `ort` session pool |
+| `src/pii/hf.rs` | HuggingFace Hub model resolution (M2.5, feature `onnx`) — opt-in revision-pinned fetch into the standard HF cache + `id2label` parse |
 
 ## Stack
 
@@ -138,8 +139,26 @@ and — when the `onnx` feature is on and the model env vars are set — the
 is env-driven: `NER_MODEL_PATH`, `NER_TOKENIZER_PATH`, `NER_LABELS` (comma-separated
 labels in class-id order), optional `NER_POOL_SIZE` (session pool for concurrency),
 `NER_TOKEN_TYPE_IDS` (BERT-family models), and `NER_REQUIRED` (fail-closed switch).
-A missing/failed model logs and falls back to structured-only. Choosing the model
-is a *measured* step (`docs/M2-NER-EVALUATION.md`); the code path is ready for it.
+A missing/failed model logs and falls back to structured-only. The model was chosen
+by *measurement* (XLM-R int8 — `docs/M2-NER-EVALUATION.md`, `docs/DEVLOG.md`).
+
+**Model management (M2.5, feature `onnx`).** The model file is resolved in priority
+order (`src/pii/hf.rs` + `server.rs::load_onnx_ner`):
+
+1. **Explicit local** — `NER_MODEL_PATH` (+ `NER_TOKENIZER_PATH` + `NER_LABELS`). Zero
+   outbound calls; the airtight-privacy path, and it always wins.
+2. **Opt-in auto-download** — when `NER_MODEL_PATH` is unset but `NER_MODEL_REPO`
+   (`owner/name`) is set, the `hf-hub` crate fetches a **revision-pinned** model into
+   the *standard* HF cache (`<home>/.cache/huggingface/hub`, library-managed, deduped
+   across tools). Tunables: `NER_MODEL_REVISION` (default `478a2a3`), `NER_MODEL_FILE`
+   (default `onnx/model_quantized.onnx`), `NER_TOKENIZER_FILE`, `NER_CONFIG_FILE`;
+   `NER_LABELS` is derived from the model's `config.json` `id2label` unless set.
+
+**Privacy note.** The auto-download is **opt-in** (only when `NER_MODEL_REPO` is set)
+and fetches **model artifacts, not user data** — the one outbound call in the whole
+tool, made once at startup and logged (repo + revision, never any input). It honors
+`HF_HOME` / `HF_HUB_CACHE`; with neither set it pins the conventional cache instead of
+`hf-hub` 1.0's `/tmp` fallback on Windows. Nothing user-supplied ever leaves the box.
 
 **Toolchain:** Rust with the **MSVC** target on Windows. On a machine without
 admin rights, install rustup per-user and the MSVC linker via portable Build Tools

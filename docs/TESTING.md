@@ -145,7 +145,13 @@ false positive): `email`, `phone`, `ssn`, `credit_card`, `iban`, `secret`.
 - OVL-02 — an NER span enclosing a structured span is dropped whole; only the structured span survives (M2-R7).
 - DEC-07 — a token offset that includes the leading space (SentencePiece `▁`) is trimmed so the span is exact (M2-R6, `leading_space_in_token_offset_is_trimmed`).
 - DEC-08 — `label_to_kind` maps granular PII labels (GIVENNAME/SURNAME→Person, CITY→Location) and keeps structured ones (EMAIL/PHONE/…)→None.
-- EVAL-01 — `tests/ner_eval.rs` (`--features onnx`, `#[ignore]`d): scores a live model against `ner_cases.json` through the hybrid resolver. **Run 2026-07-12** (XLM-R int8 vs Piiranha — see DEVLOG); run with `-- --ignored --nocapture` once a model is configured.
+- EVAL-01 — `tests/ner_eval.rs` (`--features onnx`, `#[ignore]`d): scores a live model against `ner_cases.json` through the hybrid resolver. **Run 2026-07-12** (XLM-R int8 vs Piiranha — see DEVLOG); run with `-- --ignored --nocapture` once a model is configured (`NER_MODEL_REPO` auto-download or `NER_MODEL_PATH` explicit).
+- EVAL-02 — `tally_counts_duplicates_as_multiset` (`tests/ner_eval.rs`, non-network): the harness scores TP/FP/FN as a multiset, so a duplicate `(kind, text)` can't inflate recall (M2-R10).
+
+### M2.5 — HuggingFace model management (feature `onnx`, no network)
+- HF-01 — `parse_id2label` orders labels by class id (not JSON order), matches the XLM-R config, and **fails closed** on non-contiguous ids / missing `id2label` / non-integer keys (`src/pii/hf.rs`).
+- HF-02 — `standard_hub_cache_dir` yields the conventional `<home>/.cache/huggingface/hub` tail (not `hf-hub`'s `/tmp` fallback).
+- HF-03 *(manual / live)* — the opt-in download itself is exercised only by the `#[ignore]`d `ner_eval` harness with `NER_MODEL_REPO` set (see EVAL-01).
 
 ### Decisions & open points
 - **Locale coverage — DECIDED: IT + US.** Italian and US phone numbers; IBAN

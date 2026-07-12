@@ -90,38 +90,45 @@ Verified independently: **65 tests green (default), no warnings**;
 model is off-repo and was **not** locally available, so the DEVLOG recall numbers
 were **not** independently reproduced — the eval harness and rejection reasoning were
 code-reviewed instead and are sound. One minor follow-up:
-- [ ] **M2-R10 (minor, harness precision) — eval TP/FP/FN use `Vec::contains`, so a
-  case with a duplicate `(kind, text)` entity mis-counts.** `tests/ner_eval.rs:118-130`
-  scores membership, not multiset: two identical expected entities both match a single
-  detection (recall inflated 0.5→1.0), and a spurious duplicate detection isn't an FP.
-  No current corpus case has duplicate `(kind, text)` in one sentence, so the recorded
-  numbers are unaffected — but a future case would silently inflate recall in a
-  leak-measurement harness. **Fix:** count against a consumed multiset (drain matched
-  detections, e.g. a per-`(kind,text)` count map). **Test:** a synthetic case with a
-  repeated entity where the model finds it once asserts recall 0.5, not 1.0.
+- [x] **M2-R10 (minor, harness precision) — eval TP/FP/FN counted membership, not
+  multiset.** Fixed: `tests/ner_eval.rs` now scores through a `tally` helper that counts
+  each `(kind, text)` as a multiset (`tp = min(expected, detected)`), so duplicate
+  expected entities can't both match one detection and a spurious duplicate detection is
+  an FP. Test `tally_counts_duplicates_as_multiset` (non-network) pins recall 0.5 (not
+  1.0) for a two-expected / one-detected case. The recorded numbers were unaffected (no
+  corpus case has a duplicate `(kind, text)` in one sentence), as predicted.
 
-## M2.5 — HuggingFace model management (auto-download via `hf-hub`)
-Ergonomics + reproducibility, **not a correctness gap** (M2 works). Today the NER
-model is downloaded by hand and lives in a plain folder; the standard HF cache
+## M2.5 — HuggingFace model management (auto-download via `hf-hub`) ✅
+Ergonomics + reproducibility, **not a correctness gap** (M2 works). Before this the
+NER model was downloaded by hand into a plain folder; the standard HF cache
 (`~/.cache/huggingface/hub`) is a **library-managed** content-addressed tree
-(`refs`/`blobs`/`snapshots`) you must not hand-populate. Use the official **`hf-hub`
-Rust crate** (behind the `onnx` feature) to fetch the **revision-pinned** model into
+(`refs`/`blobs`/`snapshots`) you must not hand-populate. Now the official **`hf-hub`
+Rust crate** (behind the `onnx` feature) fetches the **revision-pinned** model into
 that standard cache — conventional location, dedup, reproducible. Pure Rust: the
-default build stays native-dep-free.
-- [ ] Add `hf-hub` as an **optional** dep, wired into the `onnx` feature only.
-- [ ] Resolve a model file from `(repo, revision, filename)` → a local path in the HF
-  cache. **`NER_MODEL_PATH` (explicit local file) keeps priority** — anyone wanting
-  zero outbound calls just sets it, exactly as today.
-- [ ] **Opt-in** auto-download: when `NER_MODEL_PATH` is unset but `NER_MODEL_REPO`
-  (+ pinned `NER_MODEL_REVISION`, default `478a2a3`, + `NER_MODEL_FILE` e.g.
-  `onnx/model_quantized.onnx`, + tokenizer file) is set, fetch via `hf-hub`. It's a
-  **one-time model fetch (not user data)** — log it; never silent.
-- [ ] Derive `NER_LABELS` from the model's `config.json` `id2label` (in class-id
-  order) so the hand-typed list is optional (keep an explicit override).
-- [ ] Docs: record the env contract + the privacy note (single opt-in outbound model
-  fetch) in `ARCHITECTURE.md` / `SETUP.md`; default XLM-R repo/revision pinned.
-- [ ] Tests: path-resolution + `id2label`-ordering logic unit-tested **without
-  network**; the actual download exercised only by the `#[ignore]`d eval harness.
+default build stays native-dep-free. Implemented in `src/pii/hf.rs`, wired in
+`src/server.rs::load_onnx_ner`; verified end-to-end (`docs/DEVLOG.md` 2026-07-12).
+- [x] Added `hf-hub = { version = "1", optional = true }`, wired into the `onnx`
+  feature only (async API on the `reqwest` already in the tree — no new native deps).
+- [x] Resolve `(repo, revision, filename)` → a local cache path (`HfModelSpec::resolve`).
+  **`NER_MODEL_PATH` (explicit local file) keeps priority** — set it for zero outbound
+  calls, exactly as before.
+- [x] **Opt-in** auto-download: when `NER_MODEL_PATH` is unset but `NER_MODEL_REPO`
+  (`owner/name`) is set, fetch via `hf-hub`. Tunable `NER_MODEL_REVISION` (default
+  `478a2a3`), `NER_MODEL_FILE` (default `onnx/model_quantized.onnx`),
+  `NER_TOKENIZER_FILE` (default `tokenizer.json`), `NER_CONFIG_FILE` (default
+  `config.json`). **One-time model fetch (not user data)** — logged, never silent.
+- [x] Derive `NER_LABELS` from `config.json` `id2label` (class-id order,
+  `parse_id2label`, contiguity-checked → fail closed); explicit `NER_LABELS` overrides.
+- [x] Pin the **standard** cache: `hf-hub` 1.0 falls back to `/tmp/.cache` on Windows
+  (no `HOME`), so `build_client` sets `cache_dir = <home>/.cache/huggingface/hub` when
+  `HF_HOME`/`HF_HUB_CACHE` are unset (otherwise it defers to them). Models now dedupe
+  with every other tool on the box.
+- [x] Docs: env contract + privacy note in `ARCHITECTURE.md` / `SETUP.md`; default
+  XLM-R repo/revision pinned.
+- [x] Tests: `parse_id2label` ordering/validation + `standard_hub_cache_dir` unit-tested
+  **without network**; the real download is exercised only by the `#[ignore]`d eval
+  harness (which grew a `NER_MODEL_REPO` path). Manual model copies removed; the model
+  now lives in the standard HF cache.
 
 ## M3 — Streaming
 Goal: SSE token streaming with incremental de-anonymization.

@@ -3,6 +3,51 @@
 Newest first. One entry per meaningful change — note *what* and *why*, not just
 *what*. This is the running history so context is never lost between sessions.
 
+## 2026-07-12 — M2.5: HuggingFace model auto-download (`hf-hub`) + M2-R10 — COMPLETE
+
+Model management is now library-managed and reproducible, and the last M2 harness
+nit is closed. **65 tests green (default), 72 + 1 `#[ignore]`d (`--features onnx`),
+no warnings.** Verified end-to-end against a live download.
+
+- **M2-R10 (harness precision) closed.** `tests/ner_eval.rs` scored TP/FP/FN by
+  `Vec::contains` (set membership), so a duplicate `(kind, text)` could inflate recall.
+  Replaced with a `tally` helper that counts each `(kind, text)` as a **multiset**
+  (`tp = min(expected, detected)`). Non-network test `tally_counts_duplicates_as_multiset`
+  pins recall 0.5 (not 1.0) when two expected entities meet one detection. Recorded
+  numbers were unaffected (no corpus case has a duplicate in one sentence), as predicted.
+- **M2.5 — opt-in `hf-hub` auto-download** (`src/pii/hf.rs`, feature `onnx`). The model
+  file is resolved in priority order in `server.rs::load_onnx_ner`: (1) explicit
+  `NER_MODEL_PATH` (+ tokenizer + labels) — zero outbound calls, always wins; (2) when
+  unset but `NER_MODEL_REPO` (`owner/name`) is set, `HfModelSpec::resolve` fetches a
+  **revision-pinned** model (`NER_MODEL_REVISION` default `478a2a3`, `NER_MODEL_FILE`
+  default `onnx/model_quantized.onnx`, `NER_TOKENIZER_FILE`, `NER_CONFIG_FILE`) into the
+  standard HF cache. **`NER_LABELS` is derived from `config.json` `id2label`** (class-id
+  order, contiguity-checked → fail closed) unless set explicitly — this removes the
+  error-prone hand-typed 9-label list. `hf-hub` 1.0 uses the async API on the `reqwest`
+  already in the tree (no new native deps); `AppState::new`/`build_detector`/
+  `load_onnx_ner` became `async` for the startup fetch.
+- **Standard-cache pin (real bug found by running it).** `hf-hub` 1.0 falls back to
+  `/tmp/.cache/huggingface` on Windows when `HOME` is unset — a non-shared, drive-relative
+  location (`C:\tmp\…`) that defeats the point. `build_client` now sets
+  `cache_dir = <home>/.cache/huggingface/hub` (the `huggingface_hub` convention) when
+  `HF_HOME`/`HF_HUB_CACHE` are unset, otherwise defers to them. The model now lands in
+  `%USERPROFILE%\.cache\huggingface\hub`, deduped with every other tool. Unit-tested via
+  `standard_hub_cache_dir` (no network).
+- **Verified live + consolidated.** Ran the eval through the new download path: `hf-hub`
+  fetched `jiting/xlm-roberta-base-ner-hrl_onnx@478a2a3` into the standard cache and the
+  hybrid scored **Org 1.00 / Loc 1.00** and **Person 0.75/0.60/0.67 on the required M2
+  corpus** — identical to the manual run (the cached blob is byte-for-byte the manual
+  `model_quantized.onnx`, 278,709,677 B). *Note:* the harness's aggregate table also
+  counts the DE `multilingual_preview` case ("Herr Müller" → the model returns "Müller",
+  no title), which is labelled *not required at M2*; with it, the printed Person line is
+  0.60/0.50/0.545. Model/detections unchanged — purely scoring scope.
+- **Manual models removed** (user-authorized): deleted the hand-downloaded `ner-models\`
+  (XLM-R + rejected Piiranha, ~600 MB) and a mislocated `C:\tmp\.cache` artifact from the
+  pre-fix run (~564 MB); the only surviving copy is the `hf-hub`-managed one in the
+  standard cache. ~1.16 GB freed.
+- **Docs:** ROADMAP M2.5 ✅ + M2-R10 closed; ARCHITECTURE (model-management env contract +
+  privacy note); SETUP (§4 — auto-download vs explicit-local). **Next: M3 (streaming).**
+
 ## 2026-07-12 — M2 model chosen (measured): XLM-R int8; R6 closed — M2 COMPLETE
 
 Downloaded both locked candidates from the Hub and scored them **through the hybrid
