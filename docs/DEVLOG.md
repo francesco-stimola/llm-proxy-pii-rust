@@ -3,6 +3,26 @@
 Newest first. One entry per meaningful change — note *what* and *why*, not just
 *what*. This is the running history so context is never lost between sessions.
 
+## 2026-07-12 — M4 first landing: locale-parametrized recognizers + national IDs (IT/GB)
+
+Started M4 (broad locale coverage) with the recognizer-architecture change that is its
+barycenter. **83 tests green (default), 91 + 1 `#[ignore]`d (`--features onnx`), no warnings.**
+
+- **Locale-parametrized recognizers.** `StructuredRecognizers` split into `universal_recognizers()`
+  (email, secret, credit card, IBAN — already any-country — and phone US/`+CC`) plus
+  `locale_recognizers(code)` national-identifier packs. New `with_locales(&[codes])` (kept `new()` =
+  default `it, us`, backward-compatible). Active locales come from **`PII_LOCALES`** (default `it,us`,
+  on `Config.pii_locales`), threaded into `server.rs::build_detector`.
+- **National IDs (new `PiiKind::NationalId`, placeholder `[NATID_N]`).** IT **Codice Fiscale**
+  (`[A-Za-z]{6}\d{2}[A-Za-z]\d{2}[A-Za-z]\d{3}[A-Za-z]`) and GB **NINO** (compact + space-grouped) —
+  both deliberately specific (interleaved letters/digits) for a low false-positive rate. `PiiKind`
+  gained the variant + `label`/`priority`(national-ID tier = 3, shared with SSN)/`from_label`.
+- **Tests.** `italian_codice_fiscale_detected_by_default`, `uk_nino_needs_the_gb_locale` (incl. that it
+  is *off* without the GB locale), `locale_selection_is_scoped` (a US-only set ignores a CF).
+- **Deferred (documented in ROADMAP M4):** more locale national-ID packs (ES/FR/DE), locale phone
+  *national* formats (FP-prone without a `+CC` anchor), IBAN per-country length checks, and validating
+  the already-multilingual XLM-R against a wider corpus. **Next: continue M4 (widen the locale seam).**
+
 ## 2026-07-12 — M3-R2: JSON-aware de-mask for tool-call arguments
 
 Fixed a pre-existing correctness bug surfaced by the M3 review. **80 tests green (default),

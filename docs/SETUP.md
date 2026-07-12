@@ -141,6 +141,10 @@ de-anonymized incrementally on the way back (placeholders split across token chu
 reassembled). Request-side masking always runs first, so the provider only ever sees
 placeholders.
 
+**PII locales (M4).** `PII_LOCALES` (comma-separated, default `it,us`) selects which
+national-identifier recognizers run — e.g. `PII_LOCALES=it,us,gb` also detects UK NINOs.
+The universal recognizers (email, IBAN, credit card, phone) always run regardless.
+
 ## Fallback: GNU toolchain (no MSVC, no admin)
 
 If MSVC is unavailable, the GNU toolchain bundles its own linker and builds M1

@@ -323,7 +323,18 @@ traffic — priority can be pulled earlier if real usage demands it.
 already **acquired** — the chosen XLM-R covers 10 languages (incl. IT/EN/FR/ES/DE), so
 this milestone's barycenter shifts to the **structured recognizers**, which are still
 hard-coded **IT + US** (the NER model does nothing for phone/national-ID/IBAN formats).
-- [ ] **Locale-parametrized structured recognizers** (phone, national IDs, IBAN countries) — the meat of this milestone; the deterministic regex layer is still IT + US only.
+- [x] **Locale-parametrized recognizer architecture (first landing).** Split the recognizers into
+  **universal** (email, secret, credit card, IBAN — already any-country — and phone US/`+CC`) plus
+  per-locale **national-identifier** packs, selectable via `StructuredRecognizers::with_locales` /
+  the `PII_LOCALES` env (default `it, us`, on `Config.pii_locales`). Added national IDs: **IT Codice
+  Fiscale** and **GB NINO** (new `PiiKind::NationalId`, placeholder `[NATID_N]`). Tests:
+  `italian_codice_fiscale_detected_by_default`, `uk_nino_needs_the_gb_locale`, `locale_selection_is_scoped`.
+- [ ] **More locale national-ID packs** (ES DNI/NIE, FR INSEE, DE Steuer-ID, …) on the same seam.
+- [ ] **Locale phone national formats** (numbers without a `+CC`, e.g. UK `020 …`, DE `030 …`) —
+  deferred: national formats without a country-code anchor are false-positive-prone; needs careful
+  precision work (the `+CC` international arm already covers the unambiguous case).
+- [ ] **IBAN per-country length validation** — structural + mod-97 already accept every country; add
+  per-country length checks to raise precision if needed.
 - [ ] **Validate** the already-multilingual XLM-R against a multilingual corpus — validation, *not* model selection (the NER is already multilingual); pull languages beyond IT/EN/DE-preview into the corpus.
 - [ ] Extend the test corpus with multi-language / multi-locale cases
 - [ ] Provider-agnostic verification (not tied to OpenAI-specific behavior)

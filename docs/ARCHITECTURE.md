@@ -33,6 +33,13 @@ Keeping deterministic recognizers for structured PII removes most of the
 reliability risk *and* most of the compute cost — the ML model only carries the
 unstructured-entity load.
 
+**Locale coverage (M4).** The structured recognizers split into **universal** ones
+(email, secret, credit card, IBAN — already any-country — and phone) plus per-locale
+**national-identifier** packs (US SSN, IT Codice Fiscale, GB NINO → `PiiKind::NationalId`,
+placeholder `[NATID_N]`). Active locales come from `PII_LOCALES` (default `it, us`,
+`StructuredRecognizers::with_locales`). The NER model is already multilingual (XLM-R,
+10 languages), so M4's remaining work is mostly widening this locale seam, not the ML side.
+
 ## Anonymization
 
 Detected spans are replaced with typed placeholders of the form `[KIND_N]` — e.g.
