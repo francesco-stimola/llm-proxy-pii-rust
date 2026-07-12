@@ -263,17 +263,19 @@ Covers **GitHub Copilot** and **Anthropic** (via its OpenAI-compat layer).
   `anthropic-version`, Copilot editor headers) beyond `Authorization`.
 - Anthropic's **native** `/v1/messages` schema is deliberately **out of scope** here — Option B (Backlog).
 
-### M3 follow-ups (deferred — not leaks; documented for a later pass)
-- [ ] **Streaming de-anon of `delta.tool_calls[].function.arguments`.** Today only streamed
-  `delta.content` is de-anonymized; streamed tool-call *arguments* pass through, so a client
-  may see `[EMAIL_1]` inside a streamed tool call. **Not a leak** (the provider still only saw
-  masked values; the request round-trip is unaffected) — a usability gap. Extend `SseDemasker`
-  with per-`(choice, tool_call index)` hold-back buffers.
-- [ ] **Request-level provider routing.** Selection is per-instance (`UPSTREAM_PROVIDER`); add
-  per-request routing (path prefix / header / model map) if one instance must front several
-  providers at once.
-- [ ] **Upstream streaming error propagation.** A mid-stream upstream error currently ends the
-  client stream with an I/O error; consider emitting a terminal SSE error event instead.
+### M3 follow-ups
+- [x] **Streaming de-anon of `delta.tool_calls[].function.arguments`.** `SseDemasker` now keys
+  its hold-back buffers by field — `Content { choice }` **and** `ToolArg { choice, tool }` — so a
+  placeholder split across streamed tool-call argument deltas is reassembled and de-masked too.
+  Unit test `tool_call_arguments_split_across_deltas_are_restored`.
+- [x] **Upstream streaming error propagation.** A mid-stream upstream error is now turned into a
+  **terminal `event: error`** (after flushing any buffered content) and the stream ends cleanly,
+  instead of aborting the client connection. `demasking_sse_body` is generic over the stream error
+  so it's unit-tested without a network round-trip
+  (`mid_stream_upstream_error_becomes_terminal_sse_event`).
+- [ ] **Request-level provider routing (deferred).** Selection is per-instance (`UPSTREAM_PROVIDER`);
+  add per-request routing (path prefix / header / model map) if one instance must front several
+  providers at once. *(Intentionally left for later — user's call, 2026-07-12.)*
 
 ### M3 review (2026-07-12) — sound, no blockers
 Independently verified: **73 tests green (default) / 81 + 1 `#[ignore]`d (`--features onnx`), no
@@ -296,16 +298,12 @@ provider-independent, so no preset bypasses it. Log sweep: `src/stream.rs` emits
 streaming/routing log site carries only static text / an error object / the placeholder-only masked body.
 Deferred M3 follow-ups (tool-call-arg de-anon, request-level routing, terminal SSE error events) are all
 genuine non-leaks. One **non-blocking** follow-up found:
-- [ ] **M3-R1 (low, robustness — not a leak).** A `stream:true` request that the upstream answers with a
-  **non-SSE** response (a JSON error like 401/429, or a provider that ignores `stream`) still has its
-  `content-type` forced to `text/event-stream` and its body streamed verbatim through `SseDemasker`
-  (`stream_chat_completions`, `server.rs:319-335`). The status code is preserved and no raw PII is involved
-  (the request was masked; provider error bodies don't carry the client's `delta.content` placeholders), so
-  it is a usability/robustness nit, not a leak. **Fix:** branch on the upstream response `content-type` —
-  when it isn't `text/event-stream`, fall back to the buffered JSON path (forward the real content-type +
-  run the `on_response` de-mask) instead of forcing SSE. **Test:** an e2e where the mock upstream replies to
-  a `stream:true` request with a non-2xx `application/json` error body and the client sees that error with
-  the correct content-type/status.
+- [x] **M3-R1 (low, robustness — not a leak).** Fixed: `stream_chat_completions` now branches on the
+  upstream response `content-type` — when it isn't `text/event-stream`, it falls back to the buffered
+  path (`buffered_fallback`: forward the real status + content-type and run the `on_response` de-mask)
+  instead of forcing SSE. So a `stream:true` request the upstream answers with a JSON error (401/429/…)
+  reaches the client as that JSON error. Test `e2e_streaming_non_sse_error_falls_back_to_json` (upstream
+  429 `application/json` → client sees 429 + `application/json` + the error body).
 
 ## M4 — Broad locale & language coverage (future)
 Goal: extend PII coverage beyond IT + US to a wide set of locales and languages,

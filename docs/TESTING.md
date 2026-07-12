@@ -161,6 +161,9 @@ false positive): `email`, `phone`, `ssn`, `credit_card`, `iban`, `secret`.
 - STR-01 — `split_demaskable` (`src/stream.rs`): holds back only a suffix that could still become a placeholder (unclosed `[…`), emits a closed `[…]` or clearly-non-placeholder `[…`, and is length-bounded.
 - STR-02 — `SseDemasker` reassembles a placeholder **split across SSE events** (`[EMA` + `IL_1]` → the real value); `[DONE]` and non-`data:` lines pass through; bytes chopped mid-line are reassembled.
 - STR-03 — e2e `e2e_streaming_deanonymizes_split_placeholder` (`tests/proxy_e2e.rs`): a `stream:true` round-trip through a mock SSE upstream that fragments the reply — the client receives the de-masked value with no `[EMAIL_1]` leak, and the upstream saw only the masked body.
+- STR-04 — `tool_call_arguments_split_across_deltas_are_restored` (`src/stream.rs`): a placeholder split across streamed `delta.tool_calls[].function.arguments` deltas is reassembled and de-masked (per-`(choice, tool)` hold-back buffer).
+- STR-05 — `mid_stream_upstream_error_becomes_terminal_sse_event` (`src/server.rs`): a mid-stream upstream error is turned into a terminal `event: error` (buffered content flushed first) with a clean end, injected via a synthetic stream (no HTTP round-trip).
+- STR-06 — `e2e_streaming_non_sse_error_falls_back_to_json` (`tests/proxy_e2e.rs`, M3-R1): a `stream:true` request the upstream answers with a `429 application/json` error reaches the client as that JSON error (correct status + content-type), not force-wrapped as SSE.
 
 ### Dependency footprint (M2.5-R1)
 - DEP-01 — `tests/dependency_footprint.rs` (`default_build_excludes_the_onnx_and_hf_stack`): `cargo tree` on the **default** features must contain no `hf-hub`/`hf-xet`/`aws-lc`/`ort`/`tokenizers` — the ONNX/HF stack (heavy, native) stays behind the `onnx` feature so the shipped default build is native-dep-free.

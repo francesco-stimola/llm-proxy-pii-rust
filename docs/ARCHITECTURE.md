@@ -130,13 +130,18 @@ runs, so the upstream never sees raw PII regardless.
 **Streaming (SSE).** When a request sets `stream:true`, the proxy masks it exactly as
 a buffered request, forwards it, and streams the response back while
 **de-anonymizing incrementally** (`src/stream.rs`). A placeholder like `[EMAIL_1]`
-can be split across two token deltas, so `SseDemasker` keeps a per-choice **hold-back
-buffer**: it emits everything up to the last point that could still be an incomplete
-placeholder and holds the rest until the next delta (or stream end) resolves it. Only
-`delta.content` is rewritten today (streamed tool-call arguments are a documented
-follow-up). Streaming **never weakens fail-closed**: request-side masking runs first,
-so the provider only ever sees placeholders; a clean request (nothing masked) streams
-through untouched.
+can be split across two token deltas, so `SseDemasker` keeps a **hold-back buffer** per
+streamed field — one for each choice's `delta.content` **and** one per
+`delta.tool_calls[].function.arguments` — emitting everything up to the last point that
+could still be an incomplete placeholder and holding the rest until the next delta (or
+stream end) resolves it. Robustness: if the upstream answers a `stream:true` request
+with a **non-SSE** body (a JSON error, or a provider that ignored `stream`), the proxy
+falls back to the buffered path (real status + content-type, `on_response` de-mask)
+rather than forcing an event-stream; a **mid-stream upstream error** becomes a terminal
+`event: error` (after flushing buffered content) instead of a broken connection.
+Streaming **never weakens fail-closed**: request-side masking runs first, so the
+provider only ever sees placeholders; a clean request (nothing masked) streams through
+untouched.
 
 **Multi-provider routing — Option A.** Every provider is reached through its
 **OpenAI-compatible** endpoint, so a single schema feeds the masker (no new leak

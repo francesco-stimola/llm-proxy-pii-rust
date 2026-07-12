@@ -3,6 +3,27 @@
 Newest first. One entry per meaningful change — note *what* and *why*, not just
 *what*. This is the running history so context is never lost between sessions.
 
+## 2026-07-12 — M3 close-out: tool-call-arg streaming de-anon, M3-R1 fallback, SSE error events
+
+Closed the remaining M3 follow-ups + the M3-R1 review nit (request-level routing stays deferred,
+per user). **76 tests green (default), 84 + 1 `#[ignore]`d (`--features onnx`), no warnings.**
+
+- **Streaming de-anon of tool-call arguments.** `SseDemasker`'s hold-back buffers are now keyed by
+  field — `StreamKey::Content { choice }` **and** `StreamKey::ToolArg { choice, tool }` — so a
+  placeholder split across streamed `delta.tool_calls[].function.arguments` deltas is reassembled
+  and de-masked, not just `delta.content`. `flush_pending` synthesizes the right chunk shape per key.
+  Test `tool_call_arguments_split_across_deltas_are_restored`.
+- **M3-R1 — non-SSE fallback.** `stream_chat_completions` branches on the upstream response
+  `content-type`: when it isn't `text/event-stream` (a JSON 401/429, or a provider that ignored
+  `stream`), it falls back to `buffered_fallback` — forward the real status + content-type and run
+  the `on_response` de-mask — instead of forcing an event-stream. Test
+  `e2e_streaming_non_sse_error_falls_back_to_json` (429 `application/json` reaches the client intact).
+- **Terminal SSE error events.** A mid-stream upstream error is now turned into a terminal
+  `event: error` (after flushing buffered content) and the stream ends cleanly, rather than aborting
+  the client connection. `demasking_sse_body` was made generic over the stream error type so it is
+  unit-tested with a synthetic erroring stream (no HTTP): `mid_stream_upstream_error_becomes_terminal_sse_event`.
+- **Deferred (unchanged):** request-level provider routing — per-instance today; documented in ROADMAP.
+
 ## 2026-07-12 — M3: SSE streaming de-anon + multi-provider routing (Option A)
 
 Streaming and provider routing landed together (real Copilot/Anthropic usage is streamed).
