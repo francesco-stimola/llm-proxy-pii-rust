@@ -37,6 +37,44 @@ NER. See `docs/ARCHITECTURE.md` (hybrid detection) for why the split exists.
 it as a conceptual reference / baseline, not an integration target (Python/spaCy
 runtime doesn't fit a lean Rust binary).
 
+## Decision — first evaluation round (2026-07-12)
+
+Locked after the M2 review. Evaluate **two candidates head-to-head first**, chosen
+by the key engineering discriminator: whether the model drops into today's
+`OnnxNerDetector` (standard token-classification — `input_ids` + `attention_mask`
+→ per-token logits → BIO decode) or needs extra integration work.
+
+1. **XLM-R multilingual token-classification NER** — the *drop-in baseline*.
+   Starting-point IDs (verify at export): `Davlan/xlm-roberta-base-ner-hrl`
+   (10 languages incl. IT; PER/ORG/LOC) or `Babelscape/wikineural-multilingual-ner`
+   (9 languages incl. IT). Feeds only `input_ids`+`attention_mask`, so it runs
+   through `onnx.rs` unchanged — establishes the recall floor at ~zero integration
+   cost.
+2. **Piiranha** — the *PII specialist*, best-recall bet (recall is metric #1: a
+   missed entity is a leak). `iiiorg/piiranha-v1-detect-personal-information`
+   (mDeBERTa-v3, PII-tuned, multilingual). Integration cost: DeBERTa-v3 needs
+   `token_type_ids` → pulls in review finding **M2-R4**; its granular PII labels
+   must be mapped to `Person/Org/Location` (overlaps with the structured layer are
+   resolved by the hybrid — structured wins) → touches **M2-R3**.
+
+**GLiNER stays in escalation** — often the best zero-shot recall on rare/single-word
+names, but it is *not* token-classification (span×label scoring needs a different
+decode path), so it requires a separate detector. Not justified until the two above
+miss the recall bar.
+
+Both are scored **through the hybrid resolver** (not the NER alone), **fp32 and
+int8**, on `tests/corpus/ner_cases.json`: recall / precision / F1 per type + CPU
+latency / RAM / model size. Pick by recall-at-acceptable-cost; multilingual breaks
+ties (de-risks M5).
+
+**First build task = the evaluation harness.** `tests/ner_corpus.rs` today enforces
+only the REG-03 negatives (the deterministic layer emits no unstructured entity); it
+does *not* score a live model. Add a harness (an `#[ignore]`d test or a small bin,
+gated on `NER_MODEL_PATH` / `NER_TOKENIZER_PATH` / `NER_LABELS`) that runs a candidate
+against the corpus and prints the P/R/F1 + latency/RAM table — the artifact this
+decision is made from. Wiring the live model here is also where the fail-closed
+hardening (M2-R1…R4) naturally lands.
+
 ## Evaluation data
 
 The current corpus (`tests/corpus/pii_cases.json`) is structured-PII focused. M2
