@@ -199,27 +199,26 @@ runs). Small and independent of M3 — can be pulled early to eyeball that the s
   request and a body-less `debug!` when skipping de-mask). Same bar as the future audit
   logging in Backlog.
 
-## M3 — Streaming
-Goal: SSE token streaming with incremental de-anonymization.
+## M3 — Streaming & multi-provider routing (Option A)
+Goal: SSE token streaming with incremental de-anonymization **and** routing to multiple
+providers via their **OpenAI-compatible** endpoints (Option A). The two intertwine
+(real Copilot/Anthropic usage is streamed), so they land together.
+
+### Streaming
 - [ ] Streaming passthrough of provider responses
 - [ ] Hold-back buffer that restores placeholders split across chunks
 
-## M4 — GPU optimization & load
-Goal: faster inference once the model is locked, and prove it holds under load.
+### Multi-provider routing — Option A (OpenAI-compat normalization)
+Route every provider through its **OpenAI-compatible** endpoint so a **single schema**
+feeds the PII masker — no new leak surface (a per-schema masker is Option B, Backlog).
+Must at least cover **GitHub Copilot** and **Anthropic** (via its OpenAI-compat layer).
+- [ ] **Provider selection / routing** — today there is a single static `UPSTREAM_BASE_URL`; add per-provider config/selection.
+- [ ] **Path flexibility** — the upstream path is hardcoded `/v1/chat/completions` (`proxy.rs`); Copilot uses `/chat/completions` (no `/v1`), so the path must be per-provider.
+- [ ] **Per-provider auth & required headers** — Bearer today; Copilot needs its short-lived token + editor headers; Anthropic uses `Bearer` on its OpenAI-compat endpoint.
+- [ ] **Request-header passthrough policy** — today only `Authorization` is forwarded; decide what else (e.g. `anthropic-version`) is safe to pass.
+- Anthropic's **native** `/v1/messages` schema is deliberately **out of scope** here — that's Option B (Backlog).
 
-**Why GPU is safely deferred (decided 2026-07-12):** the M2 model choice is
-**execution-provider-agnostic** — every candidate (incl. GLiNER) is standard ONNX
-and runs on any `ort` EP, so GPU does *not* constrain model selection; we pick on
-CPU recall/latency now and revisit the EP here. On this Windows/no-admin box the
-natural EP is **DirectML** (any DX12 GPU, no CUDA/admin). Going to GPU is mostly a
-config change: swap the EP and switch the weight file from int8 (CPU) to the
-pre-shipped `model_fp16.onnx` (fp16 is the GPU sweet spot; int8 on GPU needs
-EP-specific support). No premature GPU work before the CPU baseline is locked.
-- [ ] GPU execution provider (CUDA / **DirectML** for no-admin Windows) behind config
-- [ ] Quantization tuning; benchmark against the CPU baseline (CPU int8 → GPU fp16)
-- [ ] **Load / throughput harness** (concurrent connections, large bodies) — stability under load was the founding motivation; measure it, don't assume it
-
-## M5 — Broad locale & language coverage (future)
+## M4 — Broad locale & language coverage (future)
 Goal: extend PII coverage beyond IT + US to a wide set of locales and languages,
 so the proxy protects data regardless of the user's language or the upstream
 provider. Likely valuable once we move off the OpenAI model and serve broader
@@ -227,14 +226,35 @@ traffic — priority can be pulled earlier if real usage demands it.
 
 **Refocused after the M2 model choice (2026-07-12):** the *multilingual NER* half is
 already **acquired** — the chosen XLM-R covers 10 languages (incl. IT/EN/FR/ES/DE), so
-M5's barycenter shifts to the **structured recognizers**, which are still hard-coded
-**IT + US** (the NER model does nothing for phone/national-ID/IBAN locale formats).
-- [ ] **Locale-parametrized structured recognizers** (phone, national IDs, IBAN countries) — the meat of M5; the deterministic regex layer is still IT + US only.
+this milestone's barycenter shifts to the **structured recognizers**, which are still
+hard-coded **IT + US** (the NER model does nothing for phone/national-ID/IBAN formats).
+- [ ] **Locale-parametrized structured recognizers** (phone, national IDs, IBAN countries) — the meat of this milestone; the deterministic regex layer is still IT + US only.
 - [ ] **Validate** the already-multilingual XLM-R against a multilingual corpus — validation, *not* model selection (the NER is already multilingual); pull languages beyond IT/EN/DE-preview into the corpus.
 - [ ] Extend the test corpus with multi-language / multi-locale cases
 - [ ] Provider-agnostic verification (not tied to OpenAI-specific behavior)
 
-## Backlog / later
+## Backlog / later — documented, not scheduled
+
+### GPU optimization & load  *(was M4 — deferred 2026-07-12; documented, not scheduled)*
+Faster inference once the model is locked, and prove it holds under load. **Deferred:**
+the M2 model choice is **execution-provider-agnostic** — every candidate is standard
+ONNX and runs on any `ort` EP, so GPU constrains nothing upstream; no reason to spend on
+it until real latency/load demands it. On this Windows/no-admin box the natural EP is
+**DirectML** (any DX12 GPU, no CUDA/admin); going to GPU is mostly a config change (swap
+the EP; switch int8 → the pre-shipped `model_fp16.onnx`).
+- [ ] GPU execution provider (CUDA / **DirectML** for no-admin Windows) behind config
+- [ ] Quantization tuning; benchmark against the CPU baseline (CPU int8 → GPU fp16)
+- [ ] **Load / throughput harness** (concurrent connections, large bodies) — stability under load was the founding motivation; measure it when prioritized
+
+### Option B — native provider adapters  *(documented, not scheduled)*
+The heavy alternative to M3's Option A: support each provider's **native** API (e.g.
+Anthropic's `POST /v1/messages`) instead of its OpenAI-compat endpoint. Needs a
+**per-provider, schema-aware masking adapter** (Anthropic uses `system`, content blocks,
+`tool_use`/`tool_result`, `tools[].input_schema`), plus native auth (`x-api-key` +
+`anthropic-version`) and paths. **Higher leak risk** — a missed schema field is a leak —
+so it stays unscheduled until a concrete need outweighs the OpenAI-compat path (M3/Option A).
+
+### Other later items
 Auth & rate-limiting stages, **TLS / running behind a TLS terminator**, structured
 audit logging (**never log raw PII**), config-file support & container deployment,
 additional providers, metrics/observability.

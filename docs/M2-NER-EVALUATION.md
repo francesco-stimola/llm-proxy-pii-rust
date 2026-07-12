@@ -17,17 +17,17 @@ NER. See `docs/ARCHITECTURE.md` (hybrid detection) for why the split exists.
 - **ONNX-exportable** — runs through `ort` (see the `onnx` feature). A model with
   no clean ONNX export path is disqualified regardless of accuracy.
 - **CPU-first, lean** — usable on CPU with int8 quantization; low RAM and latency
-  (this is a per-request hot path). GPU is an M4 optimization, not a requirement.
+  (this is a per-request hot path). GPU is a deferred (Backlog) optimization, not a requirement.
 - **Tokenizer compatible** with the `tokenizers` crate (HF fast tokenizer JSON).
 - **Labels mappable** to `PiiKind::{Person, Organization, Location}`.
-- **Locales IT + US now**, multilingual capability a strong bonus (it de-risks M5).
+- **Locales IT + US now**, multilingual capability a strong bonus (it de-risks M4).
 - **Permissive license** (MIT/Apache-2.0 preferred).
 
 ## Candidate shortlist
 
 | Candidate | Base / type | Languages | Notes | Why consider |
 |---|---|---|---|---|
-| **GLiNER** (multi / PII variants) | small bi-encoder, label-conditioned NER | multilingual variants exist | zero-shot labels ("person", "organization", "location"); compact; ONNX export documented | flexible label set, small, multilingual — fits IT+US and M5 |
+| **GLiNER** (multi / PII variants) | small bi-encoder, label-conditioned NER | multilingual variants exist | zero-shot labels ("person", "organization", "location"); compact; ONNX export documented | flexible label set, small, multilingual — fits IT+US and M4 |
 | **Piiranha** (`iiiorg/piiranha-*`) | mDeBERTa token-classification, PII-tuned | multilingual | purpose-built for PII categories | trained for exactly our task; strong recall baseline |
 | **Multilingual NER** (XLM-R / mDeBERTa) e.g. WikiNeural, `Davlan/*-ner-hrl` | token-classification | many incl. Italian | solid PER/ORG/LOC; well-known baselines | reliable, easy to export, good IT coverage |
 | **Italian-specific NER** (`dbmdz`, spaCy `it_core_news_*`) | BERT/spaCy | IT | strong on Italian names/orgs | comparison baseline for the IT half (spaCy = harder to ONNX) |
@@ -71,7 +71,7 @@ miss the recall bar.
 Both are scored **through the hybrid resolver** (not the NER alone), **fp32 and
 int8**, on `tests/corpus/ner_cases.json`: recall / precision / F1 per type + CPU
 latency / RAM / model size. Pick by recall-at-acceptable-cost; multilingual breaks
-ties (de-risks M5).
+ties (de-risks M4).
 
 **First build task = the evaluation harness.** `tests/ner_corpus.rs` today enforces
 only the REG-03 negatives (the deterministic layer emits no unstructured entity); it
@@ -133,7 +133,7 @@ re-quantization needed. Sizes are the on-disk ONNX file size.
 | `model_quantized.onnx` | int8 **dynamic** (default) | 317 MB | 349 MB | **279 MB** | **primary CPU-lean target** — ~¼ size, ~2× faster; the only quantized file XLM-R ships |
 | `model_int8.onnx` | int8 dynamic | 317 MB | 349 MB | — | same class as `_quantized` |
 | `model_uint8.onnx` | uint8 dynamic | 317 MB | 349 MB | — | uint8 variant of the above |
-| `model_fp16.onnx` | fp16 (half) | 575 MB | 580 MB | — | **GPU / M4** — on CPU ORT up-casts to fp32, so no speedup here |
+| `model_fp16.onnx` | fp16 (half) | 575 MB | 580 MB | — | **GPU (Backlog)** — on CPU ORT up-casts to fp32, so no speedup here |
 | `model_q4.onnx` | 4-bit **weight-only** (MatMulNBits) | 863 MB | 894 MB | — | weight-only; *larger* than int8 here (embeddings stay fp32) |
 | `model_q4f16.onnx` | 4-bit weights + fp16 | 453 MB | 472 MB | — | weight-only + fp16 compute; GPU-leaning |
 | `model_bnb4.onnx` | bitsandbytes 4-bit weight-only | 858 MB | 894 MB | — | weight-only; experimental |
@@ -154,7 +154,7 @@ measured recall demands it (measure first).
 2. **`model.onnx` (fp32)** — the accuracy ceiling; if int8 recall ≈ fp32, ship int8.
 3. **`model_q4f16.onnx` / `model_q4.onnx`** — only if we must go leaner *and* int8 recall
    holds; note q4 is **not** smaller than int8 for these models, so limited CPU upside.
-4. **`model_fp16.onnx`** — skip on CPU; revisit at **M4** (GPU EP).
+4. **`model_fp16.onnx`** — skip on CPU; revisit in the **GPU/load Backlog item** (GPU EP).
 
 ORT support: int8-dynamic and `MatMulNBits` (q4) both run on the ORT **CPU EP** (the
 crate pins a recent ORT); fp16 runs but is up-cast on CPU. Record recall + latency/RAM
@@ -170,7 +170,7 @@ needs a labelled **unstructured** set — build `tests/corpus/ner_cases.json`:
   single-word names (`Tizio`, `Caia`) that the old NER dropped.
 - **Negative / false-positive guards** (REG-03): connection names / common words
   like `anubi` must NOT be tagged `Person`.
-- A few multilingual names to preview M5.
+- A few multilingual names to preview M4.
 
 ## Metrics
 
@@ -185,7 +185,7 @@ Plus operational cost, measured on CPU:
 
 - latency per request (and per 1k tokens), peak RAM, model file size,
 - **int8 vs fp32** delta on both accuracy and speed (informs the quantization
-  choice and the M4 GPU decision).
+  choice and the GPU/load Backlog decision).
 
 ## Method
 
@@ -201,14 +201,14 @@ Plus operational cost, measured on CPU:
 
 Pick the candidate with the **best unstructured recall at acceptable CPU
 latency/RAM**, that is ONNX-exportable and permissively licensed. Multilingual
-capability breaks ties (de-risks M5). Record the choice and the numbers in
+capability breaks ties (de-risks M4). Record the choice and the numbers in
 `docs/DEVLOG.md`.
 
 ## Escalation path (if no local NER clears the bar)
 
 The `PiiDetector` trait keeps all of these swappable without touching the proxy:
 
-- larger model + GPU execution provider (pull M4 forward),
+- larger model + GPU execution provider (pull the GPU Backlog item forward),
 - a small **local** LLM with constrained/structured output for hard cases,
 - confidence-threshold tuning, or an ensemble of two NERs.
 

@@ -15,7 +15,7 @@ anonymized request upstream, and restores the original values in the response.
 - **Engine-agnostic detection** — everything sits behind the `PiiDetector` trait,
   so we can swap models or add engines without touching the proxy.
 - **CPU-first, GPU later** — correctness and reproducibility on CPU first; GPU is
-  an optimization milestone (M4) behind a feature flag. GPU behavior isn't
+  a deferred (Backlog) optimization behind a feature flag. GPU behavior isn't
   automatic — it depends on the model and quantization.
 - **Textbook & lean** — idiomatic Rust, low RAM/CPU, no over-engineering.
 
