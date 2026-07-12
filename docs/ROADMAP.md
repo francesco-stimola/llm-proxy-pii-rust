@@ -143,8 +143,8 @@ caveat. The fail-closed paths all hold: required-fetch failure is fatal at start
 missing / non-contiguous / non-integer `id2label`; the outbound fetch is opt-in
 (`NER_MODEL_REPO` only), logged, and never fires when `NER_MODEL_PATH` wins or the repo is
 unset. Two non-blocking follow-ups:
-- [ ] **M2.5-R1 (leanness + docs accuracy) — INVESTIGATED; resolution PARKED for a reviewer
-  session (2026-07-12, user's call: do not downgrade).** Confirmed the footprint with
+- [ ] **M2.5-R1 (leanness + docs accuracy) — DECIDED 2026-07-12: keep `hf-hub 1.0` (Option A).**
+  Confirmed the footprint with
   `cargo tree --features onnx`: `hf-hub 1.0.0` pulls a **second `reqwest 0.13.4`** (the
   in-tree one is `0.12.28`), **`hf-xet 1.5.3`**, `rustls 0.23` → **`aws-lc-rs` + `aws-lc-sys`**
   (native C/asm crypto), `reqwest-middleware 0.5`, and `ureq 3`. So the "built on the
@@ -166,11 +166,15 @@ unset. Two non-blocking follow-ups:
     `num_cpus`, `rand`). Its async API differs (`api::tokio::ApiBuilder` + `Repo::with_revision`)
     so `src/pii/hf.rs` would need a rewrite, and its default cache uses `dirs` (correct on
     Windows) so the `/tmp` workaround could be dropped.
-  - **Decision (user, 2026-07-12): a downgrade to a pre-1.0 release is not worth pinning an
-    older API — park this for a reviewer session** to weigh the heavy 1.0 footprint vs the
-    downgrade (or another option, e.g. a lighter Hub client / a hand-rolled revision-pinned
-    fetch). **No code changed here.** Whichever path is chosen, also correct the three
-    inaccurate "no new native deps" claims and add a footprint guard.
+  - **Decision (user, 2026-07-12) — Option A: keep `hf-hub 1.0`.** The whole footprint is
+    `onnx`-gated, and the `onnx` feature is *already* native (`ort` links ONNX Runtime C++), so a
+    maintained/audited crypto lib is no new category — the **default build stays native-dep-free**.
+    Downgrading to the **unmaintained** 0.4.3 (no upstream CVE fixes) is the worse security posture
+    for a privacy tool; a hand-rolled fetch is the fallback only if the supply-chain surface ever
+    becomes a concrete problem. **Remaining tasks (builder):** correct the three inaccurate "no new
+    native deps" claims (`Cargo.toml` comment, `docs/DEVLOG.md`, the M2.5 dep bullet) to the real
+    onnx-only footprint; add a **footprint guard** test (`cargo tree` with no features contains no
+    `hf-hub`).
 - [x] **M2.5-R2 (fail-closed hygiene, minor).** Fixed: `parse_id2label` now
   `anyhow::ensure!(!pairs.is_empty(), …)` after the contiguity check, so an **empty**
   `id2label` object fails closed at load instead of returning `Ok(vec![])` and only
