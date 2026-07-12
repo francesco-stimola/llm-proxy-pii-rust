@@ -199,6 +199,28 @@ runs). Small and independent of M3 — can be pulled early to eyeball that the s
   request and a body-less `debug!` when skipping de-mask). Same bar as the future audit
   logging in Backlog.
 
+### M2.6 + M2.5-R2 review (2026-07-12) — sound, no blockers
+Independently verified: **66 tests green (default) / 74 + 1 `#[ignore]`d (`--features onnx`),
+no warnings**; `cargo test --features onnx --no-run` compiles the whole tree clean. All
+fail-closed paths hold: request-side masking (`on_request`) runs **unconditionally** in
+`chat_completions` — `PII_DEBUG_SKIP_DEMASK` guards **only** the `on_response` de-mask loop,
+so the upstream never sees raw PII with the flag on; the flag is off by default, emits the
+loud startup `warn!`, and the fail-closed block path returns before it is consulted. The
+`trace!(masked_request)` fires **after** masking and before forwarding (placeholders only),
+and the de-masked client response is never logged (verified by inspection + a codebase-wide
+log-site sweep: every log emits kind / placeholder-token / static text only). `parse_id2label`
+now `ensure!(!pairs.is_empty())` fails closed on empty `id2label` (`empty_id2label_is_an_error`).
+Two **non-blocking** hardening nits (optional — the milestone is sound):
+- [ ] **Log-safety regression test (nit, hardens the #1 risk).** The `trace!` masked-body log
+  and the never-log-de-masked-output rule are only inspection-verified (DBG-01). Add a
+  tracing-capture test that drives a PII request and asserts the emitted `trace!` contains the
+  placeholder (`[EMAIL_1]`) and **not** the raw value, and that no log line carries the
+  de-masked client response — so a future refactor can't silently turn logging into a leak.
+- [ ] **De-duplicate `env_flag` (nit, cleanup).** The boolean-env helper is now defined twice
+  with identical semantics (`src/config.rs` + `src/server.rs`); consolidate into one shared
+  helper so flag-parsing (`1`/`true`/`yes`/`on`) can't diverge between `PII_DEBUG_SKIP_DEMASK`
+  and `NER_REQUIRED`.
+
 ## M3 — Streaming & multi-provider routing (Option A)
 Goal: SSE token streaming with incremental de-anonymization **and** routing to multiple
 providers via their **OpenAI-compatible** endpoints (Option A). The two intertwine
