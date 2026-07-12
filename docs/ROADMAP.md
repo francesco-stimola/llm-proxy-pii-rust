@@ -130,6 +130,23 @@ default build stays native-dep-free. Implemented in `src/pii/hf.rs`, wired in
   harness (which grew a `NER_MODEL_REPO` path). Manual model copies removed; the model
   now lives in the standard HF cache.
 
+## Debug & observability modes  🔍 *(small, pullable — verify the round-trip by eye)*
+Opt-in developer tools to confirm, with your own eyes, that masking holds end-to-end.
+**Off by default; neither weakens the fail-closed posture** (request-side masking always
+runs). Small and independent of M3 — can be pulled early to eyeball that the system holds.
+- [ ] **`PII_DEBUG_SKIP_DEMASK`** (opt-in, off by default): skip the response de-mask so
+  the client receives the **placeholders** (`[EMAIL_1]`, `[PERSON_1]`) exactly as the
+  provider saw them — visual proof the request left masked and the round-trip is wired.
+  Emit a **loud startup warning** when enabled so it can't linger on in production.
+  **Test:** with the flag set, the client response contains `[EMAIL_1]`, not the value.
+- [ ] **Debug-log the masked upstream body** at **`trace!`** (gated by `RUST_LOG`,
+  **orthogonal** to the skip flag — not a bespoke default): see the exact bytes that left
+  the box. Keep `debug!` for the concise kind-only audit lines so `RUST_LOG=…=debug` stays
+  readable and `=trace` opts into full-body dumps.
+- **Safety boundary (design rule):** the masked request → provider and the raw provider
+  response (both placeholders only) are safe to log; the **final de-masked client output
+  (real values) must NEVER be logged**. Same bar as the future audit logging in Backlog.
+
 ## M3 — Streaming
 Goal: SSE token streaming with incremental de-anonymization.
 - [ ] Streaming passthrough of provider responses
@@ -155,8 +172,13 @@ Goal: extend PII coverage beyond IT + US to a wide set of locales and languages,
 so the proxy protects data regardless of the user's language or the upstream
 provider. Likely valuable once we move off the OpenAI model and serve broader
 traffic — priority can be pulled earlier if real usage demands it.
-- [ ] Locale-parametrized structured recognizers (phone, national IDs, IBAN countries)
-- [ ] Multilingual NER model(s) for names / orgs / locations (evaluate vs a multilingual corpus)
+
+**Refocused after the M2 model choice (2026-07-12):** the *multilingual NER* half is
+already **acquired** — the chosen XLM-R covers 10 languages (incl. IT/EN/FR/ES/DE), so
+M5's barycenter shifts to the **structured recognizers**, which are still hard-coded
+**IT + US** (the NER model does nothing for phone/national-ID/IBAN locale formats).
+- [ ] **Locale-parametrized structured recognizers** (phone, national IDs, IBAN countries) — the meat of M5; the deterministic regex layer is still IT + US only.
+- [ ] **Validate** the already-multilingual XLM-R against a multilingual corpus — validation, *not* model selection (the NER is already multilingual); pull languages beyond IT/EN/DE-preview into the corpus.
 - [ ] Extend the test corpus with multi-language / multi-locale cases
 - [ ] Provider-agnostic verification (not tied to OpenAI-specific behavior)
 
