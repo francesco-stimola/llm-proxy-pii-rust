@@ -57,8 +57,9 @@ impl AppState {
             config.upstream_extra_headers.clone(),
         );
         let ner_required = env_flag("NER_REQUIRED");
-        let stages: Vec<Box<dyn Stage>> =
-            vec![Box::new(PrivacyStage::new(build_detector(ner_required).await?))];
+        let stages: Vec<Box<dyn Stage>> = vec![Box::new(PrivacyStage::new(
+            build_detector(ner_required, &config.pii_locales).await?,
+        ))];
         if config.debug_skip_demask {
             // Loud, so it can't quietly linger in a real deployment (M2.6).
             tracing::warn!(
@@ -84,8 +85,12 @@ impl AppState {
 /// structured-only downgrade (M2-R1).
 ///
 /// Async so the `onnx` branch can `await` an opt-in `hf-hub` model fetch (M2.5).
-async fn build_detector(ner_required: bool) -> anyhow::Result<Box<dyn PiiDetector>> {
-    let structured: Box<dyn PiiDetector> = Box::new(StructuredRecognizers::new());
+/// `locales` selects the structured recognizers' national-ID coverage (M4).
+async fn build_detector(
+    ner_required: bool,
+    locales: &[String],
+) -> anyhow::Result<Box<dyn PiiDetector>> {
+    let structured: Box<dyn PiiDetector> = Box::new(StructuredRecognizers::with_locales(locales));
 
     #[cfg(feature = "onnx")]
     {
@@ -517,9 +522,9 @@ mod tests {
     async fn required_ner_is_fatal_when_absent() {
         // M2-R1: requiring a NER that can't be present (no `onnx` feature, or —
         // with the feature — no model configured in the test env) is fatal.
-        assert!(build_detector(true).await.is_err());
+        assert!(build_detector(true, &[]).await.is_err());
         // Not requiring it always yields a structured-only detector.
-        assert!(build_detector(false).await.is_ok());
+        assert!(build_detector(false, &[]).await.is_ok());
     }
 
     #[tokio::test]

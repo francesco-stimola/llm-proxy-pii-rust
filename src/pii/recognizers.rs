@@ -36,80 +36,110 @@ pub struct StructuredRecognizers {
 }
 
 impl StructuredRecognizers {
-    /// Build the recognizer set, compiling every pattern once.
-    ///
-    /// Locales covered: **IT + US** (Italian/US phone shapes, US SSN, IBAN
-    /// including Italian). The regexes are deliberately conservative — precision
-    /// matters more than recall for structured PII, and the ML NER (M2) picks up
-    /// the fuzzy cases.
+    /// Build the default recognizer set: the universal recognizers plus the
+    /// **default locales (IT + US)**. Backward-compatible with the M1–M3 behavior.
     pub fn new() -> Self {
-        // Patterns are simple and readable on purpose; `regex` has no
-        // backreferences/lookarounds, and we don't need them here.
-        let recognizers = vec![
-            // Secrets outrank everything: an API key must never be re-read as
-            // something else, and the old ML model missed them entirely.
-            Recognizer {
-                kind: PiiKind::Secret,
-                regex: Regex::new(r"\b(?:sk-[A-Za-z0-9_-]{6,}|AKIA[0-9A-Z]{16})\b").unwrap(),
-                validate: None,
-            },
-            // IBAN before phone/credit-card: its digit groups can otherwise be
-            // mistaken for a card or phone number.
-            Recognizer {
-                kind: PiiKind::Iban,
-                // Country (2 letters) + 2 check digits + BBAN, in one of the two
-                // canonical shapes: continuous (`IT60X05428…`) or space-grouped
-                // in blocks of four (`DE89 3704 0044 …`). Matching the shapes
-                // explicitly — instead of "optional space before any char" —
-                // stops a match from bleeding into a following ALL-CAPS word
-                // (e.g. the `EUR` in `IBAN IT60…456 EUR`). mod-97 is a confidence
-                // signal only, not a gate, so synthetic-but-shaped IBANs are
-                // still masked (privacy > strict validation).
-                regex: Regex::new(
-                    r"\b[A-Z]{2}\d{2}(?:[A-Z0-9]{11,30}|(?: [A-Z0-9]{4}){2,7}(?: [A-Z0-9]{1,4})?)\b",
-                )
-                .unwrap(),
-                validate: None,
-            },
-            // Credit cards: 13–19 digits, either grouped in 4s or continuous,
-            // gated by the Luhn checksum to reject look-alikes.
-            Recognizer {
-                kind: PiiKind::CreditCard,
-                regex: Regex::new(r"\b(?:\d{4}[ -]\d{4}[ -]\d{4}[ -]\d{4}|\d{13,19})\b").unwrap(),
-                validate: Some(credit_card_valid),
-            },
-            // US SSN: 3-2-4 digit groups.
-            Recognizer {
-                kind: PiiKind::Ssn,
-                regex: Regex::new(r"\b\d{3}-\d{2}-\d{4}\b").unwrap(),
-                validate: None,
-            },
-            Recognizer {
-                kind: PiiKind::Email,
-                regex: Regex::new(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}").unwrap(),
-                validate: None,
-            },
-            // Phone, two families:
-            //  - US: 3-3-4 with `-`, `.`, space, or `(area)` grouping, optional
-            //    `+1` country code — 555-867-5309, (555) 867-5309, 555.867.5309,
-            //    +1 555-867-5309.
-            //  - International: `+CC` then two canonical shapes — three groups
-            //    (+39 333 000 0001) or two groups (+39 333 0000001). Enumerating
-            //    the shapes (rather than "1–4 groups") stops the match from
-            //    swallowing an unrelated trailing number, e.g. the `12345` in
-            //    `+39 333 0000001 12345` — the same class of bug as the IBAN
-            //    over-match. Three-group is tried first so it isn't cut short.
-            // US is tried first so `+1 …` isn't sliced by the international arm.
-            Recognizer {
-                kind: PiiKind::Phone,
-                regex: Regex::new(
-                    r"(?:\+1[ .-]?)?(?:\(\d{3}\)[ .-]?|\d{3}[ .-])\d{3}[ .-]\d{4}|\+\d{1,3} \d{2,4} \d{2,4} \d{3,4}|\+\d{1,3} \d{2,4} \d{5,8}",
-                )
-                .unwrap(),
-                validate: None,
-            },
-        ];
+        Self::with_locales(&["it", "us"])
+    }
+
+    /// Build with an explicit list of locale codes (M4). The **universal**
+    /// recognizers — email, secret, credit card, IBAN (any country + mod-97),
+    /// phone (US + `+CC` international) — are always included; each locale adds its
+    /// **national-identifier** recognizers (US SSN, IT Codice Fiscale, GB NINO).
+    /// Unknown codes contribute nothing. The regexes stay conservative: precision
+    /// matters more than recall for structured PII (the ML NER covers fuzzy cases).
+    pub fn with_locales<S: AsRef<str>>(locales: &[S]) -> Self {
+        let mut recognizers = universal_recognizers();
+        for locale in locales {
+            recognizers.extend(locale_recognizers(locale.as_ref()));
+        }
         Self { recognizers }
+    }
+}
+
+/// Locale-agnostic recognizers — valid regardless of the active locale set.
+fn universal_recognizers() -> Vec<Recognizer> {
+    // Patterns are simple and readable on purpose; `regex` has no
+    // backreferences/lookarounds, and we don't need them here.
+    vec![
+        // Secrets outrank everything: an API key must never be re-read as
+        // something else, and the old ML model missed them entirely.
+        Recognizer {
+            kind: PiiKind::Secret,
+            regex: Regex::new(r"\b(?:sk-[A-Za-z0-9_-]{6,}|AKIA[0-9A-Z]{16})\b").unwrap(),
+            validate: None,
+        },
+        // IBAN before phone/credit-card: its digit groups can otherwise be
+        // mistaken for a card or phone number. Country (2 letters) + 2 check
+        // digits + BBAN, continuous (`IT60X05428…`) or space-grouped in blocks of
+        // four (`DE89 3704 0044 …`); matching the shapes explicitly stops a match
+        // from bleeding into a following ALL-CAPS word (the `EUR` in `IBAN IT60…456
+        // EUR`). Already covers every country; mod-97 is a confidence signal only.
+        Recognizer {
+            kind: PiiKind::Iban,
+            regex: Regex::new(
+                r"\b[A-Z]{2}\d{2}(?:[A-Z0-9]{11,30}|(?: [A-Z0-9]{4}){2,7}(?: [A-Z0-9]{1,4})?)\b",
+            )
+            .unwrap(),
+            validate: None,
+        },
+        // Credit cards: 13–19 digits, either grouped in 4s or continuous, gated by
+        // the Luhn checksum to reject look-alikes.
+        Recognizer {
+            kind: PiiKind::CreditCard,
+            regex: Regex::new(r"\b(?:\d{4}[ -]\d{4}[ -]\d{4}[ -]\d{4}|\d{13,19})\b").unwrap(),
+            validate: Some(credit_card_valid),
+        },
+        Recognizer {
+            kind: PiiKind::Email,
+            regex: Regex::new(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}").unwrap(),
+            validate: None,
+        },
+        // Phone, two families (US first so `+1 …` isn't sliced by the intl arm):
+        //  - US: 3-3-4 with `-`, `.`, space, or `(area)` grouping, optional `+1`.
+        //  - International: `+CC` then two canonical shapes — three groups
+        //    (+39 333 000 0001) or two groups (+39 333 0000001). Enumerating the
+        //    shapes stops the match from swallowing an unrelated trailing number.
+        Recognizer {
+            kind: PiiKind::Phone,
+            regex: Regex::new(
+                r"(?:\+1[ .-]?)?(?:\(\d{3}\)[ .-]?|\d{3}[ .-])\d{3}[ .-]\d{4}|\+\d{1,3} \d{2,4} \d{2,4} \d{3,4}|\+\d{1,3} \d{2,4} \d{5,8}",
+            )
+            .unwrap(),
+            validate: None,
+        },
+    ]
+}
+
+/// National-identifier recognizers for one locale code (ISO-3166-ish, e.g. `us`,
+/// `it`, `gb`). Each pattern is deliberately specific (fixed letter/digit layout)
+/// to keep the false-positive rate low. Unknown codes yield nothing (M4).
+fn locale_recognizers(code: &str) -> Vec<Recognizer> {
+    match code.trim().to_ascii_lowercase().as_str() {
+        // US SSN: 3-2-4 digit groups.
+        "us" => vec![Recognizer {
+            kind: PiiKind::Ssn,
+            regex: Regex::new(r"\b\d{3}-\d{2}-\d{4}\b").unwrap(),
+            validate: None,
+        }],
+        // Italian Codice Fiscale: 6 letters, 2 digits, letter, 2 digits, letter,
+        // 3 digits, letter (16 chars). The interleaved digits make it specific.
+        "it" => vec![Recognizer {
+            kind: PiiKind::NationalId,
+            regex: Regex::new(r"\b[A-Za-z]{6}\d{2}[A-Za-z]\d{2}[A-Za-z]\d{3}[A-Za-z]\b").unwrap(),
+            validate: None,
+        }],
+        // UK National Insurance Number: 2 prefix letters, 6 digits, a suffix letter
+        // A–D — compact (`AB123456C`) or space-grouped (`AB 12 34 56 C`).
+        "gb" | "uk" => vec![Recognizer {
+            kind: PiiKind::NationalId,
+            regex: Regex::new(
+                r"\b[A-Za-z]{2}\d{6}[A-Da-d]\b|\b[A-Za-z]{2} \d{2} \d{2} \d{2} [A-Da-d]\b",
+            )
+            .unwrap(),
+            validate: None,
+        }],
+        _ => Vec::new(),
     }
 }
 
@@ -237,6 +267,53 @@ mod tests {
             .into_iter()
             .map(|e| (e.kind, e.text))
             .collect()
+    }
+
+    fn kinds_with<S: AsRef<str>>(locales: &[S], input: &str) -> Vec<(PiiKind, String)> {
+        StructuredRecognizers::with_locales(locales)
+            .detect(input)
+            .into_iter()
+            .map(|e| (e.kind, e.text))
+            .collect()
+    }
+
+    #[test]
+    fn italian_codice_fiscale_detected_by_default() {
+        // IT is a default locale, so `new()` covers Codice Fiscale (M4).
+        assert_eq!(
+            kinds("codice RSSMRA85T10A562S grazie"),
+            vec![(PiiKind::NationalId, "RSSMRA85T10A562S".to_string())]
+        );
+    }
+
+    #[test]
+    fn uk_nino_needs_the_gb_locale() {
+        let nino = "NINO AB123456C on file";
+        // Not active by default (IT + US only)…
+        assert!(kinds(nino).is_empty(), "NINO should not match without the GB locale");
+        // …but detected once GB is enabled, compact or space-grouped.
+        assert_eq!(
+            kinds_with(&["gb"], nino),
+            vec![(PiiKind::NationalId, "AB123456C".to_string())]
+        );
+        assert_eq!(
+            kinds_with(&["gb"], "NINO AB 12 34 56 C on file"),
+            vec![(PiiKind::NationalId, "AB 12 34 56 C".to_string())]
+        );
+    }
+
+    #[test]
+    fn locale_selection_is_scoped() {
+        // A US-only set must not detect an Italian Codice Fiscale…
+        assert!(kinds_with(&["us"], "codice RSSMRA85T10A562S").is_empty());
+        // …while US SSN still works, and the universal recognizers are unaffected.
+        assert_eq!(
+            kinds_with(&["us"], "ssn 123-45-6789 mail a@b.com"),
+            vec![
+                (PiiKind::Ssn, "123-45-6789".to_string()),
+                (PiiKind::Email, "a@b.com".to_string()),
+            ]
+        );
     }
 
     #[test]

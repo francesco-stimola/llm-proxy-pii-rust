@@ -62,6 +62,7 @@ async fn spawn_proxy_cfg(upstream: SocketAddr, debug_skip_demask: bool) -> Socke
         upstream_chat_path: "/v1/chat/completions".to_string(),
         upstream_extra_headers: Vec::new(),
         forward_request_headers: Vec::new(),
+        pii_locales: vec!["it".to_string(), "us".to_string()],
         debug_skip_demask,
     };
     let app = build_router(AppState::new(&config).await.expect("build app state"));

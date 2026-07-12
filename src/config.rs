@@ -33,6 +33,10 @@ pub struct Config {
     /// provider receive required headers (`anthropic-version`, editor headers, …)
     /// without blindly forwarding everything.
     pub forward_request_headers: Vec<String>,
+    /// Active locales for the structured recognizers (M4) — national-identifier
+    /// coverage per locale (`it`, `us`, `gb`, …). Universal recognizers (email,
+    /// IBAN, card, phone) always run regardless. Defaults to `it, us`.
+    pub pii_locales: Vec<String>,
     /// **Debug only (M2.6), off by default.** When set, the response de-mask is
     /// skipped so the client receives the placeholders (`[EMAIL_1]`, …) the
     /// provider saw — visual proof the round-trip is wired. Request-side masking
@@ -98,6 +102,15 @@ impl Config {
             Err(_) => Vec::new(),
         };
 
+        // Structured-recognizer locales (M4): comma-separated codes, default IT+US.
+        let pii_locales = match std::env::var("PII_LOCALES") {
+            Ok(raw) => {
+                let list = parse_header_list(&raw); // same shape: comma-split, lowercased
+                if list.is_empty() { default_locales() } else { list }
+            }
+            Err(_) => default_locales(),
+        };
+
         Ok(Self {
             listen,
             upstream_base_url,
@@ -107,9 +120,15 @@ impl Config {
             upstream_chat_path,
             upstream_extra_headers,
             forward_request_headers,
+            pii_locales,
             debug_skip_demask,
         })
     }
+}
+
+/// The default recognizer locales when `PII_LOCALES` is unset (IT + US).
+fn default_locales() -> Vec<String> {
+    vec!["it".to_string(), "us".to_string()]
 }
 
 /// OpenAI-compatible defaults per provider (M3, Option A). Base URL + API key stay
@@ -207,6 +226,7 @@ impl fmt::Debug for Config {
                     .collect::<Vec<_>>(),
             )
             .field("forward_request_headers", &self.forward_request_headers)
+            .field("pii_locales", &self.pii_locales)
             .field("debug_skip_demask", &self.debug_skip_demask)
             .finish()
     }

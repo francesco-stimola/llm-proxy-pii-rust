@@ -31,6 +31,9 @@ pub enum PiiKind {
     Email,
     Phone,
     Ssn,
+    /// A non-US national identifier (M4) — e.g. Italian Codice Fiscale, UK NINO.
+    /// US SSN keeps its own [`Ssn`](Self::Ssn) variant for continuity.
+    NationalId,
     CreditCard,
     Iban,
     /// API keys / tokens (e.g. `sk-…`, `sk-ant-…`, `AKIA…`). Deterministic —
@@ -50,6 +53,7 @@ impl PiiKind {
             PiiKind::Email => "EMAIL",
             PiiKind::Phone => "PHONE",
             PiiKind::Ssn => "SSN",
+            PiiKind::NationalId => "NATID",
             PiiKind::CreditCard => "CARD",
             PiiKind::Iban => "IBAN",
             PiiKind::Secret => "SECRET",
@@ -63,13 +67,15 @@ impl PiiKind {
     /// (see [`overlap::resolve_overlaps`]). Deterministic **structured** PII
     /// outranks the ML **NER** entities, so a checksum-backed email/IBAN always
     /// beats an ML guess on the same span. Within structured PII the order is
-    /// Secret > Iban > CreditCard > Ssn > Email > Phone.
+    /// Secret > Iban > CreditCard > Ssn ≈ NationalId > Email > Phone.
     pub fn priority(self) -> u8 {
         match self {
             PiiKind::Secret => 6,
             PiiKind::Iban => 5,
             PiiKind::CreditCard => 4,
-            PiiKind::Ssn => 3,
+            // National identifiers (US SSN + other locales) share a tier; they
+            // never overlap each other, and ties fall through to span length.
+            PiiKind::Ssn | PiiKind::NationalId => 3,
             PiiKind::Email => 2,
             PiiKind::Phone => 1,
             // NER entities (M2) sit below all structured PII.
@@ -85,6 +91,7 @@ impl PiiKind {
             "EMAIL" => PiiKind::Email,
             "PHONE" => PiiKind::Phone,
             "SSN" => PiiKind::Ssn,
+            "NATID" => PiiKind::NationalId,
             "CARD" => PiiKind::CreditCard,
             "IBAN" => PiiKind::Iban,
             "SECRET" => PiiKind::Secret,
