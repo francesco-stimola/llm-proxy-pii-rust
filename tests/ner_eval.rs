@@ -30,6 +30,8 @@ const CORPUS_JSON: &str = include_str!("corpus/ner_cases.json");
 #[derive(Deserialize)]
 struct Corpus {
     entities: HashMap<String, Category>,
+    #[serde(default)]
+    multilingual_preview: Vec<Case>,
 }
 #[derive(Deserialize)]
 struct Category {
@@ -86,8 +88,13 @@ fn evaluate_ner_model_against_corpus() {
     let mut cases = 0u32;
     let started = Instant::now();
 
-    for category in corpus.entities.values() {
-        for case in &category.positive {
+    let all_cases = corpus
+        .entities
+        .values()
+        .flat_map(|c| c.positive.iter())
+        .chain(corpus.multilingual_preview.iter());
+    {
+        for case in all_cases {
             cases += 1;
             let detected: Vec<(PiiKind, String)> = detector
                 .detect(&case.input)
@@ -101,6 +108,12 @@ fn evaluate_ner_model_against_corpus() {
                 .filter(|e| is_ner(e.kind))
                 .map(|e| (e.kind, e.text.clone()))
                 .collect();
+
+            if detected != expected {
+                eprintln!("  input:    {:?}", case.input);
+                eprintln!("    expected: {expected:?}");
+                eprintln!("    detected: {detected:?}");
+            }
 
             for exp in &expected {
                 let entry = per_kind.entry(exp.0).or_default();

@@ -54,19 +54,21 @@ array-content fail-closed gap, phone over-match, and `Confidence` consumed — a
 fixed with tests. Full detail in `docs/DEVLOG.md` (2026-07-11) / commits
 `bb68707`, `775945f`.
 
-## M2 — Unstructured entities (ONNX NER, CPU)
+## M2 — Unstructured entities (ONNX NER, CPU) ✅
 Goal: add names / organizations / locations via a local ML model.
 Candidate models & evaluation plan: [docs/M2-NER-EVALUATION.md](M2-NER-EVALUATION.md).
 
-**Infrastructure + the ONNX detector are built and compile** (`--features onnx`
-clean, native ORT + tokenizers); only the **measured model choice** remains, since
-that genuinely needs real model files (measure, don't guess). See DEVLOG 2026-07-12.
+**Done:** hybrid detector + `OnnxNerDetector` (`--features onnx`), the model
+**measured and picked** (XLM-R int8, head-to-head vs Piiranha — see DEVLOG
+2026-07-12), and all 9 review findings closed. The NER runs off-repo model files
+via env vars (`NER_MODEL_PATH` / `NER_TOKENIZER_PATH` / `NER_LABELS`); the shipped
+default build stays feature-off and native-dep-free.
 - [x] `OnnxNerDetector` behind the `onnx` feature (CPU EP) — `src/pii/onnx.rs`: HF tokenizer + `ort` session, per-token argmax → BIO decode; `--features onnx` compiles clean. Runtime verification is gated on a chosen model.
-- [ ] **Evaluate candidate models & pick one** — the remaining measured step (needs real model files; measure, don't guess). Locked set (2026-07-12 — XLM-R baseline + Piiranha specialist, head-to-head; GLiNER in escalation): see [docs/M2-NER-EVALUATION.md](M2-NER-EVALUATION.md).
-  - [x] **Eval harness** — `tests/ner_eval.rs` (`--features onnx`, `#[ignore]`d): scores a live candidate against `ner_cases.json` (recall/precision/F1 per type + timing) **through the hybrid resolver**. Runs with `cargo test --features onnx --test ner_eval -- --ignored --nocapture` once a model is set.
-  - [ ] **Candidate A — XLM-R multilingual NER** (drop-in baseline): download pre-converted ONNX (`jiting/xlm-roberta-base-ner-hrl_onnx`, int8 available — no export needed), run, record numbers.
-  - [ ] **Candidate B — Piiranha** (PII specialist): download pre-converted ONNX (`onnx-community/piiranha-v1-detect-personal-information-ONNX`, int8 available), run, record numbers. Pulls in **M2-R4** (token_type_ids) and **M2-R3** (label mapping).
-  - [ ] **Pick + record** the choice and the numbers in `docs/DEVLOG.md`. GLiNER escalation only if neither clears the recall bar.
+- [x] **Evaluate candidate models & pick one** — DONE (measured, head-to-head, `--features onnx`). **Picked: XLM-R int8** (`jiting/xlm-roberta-base-ner-hrl_onnx` @ `478a2a3`). Numbers + method in `docs/DEVLOG.md` (2026-07-12).
+  - [x] **Eval harness** — `tests/ner_eval.rs` (`--features onnx`, `#[ignore]`d): scores a live candidate against `ner_cases.json` (recall/precision/F1 per type + timing) **through the hybrid resolver**. Runs with `cargo test --features onnx --test ner_eval -- --ignored --nocapture`.
+  - [x] **Candidate A — XLM-R** (drop-in baseline): int8, hybrid **Org 1.00 / Loc 1.00 / Person 0.75** (only misses the single-token "Caia" split + the "Herr" title), ~23 ms/case CPU, 266 MB, multilingual, no `token_type_ids`, no label mapping. **Winner.**
+  - [x] **Candidate B — Piiranha** (PII specialist): int8, hybrid **~0.00 recall** on natural-sentence NER (fires only fragments like "Pinc"/"New") and has **no Organization label** — it's a form/structured-PII model, not free-text NER. Rejected. (Its granular labels wired via extended `label_to_kind`; `type_vocab_size:0` → no `token_type_ids` needed.)
+  - [x] **Pick + record** → XLM-R int8; numbers in `docs/DEVLOG.md`. GLiNER escalation not needed (XLM-R clears the bar).
 - [x] Combine deterministic + ML detectors behind one `PiiDetector` — `CompositeDetector` fans out to N detectors and merges via the shared `overlap::resolve_overlaps` (structured PII outranks NER via `PiiKind::priority`)
 - [x] Extend the corpus with unstructured-entity cases — `tests/corpus/ner_cases.json` (Person/Org/Location, IT+EN, single-word names, REG-03 negatives, a DE multilingual preview)
 - [x] **NER concurrency**: `OnnxNerDetector` holds a round-robin **pool of sessions** (`NER_POOL_SIZE`) so inference isn't a single-threaded bottleneck.
@@ -77,13 +79,13 @@ now makes the NER fail closed: a required detector's load *or* inference error i
 fatal / blocks the request via a new `PiiDetector::try_detect` error channel; when
 not required, a `FailOpen` wrapper keeps the old fail-open behaviour explicitly.
 
-### M2 review findings — 8/9 closed (only R6 pending a model)
-Closed R1–R5, R7–R9 with tests (commit — see DEVLOG 2026-07-12); **64 tests green
-(default), `--features onnx` builds clean, no warnings**. R6 (offset units for
-non-ASCII) is genuinely model-gated — it needs a real tokenizer to verify — so it
-stays open with a defensive mitigation in place (a dropped-span `warn`, never
-silent). The closed findings are left inline for the reviewer to collapse to a
-DEVLOG pointer per the lifecycle.
+### M2 review findings — ALL 9 closed ✅
+Closed R1–R9 with tests (see DEVLOG 2026-07-12); **65 tests green (default),
+`--features onnx` builds + runs a live model clean, no warnings**. R6 was closed by
+downloading the XLM-R model and confirming non-ASCII ("Müller", 2-byte `ü`) extracts
+on exact byte boundaries — plus a whitespace-trim fix so SentencePiece leading-space
+offsets don't leak into the span. The closed findings are left inline for the
+reviewer to collapse to a DEVLOG pointer per the lifecycle.
 
 - [x] **M2-R1 — load-time NER downgrade is silent (fail-open).** *(closed: `NER_REQUIRED` makes a configured-but-unloadable NER fatal at startup; `build_detector`/`AppState::new` now return `Result`. Test: `required_ner_is_fatal_when_absent`.)* `build_detector` /
   `load_onnx_ner` (`src/server.rs:78-100`) fall back to structured-only when a
@@ -131,14 +133,7 @@ DEVLOG pointer per the lifecycle.
   the first `-`/`_`-separated segment `B` (case-insensitive) as a begin. **Test:** the
   existing `adjacent_same_type_entities_are_split_by_begin` case, re-run with
   `B_LOC`/`I_LOC`/`B_LOC`, still splits.
-- [ ] **M2-R6 — offset units unverified for non-ASCII (recall/robustness).** *(OPEN — model-gated.)*
-  `decode_entities` treats tokenizer offsets as byte offsets into the Rust `&str`.
-  If the chosen tokenizer emits char offsets, non-ASCII names (e.g. `Müller`)
-  misalign. **Mitigation done:** `decode_entities` now `warn`s (kind only) instead of
-  silently dropping an off-boundary span, so a misalignment is visible, not invisible.
-  **Remaining (at model landing):** add a non-ASCII corpus case and assert an exact
-  `OnnxNerDetector` mask→restore round-trip (or convert offsets if the tokenizer is
-  char-based). Needs a real tokenizer to verify — can't close without a model.
+- [x] **M2-R6 — offset units unverified for non-ASCII (recall/robustness).** *(closed with the real model: XLM-R extracts "Müller"/"Berlin" on exact byte boundaries — the tokenizer emits byte offsets, so the `&str` slicing is correct for non-ASCII. Added a **whitespace-trim** in `decode_entities` (SentencePiece includes the leading space in a token offset, e.g. `▁Mario` spans " Mario") so the span is exact and masking preserves surrounding spaces. Tests: `leading_space_in_token_offset_is_trimmed` + the live `ner_eval` on the DE case. A dropped off-boundary span still `warn`s as a backstop.)*
 - [x] **M2-R7 — partial-overlap drops the NER remainder (recall, by-design).** *(closed as a conscious choice: `resolve_overlaps` drops the whole lower-priority span — documented in the function + tested (`ner_span_enclosing_a_structured_span_is_dropped_whole`). Structured PII is never lost; only the non-overlapping unstructured remainder.)*
   `resolve_overlaps` (`src/pii/overlap.rs:26-33`) discards a whole lower-priority NER
   span when it overlaps a kept structured span — including the non-overlapping part,

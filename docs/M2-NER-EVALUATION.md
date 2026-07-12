@@ -39,6 +39,12 @@ runtime doesn't fit a lean Rust binary).
 
 ## Decision — first evaluation round (2026-07-12)
 
+> **RESULT (2026-07-12): picked XLM-R int8** (`jiting/xlm-roberta-base-ner-hrl_onnx`
+> @ `478a2a3`). Hybrid scores: Org 1.00 / Loc 1.00 / Person 0.75; ~23 ms/case CPU;
+> 266 MB; multilingual; drop-in (no `token_type_ids`, no label mapping). Piiranha
+> rejected (~0 recall on natural-sentence NER, no Organization label). Full numbers
+> and method in `docs/DEVLOG.md`.
+
 Locked after the M2 review. Evaluate **two candidates head-to-head first**, chosen
 by the key engineering discriminator: whether the model drops into today's
 `OnnxNerDetector` (standard token-classification — `input_ids` + `attention_mask`

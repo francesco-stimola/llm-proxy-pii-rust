@@ -18,13 +18,19 @@ pub struct TokenTag<'a> {
 }
 
 /// Map a NER label to a [`PiiKind`], stripping any `B-`/`I-` prefix. Returns
-/// `None` for `O` / unknown labels (so only Person/Org/Location survive).
+/// `None` for `O` / unknown labels, and — deliberately — for a PII-specialist
+/// model's **structured** categories (email / phone / card / id / account …):
+/// those are owned by the deterministic layer, so the NER should not also mask
+/// them. Covers both plain PER/ORG/LOC schemes (XLM-R, WikiNeural) and
+/// granular PII schemes (Piiranha: GIVENNAME / SURNAME / CITY …).
 pub fn label_to_kind(label: &str) -> Option<PiiKind> {
     let tag = label.split(['-', '_']).next_back().unwrap_or(label);
     match tag.to_ascii_uppercase().as_str() {
-        "PER" | "PERSON" => Some(PiiKind::Person),
-        "ORG" | "ORGANIZATION" => Some(PiiKind::Organization),
-        "LOC" | "GPE" | "LOCATION" => Some(PiiKind::Location),
+        "PER" | "PERSON" | "GIVENNAME" | "SURNAME" | "FIRSTNAME" | "LASTNAME" | "NAME" => {
+            Some(PiiKind::Person)
+        }
+        "ORG" | "ORGANIZATION" | "COMPANY" => Some(PiiKind::Organization),
+        "LOC" | "GPE" | "LOCATION" | "CITY" | "STATE" | "COUNTRY" => Some(PiiKind::Location),
         _ => None,
     }
 }
@@ -64,12 +70,25 @@ pub fn decode_entities(text: &str, tokens: &[TokenTag<'_>]) -> Vec<PiiEntity> {
     let flush = |current: &mut Option<(PiiKind, usize, usize)>, out: &mut Vec<PiiEntity>| {
         if let Some((kind, start, end)) = current.take() {
             match text.get(start..end) {
-                Some(slice) => out.push(PiiEntity {
-                    kind,
-                    span: start..end,
-                    text: slice.to_string(),
-                    confidence: Confidence::Structural,
-                }),
+                Some(slice) => {
+                    // Tokenizer offsets can include the leading space
+                    // (SentencePiece metaspace, e.g. XLM-R emits `▁Mario` spanning
+                    // " Mario"). Trim surrounding whitespace and shift the span to
+                    // the real content, so masking preserves the space and the
+                    // span text matches the value exactly.
+                    let lead = slice.len() - slice.trim_start().len();
+                    let trimmed = slice.trim();
+                    if trimmed.is_empty() {
+                        return;
+                    }
+                    let start = start + lead;
+                    out.push(PiiEntity {
+                        kind,
+                        span: start..start + trimmed.len(),
+                        text: trimmed.to_string(),
+                        confidence: Confidence::Structural,
+                    });
+                }
                 // Offsets not on a UTF-8 boundary (e.g. char- vs byte-offset
                 // mismatch) — surface it rather than silently dropping a name
                 // (M2-R6). Kind only, never the text.
@@ -119,6 +138,14 @@ mod tests {
         assert_eq!(label_to_kind("B-LOC"), Some(PiiKind::Location));
         assert_eq!(label_to_kind("O"), None);
         assert_eq!(label_to_kind("MISC"), None);
+        // Granular PII scheme (Piiranha): names → Person, city → Location…
+        assert_eq!(label_to_kind("I-GIVENNAME"), Some(PiiKind::Person));
+        assert_eq!(label_to_kind("I-SURNAME"), Some(PiiKind::Person));
+        assert_eq!(label_to_kind("I-CITY"), Some(PiiKind::Location));
+        // …but structured PII stays with the deterministic layer.
+        assert_eq!(label_to_kind("I-EMAIL"), None);
+        assert_eq!(label_to_kind("I-TELEPHONENUM"), None);
+        assert_eq!(label_to_kind("I-CREDITCARDNUMBER"), None);
     }
 
     #[test]
@@ -181,5 +208,18 @@ mod tests {
         assert!(validate_label_count(9, 9).is_ok());
         assert!(validate_label_count(3, 9).is_err());
         assert!(validate_label_count(9, 3).is_err());
+    }
+
+    #[test]
+    fn leading_space_in_token_offset_is_trimmed() {
+        // SentencePiece metaspace: the token offset includes the leading space
+        // (e.g. XLM-R `▁Acme` spans " Acme"). The decoded span must be trimmed to
+        // the real content, with the offsets shifted to match.
+        let text = "at Acme Corp";
+        let tokens = [tag("B-ORG", 2, 7), tag("I-ORG", 7, 12)];
+        let got = decode_entities(text, &tokens);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].text, "Acme Corp");
+        assert_eq!(got[0].span, 3..12);
     }
 }

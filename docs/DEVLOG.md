@@ -3,6 +3,43 @@
 Newest first. One entry per meaningful change — note *what* and *why*, not just
 *what*. This is the running history so context is never lost between sessions.
 
+## 2026-07-12 — M2 model chosen (measured): XLM-R int8; R6 closed — M2 COMPLETE
+
+Downloaded both locked candidates from the Hub and scored them **through the hybrid
+resolver** on `tests/corpus/ner_cases.json` (8 cases incl. the DE non-ASCII preview),
+per `docs/M2-NER-EVALUATION.md`. int8 (`model_quantized.onnx`), ORT CPU EP.
+
+| Model | repo @ rev | Person R/P/F1 | Org R/P/F1 | Loc R/P/F1 | latency | size |
+|---|---|---|---|---|---|---|
+| **XLM-R** (winner) | `jiting/xlm-roberta-base-ner-hrl_onnx` @ `478a2a3` | 0.75 / 0.60 / 0.67 | **1.00 / 1.00 / 1.00** | **1.00 / 1.00 / 1.00** | ~23 ms/case | 266 MB |
+| Piiranha | `onnx-community/piiranha-…-ONNX` | 0.00 | 0.00 (no ORG label) | 0.00 | ~37 ms/case | 302 MB |
+
+**Pick: XLM-R int8.** Perfect Org/Loc; Person misses only the pathological single-token
+"Caia" (tokenized `▁Cai`+`a`, tagged as two spans) and the "Herr" title on "Herr Müller".
+Multilingual (10 langs incl. IT), drop-in (PER/ORG/LOC labels, no `token_type_ids`, no
+label mapping). **Piiranha rejected:** ~0 recall on natural-sentence NER (it fires only
+subword fragments — it's a form/structured-PII model) **and has no Organization label**.
+GLiNER escalation not needed. (Piiranha's granular labels were wired anyway via an
+extended `label_to_kind`; `type_vocab_size:0` → it needs no `token_type_ids`.)
+
+- **R6 closed by the live run.** Confirmed non-ASCII "Müller" (2-byte `ü`) extracts on
+  exact byte boundaries → the HF tokenizer emits **byte** offsets and the `&str`
+  slicing is correct. Added a **whitespace trim** in `decode_entities`: SentencePiece
+  includes the leading space in a token offset (`▁Mario` spans " Mario"), so the raw
+  span was " Mario Rossi"; trimming shifts the span to the real content (masking now
+  preserves the space, and the span text matches the value). This is what took recall
+  from 0.00 (exact-text mismatch) to the numbers above. Test:
+  `leading_space_in_token_offset_is_trimmed`.
+- **`label_to_kind` broadened** to cover granular PII schemes (GIVENNAME/SURNAME → Person,
+  CITY/STATE/COUNTRY → Location) while keeping structured categories (EMAIL/PHONE/…) →
+  `None` (owned by the deterministic layer). Test updated.
+- **To run the NER** (off-repo model, ~266 MB, not committed): download
+  `onnx/model_quantized.onnx` + `tokenizer.json` from the XLM-R repo, then set
+  `NER_MODEL_PATH` / `NER_TOKENIZER_PATH` / `NER_LABELS="O,B-DATE,I-DATE,B-PER,I-PER,B-ORG,I-ORG,B-LOC,I-LOC"`
+  and build `--features onnx`.
+- **M2 COMPLETE.** 65 tests green (default), `--features onnx` builds + runs a live model
+  clean, no warnings. Next milestone: M3 (streaming).
+
 ## 2026-07-12 — M2 review findings closed (8/9) + fail-closed NER + eval harness
 
 Closed the M2 review (M2-R1…R9 except the model-gated R6), all with tests.
