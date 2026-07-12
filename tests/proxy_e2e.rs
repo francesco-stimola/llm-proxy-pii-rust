@@ -46,11 +46,18 @@ async fn spawn_mock_upstream() -> SocketAddr {
 
 /// Spawn the proxy pointing at `upstream`; return its address.
 async fn spawn_proxy(upstream: SocketAddr) -> SocketAddr {
+    spawn_proxy_cfg(upstream, false).await
+}
+
+/// Spawn the proxy with an explicit `debug_skip_demask` (M2.6). The flag is set on
+/// `Config` (not process env) so it stays isolated to this proxy instance.
+async fn spawn_proxy_cfg(upstream: SocketAddr, debug_skip_demask: bool) -> SocketAddr {
     let config = Config {
         listen: "127.0.0.1:0".parse().unwrap(),
         upstream_base_url: format!("http://{upstream}"),
         upstream_api_key: None,
         max_body_bytes: llm_proxy_pii_rust::config::DEFAULT_MAX_BODY_BYTES,
+        debug_skip_demask,
     };
     let app = build_router(AppState::new(&config).await.expect("build app state"));
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -110,6 +117,33 @@ async fn e2e01_multi_pii_roundtrip() {
         content.contains("IT60X0542811101000000123456"),
         "got: {content}"
     );
+}
+
+#[tokio::test]
+async fn e2e_debug_skip_demask_returns_placeholders_to_client() {
+    // M2.6: with PII_DEBUG_SKIP_DEMASK on, the client sees placeholders instead of
+    // the real values — while the upstream still received only masked data (the
+    // request-side masking always runs, so the fail-closed posture is intact).
+    let proxy = spawn_proxy_cfg(spawn_mock_upstream().await, true).await;
+
+    let reply = chat(
+        proxy,
+        json!({
+            "model": "gpt-x",
+            "messages": [{ "role": "user", "content": "Mail bob@test.com please" }]
+        }),
+    )
+    .await;
+
+    // Upstream saw the masked value, never the raw email.
+    let seen_text = reply["upstream_received"].to_string();
+    assert!(!seen_text.contains("bob@test.com"), "leaked email upstream");
+    assert!(seen_text.contains("[EMAIL_1]"));
+
+    // The client gets the placeholder back, NOT the real value (de-mask skipped).
+    let content = reply["choices"][0]["message"]["content"].as_str().unwrap();
+    assert!(content.contains("[EMAIL_1]"), "expected placeholder, got: {content}");
+    assert!(!content.contains("bob@test.com"), "value leaked to client: {content}");
 }
 
 #[tokio::test]

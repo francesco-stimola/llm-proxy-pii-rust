@@ -19,6 +19,12 @@ pub struct Config {
     /// Maximum request body size in bytes. Tuned above axum's 2 MiB default so
     /// long-context requests aren't silently rejected with 413.
     pub max_body_bytes: usize,
+    /// **Debug only (M2.6), off by default.** When set, the response de-mask is
+    /// skipped so the client receives the placeholders (`[EMAIL_1]`, …) the
+    /// provider saw — visual proof the round-trip is wired. Request-side masking
+    /// still runs, so it never weakens the fail-closed posture; a loud startup
+    /// warning fires when it's on. Never enable in production.
+    pub debug_skip_demask: bool,
 }
 
 /// Default max request body: 16 MiB — comfortably above long-context payloads
@@ -52,13 +58,23 @@ impl Config {
             Err(_) => DEFAULT_MAX_BODY_BYTES,
         };
 
+        let debug_skip_demask = env_flag("PII_DEBUG_SKIP_DEMASK");
+
         Ok(Self {
             listen,
             upstream_base_url,
             upstream_api_key,
             max_body_bytes,
+            debug_skip_demask,
         })
     }
+}
+
+/// Read a boolean-ish env flag (`1` / `true` / `yes` / `on`, case-insensitive).
+fn env_flag(key: &str) -> bool {
+    std::env::var(key)
+        .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+        .unwrap_or(false)
 }
 
 /// Manual `Debug` so the API key is never written to logs — `main` logs the
@@ -73,6 +89,7 @@ impl fmt::Debug for Config {
                 &self.upstream_api_key.as_ref().map(|_| "<redacted>"),
             )
             .field("max_body_bytes", &self.max_body_bytes)
+            .field("debug_skip_demask", &self.debug_skip_demask)
             .finish()
     }
 }

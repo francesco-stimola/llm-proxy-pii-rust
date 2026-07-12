@@ -31,6 +31,8 @@ pub struct AppState {
     upstream: Arc<Upstream>,
     stages: Arc<Vec<Box<dyn Stage>>>,
     max_body_bytes: usize,
+    /// Debug only (M2.6): skip the response de-mask so the client sees placeholders.
+    debug_skip_demask: bool,
 }
 
 impl AppState {
@@ -47,10 +49,18 @@ impl AppState {
         let ner_required = env_flag("NER_REQUIRED");
         let stages: Vec<Box<dyn Stage>> =
             vec![Box::new(PrivacyStage::new(build_detector(ner_required).await?))];
+        if config.debug_skip_demask {
+            // Loud, so it can't quietly linger in a real deployment (M2.6).
+            tracing::warn!(
+                "PII_DEBUG_SKIP_DEMASK is ON — responses are NOT de-masked; the client \
+                 receives placeholders. DEBUG ONLY, never enable in production."
+            );
+        }
         Ok(Self {
             upstream: Arc::new(upstream),
             stages: Arc::new(stages),
             max_body_bytes: config.max_body_bytes,
+            debug_skip_demask: config.debug_skip_demask,
         })
     }
 }
@@ -248,6 +258,11 @@ async fn chat_completions(
         return error_response(StatusCode::BAD_REQUEST, &reason, "blocked");
     }
 
+    // M2.6: the outgoing body is masked here (placeholders only), so it is safe to
+    // dump at `trace!` for debugging — opt in with `RUST_LOG=…=trace`. The concise
+    // kind-only audit stays at `debug!`. NEVER log the de-masked response below.
+    tracing::trace!(masked_request = %request.body, "forwarding masked request body upstream");
+
     let client_auth = headers.get(AUTHORIZATION).and_then(|v| v.to_str().ok());
     let (status, upstream_headers, upstream_body) = match state
         .upstream
@@ -262,8 +277,15 @@ async fn chat_completions(
     };
 
     let mut response = ProxyResponse { body: upstream_body };
-    for stage in state.stages.iter().rev() {
-        stage.on_response(&mut response, &mut ctx);
+    // M2.6 debug: when skipping de-mask, the client deliberately receives the
+    // placeholders the provider saw. Request-side masking already ran, so this
+    // never leaks raw PII upstream — it only changes what the (local) client sees.
+    if state.debug_skip_demask {
+        tracing::debug!("skipping response de-mask (PII_DEBUG_SKIP_DEMASK)");
+    } else {
+        for stage in state.stages.iter().rev() {
+            stage.on_response(&mut response, &mut ctx);
+        }
     }
 
     let code = StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY);

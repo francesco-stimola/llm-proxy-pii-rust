@@ -119,6 +119,11 @@ pub fn parse_id2label(config_json: &str) -> Result<Vec<String>> {
             ));
         }
     }
+    // An empty label list would otherwise pass here and only surface later, at
+    // request time, via `validate_label_count` (and only when NER_REQUIRED is set).
+    // Fail closed now so a broken config can never silently disable name detection
+    // (M2.5-R2).
+    anyhow::ensure!(!pairs.is_empty(), "config.json `id2label` is empty");
     Ok(pairs.into_iter().map(|(_, label)| label).collect())
 }
 
@@ -218,6 +223,12 @@ mod tests {
     #[test]
     fn missing_id2label_is_an_error() {
         assert!(parse_id2label(r#"{"architectures":["X"]}"#).is_err());
+    }
+
+    #[test]
+    fn empty_id2label_is_an_error() {
+        // Fail closed: an empty map must not yield an empty label list (M2.5-R2).
+        assert!(parse_id2label(r#"{"id2label":{}}"#).is_err());
     }
 
     #[test]
