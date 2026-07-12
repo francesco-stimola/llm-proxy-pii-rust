@@ -177,8 +177,17 @@ Goal: SSE token streaming with incremental de-anonymization.
 
 ## M4 — GPU optimization & load
 Goal: faster inference once the model is locked, and prove it holds under load.
-- [ ] GPU execution provider (CUDA / DirectML) behind config
-- [ ] Quantization tuning; benchmark against the CPU baseline
+
+**Why GPU is safely deferred (decided 2026-07-12):** the M2 model choice is
+**execution-provider-agnostic** — every candidate (incl. GLiNER) is standard ONNX
+and runs on any `ort` EP, so GPU does *not* constrain model selection; we pick on
+CPU recall/latency now and revisit the EP here. On this Windows/no-admin box the
+natural EP is **DirectML** (any DX12 GPU, no CUDA/admin). Going to GPU is mostly a
+config change: swap the EP and switch the weight file from int8 (CPU) to the
+pre-shipped `model_fp16.onnx` (fp16 is the GPU sweet spot; int8 on GPU needs
+EP-specific support). No premature GPU work before the CPU baseline is locked.
+- [ ] GPU execution provider (CUDA / **DirectML** for no-admin Windows) behind config
+- [ ] Quantization tuning; benchmark against the CPU baseline (CPU int8 → GPU fp16)
 - [ ] **Load / throughput harness** (concurrent connections, large bodies) — stability under load was the founding motivation; measure it, don't assume it
 
 ## M5 — Broad locale & language coverage (future)
