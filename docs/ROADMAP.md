@@ -273,9 +273,9 @@ Covers **GitHub Copilot** and **Anthropic** (via its OpenAI-compat layer).
   instead of aborting the client connection. `demasking_sse_body` is generic over the stream error
   so it's unit-tested without a network round-trip
   (`mid_stream_upstream_error_becomes_terminal_sse_event`).
-- [ ] **Request-level provider routing (deferred).** Selection is per-instance (`UPSTREAM_PROVIDER`);
-  add per-request routing (path prefix / header / model map) if one instance must front several
-  providers at once. *(Intentionally left for later — user's call, 2026-07-12.)*
+- **Request-level provider routing** — **moved out of M3 to Backlog** (2026-07-12): per-instance
+  `UPSTREAM_PROVIDER` already covers Copilot + Anthropic (one instance per provider); a clean
+  per-request form is non-trivial. See Backlog.
 
 ### M3 review (2026-07-12) — sound, no blockers
 Independently verified: **73 tests green (default) / 81 + 1 `#[ignore]`d (`--features onnx`), no
@@ -359,6 +359,18 @@ Anthropic's `POST /v1/messages`) instead of its OpenAI-compat endpoint. Needs a
 `tool_use`/`tool_result`, `tools[].input_schema`), plus native auth (`x-api-key` +
 `anthropic-version`) and paths. **Higher leak risk** — a missed schema field is a leak —
 so it stays unscheduled until a concrete need outweighs the OpenAI-compat path (M3/Option A).
+
+### Request-level provider routing  *(moved out of M3 — 2026-07-12; documented, not scheduled)*
+Today provider selection is **per-instance** (`UPSTREAM_PROVIDER`, chosen at startup), which already
+covers Copilot + Anthropic: **run one proxy instance per provider** (separate `LISTEN_ADDR`) and point
+each client at the right port — no code needed. A *single* instance choosing the provider **per request**
+is deferred because a clean, robust form is non-trivial: it needs a provider **map** in `Config` (N base
+URLs / keys / presets) + a selection rule, and doing it well across providers likely means understanding
+each provider's request conventions (model naming, required fields / headers) — which shades into Option B
+territory once native schemas are involved. **If pursued, prefer routing by the request's `model`** (over
+the Option A OpenAI-compat normalization): no client changes, no custom headers, composes with the existing
+presets; keep it opt-in (one configured provider ⇒ today's behaviour). Not a privacy change — masking runs
+before routing, so a mis-route is a wrong-provider error, never a leak.
 
 ### Other later items
 Auth & rate-limiting stages, **TLS / running behind a TLS terminator**, structured

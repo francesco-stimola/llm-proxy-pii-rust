@@ -136,6 +136,12 @@ Overrides: `UPSTREAM_CHAT_PATH` (e.g. `/chat/completions`), `UPSTREAM_FORWARD_HE
 (comma list of client headers to pass through), `UPSTREAM_EXTRA_HEADERS` (`Key=Value`
 pairs separated by `;` added to every upstream request).
 
+**One provider per instance (today).** `UPSTREAM_PROVIDER` is chosen at startup, so a single
+proxy fronts one provider at a time. To front **several at once** (e.g. Copilot *and* Anthropic),
+run **one instance per provider** on different ports (set `LISTEN_ADDR`) and point each client at
+the right one — no code needed. Per-request routing from a *single* instance is a Backlog item
+(see `docs/ROADMAP.md`).
+
 **Streaming** works automatically: a request with `"stream": true` is forwarded as SSE and
 de-anonymized incrementally on the way back (placeholders split across token chunks are
 reassembled). Request-side masking always runs first, so the provider only ever sees
