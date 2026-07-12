@@ -98,10 +98,57 @@ at them. **Pin the exact repo revision (commit hash)** used, for reproducibility
   labels overlap the structured layer and are resolved by the hybrid. This is the
   **M2-R3** label-mapping work; being mDeBERTa-v3 it also needs `token_type_ids`
   (**M2-R4**).
+- **GLiNER PII (escalation only)** → [`onnx-community/gliner_multi_pii-v1`](https://huggingface.co/onnx-community/gliner_multi_pii-v1)
+  (fine-tuned for PII on 6 languages incl. Italian; base `urchade/gliner_multi-v2.1`).
+  Full int8 / 4-bit ONNX spread + `tokenizer.json` present. **But GLiNER is not
+  token-classification:** its ONNX takes extra inputs (word / span masks, the entity
+  types fed as text) and emits span logits, so it needs a **separate detector +
+  decode path**, not today's `onnx.rs`. Pre-converted weights do *not* remove that
+  integration work — hence escalation, not first-round. (Alternatives if we escalate:
+  `knowledgator/gliner-pii-*-v1.0`, `nvidia/gliner-PII`.)
 
 Trust note: these are community/auto conversions, not the original authors'. No
 separate trust step is required — scoring each against `ner_cases.json` **is** the
 correctness check (a bad conversion surfaces as low recall) — but pin the revision.
+
+### Quantization inventory & weight tuning (verified 2026-07-12)
+
+Every variant below ships in each repo's `onnx/` folder (Transformers.js naming), so
+tuning the precision is a matter of pointing `NER_MODEL_PATH` at a different file — no
+re-quantization needed. Sizes are the on-disk ONNX file size.
+
+| File | Scheme | Piiranha | GLiNER-PII | XLM-R (`jiting`) | CPU note |
+|---|---|---|---|---|---|
+| `model.onnx` | fp32 (full precision) | 1.15 GB | 1.16 GB | 1.11 GB | accuracy **ceiling**; biggest/slowest — the reference to score int8 against |
+| `model_quantized.onnx` | int8 **dynamic** (default) | 317 MB | 349 MB | **279 MB** | **primary CPU-lean target** — ~¼ size, ~2× faster; the only quantized file XLM-R ships |
+| `model_int8.onnx` | int8 dynamic | 317 MB | 349 MB | — | same class as `_quantized` |
+| `model_uint8.onnx` | uint8 dynamic | 317 MB | 349 MB | — | uint8 variant of the above |
+| `model_fp16.onnx` | fp16 (half) | 575 MB | 580 MB | — | **GPU / M4** — on CPU ORT up-casts to fp32, so no speedup here |
+| `model_q4.onnx` | 4-bit **weight-only** (MatMulNBits) | 863 MB | 894 MB | — | weight-only; *larger* than int8 here (embeddings stay fp32) |
+| `model_q4f16.onnx` | 4-bit weights + fp16 | 453 MB | 472 MB | — | weight-only + fp16 compute; GPU-leaning |
+| `model_bnb4.onnx` | bitsandbytes 4-bit weight-only | 858 MB | 894 MB | — | weight-only; experimental |
+
+**Weight-only vs dynamic (answering the "wo" question).** *Weight-only* quantization
+— weights stored quantized and **dequantized to float at compute time**, activations
+kept float — is exactly the **`q4` / `q4f16` / `bnb4`** family here (4-bit weight-only
+via the `MatMulNBits` op). The **int8 "dynamic"** files (`model_int8` / `_quantized` /
+`_uint8`) are the other scheme: weights are pre-stored int8, activations are quantized
+*dynamically per inference* — the standard, well-supported CPU path. A dedicated
+*int8 weight-only + fp32 activations* file is **not** in the shipped spread; if int8-
+dynamic ever costs too much NER recall, we can generate one with ORT's weight-only
+quantizer (`onnxruntime.quantization`, weight-only / matmul modes) — but only if the
+measured recall demands it (measure first).
+
+**Which weights to benchmark first** (CPU-first, recall is metric #1):
+1. **`model_quantized.onnx` (int8 dynamic)** — the lean default; start here.
+2. **`model.onnx` (fp32)** — the accuracy ceiling; if int8 recall ≈ fp32, ship int8.
+3. **`model_q4f16.onnx` / `model_q4.onnx`** — only if we must go leaner *and* int8 recall
+   holds; note q4 is **not** smaller than int8 for these models, so limited CPU upside.
+4. **`model_fp16.onnx`** — skip on CPU; revisit at **M4** (GPU EP).
+
+ORT support: int8-dynamic and `MatMulNBits` (q4) both run on the ORT **CPU EP** (the
+crate pins a recent ORT); fp16 runs but is up-cast on CPU. Record recall + latency/RAM
+for at least rows 1–2 per model, per `docs/M2-NER-EVALUATION.md` metrics.
 
 ## Evaluation data
 
