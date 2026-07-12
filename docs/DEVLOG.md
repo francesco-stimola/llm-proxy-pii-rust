@@ -3,6 +3,25 @@
 Newest first. One entry per meaningful change — note *what* and *why*, not just
 *what*. This is the running history so context is never lost between sessions.
 
+## 2026-07-12 — M3-R2: JSON-aware de-mask for tool-call arguments
+
+Fixed a pre-existing correctness bug surfaced by the M3 review. **80 tests green (default),
+88 + 1 `#[ignore]`d (`--features onnx`), no warnings.**
+
+- **Problem.** `Vault::demask` did a plain string substitution `[KIND_N]` → raw value. In a
+  **JSON-encoded string** field — `tool_calls[].function.arguments` / legacy
+  `function_call.arguments` — a value containing a `"`, `\`, or control char produced **invalid
+  inner JSON**, so the client couldn't parse the tool-call arguments. Not a leak (client-side;
+  request masking unaffected), but a real correctness gap on both the buffered and streaming paths.
+- **Fix.** Added `Vault::demask_json_string`, which substitutes the **JSON-string-escaped** value
+  (`json_string_body` = `serde_json::to_string` minus the outer quotes). Wired it into the
+  `arguments` fields only: buffered `demask_response` (`src/pipeline/privacy.rs`) now uses it for
+  `tool_calls`/`function_call` args, and streaming `SseDemasker::demask_for` picks it for
+  `StreamKey::ToolArg`. `content` keeps the plain `demask` (it's not a JSON string).
+- **Tests.** `demask_json_string_keeps_inner_json_valid` (vault, incl. asserting plain demask *would*
+  break it); `tool_call_arguments_demask_stays_valid_json` + `content_demask_is_not_json_escaped`
+  (buffered); `tool_call_arguments_deanon_stays_valid_json` (streaming). **Next: M4.**
+
 ## 2026-07-12 — M3 close-out: tool-call-arg streaming de-anon, M3-R1 fallback, SSE error events
 
 Closed the remaining M3 follow-ups + the M3-R1 review nit (request-level routing stays deferred,

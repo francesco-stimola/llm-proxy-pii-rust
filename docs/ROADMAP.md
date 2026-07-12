@@ -304,19 +304,14 @@ genuine non-leaks. **Non-blocking** follow-ups found:
   instead of forcing SSE. So a `stream:true` request the upstream answers with a JSON error (401/429/…)
   reaches the client as that JSON error. Test `e2e_streaming_non_sse_error_falls_back_to_json` (upstream
   429 `application/json` → client sees 429 + `application/json` + the error body).
-- [ ] **M3-R2 (low-medium, correctness — not a leak; pre-existing).** `Vault::demask` substitutes
-  `[KIND_N]` → the raw value as a **plain string replacement**. When the surrounding text is a
-  **JSON-encoded string** — notably `tool_calls[].function.arguments` (and legacy
-  `function_call.arguments`) — a de-masked value containing a `"`, `\`, or a control char yields
-  **invalid inner JSON**, so the client fails to parse the tool-call arguments. Affects **both** the
-  buffered path (M1 Part B, `src/pipeline/privacy.rs`) **and** the M3 streaming tool-arg de-anon
-  (`src/stream.rs`); it is **pre-existing**, surfaced during the M3 review. Not a leak (client-facing;
-  request-side masking is unaffected) and low-probability (structured PII never carries these chars;
-  NER Person/Org/Location values rarely do). **Fix:** make de-mask **JSON-aware** for JSON-string
-  fields — JSON-escape the substituted value when demasking into an `arguments` field (covers buffered
-  *and* streaming), or on the buffered path parse → demask the string leaves → re-serialize. **Test:** a
-  Person/Org value containing a quote (e.g. `Ac"me Corp`) de-masked into a tool-call `arguments` → assert
-  the resulting `arguments` is still valid JSON carrying the correct value.
+- [x] **M3-R2 (low-medium, correctness — not a leak; pre-existing).** Fixed: added
+  `Vault::demask_json_string`, which JSON-string-escapes the substituted value (via
+  `json_string_body`), and wired it into the **`arguments`** fields on both paths — buffered
+  (`demask_response` in `src/pipeline/privacy.rs`) and streaming (`SseDemasker::demask_for` picks it for
+  `StreamKey::ToolArg`). `content` still uses the plain `demask`. So a de-masked value containing a `"` /
+  `\` / control char stays valid inner JSON and the client can parse the tool-call arguments. Tests:
+  `demask_json_string_keeps_inner_json_valid` (vault), `tool_call_arguments_demask_stays_valid_json` +
+  `content_demask_is_not_json_escaped` (buffered), `tool_call_arguments_deanon_stays_valid_json` (streaming).
 
 ## M4 — Broad locale & language coverage (future)
 Goal: extend PII coverage beyond IT + US to a wide set of locales and languages,
