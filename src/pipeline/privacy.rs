@@ -67,16 +67,31 @@ impl Stage for PrivacyStage {
 
     fn on_request(&self, req: &mut ProxyRequest, ctx: &mut RequestContext) {
         // Scope the vault borrow so it's released before we re-read the vault.
+        // `detect_error` captures a *required* detector failure so we can fail
+        // closed after the walk (its message carries no input text).
+        let mut detect_error: Option<crate::pii::DetectError> = None;
         let outcome = {
             let detector = self.detector.as_ref();
             let vault = &mut ctx.vault;
-            let mut mask = |text: &str| {
-                let entities = detector.detect(text);
-                vault.mask(text, &entities)
+            let error_slot = &mut detect_error;
+            let mut mask = |text: &str| match detector.try_detect(text) {
+                Ok(entities) => vault.mask(text, &entities),
+                Err(err) => {
+                    if error_slot.is_none() {
+                        *error_slot = Some(err);
+                    }
+                    // Leave the text as-is; we block below and never forward it.
+                    text.to_string()
+                }
             };
             mask_request(&mut req.body, &mut mask)
         };
 
+        // Fail closed: a required detector errored → block, don't forward.
+        if let Some(err) = detect_error {
+            ctx.block(err.to_string());
+            return;
+        }
         if let Err(reason) = outcome {
             ctx.block(reason);
             return;

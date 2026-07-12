@@ -14,6 +14,14 @@ use super::PiiEntity;
 /// overlap something already kept. Priority-then-length is what makes a
 /// deterministic structured match (email, IBAN) win over an ML `Person`/`Org`
 /// guess on the same characters — and an IBAN win the digits a phone would claim.
+///
+/// **Remainder policy (M2-R7, deliberate):** when a lower-priority span overlaps
+/// a kept one, the *whole* lower span is dropped — including any part that
+/// extends beyond the overlap. A `Person` span that happens to enclose an email
+/// is discarded entirely (only the email survives). This is a lean, conscious
+/// choice: masking the whole enclosing span would over-mask, and trimming spans
+/// adds complexity for a rare case. Structured PII is never lost either way; the
+/// only cost is recall on the non-overlapping *unstructured* remainder.
 pub fn resolve_overlaps(mut candidates: Vec<PiiEntity>) -> Vec<PiiEntity> {
     candidates.sort_by(|a, b| {
         b.kind
@@ -70,5 +78,17 @@ mod tests {
         assert_eq!(kept.len(), 2);
         assert_eq!(kept[0].span.start, 0);
         assert_eq!(kept[1].span.start, 20);
+    }
+
+    #[test]
+    fn ner_span_enclosing_a_structured_span_is_dropped_whole() {
+        // M2-R7: a Person span that strictly encloses an Email keeps only the
+        // Email; the Person (incl. its non-overlapping remainder) is discarded.
+        let kept = resolve_overlaps(vec![
+            entity(PiiKind::Person, 0..30),
+            entity(PiiKind::Email, 10..24),
+        ]);
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].kind, PiiKind::Email);
     }
 }

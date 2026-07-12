@@ -123,11 +123,40 @@ pub struct PiiEntity {
     pub confidence: Confidence,
 }
 
+/// A detector failure that must be surfaced (e.g. ML inference / config error).
+///
+/// Carries only a static `detector` label and a category `message` — **never**
+/// input-derived text, per the "never log raw PII" rule. Used to let a *required*
+/// detector fail the request **closed** instead of silently dropping entities.
+#[derive(Debug, Clone)]
+pub struct DetectError {
+    /// Which detector failed (a static label, never the input).
+    pub detector: &'static str,
+    /// A category / reason with no input text.
+    pub message: String,
+}
+
+impl std::fmt::Display for DetectError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} detector failed: {}", self.detector, self.message)
+    }
+}
+
+impl std::error::Error for DetectError {}
+
 /// Engine-agnostic PII detector.
 ///
 /// Deterministic recognizers and the ML NER model both implement this, so the
 /// pipeline can combine or swap engines freely.
 pub trait PiiDetector: Send + Sync {
-    /// Return all PII entities found in `input`.
+    /// Return all PII entities found in `input`. Infallible view — a detector
+    /// that can fail returns whatever it could detect (typically empty on error).
     fn detect(&self, input: &str) -> Vec<PiiEntity>;
+
+    /// Fallible detection. The default is infallible ([`detect`](Self::detect));
+    /// a detector that can genuinely fail (ML inference, bad config) overrides
+    /// this so a *required* detector can fail the request **closed**.
+    fn try_detect(&self, input: &str) -> Result<Vec<PiiEntity>, DetectError> {
+        Ok(self.detect(input))
+    }
 }

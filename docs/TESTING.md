@@ -137,7 +137,13 @@ false positive): `email`, `phone`, `ssn`, `credit_card`, `iban`, `secret`.
 - DEC-02 — `decode_entities` merges a multi-token entity into one span via offsets.
 - DEC-03 — a `B-` label splits two adjacent same-type entities (New York | London).
 - DEC-04 — `O`/unknown-only token streams yield no entities.
-- *(pending model)* NER recall/precision per entity type is measured behind the `onnx` feature once a model is wired — see `docs/M2-NER-EVALUATION.md`.
+- DEC-05 — `underscore`-BIO (`B_LOC`/`I_LOC`) still splits adjacent entities (M2-R5).
+- DEC-06 — `validate_label_count` accepts a match, rejects a mismatch (M2-R3).
+- FC-04 — a required detector error blocks the request (400); block reason carries no input text (M2-R2, `required_detector_error_blocks_request_fail_closed`).
+- FC-05 — `build_detector(true)` is fatal when no NER can be present; `build_detector(false)` is Ok (M2-R1).
+- CMP-02 — required detector error propagates through the composite; a `FailOpen`-wrapped one is swallowed (M2-R2).
+- OVL-02 — an NER span enclosing a structured span is dropped whole; only the structured span survives (M2-R7).
+- EVAL-01 — `tests/ner_eval.rs` (`--features onnx`, `#[ignore]`d): scores a live model against `ner_cases.json` through the hybrid resolver. Run with `-- --ignored --nocapture` once a model is configured.
 
 ### Decisions & open points
 - **Locale coverage — DECIDED: IT + US.** Italian and US phone numbers; IBAN

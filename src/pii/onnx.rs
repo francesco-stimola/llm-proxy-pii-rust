@@ -9,6 +9,12 @@
 //! run the ONNX session, and turn per-token logits into label ids. The actual
 //! label→[`PiiKind`] mapping and BIO→span merge live in the model-independent
 //! [`ner_decode`](super::ner_decode), which is unit-tested without a model.
+//!
+//! **Model contract:** a token-classification model with input `input_ids` +
+//! `attention_mask` (and `token_type_ids` when `NER_TOKEN_TYPE_IDS` is set, e.g.
+//! BERT-family models such as Piiranha) and a single output named `logits` of
+//! shape `[1, seq, num_labels]`. `NER_LABELS` must list exactly `num_labels`
+//! labels in class-id order — a mismatch is rejected (never silently degraded).
 
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -19,8 +25,8 @@ use ort::session::builder::GraphOptimizationLevel;
 use ort::value::Tensor;
 use tokenizers::Tokenizer;
 
-use super::ner_decode::{TokenTag, decode_entities};
-use super::{PiiDetector, PiiEntity};
+use super::ner_decode::{TokenTag, decode_entities, validate_label_count};
+use super::{DetectError, PiiDetector, PiiEntity};
 
 /// NER-based detector backed by an ONNX Runtime session.
 ///
@@ -33,19 +39,23 @@ pub struct OnnxNerDetector {
     /// id → label string (e.g. `["O", "B-PER", "I-PER", …]`), from the model's
     /// config. Passed in so this stays model-agnostic.
     id2label: Vec<String>,
+    /// Whether the model expects a `token_type_ids` input (BERT-family).
+    needs_token_type_ids: bool,
     next: AtomicUsize,
 }
 
 impl OnnxNerDetector {
     /// Load the model + tokenizer from disk and build a CPU session pool.
     ///
-    /// `id2label` is the model's label list (index = class id). `pool_size` is
-    /// clamped to at least 1.
+    /// `id2label` is the model's label list (index = class id); `pool_size` is
+    /// clamped to at least 1; `needs_token_type_ids` threads a zero
+    /// `token_type_ids` input for BERT-family models.
     pub fn load(
         model_path: &str,
         tokenizer_path: &str,
         id2label: Vec<String>,
         pool_size: usize,
+        needs_token_type_ids: bool,
     ) -> Result<Self> {
         let tokenizer =
             Tokenizer::from_file(tokenizer_path).map_err(|e| anyhow!("load tokenizer: {e}"))?;
@@ -74,16 +84,19 @@ impl OnnxNerDetector {
             sessions,
             tokenizer,
             id2label,
+            needs_token_type_ids,
             next: AtomicUsize::new(0),
         })
     }
 
     /// Tokenize → run → argmax per token → decode into entity spans.
     fn infer(&self, input: &str) -> Result<Vec<PiiEntity>> {
+        // Drop the tokenizer's error detail: it can echo the input text, and this
+        // is a "never log raw PII" tool (M2-R8).
         let encoding = self
             .tokenizer
             .encode(input, true)
-            .map_err(|e| anyhow!("tokenize: {e}"))?;
+            .map_err(|_| anyhow!("tokenizer error"))?;
 
         let seq = encoding.get_ids().len();
         if seq == 0 {
@@ -102,25 +115,48 @@ impl OnnxNerDetector {
         let attention_mask = Tensor::from_array(([1, seq], mask))
             .map_err(|e| anyhow!("attention_mask tensor: {e}"))?;
 
-        // Round-robin a session out of the pool.
+        // Round-robin a session; recover a poisoned lock rather than permanently
+        // disabling a pool slot (M2-R9).
         let idx = self.next.fetch_add(1, Ordering::Relaxed) % self.sessions.len();
-        let mut session = self.sessions[idx].lock().expect("session mutex poisoned");
-        let outputs = session
-            .run(ort::inputs![
-                "input_ids" => input_ids,
-                "attention_mask" => attention_mask,
-            ])
-            .map_err(|e| anyhow!("ONNX run: {e}"))?;
+        let mut session = self.sessions[idx]
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
 
-        // logits: [1, seq, num_labels], row-major. Derive num_labels from the
-        // flat length + token count (avoids depending on the Shape API).
-        let (_shape, logits) = outputs["logits"]
+        let outputs = if self.needs_token_type_ids {
+            let type_ids: Vec<i64> = encoding.get_type_ids().iter().map(|&i| i as i64).collect();
+            let token_type_ids = Tensor::from_array(([1, seq], type_ids))
+                .map_err(|e| anyhow!("token_type_ids tensor: {e}"))?;
+            session
+                .run(ort::inputs![
+                    "input_ids" => input_ids,
+                    "attention_mask" => attention_mask,
+                    "token_type_ids" => token_type_ids,
+                ])
+                .map_err(|e| anyhow!("ONNX run: {e}"))?
+        } else {
+            session
+                .run(ort::inputs![
+                    "input_ids" => input_ids,
+                    "attention_mask" => attention_mask,
+                ])
+                .map_err(|e| anyhow!("ONNX run: {e}"))?
+        };
+
+        // logits: [1, seq, num_labels], row-major. Look the output up by name —
+        // never panic on a differently-shaped model (M2-R4).
+        let logits_value = outputs
+            .get("logits")
+            .ok_or_else(|| anyhow!("model has no `logits` output"))?;
+        let (_shape, logits) = logits_value
             .try_extract_tensor::<f32>()
             .map_err(|e| anyhow!("extract logits: {e}"))?;
+
         let num_labels = logits.len() / seq;
         if num_labels == 0 {
             return Ok(Vec::new());
         }
+        // A mismatched label list would silently drop entities (M2-R3).
+        validate_label_count(self.id2label.len(), num_labels).map_err(|m| anyhow!(m))?;
 
         let mut tags: Vec<TokenTag> = Vec::with_capacity(seq);
         for (token, &(start, end)) in offsets.iter().enumerate().take(seq) {
@@ -145,17 +181,15 @@ fn argmax(row: &[f32]) -> usize {
 
 impl PiiDetector for OnnxNerDetector {
     fn detect(&self, input: &str) -> Vec<PiiEntity> {
-        match self.infer(input) {
-            Ok(entities) => entities,
-            Err(err) => {
-                // A per-request inference error must not crash the request. The
-                // structured layer already masked structured PII; log and yield
-                // no NER entities. NOTE (fail-closed): if the NER is mandatory,
-                // an error should instead block the request — tracked as an M2
-                // review item once the model is wired.
-                tracing::warn!(error = %err, "ONNX NER inference failed; no NER entities");
-                Vec::new()
-            }
-        }
+        // Infallible view: fail open (the caller decides whether to require it).
+        self.try_detect(input).unwrap_or_default()
+    }
+
+    fn try_detect(&self, input: &str) -> Result<Vec<PiiEntity>, DetectError> {
+        self.infer(input).map_err(|err| DetectError {
+            detector: "onnx-ner",
+            // `infer` never embeds input text in its errors (see M2-R8).
+            message: err.to_string(),
+        })
     }
 }

@@ -5,6 +5,7 @@
 use serde_json::{Value, json};
 
 use llm_proxy_pii_rust::pii::recognizers::StructuredRecognizers;
+use llm_proxy_pii_rust::pii::{DetectError, PiiDetector, PiiEntity};
 use llm_proxy_pii_rust::pipeline::privacy::PrivacyStage;
 use llm_proxy_pii_rust::pipeline::{RequestContext, Stage};
 use llm_proxy_pii_rust::proxy::{ProxyRequest, ProxyResponse};
@@ -327,6 +328,35 @@ fn content_array_scalar_element_fails_closed() {
     };
     stage().on_request(&mut req, &mut ctx);
     assert!(ctx.block.is_some(), "scalar array element must fail closed");
+}
+
+/// A detector that always errors, to drive the fail-closed path.
+struct AlwaysFails;
+impl PiiDetector for AlwaysFails {
+    fn detect(&self, _input: &str) -> Vec<PiiEntity> {
+        Vec::new()
+    }
+    fn try_detect(&self, _input: &str) -> Result<Vec<PiiEntity>, DetectError> {
+        Err(DetectError {
+            detector: "test",
+            message: "boom".to_string(),
+        })
+    }
+}
+
+#[test]
+fn required_detector_error_blocks_request_fail_closed() {
+    // M2-R2: a required detector that errors must fail the request closed, and
+    // the block reason must not carry any input text.
+    let stage = PrivacyStage::new(Box::new(AlwaysFails));
+    let mut ctx = RequestContext::new();
+    let mut req = ProxyRequest {
+        body: json!({ "messages": [{ "role": "user", "content": "hi Mario Rossi" }] }),
+    };
+    stage.on_request(&mut req, &mut ctx);
+
+    let reason = ctx.block.expect("required detector error must fail closed");
+    assert!(!reason.contains("Mario Rossi"), "block reason leaked input: {reason}");
 }
 
 #[test]

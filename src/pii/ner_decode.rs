@@ -29,9 +29,28 @@ pub fn label_to_kind(label: &str) -> Option<PiiKind> {
     }
 }
 
+/// Whether a label opens a new entity (`B-`/`B_`, case-insensitive). Handles
+/// both `-` and `_` BIO separators so `B_PER` counts as a begin, not just `B-PER`
+/// (M2-R5). A prefix-less label (e.g. bare `PER`) is not a begin, so consecutive
+/// same-kind tokens still merge.
 fn is_begin(label: &str) -> bool {
-    let lower = label.to_ascii_lowercase();
-    lower.starts_with("b-")
+    label
+        .split(['-', '_'])
+        .next()
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("B"))
+}
+
+/// Ensure the configured label list matches the model's class count. A mismatch
+/// would let an out-of-range class id silently decode to `O` and drop a real
+/// entity, so this fails loudly instead (M2-R3).
+pub fn validate_label_count(id2label_len: usize, num_labels: usize) -> Result<(), String> {
+    if id2label_len == num_labels {
+        Ok(())
+    } else {
+        Err(format!(
+            "NER label count mismatch: {id2label_len} labels vs {num_labels} model classes"
+        ))
+    }
 }
 
 /// Merge BIO-tagged tokens into entity spans. Consecutive tokens of the same
@@ -44,13 +63,20 @@ pub fn decode_entities(text: &str, tokens: &[TokenTag<'_>]) -> Vec<PiiEntity> {
 
     let flush = |current: &mut Option<(PiiKind, usize, usize)>, out: &mut Vec<PiiEntity>| {
         if let Some((kind, start, end)) = current.take() {
-            if let Some(slice) = text.get(start..end) {
-                out.push(PiiEntity {
+            match text.get(start..end) {
+                Some(slice) => out.push(PiiEntity {
                     kind,
                     span: start..end,
                     text: slice.to_string(),
                     confidence: Confidence::Structural,
-                });
+                }),
+                // Offsets not on a UTF-8 boundary (e.g. char- vs byte-offset
+                // mismatch) — surface it rather than silently dropping a name
+                // (M2-R6). Kind only, never the text.
+                None => tracing::warn!(
+                    kind = ?kind,
+                    "NER span offsets off a char boundary; entity dropped"
+                ),
             }
         }
     };
@@ -132,5 +158,28 @@ mod tests {
         let text = "just some words";
         let tokens = [tag("O", 0, 4), tag("MISC", 5, 9), tag("O", 10, 15)];
         assert!(decode_entities(text, &tokens).is_empty());
+    }
+
+    #[test]
+    fn underscore_bio_prefix_also_splits_entities() {
+        // M2-R5: a model using `B_LOC`/`I_LOC` must still split adjacent LOCs.
+        let text = "New York London";
+        let tokens = [
+            tag("B_LOC", 0, 3),
+            tag("I_LOC", 4, 8),
+            tag("B_LOC", 9, 15),
+        ];
+        let got = decode_entities(text, &tokens);
+        assert_eq!(
+            got.iter().map(|e| e.text.as_str()).collect::<Vec<_>>(),
+            vec!["New York", "London"]
+        );
+    }
+
+    #[test]
+    fn label_count_validation() {
+        assert!(validate_label_count(9, 9).is_ok());
+        assert!(validate_label_count(3, 9).is_err());
+        assert!(validate_label_count(9, 3).is_err());
     }
 }

@@ -34,69 +34,106 @@ pub struct AppState {
 }
 
 impl AppState {
-    /// Build the state from config: the upstream client and the default
-    /// pipeline (currently just the privacy stage over the structured
-    /// recognizers).
-    pub fn new(config: &Config) -> Self {
+    /// Build the state from config: the upstream client and the pipeline.
+    ///
+    /// Fallible because a **required** NER (`NER_REQUIRED`) that can't be loaded
+    /// must be fatal at startup (fail closed), not silently downgraded.
+    pub fn new(config: &Config) -> anyhow::Result<Self> {
         let upstream = Upstream::new(
             config.upstream_base_url.clone(),
             config.upstream_api_key.clone(),
         );
-        let stages: Vec<Box<dyn Stage>> = vec![Box::new(PrivacyStage::new(build_detector()))];
-        Self {
+        let ner_required = env_flag("NER_REQUIRED");
+        let stages: Vec<Box<dyn Stage>> =
+            vec![Box::new(PrivacyStage::new(build_detector(ner_required)?))];
+        Ok(Self {
             upstream: Arc::new(upstream),
             stages: Arc::new(stages),
             max_body_bytes: config.max_body_bytes,
-        }
+        })
     }
+}
+
+/// Read a boolean-ish env flag (`1` / `true` / `yes` / `on`, case-insensitive).
+fn env_flag(key: &str) -> bool {
+    std::env::var(key)
+        .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+        .unwrap_or(false)
 }
 
 /// Build the hybrid detector: the deterministic structured recognizers, plus the
 /// ONNX NER (M2) when the `onnx` feature is on **and** the model env vars are set.
-fn build_detector() -> Box<dyn PiiDetector> {
+///
+/// `ner_required` fails closed: a configured-but-unloadable NER (or, without the
+/// `onnx` feature, requiring one at all) is a fatal error rather than a silent
+/// structured-only downgrade (M2-R1).
+fn build_detector(ner_required: bool) -> anyhow::Result<Box<dyn PiiDetector>> {
     let structured: Box<dyn PiiDetector> = Box::new(StructuredRecognizers::new());
 
     #[cfg(feature = "onnx")]
-    let detectors = {
+    {
         let mut detectors = vec![structured];
-        if let Some(ner) = load_onnx_ner() {
-            detectors.push(ner);
+        match load_onnx_ner() {
+            Ok(Some(ner)) => {
+                // Required → propagate its errors (fail closed); otherwise wrap
+                // so a per-request inference error is swallowed (fail open).
+                detectors.push(if ner_required {
+                    ner
+                } else {
+                    Box::new(crate::pii::composite::FailOpen(ner))
+                });
+            }
+            Ok(None) => anyhow::ensure!(
+                !ner_required,
+                "NER_REQUIRED is set but the NER is not configured (set NER_MODEL_PATH / NER_TOKENIZER_PATH / NER_LABELS)"
+            ),
+            Err(err) => {
+                if ner_required {
+                    return Err(err.context("NER_REQUIRED is set and the NER model failed to load"));
+                }
+                tracing::error!(error = %err, "NER configured but failed to load; running structured-only");
+            }
         }
-        detectors
-    };
+        Ok(Box::new(CompositeDetector::new(detectors)))
+    }
     #[cfg(not(feature = "onnx"))]
-    let detectors = vec![structured];
-
-    Box::new(CompositeDetector::new(detectors))
+    {
+        anyhow::ensure!(
+            !ner_required,
+            "NER_REQUIRED is set but this binary was built without the `onnx` feature"
+        );
+        Ok(Box::new(CompositeDetector::new(vec![structured])))
+    }
 }
 
 /// Load the ONNX NER detector from env (`NER_MODEL_PATH`, `NER_TOKENIZER_PATH`,
 /// `NER_LABELS` = comma-separated labels in class-id order, optional
-/// `NER_POOL_SIZE`). Returns `None` (structured-only) if unconfigured or on a
-/// load error — logged, never fatal.
+/// `NER_POOL_SIZE`, `NER_TOKEN_TYPE_IDS`). `Ok(None)` = unconfigured; `Err` =
+/// configured but failed to load (the caller decides if that's fatal).
 #[cfg(feature = "onnx")]
-fn load_onnx_ner() -> Option<Box<dyn PiiDetector>> {
+fn load_onnx_ner() -> anyhow::Result<Option<Box<dyn PiiDetector>>> {
     use crate::pii::onnx::OnnxNerDetector;
 
-    let model = std::env::var("NER_MODEL_PATH").ok()?;
-    let tokenizer = std::env::var("NER_TOKENIZER_PATH").ok()?;
-    let labels = std::env::var("NER_LABELS").ok()?;
+    let (model, tokenizer, labels) = match (
+        std::env::var("NER_MODEL_PATH").ok(),
+        std::env::var("NER_TOKENIZER_PATH").ok(),
+        std::env::var("NER_LABELS").ok(),
+    ) {
+        (Some(m), Some(t), Some(l)) => (m, t, l),
+        _ => return Ok(None), // not configured
+    };
+
     let id2label: Vec<String> = labels.split(',').map(|s| s.trim().to_string()).collect();
     let pool_size = std::env::var("NER_POOL_SIZE")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(2);
+    let needs_token_type_ids = env_flag("NER_TOKEN_TYPE_IDS");
 
-    match OnnxNerDetector::load(&model, &tokenizer, id2label, pool_size) {
-        Ok(detector) => {
-            tracing::info!(model, pool_size, "ONNX NER detector loaded");
-            Some(Box::new(detector))
-        }
-        Err(err) => {
-            tracing::error!(error = %err, "failed to load ONNX NER; running structured-only");
-            None
-        }
-    }
+    let detector =
+        OnnxNerDetector::load(&model, &tokenizer, id2label, pool_size, needs_token_type_ids)?;
+    tracing::info!(model, pool_size, "ONNX NER detector loaded");
+    Ok(Some(Box::new(detector)))
 }
 
 /// Build the router. Exposed so integration tests can serve it on an ephemeral
@@ -114,9 +151,9 @@ pub fn build_router(state: AppState) -> Router {
 
 /// Bind the listener and serve until shutdown.
 pub async fn run(config: Config) -> anyhow::Result<()> {
+    let app = build_router(AppState::new(&config)?);
     let listener = tokio::net::TcpListener::bind(config.listen).await?;
     tracing::info!("listening on http://{}", listener.local_addr()?);
-    let app = build_router(AppState::new(&config));
     axum::serve(listener, app).await?;
     Ok(())
 }
@@ -227,4 +264,18 @@ fn is_forwardable(name: &str) -> bool {
         || name.starts_with("x-ratelimit")
         || name.starts_with("openai-")
         || name.starts_with("anthropic-")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build_detector;
+
+    #[test]
+    fn required_ner_is_fatal_when_absent() {
+        // M2-R1: requiring a NER that can't be present (no `onnx` feature, or —
+        // with the feature — no model configured in the test env) is fatal.
+        assert!(build_detector(true).is_err());
+        // Not requiring it always yields a structured-only detector.
+        assert!(build_detector(false).is_ok());
+    }
 }

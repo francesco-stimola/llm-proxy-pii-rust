@@ -6,11 +6,15 @@
 //! never knows how many engines are underneath — it just gets one detector.
 
 use super::overlap::resolve_overlaps;
-use super::{PiiDetector, PiiEntity};
+use super::{DetectError, PiiDetector, PiiEntity};
 
 /// Runs every wrapped detector over the input and reconciles their spans with
 /// the shared [`resolve_overlaps`] — so a deterministic match (email, IBAN) wins
 /// over an ML `Person`/`Org`/`Location` guess on the same characters.
+///
+/// [`try_detect`](PiiDetector::try_detect) **propagates** a sub-detector error,
+/// so a required detector (one not wrapped in [`FailOpen`]) fails the request
+/// closed. Wrap a non-critical detector in [`FailOpen`] to opt it out.
 pub struct CompositeDetector {
     detectors: Vec<Box<dyn PiiDetector>>,
 }
@@ -25,11 +29,35 @@ impl CompositeDetector {
 
 impl PiiDetector for CompositeDetector {
     fn detect(&self, input: &str) -> Vec<PiiEntity> {
+        // Infallible view: never propagate — used where an error shouldn't block.
+        self.try_detect(input).unwrap_or_default()
+    }
+
+    fn try_detect(&self, input: &str) -> Result<Vec<PiiEntity>, DetectError> {
         let mut all = Vec::new();
         for detector in &self.detectors {
-            all.extend(detector.detect(input));
+            all.extend(detector.try_detect(input)?);
         }
-        resolve_overlaps(all)
+        Ok(resolve_overlaps(all))
+    }
+}
+
+/// Wraps a detector so its errors are **swallowed** (logged, treated as "no
+/// entities") instead of failing the request. This is how a non-critical
+/// detector — e.g. the NER when `NER_REQUIRED` is off — opts out of fail-closed.
+pub struct FailOpen(pub Box<dyn PiiDetector>);
+
+impl PiiDetector for FailOpen {
+    fn detect(&self, input: &str) -> Vec<PiiEntity> {
+        self.0.detect(input)
+    }
+
+    fn try_detect(&self, input: &str) -> Result<Vec<PiiEntity>, DetectError> {
+        Ok(self.0.try_detect(input).unwrap_or_else(|err| {
+            // Log the detector label only — never the input.
+            tracing::warn!(detector = err.detector, "detector failed; continuing without it");
+            Vec::new()
+        }))
     }
 }
 
@@ -95,6 +123,43 @@ mod tests {
             }),
         ]);
         let got = composite.detect("write bob@acme.com");
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].kind, PiiKind::Email);
+    }
+
+    /// A detector that always fails, to exercise the error channel.
+    struct FailingDetector;
+    impl PiiDetector for FailingDetector {
+        fn detect(&self, _input: &str) -> Vec<PiiEntity> {
+            Vec::new()
+        }
+        fn try_detect(&self, _input: &str) -> Result<Vec<PiiEntity>, super::DetectError> {
+            Err(super::DetectError {
+                detector: "failing",
+                message: "boom".to_string(),
+            })
+        }
+    }
+
+    #[test]
+    fn required_detector_error_propagates() {
+        // M2-R2: a required (unwrapped) failing detector fails the composite closed.
+        let composite = CompositeDetector::new(vec![
+            Box::new(StructuredRecognizers::new()),
+            Box::new(FailingDetector),
+        ]);
+        assert!(composite.try_detect("mail bob@test.com").is_err());
+    }
+
+    #[test]
+    fn fail_open_wrapped_detector_is_swallowed() {
+        // M2-R2: FailOpen turns a detector error into "no entities", so the
+        // composite still succeeds (structured PII survives).
+        let composite = CompositeDetector::new(vec![
+            Box::new(StructuredRecognizers::new()),
+            Box::new(super::FailOpen(Box::new(FailingDetector))),
+        ]);
+        let got = composite.try_detect("mail bob@test.com").expect("must not error");
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].kind, PiiKind::Email);
     }

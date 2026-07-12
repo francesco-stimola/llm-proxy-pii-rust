@@ -99,14 +99,14 @@ For a privacy proxy the failure mode *is* the product: anything unexpected must
   `Structural`). A structure-only IBAN (mod-97 fails) is still masked but tagged
   `Structural`; the signal is available to audit logging now and ML thresholds in
   M2.
-- **Known M2 gap — NER fails *open*.** Structured PII is always fail-closed, but the
-  M2 NER layer is not yet: when a configured model fails to *load* it falls back to
-  structured-only (`build_detector`), and when a per-request *inference* errors the
-  detector yields no NER entities (`OnnxNerDetector::detect`) — in both cases raw
-  **unstructured** PII (names/orgs/locations) is forwarded upstream. This is a
-  deliberate deferral (the `PiiDetector::detect` signature has no error channel, and
-  the right policy needs a real error rate to tune) tracked in ROADMAP M2-R1/R2; the
-  structured guarantees above are unaffected.
+- **NER fail-closed is configurable (`NER_REQUIRED`).** Structured PII is always
+  fail-closed. For the M2 NER layer: by default a missing/failing NER falls back to
+  structured-only (fail *open* for names — an explicit `FailOpen` wrapper). Setting
+  **`NER_REQUIRED`** makes it fail *closed*: a configured-but-unloadable model is
+  fatal at startup (`build_detector`/`AppState::new` return `Result`), and a
+  per-request inference error blocks the request (400) via the fallible
+  `PiiDetector::try_detect` error channel — whose `DetectError` carries only a
+  static label, never input text.
 
 ## Module layout
 
@@ -136,7 +136,8 @@ Runtime, M2, feature `onnx`) · `tokenizers` (M2, feature `onnx`).
 and — when the `onnx` feature is on and the model env vars are set — the
 `OnnxNerDetector` over the same text, merging spans through `overlap`. NER config
 is env-driven: `NER_MODEL_PATH`, `NER_TOKENIZER_PATH`, `NER_LABELS` (comma-separated
-labels in class-id order), optional `NER_POOL_SIZE` (session pool for concurrency).
+labels in class-id order), optional `NER_POOL_SIZE` (session pool for concurrency),
+`NER_TOKEN_TYPE_IDS` (BERT-family models), and `NER_REQUIRED` (fail-closed switch).
 A missing/failed model logs and falls back to structured-only. Choosing the model
 is a *measured* step (`docs/M2-NER-EVALUATION.md`); the code path is ready for it.
 

@@ -3,6 +3,39 @@
 Newest first. One entry per meaningful change — note *what* and *why*, not just
 *what*. This is the running history so context is never lost between sessions.
 
+## 2026-07-12 — M2 review findings closed (8/9) + fail-closed NER + eval harness
+
+Closed the M2 review (M2-R1…R9 except the model-gated R6), all with tests.
+**64 tests green (default), `--features onnx` builds clean, no warnings.**
+
+- **Fail-closed NER (R1/R2).** New `PiiDetector::try_detect(&str) -> Result<_,
+  DetectError>` (default delegates to `detect`). `CompositeDetector` propagates a
+  sub-detector error; `PrivacyStage::on_request` sets `ctx.block` (→ 400) when a
+  *required* detector errors. `FailOpen(Box<dyn PiiDetector>)` opts a non-critical
+  detector out (logs + empty). `NER_REQUIRED` drives it: `build_detector`/
+  `AppState::new` now return `Result`, so a configured-but-unloadable required NER
+  is fatal at startup; unset → old fail-open via `FailOpen`. `DetectError` carries
+  only a static label, never input (R8).
+- **Decode robustness.** `is_begin` accepts `B_`/underscore prefixes (R5, else
+  adjacent same-type entities glue); `validate_label_count` rejects a
+  `NER_LABELS`/model class-count mismatch instead of silently dropping entities
+  (R3); `decode_entities` `warn`s (kind only) on an off-boundary offset rather
+  than silently dropping a name (R6 mitigation — full non-ASCII verification stays
+  open, needs a real tokenizer).
+- **ONNX I/O (R4).** `outputs.get("logits")` → graceful `Err`, no panic;
+  `token_type_ids` threaded when `NER_TOKEN_TYPE_IDS` is set (BERT-family, e.g.
+  Piiranha); required input/output contract documented. `.lock()` recovers a
+  poisoned session mutex (R9).
+- **Overlap remainder (R7).** Documented + tested the deliberate choice: an NER
+  span overlapping a kept structured span is dropped whole (structured never lost;
+  only the non-overlapping unstructured remainder).
+- **Eval harness.** `tests/ner_eval.rs` (`--features onnx`, `#[ignore]`d) scores a
+  live model against `ner_cases.json` through the hybrid resolver
+  (recall/precision/F1 per type + timing). Run:
+  `cargo test --features onnx --test ner_eval -- --ignored --nocapture`.
+- **Still open:** R6 (non-ASCII offset verification) + the measured model
+  selection — both genuinely need a real model/tokenizer file.
+
 ## 2026-07-12 — M2 part 2: OnnxNerDetector behind the `onnx` feature (compiles)
 
 The ONNX NER detector is implemented and **`cargo build --features onnx` is

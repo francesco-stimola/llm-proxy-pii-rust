@@ -52,7 +52,7 @@ async fn spawn_proxy(upstream: SocketAddr) -> SocketAddr {
         upstream_api_key: None,
         max_body_bytes: llm_proxy_pii_rust::config::DEFAULT_MAX_BODY_BYTES,
     };
-    let app = build_router(AppState::new(&config));
+    let app = build_router(AppState::new(&config).expect("build app state"));
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
