@@ -188,9 +188,18 @@ impl SseDemasker {
             std::mem::take(pending)
         };
         let split = split_demaskable(&combined);
-        let emitted = self.vault.demask(&combined[..split]);
+        let emitted = self.demask_for(&key, &combined[..split]);
         self.pending.insert(key, combined[split..].to_string());
         emitted
+    }
+
+    /// De-mask for a field: plain for `content`, JSON-aware for a tool-call
+    /// `arguments` (a JSON-encoded string — keep a `"`/`\` value valid, M3-R2).
+    fn demask_for(&self, key: &StreamKey, text: &str) -> String {
+        match key {
+            StreamKey::Content { .. } => self.vault.demask(text),
+            StreamKey::ToolArg { .. } => self.vault.demask_json_string(text),
+        }
     }
 
     /// Emit any held-back text as synthesized delta chunks (once), in a stable
@@ -207,7 +216,7 @@ impl SseDemasker {
             if pending.is_empty() {
                 continue;
             }
-            let text = self.vault.demask(&pending);
+            let text = self.demask_for(&key, &pending);
             if text.is_empty() {
                 continue;
             }
@@ -334,6 +343,36 @@ mod tests {
         assert_eq!(collect_tool_args(&out), r#"{"to":"bob@test.com"}"#);
         let raw = String::from_utf8(out).unwrap();
         assert!(!raw.contains("[EMAIL_1]"), "placeholder leaked in tool args: {raw}");
+    }
+
+    #[test]
+    fn tool_call_arguments_deanon_stays_valid_json() {
+        // M3-R2: a value with a `"` de-masked into streamed tool-call arguments
+        // must keep the arguments valid inner JSON.
+        use crate::pii::{Confidence, PiiEntity, PiiKind};
+        let value = r#"Ac"me"#;
+        let mut vault = Vault::new();
+        let entity = PiiEntity {
+            kind: PiiKind::Person,
+            span: 0..value.len(),
+            text: value.to_string(),
+            confidence: Confidence::Structural,
+        };
+        vault.mask(value, std::slice::from_ref(&entity));
+
+        let mut d = SseDemasker::new(vault);
+        let mut out = Vec::new();
+        out.extend(d.push(&sse_event(json!({
+            "choices": [ { "index": 0, "delta": {
+                "tool_calls": [ { "index": 0, "function": { "arguments": "{\"vendor\":\"[PERSON_1]\"}" } } ]
+            } } ]
+        }))));
+        out.extend(d.push(b"data: [DONE]\n\n"));
+        out.extend(d.flush());
+
+        let args = collect_tool_args(&out);
+        let parsed: Value = serde_json::from_str(&args).expect("valid streamed tool args JSON");
+        assert_eq!(parsed["vendor"], r#"Ac"me"#);
     }
 
     #[test]

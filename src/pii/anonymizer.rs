@@ -82,6 +82,21 @@ impl Vault {
     /// like one of our kinds (so the model probably mangled or invented it), a
     /// warning is logged rather than silently shipping a broken placeholder.
     pub fn demask(&self, text: &str) -> String {
+        self.demask_inner(text, false)
+    }
+
+    /// Like [`demask`](Self::demask), but for text that is itself a **JSON-encoded
+    /// string** — notably a tool-call `arguments` value. The substituted value is
+    /// JSON-string-escaped so a value containing a `"`, `\`, or control character
+    /// keeps the surrounding inner JSON valid (M3-R2); otherwise the client fails
+    /// to parse the tool-call arguments.
+    pub fn demask_json_string(&self, text: &str) -> String {
+        self.demask_inner(text, true)
+    }
+
+    /// Shared demask pass; `json_escape` escapes the substituted value as a
+    /// JSON-string body (for `arguments`-style fields).
+    fn demask_inner(&self, text: &str, json_escape: bool) -> String {
         if self.to_original.is_empty() {
             return text.to_string();
         }
@@ -89,7 +104,11 @@ impl Vault {
             .replace_all(text, |caps: &Captures| {
                 let canonical = format!("[{}_{}]", caps[1].to_ascii_uppercase(), &caps[2]);
                 if let Some(original) = self.to_original.get(&canonical) {
-                    return original.clone();
+                    return if json_escape {
+                        json_string_body(original)
+                    } else {
+                        original.clone()
+                    };
                 }
                 if PiiKind::from_label(&caps[1]).is_some() {
                     tracing::warn!(
@@ -118,11 +137,52 @@ impl Vault {
     }
 }
 
+/// Escape `s` as the **body** of a JSON string (no surrounding quotes) — i.e. the
+/// form it must take when substituted into an already-quoted JSON-string field.
+/// `serde_json::to_string` yields `"…escaped…"`; we drop the outer quotes.
+fn json_string_body(s: &str) -> String {
+    let quoted = serde_json::to_string(s).unwrap_or_default();
+    quoted
+        .get(1..quoted.len().saturating_sub(1))
+        .unwrap_or("")
+        .to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pii::PiiDetector;
+    use crate::pii::{Confidence, PiiDetector, PiiEntity, PiiKind};
     use crate::pii::recognizers::StructuredRecognizers;
+
+    /// Build a vault mapping a `[PERSON_1]` placeholder to a value with a quote.
+    fn vault_with_quoted_person(value: &str) -> Vault {
+        let mut vault = Vault::new();
+        let entity = PiiEntity {
+            kind: PiiKind::Person,
+            span: 0..value.len(),
+            text: value.to_string(),
+            confidence: Confidence::Structural,
+        };
+        vault.mask(value, std::slice::from_ref(&entity));
+        vault
+    }
+
+    #[test]
+    fn demask_json_string_keeps_inner_json_valid() {
+        // M3-R2: a value with a `"` de-masked into a tool-call `arguments` string
+        // must stay valid inner JSON (plain demask would break it).
+        let vault = vault_with_quoted_person(r#"Ac"me Corp"#);
+        let args = r#"{"vendor":"[PERSON_1]"}"#;
+
+        let restored = vault.demask_json_string(args);
+        assert_eq!(restored, r#"{"vendor":"Ac\"me Corp"}"#);
+        // …and it really parses, carrying the exact value.
+        let parsed: serde_json::Value = serde_json::from_str(&restored).expect("valid inner JSON");
+        assert_eq!(parsed["vendor"], r#"Ac"me Corp"#);
+
+        // Plain demask would have produced invalid inner JSON here.
+        assert!(serde_json::from_str::<serde_json::Value>(&vault.demask(args)).is_err());
+    }
 
     fn mask_roundtrip(input: &str) -> (String, String) {
         let detector = StructuredRecognizers::new();

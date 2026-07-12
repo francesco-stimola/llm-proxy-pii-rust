@@ -31,6 +31,7 @@
 use serde_json::{Value, json};
 
 use crate::pii::PiiDetector;
+use crate::pii::anonymizer::Vault;
 use crate::pipeline::{RequestContext, Stage};
 use crate::proxy::{ProxyRequest, ProxyResponse};
 
@@ -107,8 +108,7 @@ impl Stage for PrivacyStage {
         if ctx.vault.is_empty() {
             return;
         }
-        let vault = &ctx.vault;
-        demask_response(&mut resp.body, &mut |text| vault.demask(text));
+        demask_response(&mut resp.body, &ctx.vault);
     }
 }
 
@@ -212,7 +212,11 @@ fn mask_schema_descriptions(schema: &mut Value, f: &mut dyn FnMut(&str) -> Strin
 // ── Response restoring ─────────────────────────────────────────────────────
 
 /// Restore placeholders in every text-bearing field of a response.
-fn demask_response(body: &mut Value, f: &mut dyn FnMut(&str) -> String) {
+///
+/// `content` is plain text (plain demask); `tool_calls[].function.arguments` and the
+/// legacy `function_call.arguments` are **JSON-encoded strings**, so they get the
+/// JSON-aware demask that keeps a value with a `"`/`\` valid inner JSON (M3-R2).
+fn demask_response(body: &mut Value, vault: &Vault) {
     let Some(choices) = body.get_mut("choices").and_then(Value::as_array_mut) else {
         return;
     };
@@ -221,11 +225,17 @@ fn demask_response(body: &mut Value, f: &mut dyn FnMut(&str) -> String) {
             continue;
         };
         if let Some(content) = message.get_mut("content") {
-            demask_content(content, f);
+            demask_content(content, &mut |text| vault.demask(text));
         }
-        transform_tool_call_args(message, f);
+        if let Some(tool_calls) = message.get_mut("tool_calls").and_then(Value::as_array_mut) {
+            for tool_call in tool_calls {
+                if let Some(args) = tool_call.pointer_mut("/function/arguments") {
+                    transform_string_value(args, &mut |text| vault.demask_json_string(text));
+                }
+            }
+        }
         if let Some(args) = message.pointer_mut("/function_call/arguments") {
-            transform_string_value(args, f);
+            transform_string_value(args, &mut |text| vault.demask_json_string(text));
         }
     }
 }
@@ -298,5 +308,63 @@ fn merge_augmentation(message: &mut Value) {
             parts.push(json!({ "type": "text", "text": AUGMENTATION_PROMPT }));
         }
         _ => message["content"] = json!(AUGMENTATION_PROMPT),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::pii::{Confidence, PiiEntity, PiiKind};
+
+    /// A vault mapping `[PERSON_1]` to `value` (built via `mask` from one entity).
+    fn vault_for(value: &str) -> Vault {
+        let mut vault = Vault::new();
+        let entity = PiiEntity {
+            kind: PiiKind::Person,
+            span: 0..value.len(),
+            text: value.to_string(),
+            confidence: Confidence::Structural,
+        };
+        vault.mask(value, std::slice::from_ref(&entity));
+        vault
+    }
+
+    #[test]
+    fn tool_call_arguments_demask_stays_valid_json() {
+        // M3-R2: a Person value with a `"` de-masked into tool-call `arguments`
+        // must keep `arguments` a valid JSON string the client can parse.
+        let vault = vault_for(r#"Ac"me Corp"#);
+        let mut body = json!({
+            "choices": [ { "message": {
+                "role": "assistant",
+                "tool_calls": [ {
+                    "function": { "name": "lookup", "arguments": "{\"vendor\":\"[PERSON_1]\"}" }
+                } ]
+            } } ]
+        });
+
+        demask_response(&mut body, &vault);
+
+        let args = body
+            .pointer("/choices/0/message/tool_calls/0/function/arguments")
+            .and_then(Value::as_str)
+            .expect("arguments string");
+        let parsed: Value = serde_json::from_str(args).expect("valid tool-call arguments JSON");
+        assert_eq!(parsed["vendor"], r#"Ac"me Corp"#);
+    }
+
+    #[test]
+    fn content_demask_is_not_json_escaped() {
+        // Plain content is not a JSON string, so it must be restored verbatim
+        // (no escaping of a quote in a name).
+        let vault = vault_for(r#"O'Ac"me"#);
+        let mut body = json!({
+            "choices": [ { "message": { "role": "assistant", "content": "from [PERSON_1] today" } } ]
+        });
+        demask_response(&mut body, &vault);
+        assert_eq!(
+            body.pointer("/choices/0/message/content").and_then(Value::as_str),
+            Some(r#"from O'Ac"me today"#)
+        );
     }
 }
