@@ -275,6 +275,38 @@ Covers **GitHub Copilot** and **Anthropic** (via its OpenAI-compat layer).
 - [ ] **Upstream streaming error propagation.** A mid-stream upstream error currently ends the
   client stream with an I/O error; consider emitting a terminal SSE error event instead.
 
+### M3 review (2026-07-12) — sound, no blockers
+Independently verified: **73 tests green (default) / 81 + 1 `#[ignore]`d (`--features onnx`), no
+warnings**; `cargo test --features onnx` compiles **and** links the `ort` native lib clean (the
+`binary_smoke` test boots the real linked binary). Fail-closed holds for streaming: `chat_completions`
+runs the `on_request` mask stages **and** the block check *before* the `stream:true` branch
+(`server.rs:245-267`), so a streaming request is masked identically and a blocked one returns 400 without
+ever forwarding — the provider only ever sees placeholders; streaming de-anon (`src/stream.rs`) is
+**client-side only** (safe direction). Confirmed sound: the hold-back tail is length-bounded to 32 chars
+(our longest placeholder body, `[ORGANIZATION_NN`, is ~15 — it never over-holds), slices only on the
+ASCII `[` boundary (no multi-byte panic), and **no content is dropped** — `demasking_sse_body` calls
+`SseDemasker::flush()` exactly once at stream end, and `flush_pending` is idempotent via the `flushed`
+guard (also fired pre-`[DONE]`), so the final held tail is always emitted; a mid-stream upstream error is
+handled (propagated as an I/O error, no panic). Secrets redacted: `Config`'s manual `Debug` shows
+`upstream_api_key` as `<redacted>` and `upstream_extra_headers` as **names only** (values may carry a
+Copilot integration id / token), so the startup `info!(?config)` can't leak one; `forward_request_headers`
+is an allowlist of header *names*, not secrets. Provider presets (`openai`/`copilot`/`anthropic`) set only
+the OpenAI-compat *shape* (path / client-header allowlist / static headers) — masking is schema-based and
+provider-independent, so no preset bypasses it. Log sweep: `src/stream.rs` emits **no** logs, and every
+streaming/routing log site carries only static text / an error object / the placeholder-only masked body.
+Deferred M3 follow-ups (tool-call-arg de-anon, request-level routing, terminal SSE error events) are all
+genuine non-leaks. One **non-blocking** follow-up found:
+- [ ] **M3-R1 (low, robustness — not a leak).** A `stream:true` request that the upstream answers with a
+  **non-SSE** response (a JSON error like 401/429, or a provider that ignores `stream`) still has its
+  `content-type` forced to `text/event-stream` and its body streamed verbatim through `SseDemasker`
+  (`stream_chat_completions`, `server.rs:319-335`). The status code is preserved and no raw PII is involved
+  (the request was masked; provider error bodies don't carry the client's `delta.content` placeholders), so
+  it is a usability/robustness nit, not a leak. **Fix:** branch on the upstream response `content-type` —
+  when it isn't `text/event-stream`, fall back to the buffered JSON path (forward the real content-type +
+  run the `on_response` de-mask) instead of forcing SSE. **Test:** an e2e where the mock upstream replies to
+  a `stream:true` request with a non-2xx `application/json` error body and the client sees that error with
+  the correct content-type/status.
+
 ## M4 — Broad locale & language coverage (future)
 Goal: extend PII coverage beyond IT + US to a wide set of locales and languages,
 so the proxy protects data regardless of the user's language or the upstream
