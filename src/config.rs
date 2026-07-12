@@ -19,6 +19,20 @@ pub struct Config {
     /// Maximum request body size in bytes. Tuned above axum's 2 MiB default so
     /// long-context requests aren't silently rejected with 413.
     pub max_body_bytes: usize,
+    /// Which upstream provider preset is active (`openai` / `copilot` /
+    /// `anthropic` / a custom name) — informational, drives the defaults below.
+    pub provider: String,
+    /// Path appended to `upstream_base_url` for chat completions. Per-provider
+    /// (M3): OpenAI/Anthropic use `/v1/chat/completions`, Copilot `/chat/completions`.
+    pub upstream_chat_path: String,
+    /// Extra static headers to add to every upstream request (e.g. editor headers
+    /// some providers require). Never includes secrets by default.
+    pub upstream_extra_headers: Vec<(String, String)>,
+    /// Allowlist of **client request** header names (lowercased) to pass through
+    /// to the upstream — beyond `Authorization`, which is always handled. Lets a
+    /// provider receive required headers (`anthropic-version`, editor headers, …)
+    /// without blindly forwarding everything.
+    pub forward_request_headers: Vec<String>,
     /// **Debug only (M2.6), off by default.** When set, the response de-mask is
     /// skipped so the client receives the placeholders (`[EMAIL_1]`, …) the
     /// provider saw — visual proof the round-trip is wired. Request-side masking
@@ -60,14 +74,103 @@ impl Config {
 
         let debug_skip_demask = env_flag("PII_DEBUG_SKIP_DEMASK");
 
+        // Provider routing (M3, Option A): a preset picks OpenAI-compatible
+        // defaults (path + which client headers to pass through), each overridable.
+        let provider = std::env::var("UPSTREAM_PROVIDER")
+            .ok()
+            .map(|p| p.trim().to_ascii_lowercase())
+            .filter(|p| !p.is_empty())
+            .unwrap_or_else(|| "openai".to_string());
+        let preset = ProviderPreset::for_name(&provider);
+
+        let upstream_chat_path = std::env::var("UPSTREAM_CHAT_PATH")
+            .ok()
+            .filter(|p| !p.is_empty())
+            .unwrap_or_else(|| preset.chat_path.to_string());
+
+        let forward_request_headers = match std::env::var("UPSTREAM_FORWARD_HEADERS") {
+            Ok(raw) => parse_header_list(&raw),
+            Err(_) => preset.forward_headers.iter().map(|h| h.to_string()).collect(),
+        };
+
+        let upstream_extra_headers = match std::env::var("UPSTREAM_EXTRA_HEADERS") {
+            Ok(raw) => parse_extra_headers(&raw),
+            Err(_) => Vec::new(),
+        };
+
         Ok(Self {
             listen,
             upstream_base_url,
             upstream_api_key,
             max_body_bytes,
+            provider,
+            upstream_chat_path,
+            upstream_extra_headers,
+            forward_request_headers,
             debug_skip_demask,
         })
     }
+}
+
+/// OpenAI-compatible defaults per provider (M3, Option A). Base URL + API key stay
+/// env-driven; only the *shape* differences (path, required client headers) are
+/// preset here. Everything is overridable via `UPSTREAM_CHAT_PATH` /
+/// `UPSTREAM_FORWARD_HEADERS` / `UPSTREAM_EXTRA_HEADERS`.
+struct ProviderPreset {
+    chat_path: &'static str,
+    /// Client request headers (lowercased) safe & useful to pass through.
+    forward_headers: &'static [&'static str],
+}
+
+impl ProviderPreset {
+    fn for_name(name: &str) -> Self {
+        match name {
+            // GitHub Copilot's OpenAI-compat endpoint has no `/v1` and expects the
+            // editor identification headers the client sends.
+            "copilot" => ProviderPreset {
+                chat_path: "/chat/completions",
+                forward_headers: &[
+                    "editor-version",
+                    "editor-plugin-version",
+                    "copilot-integration-id",
+                    "openai-intent",
+                ],
+            },
+            // Anthropic's OpenAI-compat layer keeps `/v1/chat/completions`.
+            "anthropic" => ProviderPreset {
+                chat_path: "/v1/chat/completions",
+                forward_headers: &["anthropic-version", "anthropic-beta"],
+            },
+            // OpenAI (default) and any unknown name.
+            _ => ProviderPreset {
+                chat_path: "/v1/chat/completions",
+                forward_headers: &["openai-organization", "openai-project"],
+            },
+        }
+    }
+}
+
+/// Parse a comma-separated header-name list into a lowercased allowlist.
+fn parse_header_list(raw: &str) -> Vec<String> {
+    raw.split(',')
+        .map(|s| s.trim().to_ascii_lowercase())
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+/// Parse `Key=Value` pairs separated by `;` into `(name, value)` header tuples.
+/// Malformed entries (no `=`, empty name) are skipped.
+fn parse_extra_headers(raw: &str) -> Vec<(String, String)> {
+    raw.split(';')
+        .filter_map(|entry| {
+            let (name, value) = entry.split_once('=')?;
+            let name = name.trim();
+            if name.is_empty() {
+                return None;
+            }
+            Some((name.to_string(), value.trim().to_string()))
+        })
+        .collect()
 }
 
 /// Read a boolean-ish env flag (`1` / `true` / `yes` / `on`, case-insensitive).
@@ -92,6 +195,18 @@ impl fmt::Debug for Config {
                 &self.upstream_api_key.as_ref().map(|_| "<redacted>"),
             )
             .field("max_body_bytes", &self.max_body_bytes)
+            .field("provider", &self.provider)
+            .field("upstream_chat_path", &self.upstream_chat_path)
+            // Names only — an extra header value may be a secret (e.g. a token).
+            .field(
+                "upstream_extra_headers",
+                &self
+                    .upstream_extra_headers
+                    .iter()
+                    .map(|(name, _)| name.as_str())
+                    .collect::<Vec<_>>(),
+            )
+            .field("forward_request_headers", &self.forward_request_headers)
             .field("debug_skip_demask", &self.debug_skip_demask)
             .finish()
     }

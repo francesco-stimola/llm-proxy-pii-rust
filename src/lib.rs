@@ -9,3 +9,4 @@ pub mod pii;
 pub mod pipeline;
 pub mod proxy;
 pub mod server;
+pub mod stream;

@@ -1508,6 +1508,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
+ "futures-util",
  "hf-hub",
  "once_cell",
  "ort",

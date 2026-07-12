@@ -8,6 +8,7 @@
 //! *does* de-mask, so the test can confirm the client gets the real values back.
 
 use std::net::SocketAddr;
+use std::sync::{Arc, Mutex};
 
 use axum::{Json, Router, http::HeaderMap, response::IntoResponse, routing::post};
 use serde_json::{Value, json};
@@ -57,6 +58,10 @@ async fn spawn_proxy_cfg(upstream: SocketAddr, debug_skip_demask: bool) -> Socke
         upstream_base_url: format!("http://{upstream}"),
         upstream_api_key: None,
         max_body_bytes: llm_proxy_pii_rust::config::DEFAULT_MAX_BODY_BYTES,
+        provider: "openai".to_string(),
+        upstream_chat_path: "/v1/chat/completions".to_string(),
+        upstream_extra_headers: Vec::new(),
+        forward_request_headers: Vec::new(),
         debug_skip_demask,
     };
     let app = build_router(AppState::new(&config).await.expect("build app state"));
@@ -238,6 +243,101 @@ async fn e2e_fail_closed_request_returns_400_and_is_not_forwarded() {
     assert_eq!(resp.status(), 400);
     let body: Value = resp.json().await.unwrap();
     assert_eq!(body["error"]["type"], "blocked");
+}
+
+/// Mock upstream that streams the (masked) last user message back as SSE, split
+/// into small fragments so a placeholder like `[EMAIL_1]` lands across events —
+/// the proxy's hold-back buffer must still restore it. Captures the received body
+/// so the test can assert the upstream saw only masked values.
+async fn spawn_sse_mock() -> (SocketAddr, Arc<Mutex<String>>) {
+    let seen = Arc::new(Mutex::new(String::new()));
+    let seen_for_handler = seen.clone();
+    let handler = move |Json(body): Json<Value>| {
+        let seen = seen_for_handler.clone();
+        async move {
+            *seen.lock().unwrap() = body.to_string();
+            let last = body["messages"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|m| m["role"] == "user")
+                .next_back()
+                .and_then(|m| m["content"].as_str())
+                .unwrap_or_default()
+                .to_string();
+
+            // Emit `last` in 4-char fragments, so `[EMAIL_1]` splits across events.
+            let chars: Vec<char> = last.chars().collect();
+            let mut sse = String::new();
+            for chunk in chars.chunks(4) {
+                let frag: String = chunk.iter().collect();
+                let ev = json!({ "choices": [ { "index": 0, "delta": { "content": frag } } ] });
+                sse.push_str(&format!("data: {ev}\n\n"));
+            }
+            sse.push_str("data: [DONE]\n\n");
+            (
+                [(axum::http::header::CONTENT_TYPE, "text/event-stream")],
+                sse,
+            )
+                .into_response()
+        }
+    };
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let app = Router::new().route("/v1/chat/completions", post(handler));
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    (addr, seen)
+}
+
+/// Sum the `delta.content` across the SSE `data:` events in a raw stream body.
+fn sse_content(raw: &str) -> String {
+    let mut acc = String::new();
+    for line in raw.lines() {
+        if let Some(data) = line.strip_prefix("data:") {
+            let data = data.trim();
+            if data == "[DONE]" {
+                continue;
+            }
+            if let Ok(v) = serde_json::from_str::<Value>(data) {
+                if let Some(c) = v.pointer("/choices/0/delta/content").and_then(Value::as_str) {
+                    acc.push_str(c);
+                }
+            }
+        }
+    }
+    acc
+}
+
+#[tokio::test]
+async fn e2e_streaming_deanonymizes_split_placeholder() {
+    let (upstream, seen) = spawn_sse_mock().await;
+    let proxy = spawn_proxy(upstream).await;
+
+    let raw = reqwest::Client::new()
+        .post(format!("http://{proxy}/v1/chat/completions"))
+        .json(&json!({
+            "model": "gpt-x",
+            "stream": true,
+            "messages": [{ "role": "user", "content": "please email bob@test.com now" }]
+        }))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+
+    // Upstream saw the masked value, never the raw email.
+    let upstream_saw = seen.lock().unwrap().clone();
+    assert!(!upstream_saw.contains("bob@test.com"), "leaked email upstream");
+    assert!(upstream_saw.contains("[EMAIL_1]"), "expected placeholder upstream");
+
+    // The client's reassembled stream carries the real value, no placeholder —
+    // even though `[EMAIL_1]` was split across SSE events.
+    let content = sse_content(&raw);
+    assert_eq!(content, "please email bob@test.com now", "got: {content}");
+    assert!(!raw.contains("[EMAIL_1]"), "placeholder leaked to client: {raw}");
+    assert!(raw.contains("[DONE]"), "terminator preserved");
 }
 
 #[tokio::test]

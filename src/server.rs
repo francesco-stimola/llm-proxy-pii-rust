@@ -9,11 +9,16 @@ use std::sync::Arc;
 
 use axum::{
     Json, Router,
+    body::{Body, Bytes},
     extract::{DefaultBodyLimit, State},
-    http::{HeaderMap, HeaderName, HeaderValue, StatusCode, header::AUTHORIZATION},
+    http::{
+        HeaderMap, HeaderName, HeaderValue, StatusCode,
+        header::{AUTHORIZATION, CONTENT_TYPE},
+    },
     response::{IntoResponse, Response},
     routing::{get, post},
 };
+use futures_util::StreamExt;
 use serde_json::{Value, json};
 use tower_http::trace::TraceLayer;
 
@@ -24,6 +29,7 @@ use crate::pii::recognizers::StructuredRecognizers;
 use crate::pipeline::privacy::PrivacyStage;
 use crate::pipeline::{RequestContext, Stage};
 use crate::proxy::{ProxyRequest, ProxyResponse, Upstream};
+use crate::stream::SseDemasker;
 
 /// Shared, cheaply-cloneable server state (axum clones it per request).
 #[derive(Clone)]
@@ -31,6 +37,8 @@ pub struct AppState {
     upstream: Arc<Upstream>,
     stages: Arc<Vec<Box<dyn Stage>>>,
     max_body_bytes: usize,
+    /// Allowlist of client request headers to pass through upstream (M3).
+    forward_request_headers: Arc<Vec<String>>,
     /// Debug only (M2.6): skip the response de-mask so the client sees placeholders.
     debug_skip_demask: bool,
 }
@@ -45,6 +53,8 @@ impl AppState {
         let upstream = Upstream::new(
             config.upstream_base_url.clone(),
             config.upstream_api_key.clone(),
+            config.upstream_chat_path.clone(),
+            config.upstream_extra_headers.clone(),
         );
         let ner_required = env_flag("NER_REQUIRED");
         let stages: Vec<Box<dyn Stage>> =
@@ -60,6 +70,7 @@ impl AppState {
             upstream: Arc::new(upstream),
             stages: Arc::new(stages),
             max_body_bytes: config.max_body_bytes,
+            forward_request_headers: Arc::new(config.forward_request_headers.clone()),
             debug_skip_demask: config.debug_skip_demask,
         })
     }
@@ -220,23 +231,16 @@ async fn not_proxied() -> Response {
         .into_response()
 }
 
-/// `POST /v1/chat/completions`: mask → forward → restore.
+/// `POST /v1/chat/completions`: mask → forward → restore. Handles both buffered
+/// JSON and streaming (SSE) responses; request-side masking is identical for both.
 async fn chat_completions(
     State(state): State<AppState>,
     headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Response {
-    // Streaming (SSE) round-trip is milestone M3.
-    if body.get("stream").and_then(Value::as_bool) == Some(true) {
-        return error_response(
-            StatusCode::BAD_REQUEST,
-            "streaming responses are not supported yet (milestone M3)",
-            "unsupported",
-        );
-    }
+    let streaming = body.get("stream").and_then(Value::as_bool) == Some(true);
 
     let mut ctx = RequestContext::new();
-
     let mut request = ProxyRequest { body };
     for stage in state.stages.iter() {
         stage.on_request(&mut request, &mut ctx);
@@ -257,9 +261,17 @@ async fn chat_completions(
     tracing::trace!(masked_request = %request.body, "forwarding masked request body upstream");
 
     let client_auth = headers.get(AUTHORIZATION).and_then(|v| v.to_str().ok());
+    let passthrough = collect_passthrough(&headers, &state.forward_request_headers);
+
+    if streaming {
+        return stream_chat_completions(&state, &request.body, client_auth, &passthrough, &mut ctx)
+            .await;
+    }
+
+    // ── Non-streaming (buffered JSON) ────────────────────────────────────────
     let (status, upstream_headers, upstream_body) = match state
         .upstream
-        .forward_chat_completions(&request.body, client_auth)
+        .forward_chat_completions(&request.body, client_auth, &passthrough)
         .await
     {
         Ok(ok) => ok,
@@ -284,6 +296,112 @@ async fn chat_completions(
     let code = StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY);
     let forwarded = forwardable_headers(&upstream_headers);
     (code, forwarded, Json(response.body)).into_response()
+}
+
+/// Streaming (SSE) round-trip: forward the masked body, then de-anonymize the
+/// token stream incrementally on the way back (M3). Request-side masking has
+/// already run, so nothing raw ever reaches the provider regardless.
+async fn stream_chat_completions(
+    state: &AppState,
+    body: &Value,
+    client_auth: Option<&str>,
+    passthrough: &[(reqwest::header::HeaderName, reqwest::header::HeaderValue)],
+    ctx: &mut RequestContext,
+) -> Response {
+    let response = match state.upstream.send(body, client_auth, passthrough).await {
+        Ok(r) => r,
+        Err(err) => {
+            tracing::error!(error = %err, "upstream streaming request failed");
+            return error_response(StatusCode::BAD_GATEWAY, &err.to_string(), "proxy_error");
+        }
+    };
+
+    let code = StatusCode::from_u16(response.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+    let mut out_headers = forwardable_headers(response.headers());
+    out_headers.insert(CONTENT_TYPE, HeaderValue::from_static("text/event-stream"));
+
+    let upstream = response.bytes_stream();
+    // Clean request (nothing masked) or debug-skip → stream through untouched;
+    // otherwise de-anonymize each `delta.content` with the hold-back buffer.
+    let body = if state.debug_skip_demask || ctx.vault.is_empty() {
+        if state.debug_skip_demask {
+            tracing::debug!("skipping response de-mask (PII_DEBUG_SKIP_DEMASK)");
+        }
+        Body::from_stream(upstream)
+    } else {
+        demasking_sse_body(upstream, std::mem::take(&mut ctx.vault))
+    };
+
+    (code, out_headers, body).into_response()
+}
+
+/// Wrap an upstream SSE byte stream in an incremental de-anonymizer (M3).
+fn demasking_sse_body<S>(upstream: S, vault: crate::pii::anonymizer::Vault) -> Body
+where
+    S: futures_util::Stream<Item = reqwest::Result<Bytes>> + Send + 'static,
+{
+    struct StreamState<S> {
+        inner: std::pin::Pin<Box<S>>,
+        demasker: SseDemasker,
+        ended: bool,
+    }
+
+    let state = StreamState {
+        inner: Box::pin(upstream),
+        demasker: SseDemasker::new(vault),
+        ended: false,
+    };
+
+    let stream = futures_util::stream::unfold(state, |mut st| async move {
+        loop {
+            if st.ended {
+                return None;
+            }
+            match st.inner.next().await {
+                Some(Ok(chunk)) => {
+                    let out = st.demasker.push(chunk.as_ref());
+                    if out.is_empty() {
+                        continue; // no complete line yet — pull more
+                    }
+                    return Some((Ok::<Bytes, std::io::Error>(Bytes::from(out)), st));
+                }
+                Some(Err(err)) => {
+                    st.ended = true;
+                    let io = std::io::Error::other(err.to_string());
+                    return Some((Err(io), st));
+                }
+                None => {
+                    st.ended = true;
+                    let tail = st.demasker.flush();
+                    if tail.is_empty() {
+                        return None;
+                    }
+                    return Some((Ok(Bytes::from(tail)), st));
+                }
+            }
+        }
+    });
+
+    Body::from_stream(stream)
+}
+
+/// Collect the allowlisted client request headers to pass through upstream (M3).
+fn collect_passthrough(
+    client: &HeaderMap,
+    allow: &[String],
+) -> Vec<(reqwest::header::HeaderName, reqwest::header::HeaderValue)> {
+    let mut out = Vec::new();
+    for name in allow {
+        if let Some(value) = client.get(name.as_str()) {
+            if let (Ok(n), Ok(v)) = (
+                reqwest::header::HeaderName::from_bytes(name.as_bytes()),
+                reqwest::header::HeaderValue::from_bytes(value.as_bytes()),
+            ) {
+                out.push((n, v));
+            }
+        }
+    }
+    out
 }
 
 /// A small JSON error body with a status code.

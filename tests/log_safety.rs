@@ -77,6 +77,10 @@ async fn spawn_proxy(upstream: SocketAddr) -> SocketAddr {
         upstream_base_url: format!("http://{upstream}"),
         upstream_api_key: None,
         max_body_bytes: DEFAULT_MAX_BODY_BYTES,
+        provider: "openai".to_string(),
+        upstream_chat_path: "/v1/chat/completions".to_string(),
+        upstream_extra_headers: Vec::new(),
+        forward_request_headers: Vec::new(),
         debug_skip_demask: false,
     };
     let app = build_router(AppState::new(&config).await.expect("app state"));
