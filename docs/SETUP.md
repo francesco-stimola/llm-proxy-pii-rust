@@ -98,6 +98,21 @@ Common knobs (both modes): `NER_POOL_SIZE` (session pool for concurrency),
 `NER_TOKEN_TYPE_IDS=1` (BERT-family models), `NER_REQUIRED=1` (fail closed if the model
 can't load — a missing NER then blocks startup instead of silently downgrading).
 
+## 5. Debug & observability (M2.6, off by default)
+
+Opt-in tools to eyeball that masking holds — never enable in production:
+
+```powershell
+# See the placeholders the provider saw (skips response de-mask; loud startup warning):
+$env:PII_DEBUG_SKIP_DEMASK = "1"
+# Dump the exact masked body sent upstream (placeholders only — safe):
+$env:RUST_LOG = "llm_proxy_pii_rust=trace"
+cargo run
+```
+
+Request-side masking always runs, so neither flag ever sends raw PII upstream. The final
+de-masked client output (real values) is **never** logged.
+
 ## Fallback: GNU toolchain (no MSVC, no admin)
 
 If MSVC is unavailable, the GNU toolchain bundles its own linker and builds M1

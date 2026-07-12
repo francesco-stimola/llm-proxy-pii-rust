@@ -108,6 +108,23 @@ For a privacy proxy the failure mode *is* the product: anything unexpected must
   `PiiDetector::try_detect` error channel — whose `DetectError` carries only a
   static label, never input text.
 
+## Debug & observability (M2.6)
+
+Opt-in developer tools to *see* that masking holds end-to-end. Both are **off by
+default** and neither weakens the fail-closed posture — request-side masking always
+runs, so the upstream never sees raw PII regardless.
+
+- **`PII_DEBUG_SKIP_DEMASK`** (on `Config.debug_skip_demask`): skips the response
+  de-mask so the (local) client receives the placeholders the provider saw — proof the
+  round-trip is wired. A **loud `warn!`** fires at startup when it's on, so it can't
+  quietly linger in a deployment.
+- **`trace!` of the masked upstream body** (`RUST_LOG=…=trace`): the exact bytes sent
+  upstream, logged just before forwarding — masked at that point, so safe. `debug!`
+  keeps the concise kind-only audit lines.
+- **Safety boundary (rule):** the masked request and the raw provider response
+  (placeholders only) are safe to log; the **final de-masked client output (real
+  values) is NEVER logged**. Same bar as the future audit logging.
+
 ## Module layout
 
 | Path | Responsibility |

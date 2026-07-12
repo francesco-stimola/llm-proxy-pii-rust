@@ -143,42 +143,61 @@ caveat. The fail-closed paths all hold: required-fetch failure is fatal at start
 missing / non-contiguous / non-integer `id2label`; the outbound fetch is opt-in
 (`NER_MODEL_REPO` only), logged, and never fires when `NER_MODEL_PATH` wins or the repo is
 unset. Two non-blocking follow-ups:
-- [ ] **M2.5-R1 (leanness + docs accuracy).** `hf-hub` 1.0 does **not** reuse the in-tree
-  `reqwest 0.12`; under `--features onnx` it pulls a **second** `reqwest 0.13.4`, plus
-  `rustls` + **`aws-lc-rs`** (a new native C/asm crypto lib), `hf-xet`, and
-  `reqwest-middleware`. So the "built on the `reqwest` already in the tree — no new native
-  deps" claim (`Cargo.toml` comment, `docs/DEVLOG.md`, this file) is inaccurate. The
-  **default** build is unaffected (hf-hub is `onnx`-gated). **Fix (DECIDED 2026-07-12 —
-  trim, per the lean bar):** set `hf-hub = { …, default-features = false, features = [ … ] }`
-  with a minimal/leaner-TLS feature set (align the TLS backend with the in-tree `reqwest`;
-  **drop `aws-lc-rs` / `hf-xet` / the duplicate `reqwest`**), **and** correct the three
-  inaccurate claims (`Cargo.toml` comment, `docs/DEVLOG.md`, this file) to the real
-  onnx-only footprint. **Test:** a guard asserting `cargo tree` (no features) contains no
-  `hf-hub`, plus a note pinning the intended `cargo tree --features onnx` set.
-- [ ] **M2.5-R2 (fail-closed hygiene, minor).** `parse_id2label` returns `Ok(vec![])` for
-  an **empty** `id2label` object instead of failing closed — the empty-map case is caught
-  only later, by `validate_label_count` at **request** time (and only `NER_REQUIRED` turns
-  that into a block; otherwise names silently go undetected). **Fix:**
-  `anyhow::ensure!(!pairs.is_empty(), "id2label is empty")` after the contiguity check in
-  `src/pii/hf.rs`. **Test:** `empty_id2label_is_an_error` asserts
-  `parse_id2label(r#"{"id2label":{}}"#).is_err()`.
+- [ ] **M2.5-R1 (leanness + docs accuracy) — INVESTIGATED; resolution PARKED for a reviewer
+  session (2026-07-12, user's call: do not downgrade).** Confirmed the footprint with
+  `cargo tree --features onnx`: `hf-hub 1.0.0` pulls a **second `reqwest 0.13.4`** (the
+  in-tree one is `0.12.28`), **`hf-xet 1.5.3`**, `rustls 0.23` → **`aws-lc-rs` + `aws-lc-sys`**
+  (native C/asm crypto), `reqwest-middleware 0.5`, and `ureq 3`. So the "built on the
+  `reqwest` already in the tree — no new native deps" claim (`Cargo.toml` comment,
+  `docs/DEVLOG.md`, the M2.5 dep bullet above) is **inaccurate**. The **default** build is
+  unaffected — hf-hub is `onnx`-gated, so a plain `cargo build`/`cargo test` stays
+  native-dep-free.
+  - **Why the DECIDED trim (`default-features = false`, minimal features) does NOT work on
+    1.0:** verified in `hf-hub 1.0.0`'s own `Cargo.toml` that `hf-xet` and `reqwest 0.13`
+    are **non-optional** dependencies — not behind any feature. Its *only* features are
+    `blocking`, `rustls-tls`, `socks`, `default = []`. No feature combination can drop
+    `hf-xet` / `aws-lc-rs` / the duplicate `reqwest`; `default-features = false` is a no-op
+    (default is already empty).
+  - **The only way to shed them is a downgrade to a pre-Xet release.** `hf-hub 0.4.3` has
+    `reqwest ^0.12` as an **optional** dep (unifies with the in-tree `reqwest 0.12.28`,
+    native-tls/schannel) and **no `hf-xet`, no `aws-lc-rs`, no `rustls`, no second reqwest**
+    — `hf-hub = { version = "0.4.3", default-features = false, features = ["tokio"] }` would
+    reuse the in-tree reqwest and add only small pure-Rust crates (`dirs`, `indicatif`,
+    `num_cpus`, `rand`). Its async API differs (`api::tokio::ApiBuilder` + `Repo::with_revision`)
+    so `src/pii/hf.rs` would need a rewrite, and its default cache uses `dirs` (correct on
+    Windows) so the `/tmp` workaround could be dropped.
+  - **Decision (user, 2026-07-12): a downgrade to a pre-1.0 release is not worth pinning an
+    older API — park this for a reviewer session** to weigh the heavy 1.0 footprint vs the
+    downgrade (or another option, e.g. a lighter Hub client / a hand-rolled revision-pinned
+    fetch). **No code changed here.** Whichever path is chosen, also correct the three
+    inaccurate "no new native deps" claims and add a footprint guard.
+- [x] **M2.5-R2 (fail-closed hygiene, minor).** Fixed: `parse_id2label` now
+  `anyhow::ensure!(!pairs.is_empty(), …)` after the contiguity check, so an **empty**
+  `id2label` object fails closed at load instead of returning `Ok(vec![])` and only
+  surfacing later at request time. Test `empty_id2label_is_an_error` asserts
+  `parse_id2label(r#"{"id2label":{}}"#).is_err()` (`src/pii/hf.rs`).
 
-## M2.6 — Debug & observability modes  🔍 *(small, pullable — independent of M3)*
+## M2.6 — Debug & observability modes  🔍 ✅ *(small, pullable — independent of M3)*
 Opt-in developer tools to confirm, with your own eyes, that masking holds end-to-end.
 **Off by default; neither weakens the fail-closed posture** (request-side masking always
 runs). Small and independent of M3 — can be pulled early to eyeball that the system holds.
-- [ ] **`PII_DEBUG_SKIP_DEMASK`** (opt-in, off by default): skip the response de-mask so
-  the client receives the **placeholders** (`[EMAIL_1]`, `[PERSON_1]`) exactly as the
-  provider saw them — visual proof the request left masked and the round-trip is wired.
-  Emit a **loud startup warning** when enabled so it can't linger on in production.
-  **Test:** with the flag set, the client response contains `[EMAIL_1]`, not the value.
-- [ ] **Debug-log the masked upstream body** at **`trace!`** (gated by `RUST_LOG`,
-  **orthogonal** to the skip flag — not a bespoke default): see the exact bytes that left
-  the box. Keep `debug!` for the concise kind-only audit lines so `RUST_LOG=…=debug` stays
-  readable and `=trace` opts into full-body dumps.
-- **Safety boundary (design rule):** the masked request → provider and the raw provider
-  response (both placeholders only) are safe to log; the **final de-masked client output
-  (real values) must NEVER be logged**. Same bar as the future audit logging in Backlog.
+- [x] **`PII_DEBUG_SKIP_DEMASK`** (opt-in, off by default): skips the response de-mask so
+  the client receives the **placeholders** (`[EMAIL_1]`, …) exactly as the provider saw
+  them — visual proof the request left masked and the round-trip is wired. On `Config`
+  (`debug_skip_demask`), not a bare env read, so it's isolated + testable; a **loud
+  `warn!` startup log** fires when enabled. Request-side masking still runs (upstream never
+  sees raw PII). **Test:** `e2e_debug_skip_demask_returns_placeholders_to_client` — the
+  client gets `[EMAIL_1]` (not the value) while the upstream still saw the masked body.
+- [x] **Debug-log the masked upstream body** at **`trace!`** (gated by `RUST_LOG`,
+  **orthogonal** to the skip flag): `chat_completions` emits `trace!(masked_request = …)`
+  just before forwarding — the body is masked at that point, so it's safe. `debug!` stays
+  for the concise kind-only audit lines, so `RUST_LOG=…=debug` is readable and `=trace`
+  opts into full-body dumps.
+- **Safety boundary (design rule) — upheld:** the masked request → provider and the raw
+  provider response (placeholders only) are safe to log; the **final de-masked client
+  output (real values) is NEVER logged** (the only body logs are the `trace!` masked
+  request and a body-less `debug!` when skipping de-mask). Same bar as the future audit
+  logging in Backlog.
 
 ## M3 — Streaming
 Goal: SSE token streaming with incremental de-anonymization.

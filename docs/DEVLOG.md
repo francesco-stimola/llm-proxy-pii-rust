@@ -3,6 +3,37 @@
 Newest first. One entry per meaningful change — note *what* and *why*, not just
 *what*. This is the running history so context is never lost between sessions.
 
+## 2026-07-12 — M2.5 review follow-ups (R1 parked, R2 fixed) + M2.6 debug modes
+
+Closed the M2.5 review's R2 and the new M2.6 milestone; R1 investigated and parked.
+**66 tests green (default), 74 + 1 `#[ignore]`d (`--features onnx`), no warnings.**
+
+- **M2.5-R1 (hf-hub footprint) — investigated, PARKED (user's call: no downgrade).**
+  `cargo tree --features onnx` confirmed `hf-hub 1.0.0` pulls a **second `reqwest 0.13.4`**,
+  **`hf-xet 1.5.3`**, `rustls 0.23` → **`aws-lc-rs`/`aws-lc-sys`** (native crypto),
+  `reqwest-middleware`, and `ureq 3` — so the "no new native deps" claim is inaccurate.
+  Verified in hf-hub 1.0.0's `Cargo.toml` that `hf-xet` + `reqwest 0.13` are **non-optional**
+  (its only features are `blocking`/`rustls-tls`/`socks`/`default=[]`), so the DECIDED
+  `default-features = false` trim is a **no-op** — the only way to shed them is a downgrade
+  to the pre-Xet `hf-hub 0.4.3` (reuses the in-tree `reqwest 0.12`, no xet/aws-lc). The user
+  chose **not** to pin an older API; parked for a reviewer session. **No code changed.**
+  Details + the correction to-do recorded in ROADMAP M2.5-R1. The **default** build stays
+  native-dep-free regardless (hf-hub is `onnx`-gated).
+- **M2.5-R2 (fail-closed hygiene) fixed.** `parse_id2label` now `ensure!(!pairs.is_empty())`
+  after the contiguity check, so an **empty** `id2label` fails closed at load instead of
+  returning `Ok(vec![])` and only surfacing later (and only under `NER_REQUIRED`). Test
+  `empty_id2label_is_an_error`.
+- **M2.6 — debug & observability modes** (opt-in, off by default; neither weakens
+  fail-closed — request-side masking always runs). (1) **`PII_DEBUG_SKIP_DEMASK`** on
+  `Config.debug_skip_demask` (not a bare env read → isolated + testable): skips the response
+  de-mask so the client sees the placeholders the provider saw; a **loud `warn!`** fires at
+  startup. `chat_completions` guards the `on_response` loop on it. (2) **`trace!` of the
+  masked upstream body** just before forwarding (masked → safe), `debug!` kept for the
+  kind-only audit. **Safety boundary upheld:** the de-masked client output is never logged
+  (only the `trace!` masked request + a body-less `debug!` on skip). Test
+  `e2e_debug_skip_demask_returns_placeholders_to_client`; new `Config.debug_skip_demask`
+  threaded through `spawn_proxy_cfg` in the e2e harness.
+
 ## 2026-07-12 — M2.5: HuggingFace model auto-download (`hf-hub`) + M2-R10 — COMPLETE
 
 Model management is now library-managed and reproducible, and the last M2 harness
