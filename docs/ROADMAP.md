@@ -227,24 +227,53 @@ Two **non-blocking** hardening nits (optional — the milestone is sound):
   `config::env_flag`; `server.rs` imports it. `PII_DEBUG_SKIP_DEMASK`, `NER_REQUIRED`, and
   `NER_TOKEN_TYPE_IDS` now share the single `1`/`true`/`yes`/`on` parser — no divergence.
 
-## M3 — Streaming & multi-provider routing (Option A)
+## M3 — Streaming & multi-provider routing (Option A) ✅
 Goal: SSE token streaming with incremental de-anonymization **and** routing to multiple
 providers via their **OpenAI-compatible** endpoints (Option A). The two intertwine
-(real Copilot/Anthropic usage is streamed), so they land together.
+(real Copilot/Anthropic usage is streamed), so they landed together.
+
+**Done:** streaming SSE round-trip with an incremental hold-back de-anonymizer
+(`src/stream.rs`), and per-provider config presets (path / passthrough / extra headers)
+so one binary fronts OpenAI, Copilot, or Anthropic's OpenAI-compat endpoint. Streaming
+never weakens fail-closed: request-side masking runs first, so the provider only ever sees
+placeholders. Details in `docs/DEVLOG.md` (2026-07-12).
 
 ### Streaming
-- [ ] Streaming passthrough of provider responses
-- [ ] Hold-back buffer that restores placeholders split across chunks
+- [x] Streaming passthrough of provider responses — `stream:true` now forwards with
+  `Body::from_stream`; `content-type: text/event-stream`; clean requests (nothing masked)
+  stream through untouched.
+- [x] Hold-back buffer that restores placeholders split across chunks — `SseDemasker`
+  keeps a per-choice buffer, emits up to the last point that could still be an incomplete
+  placeholder, and holds the rest until the next delta (or stream end) resolves it. Units +
+  an e2e test (`[EMAIL_1]` split across SSE events → client gets the real value).
 
 ### Multi-provider routing — Option A (OpenAI-compat normalization)
 Route every provider through its **OpenAI-compatible** endpoint so a **single schema**
 feeds the PII masker — no new leak surface (a per-schema masker is Option B, Backlog).
-Must at least cover **GitHub Copilot** and **Anthropic** (via its OpenAI-compat layer).
-- [ ] **Provider selection / routing** — today there is a single static `UPSTREAM_BASE_URL`; add per-provider config/selection.
-- [ ] **Path flexibility** — the upstream path is hardcoded `/v1/chat/completions` (`proxy.rs`); Copilot uses `/chat/completions` (no `/v1`), so the path must be per-provider.
-- [ ] **Per-provider auth & required headers** — Bearer today; Copilot needs its short-lived token + editor headers; Anthropic uses `Bearer` on its OpenAI-compat endpoint.
-- [ ] **Request-header passthrough policy** — today only `Authorization` is forwarded; decide what else (e.g. `anthropic-version`) is safe to pass.
-- Anthropic's **native** `/v1/messages` schema is deliberately **out of scope** here — that's Option B (Backlog).
+Covers **GitHub Copilot** and **Anthropic** (via its OpenAI-compat layer).
+- [x] **Provider selection / routing** — `UPSTREAM_PROVIDER` (`openai`/`copilot`/`anthropic`)
+  picks a preset; base URL + key stay env-driven. *(Deployment-level: one active provider
+  per instance — request-level routing is a follow-up below.)*
+- [x] **Path flexibility** — `upstream_chat_path` is per-provider (Copilot `/chat/completions`,
+  OpenAI/Anthropic `/v1/chat/completions`); override with `UPSTREAM_CHAT_PATH`.
+- [x] **Per-provider auth & required headers** — client `Authorization` wins, else the
+  configured key as `Bearer`; `UPSTREAM_EXTRA_HEADERS` adds provider-required static headers.
+- [x] **Request-header passthrough policy** — an allowlist (`forward_request_headers`, from the
+  preset or `UPSTREAM_FORWARD_HEADERS`) forwards only named client headers (e.g.
+  `anthropic-version`, Copilot editor headers) beyond `Authorization`.
+- Anthropic's **native** `/v1/messages` schema is deliberately **out of scope** here — Option B (Backlog).
+
+### M3 follow-ups (deferred — not leaks; documented for a later pass)
+- [ ] **Streaming de-anon of `delta.tool_calls[].function.arguments`.** Today only streamed
+  `delta.content` is de-anonymized; streamed tool-call *arguments* pass through, so a client
+  may see `[EMAIL_1]` inside a streamed tool call. **Not a leak** (the provider still only saw
+  masked values; the request round-trip is unaffected) — a usability gap. Extend `SseDemasker`
+  with per-`(choice, tool_call index)` hold-back buffers.
+- [ ] **Request-level provider routing.** Selection is per-instance (`UPSTREAM_PROVIDER`); add
+  per-request routing (path prefix / header / model map) if one instance must front several
+  providers at once.
+- [ ] **Upstream streaming error propagation.** A mid-stream upstream error currently ends the
+  client stream with an I/O error; consider emitting a terminal SSE error event instead.
 
 ## M4 — Broad locale & language coverage (future)
 Goal: extend PII coverage beyond IT + US to a wide set of locales and languages,

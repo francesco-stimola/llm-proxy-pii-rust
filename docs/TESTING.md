@@ -157,6 +157,11 @@ false positive): `email`, `phone`, `ssn`, `credit_card`, `iban`, `secret`.
 - DBG-01 — `PII_DEBUG_SKIP_DEMASK` (via `Config.debug_skip_demask`): the client receives the placeholder (`[EMAIL_1]`), not the value, while the upstream still saw the masked body (`e2e_debug_skip_demask_returns_placeholders_to_client`).
 - DBG-02 — **log-safety regression** (`tests/log_safety.rs`, `crate_logs_carry_placeholders_never_raw_pii`): captures the crate's `trace` logs during a real PII round-trip and asserts the `trace!` masked-body log shows `[EMAIL_1]` and **never** the raw value (while the reply did carry the de-masked value) — the never-log-raw-PII rule is now automated, not just inspection.
 
+### M3 — streaming (SSE) & multi-provider routing
+- STR-01 — `split_demaskable` (`src/stream.rs`): holds back only a suffix that could still become a placeholder (unclosed `[…`), emits a closed `[…]` or clearly-non-placeholder `[…`, and is length-bounded.
+- STR-02 — `SseDemasker` reassembles a placeholder **split across SSE events** (`[EMA` + `IL_1]` → the real value); `[DONE]` and non-`data:` lines pass through; bytes chopped mid-line are reassembled.
+- STR-03 — e2e `e2e_streaming_deanonymizes_split_placeholder` (`tests/proxy_e2e.rs`): a `stream:true` round-trip through a mock SSE upstream that fragments the reply — the client receives the de-masked value with no `[EMAIL_1]` leak, and the upstream saw only the masked body.
+
 ### Dependency footprint (M2.5-R1)
 - DEP-01 — `tests/dependency_footprint.rs` (`default_build_excludes_the_onnx_and_hf_stack`): `cargo tree` on the **default** features must contain no `hf-hub`/`hf-xet`/`aws-lc`/`ort`/`tokenizers` — the ONNX/HF stack (heavy, native) stays behind the `onnx` feature so the shipped default build is native-dep-free.
 

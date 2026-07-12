@@ -113,6 +113,34 @@ cargo run
 Request-side masking always runs, so neither flag ever sends raw PII upstream. The final
 de-masked client output (real values) is **never** logged.
 
+## 6. Provider selection & streaming (M3)
+
+The proxy fronts any provider's **OpenAI-compatible** endpoint. Pick one with a preset
+that sets the right path + client-header passthrough (all overridable):
+
+```powershell
+# OpenAI (default) — nothing extra needed beyond the key:
+$env:UPSTREAM_BASE_URL = "https://api.openai.com"
+$env:UPSTREAM_API_KEY  = "sk-…"
+
+# GitHub Copilot (no /v1; passes editor headers through):
+$env:UPSTREAM_PROVIDER = "copilot"
+$env:UPSTREAM_BASE_URL = "https://api.githubcopilot.com"
+
+# Anthropic via its OpenAI-compat layer (passes anthropic-version through):
+$env:UPSTREAM_PROVIDER = "anthropic"
+$env:UPSTREAM_BASE_URL = "https://api.anthropic.com"
+```
+
+Overrides: `UPSTREAM_CHAT_PATH` (e.g. `/chat/completions`), `UPSTREAM_FORWARD_HEADERS`
+(comma list of client headers to pass through), `UPSTREAM_EXTRA_HEADERS` (`Key=Value`
+pairs separated by `;` added to every upstream request).
+
+**Streaming** works automatically: a request with `"stream": true` is forwarded as SSE and
+de-anonymized incrementally on the way back (placeholders split across token chunks are
+reassembled). Request-side masking always runs first, so the provider only ever sees
+placeholders.
+
 ## Fallback: GNU toolchain (no MSVC, no admin)
 
 If MSVC is unavailable, the GNU toolchain bundles its own linker and builds M1

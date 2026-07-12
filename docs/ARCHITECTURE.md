@@ -125,6 +125,29 @@ runs, so the upstream never sees raw PII regardless.
   (placeholders only) are safe to log; the **final de-masked client output (real
   values) is NEVER logged**. Same bar as the future audit logging.
 
+## Streaming & multi-provider routing (M3)
+
+**Streaming (SSE).** When a request sets `stream:true`, the proxy masks it exactly as
+a buffered request, forwards it, and streams the response back while
+**de-anonymizing incrementally** (`src/stream.rs`). A placeholder like `[EMAIL_1]`
+can be split across two token deltas, so `SseDemasker` keeps a per-choice **hold-back
+buffer**: it emits everything up to the last point that could still be an incomplete
+placeholder and holds the rest until the next delta (or stream end) resolves it. Only
+`delta.content` is rewritten today (streamed tool-call arguments are a documented
+follow-up). Streaming **never weakens fail-closed**: request-side masking runs first,
+so the provider only ever sees placeholders; a clean request (nothing masked) streams
+through untouched.
+
+**Multi-provider routing — Option A.** Every provider is reached through its
+**OpenAI-compatible** endpoint, so a single schema feeds the masker (no new leak
+surface). A `UPSTREAM_PROVIDER` preset (`openai` / `copilot` / `anthropic`) sets the
+per-provider *shape* — the chat path (`upstream_chat_path`; Copilot drops `/v1`), the
+allowlist of client request headers to pass through (`forward_request_headers`, e.g.
+`anthropic-version` or editor headers), and any required static headers
+(`upstream_extra_headers`) — each overridable by env. Base URL + API key stay
+env-driven. Auth: the client's own `Authorization` wins, else the configured key as
+`Bearer`. Anthropic's *native* `/v1/messages` schema is out of scope (Option B, Backlog).
+
 ## Module layout
 
 | Path | Responsibility |
@@ -132,7 +155,8 @@ runs, so the upstream never sees raw PII regardless.
 | `src/main.rs` | binary entry: tracing, config, run server |
 | `src/config.rs` | runtime configuration |
 | `src/server.rs` | axum router + handlers |
-| `src/proxy.rs` | request/response value objects + the upstream HTTP client (the pipeline is applied in `server.rs`) |
+| `src/proxy.rs` | request/response value objects + the upstream HTTP client (per-provider path/headers, raw + JSON send) |
+| `src/stream.rs` | streaming (SSE) incremental de-anonymizer with the split-placeholder hold-back buffer (M3) |
 | `src/pipeline/mod.rs` | `Stage` trait |
 | `src/pipeline/privacy.rs` | the privacy stage (only one wired) |
 | `src/pii/mod.rs` | `PiiDetector` trait, `PiiEntity` / `PiiKind` / `Confidence` |

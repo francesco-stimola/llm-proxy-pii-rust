@@ -3,6 +3,38 @@
 Newest first. One entry per meaningful change — note *what* and *why*, not just
 *what*. This is the running history so context is never lost between sessions.
 
+## 2026-07-12 — M3: SSE streaming de-anon + multi-provider routing (Option A)
+
+Streaming and provider routing landed together (real Copilot/Anthropic usage is streamed).
+**73 tests green (default), 81 + 1 `#[ignore]`d (`--features onnx`), no warnings.**
+
+- **Streaming (SSE) with incremental de-anon** (`src/stream.rs`, new). `stream:true` is now
+  forwarded (no more 400): the handler masks the request as usual, then streams the response
+  back through `SseDemasker`, which parses `data:` lines and de-anonymizes each
+  `choices[].delta.content`. A placeholder can be **split across two token deltas**
+  (`[EMA` + `IL_1]`), so it keeps a per-choice **hold-back buffer** — `split_demaskable`
+  finds the last point that could still be an incomplete placeholder, emits everything before
+  it, and holds the tail until the next delta (or stream end) closes it. `[DONE]` and non-data
+  lines pass through; a clean request (nothing masked) or `PII_DEBUG_SKIP_DEMASK` streams
+  through untouched. **Fail-closed intact:** request-side masking runs first, so the provider
+  only ever sees placeholders — streaming de-anon is a client-side usability step, never a
+  privacy gate. `server.rs` builds the response body with `Body::from_stream` over a
+  `futures_util::stream::unfold` adapter (new dep `futures-util`).
+- **Multi-provider routing — Option A** (`config.rs` + `proxy.rs`). `UPSTREAM_PROVIDER`
+  (`openai`/`copilot`/`anthropic`) selects a preset for the per-provider *shape*: chat path
+  (`upstream_chat_path` — Copilot drops `/v1`), a client-header passthrough allowlist
+  (`forward_request_headers` — e.g. `anthropic-version`, Copilot editor headers), and static
+  `upstream_extra_headers`. All overridable (`UPSTREAM_CHAT_PATH` / `UPSTREAM_FORWARD_HEADERS`
+  / `UPSTREAM_EXTRA_HEADERS`); base URL + key stay env-driven. `Upstream` gained a raw `send`
+  (used by streaming) plus the configurable path/headers; `Config::Debug` redacts extra-header
+  values (may be secrets).
+- **Tests.** `stream.rs` units (hold-back split, split-placeholder reassembly, mid-line byte
+  splits, passthrough) + e2e `e2e_streaming_deanonymizes_split_placeholder` (client gets the
+  real value from a `[EMAIL_1]` split across SSE events; the upstream saw only the masked body).
+- **Deferred (documented, not leaks):** streaming de-anon of `delta.tool_calls[].function.arguments`
+  (streamed tool args currently pass through), request-level provider routing, and terminal
+  SSE error events. See ROADMAP M3 follow-ups. **Next: M4 (broad locale coverage).**
+
 ## 2026-07-12 — M2.5-R1 / M2.6 review nits: footprint guard, log-safety test, env_flag dedup
 
 Closed the last M2.5/M2.6 review items. **68 tests green (default), 76 + 1 `#[ignore]`d
