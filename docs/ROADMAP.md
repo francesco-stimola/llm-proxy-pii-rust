@@ -108,8 +108,10 @@ that standard cache — conventional location, dedup, reproducible. Pure Rust: t
 default build stays native-dep-free. Implemented in `src/pii/hf.rs`, wired in
 `src/server.rs::load_onnx_ner`; verified end-to-end (`docs/DEVLOG.md` 2026-07-12).
 - [x] Added `hf-hub = { version = "1", optional = true }`, wired into the `onnx`
-  feature only (async API; **default features**). *Its real dep footprint is heavier
-  than first recorded — see **M2.5-R1**.* The **default** build stays native-dep-free.
+  feature only (async API). **Footprint (M2.5-R1, corrected):** under `--features onnx`
+  hf-hub 1.x pulls a **second `reqwest 0.13`** + **`hf-xet`** + **`rustls`/`aws-lc-rs`**
+  (native crypto) — *not* "no new native deps". Kept on 1.x deliberately (see M2.5-R1).
+  The **default** build stays native-dep-free (hf-hub is `onnx`-gated).
 - [x] Resolve `(repo, revision, filename)` → a local cache path (`HfModelSpec::resolve`).
   **`NER_MODEL_PATH` (explicit local file) keeps priority** — set it for zero outbound
   calls, exactly as before.
@@ -143,7 +145,7 @@ caveat. The fail-closed paths all hold: required-fetch failure is fatal at start
 missing / non-contiguous / non-integer `id2label`; the outbound fetch is opt-in
 (`NER_MODEL_REPO` only), logged, and never fires when `NER_MODEL_PATH` wins or the repo is
 unset. Two non-blocking follow-ups:
-- [ ] **M2.5-R1 (leanness + docs accuracy) — DECIDED 2026-07-12: keep `hf-hub 1.0` (Option A).**
+- [x] **M2.5-R1 (leanness + docs accuracy) — DECIDED 2026-07-12: keep `hf-hub 1.0` (Option A); builder tasks DONE.**
   Confirmed the footprint with
   `cargo tree --features onnx`: `hf-hub 1.0.0` pulls a **second `reqwest 0.13.4`** (the
   in-tree one is `0.12.28`), **`hf-xet 1.5.3`**, `rustls 0.23` → **`aws-lc-rs` + `aws-lc-sys`**
@@ -171,10 +173,11 @@ unset. Two non-blocking follow-ups:
     maintained/audited crypto lib is no new category — the **default build stays native-dep-free**.
     Downgrading to the **unmaintained** 0.4.3 (no upstream CVE fixes) is the worse security posture
     for a privacy tool; a hand-rolled fetch is the fallback only if the supply-chain surface ever
-    becomes a concrete problem. **Remaining tasks (builder):** correct the three inaccurate "no new
+    becomes a concrete problem. **Builder tasks — DONE:** corrected the three inaccurate "no new
     native deps" claims (`Cargo.toml` comment, `docs/DEVLOG.md`, the M2.5 dep bullet) to the real
-    onnx-only footprint; add a **footprint guard** test (`cargo tree` with no features contains no
-    `hf-hub`).
+    onnx-only footprint; added the **footprint guard** `tests/dependency_footprint.rs`
+    (`default_build_excludes_the_onnx_and_hf_stack`: `cargo tree` on the default features contains
+    no `hf-hub`/`hf-xet`/`aws-lc`/`ort`/`tokenizers`).
 - [x] **M2.5-R2 (fail-closed hygiene, minor).** Fixed: `parse_id2label` now
   `anyhow::ensure!(!pairs.is_empty(), …)` after the contiguity check, so an **empty**
   `id2label` object fails closed at load instead of returning `Ok(vec![])` and only
@@ -215,15 +218,14 @@ and the de-masked client response is never logged (verified by inspection + a co
 log-site sweep: every log emits kind / placeholder-token / static text only). `parse_id2label`
 now `ensure!(!pairs.is_empty())` fails closed on empty `id2label` (`empty_id2label_is_an_error`).
 Two **non-blocking** hardening nits (optional — the milestone is sound):
-- [ ] **Log-safety regression test (nit, hardens the #1 risk).** The `trace!` masked-body log
-  and the never-log-de-masked-output rule are only inspection-verified (DBG-01). Add a
-  tracing-capture test that drives a PII request and asserts the emitted `trace!` contains the
-  placeholder (`[EMAIL_1]`) and **not** the raw value, and that no log line carries the
-  de-masked client response — so a future refactor can't silently turn logging into a leak.
-- [ ] **De-duplicate `env_flag` (nit, cleanup).** The boolean-env helper is now defined twice
-  with identical semantics (`src/config.rs` + `src/server.rs`); consolidate into one shared
-  helper so flag-parsing (`1`/`true`/`yes`/`on`) can't diverge between `PII_DEBUG_SKIP_DEMASK`
-  and `NER_REQUIRED`.
+- [x] **Log-safety regression test (nit, hardens the #1 risk).** Added `tests/log_safety.rs`
+  (`crate_logs_carry_placeholders_never_raw_pii`): captures this crate's logs at `trace` while
+  driving a real PII request, and asserts the emitted `trace!` contains the placeholder
+  (`[EMAIL_1]`) and **not** the raw value — while the reply really did carry the de-masked value
+  (so a log leak would be caught). A future refactor can't silently turn logging into a leak.
+- [x] **De-duplicate `env_flag` (nit, cleanup).** Consolidated into one `pub(crate)`
+  `config::env_flag`; `server.rs` imports it. `PII_DEBUG_SKIP_DEMASK`, `NER_REQUIRED`, and
+  `NER_TOKEN_TYPE_IDS` now share the single `1`/`true`/`yes`/`on` parser — no divergence.
 
 ## M3 — Streaming & multi-provider routing (Option A)
 Goal: SSE token streaming with incremental de-anonymization **and** routing to multiple

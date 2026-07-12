@@ -3,6 +3,26 @@
 Newest first. One entry per meaningful change — note *what* and *why*, not just
 *what*. This is the running history so context is never lost between sessions.
 
+## 2026-07-12 — M2.5-R1 / M2.6 review nits: footprint guard, log-safety test, env_flag dedup
+
+Closed the last M2.5/M2.6 review items. **68 tests green (default), 76 + 1 `#[ignore]`d
+(`--features onnx`), no warnings.**
+
+- **M2.5-R1 builder tasks (decision: Option A — keep `hf-hub 1.0`).** Corrected the three
+  inaccurate "no new native deps" claims (`Cargo.toml` comment, this log's M2.5 entry, the
+  ROADMAP M2.5 dep bullet) to the real onnx-only footprint — under `--features onnx` hf-hub 1.x
+  pulls a second `reqwest 0.13` + `hf-xet` + `rustls`/`aws-lc-rs`. Added **`tests/dependency_footprint.rs`**:
+  a `cargo tree` guard that fails if the **default** build ever pulls
+  `hf-hub`/`hf-xet`/`aws-lc`/`ort`/`tokenizers` (they must stay `onnx`-gated). Verified
+  non-vacuous — all five appear under `--features onnx`, none in the default tree.
+- **Log-safety regression test (M2.6).** `tests/log_safety.rs` captures the crate's
+  `trace`-level logs during a real PII round-trip and asserts the `trace!` masked-body log shows
+  `[EMAIL_1]` and **never** the raw value, while the reply really did carry the de-masked value
+  (so a leak would be caught). Turns the DBG-01 inspection rule into an automated guard.
+- **`env_flag` de-dup.** One `pub(crate) config::env_flag`; `server.rs` imports it, so
+  `PII_DEBUG_SKIP_DEMASK` / `NER_REQUIRED` / `NER_TOKEN_TYPE_IDS` share a single `1`/`true`/`yes`/`on`
+  parser and can't diverge.
+
 ## 2026-07-12 — M2.5 review follow-ups (R1 parked, R2 fixed) + M2.6 debug modes
 
 Closed the M2.5 review's R2 and the new M2.6 milestone; R1 investigated and parked.
@@ -54,9 +74,13 @@ no warnings.** Verified end-to-end against a live download.
   default `onnx/model_quantized.onnx`, `NER_TOKENIZER_FILE`, `NER_CONFIG_FILE`) into the
   standard HF cache. **`NER_LABELS` is derived from `config.json` `id2label`** (class-id
   order, contiguity-checked → fail closed) unless set explicitly — this removes the
-  error-prone hand-typed 9-label list. `hf-hub` 1.0 uses the async API on the `reqwest`
-  already in the tree (no new native deps); `AppState::new`/`build_detector`/
-  `load_onnx_ner` became `async` for the startup fetch.
+  error-prone hand-typed 9-label list. `hf-hub` 1.0 uses the async API;
+  `AppState::new`/`build_detector`/`load_onnx_ner` became `async` for the startup fetch.
+  *(Correction, M2.5-R1: an earlier version of this entry claimed hf-hub "reuses the
+  reqwest already in the tree — no new native deps". That is **inaccurate**: under
+  `--features onnx` hf-hub 1.x pulls a second `reqwest 0.13` + `hf-xet` +
+  `rustls`/`aws-lc-rs`. The **default** build is still native-dep-free. See the M2.5-R1
+  entry above and ROADMAP M2.5-R1.)*
 - **Standard-cache pin (real bug found by running it).** `hf-hub` 1.0 falls back to
   `/tmp/.cache/huggingface` on Windows when `HOME` is unset — a non-shared, drive-relative
   location (`C:\tmp\…`) that defeats the point. `build_client` now sets
