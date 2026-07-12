@@ -37,15 +37,16 @@ impl AppState {
     /// Build the state from config: the upstream client and the pipeline.
     ///
     /// Fallible because a **required** NER (`NER_REQUIRED`) that can't be loaded
-    /// must be fatal at startup (fail closed), not silently downgraded.
-    pub fn new(config: &Config) -> anyhow::Result<Self> {
+    /// must be fatal at startup (fail closed), not silently downgraded. Async
+    /// because an opt-in `hf-hub` model fetch (M2.5) is network I/O at startup.
+    pub async fn new(config: &Config) -> anyhow::Result<Self> {
         let upstream = Upstream::new(
             config.upstream_base_url.clone(),
             config.upstream_api_key.clone(),
         );
         let ner_required = env_flag("NER_REQUIRED");
         let stages: Vec<Box<dyn Stage>> =
-            vec![Box::new(PrivacyStage::new(build_detector(ner_required)?))];
+            vec![Box::new(PrivacyStage::new(build_detector(ner_required).await?))];
         Ok(Self {
             upstream: Arc::new(upstream),
             stages: Arc::new(stages),
@@ -67,13 +68,15 @@ fn env_flag(key: &str) -> bool {
 /// `ner_required` fails closed: a configured-but-unloadable NER (or, without the
 /// `onnx` feature, requiring one at all) is a fatal error rather than a silent
 /// structured-only downgrade (M2-R1).
-fn build_detector(ner_required: bool) -> anyhow::Result<Box<dyn PiiDetector>> {
+///
+/// Async so the `onnx` branch can `await` an opt-in `hf-hub` model fetch (M2.5).
+async fn build_detector(ner_required: bool) -> anyhow::Result<Box<dyn PiiDetector>> {
     let structured: Box<dyn PiiDetector> = Box::new(StructuredRecognizers::new());
 
     #[cfg(feature = "onnx")]
     {
         let mut detectors = vec![structured];
-        match load_onnx_ner() {
+        match load_onnx_ner().await {
             Ok(Some(ner)) => {
                 // Required → propagate its errors (fail closed); otherwise wrap
                 // so a per-request inference error is swallowed (fail open).
@@ -106,34 +109,79 @@ fn build_detector(ner_required: bool) -> anyhow::Result<Box<dyn PiiDetector>> {
     }
 }
 
-/// Load the ONNX NER detector from env (`NER_MODEL_PATH`, `NER_TOKENIZER_PATH`,
-/// `NER_LABELS` = comma-separated labels in class-id order, optional
-/// `NER_POOL_SIZE`, `NER_TOKEN_TYPE_IDS`). `Ok(None)` = unconfigured; `Err` =
-/// configured but failed to load (the caller decides if that's fatal).
+/// Load the ONNX NER detector from env. The model source is resolved in priority
+/// order (fail-closed defaults, no surprise outbound calls):
+///
+/// 1. **Explicit local files** — `NER_MODEL_PATH` + `NER_TOKENIZER_PATH` +
+///    `NER_LABELS` (comma-separated, class-id order). Zero outbound calls; this
+///    is the airtight-privacy path and always wins.
+/// 2. **Opt-in auto-download (M2.5)** — when `NER_MODEL_PATH` is unset but
+///    `NER_MODEL_REPO` (`owner/name`) is set: fetch a revision-pinned model into
+///    the standard HF cache via `hf-hub`. Tunable via `NER_MODEL_REVISION`
+///    (default `478a2a3`, the picked XLM-R int8), `NER_MODEL_FILE`
+///    (default `onnx/model_quantized.onnx`), `NER_TOKENIZER_FILE`
+///    (default `tokenizer.json`), `NER_CONFIG_FILE` (default `config.json`).
+///    `NER_LABELS` is optional here — derived from the model's `config.json`
+///    `id2label` unless set explicitly.
+///
+/// Common to both: optional `NER_POOL_SIZE`, `NER_TOKEN_TYPE_IDS`. `Ok(None)` =
+/// unconfigured; `Err` = configured but failed to load/fetch (the caller decides
+/// if that's fatal). Async so the auto-download can run on the `tokio` runtime.
 #[cfg(feature = "onnx")]
-fn load_onnx_ner() -> anyhow::Result<Option<Box<dyn PiiDetector>>> {
+async fn load_onnx_ner() -> anyhow::Result<Option<Box<dyn PiiDetector>>> {
     use crate::pii::onnx::OnnxNerDetector;
 
-    let (model, tokenizer, labels) = match (
-        std::env::var("NER_MODEL_PATH").ok(),
-        std::env::var("NER_TOKENIZER_PATH").ok(),
-        std::env::var("NER_LABELS").ok(),
-    ) {
-        (Some(m), Some(t), Some(l)) => (m, t, l),
-        _ => return Ok(None), // not configured
-    };
-
-    let id2label: Vec<String> = labels.split(',').map(|s| s.trim().to_string()).collect();
     let pool_size = std::env::var("NER_POOL_SIZE")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(2);
     let needs_token_type_ids = env_flag("NER_TOKEN_TYPE_IDS");
+    let labels_override = std::env::var("NER_LABELS").ok();
+
+    // Resolve (model path, tokenizer path, id2label) from one of the two sources.
+    let (model, tokenizer, id2label) = if let Ok(model) = std::env::var("NER_MODEL_PATH") {
+        // (1) Explicit local files — tokenizer + labels are required alongside.
+        let (Some(tokenizer), Some(labels)) =
+            (std::env::var("NER_TOKENIZER_PATH").ok(), labels_override)
+        else {
+            return Ok(None); // partial config → unconfigured (NER_REQUIRED makes it fatal)
+        };
+        let id2label = labels.split(',').map(|s| s.trim().to_string()).collect();
+        (model, tokenizer, id2label)
+    } else if let Ok(repo) = std::env::var("NER_MODEL_REPO") {
+        // (2) Opt-in, revision-pinned fetch into the standard HF cache (M2.5).
+        let spec = crate::pii::hf::HfModelSpec {
+            repo,
+            revision: env_or("NER_MODEL_REVISION", "478a2a3"),
+            model_file: env_or("NER_MODEL_FILE", "onnx/model_quantized.onnx"),
+            tokenizer_file: env_or("NER_TOKENIZER_FILE", "tokenizer.json"),
+            config_file: env_or("NER_CONFIG_FILE", "config.json"),
+        };
+        let resolved = spec.resolve().await?;
+        // An explicit NER_LABELS overrides the config-derived labels.
+        let id2label = match labels_override {
+            Some(labels) => labels.split(',').map(|s| s.trim().to_string()).collect(),
+            None => resolved.id2label,
+        };
+        (
+            resolved.model_path.to_string_lossy().into_owned(),
+            resolved.tokenizer_path.to_string_lossy().into_owned(),
+            id2label,
+        )
+    } else {
+        return Ok(None); // not configured
+    };
 
     let detector =
         OnnxNerDetector::load(&model, &tokenizer, id2label, pool_size, needs_token_type_ids)?;
     tracing::info!(model, pool_size, "ONNX NER detector loaded");
     Ok(Some(Box::new(detector)))
+}
+
+/// Read an env var, falling back to `default` when unset.
+#[cfg(feature = "onnx")]
+fn env_or(key: &str, default: &str) -> String {
+    std::env::var(key).unwrap_or_else(|_| default.to_string())
 }
 
 /// Build the router. Exposed so integration tests can serve it on an ephemeral
@@ -151,7 +199,7 @@ pub fn build_router(state: AppState) -> Router {
 
 /// Bind the listener and serve until shutdown.
 pub async fn run(config: Config) -> anyhow::Result<()> {
-    let app = build_router(AppState::new(&config)?);
+    let app = build_router(AppState::new(&config).await?);
     let listener = tokio::net::TcpListener::bind(config.listen).await?;
     tracing::info!("listening on http://{}", listener.local_addr()?);
     axum::serve(listener, app).await?;
@@ -270,12 +318,12 @@ fn is_forwardable(name: &str) -> bool {
 mod tests {
     use super::build_detector;
 
-    #[test]
-    fn required_ner_is_fatal_when_absent() {
+    #[tokio::test]
+    async fn required_ner_is_fatal_when_absent() {
         // M2-R1: requiring a NER that can't be present (no `onnx` feature, or —
         // with the feature — no model configured in the test env) is fatal.
-        assert!(build_detector(true).is_err());
+        assert!(build_detector(true).await.is_err());
         // Not requiring it always yields a structured-only detector.
-        assert!(build_detector(false).is_ok());
+        assert!(build_detector(false).await.is_ok());
     }
 }

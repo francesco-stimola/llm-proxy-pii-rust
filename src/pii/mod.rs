@@ -12,6 +12,8 @@ pub mod overlap;
 pub mod recognizers;
 
 #[cfg(feature = "onnx")]
+pub mod hf;
+#[cfg(feature = "onnx")]
 pub mod onnx;
 
 use std::ops::Range;

@@ -28,10 +28,14 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # `tokenizers` uses default-features = false to avoid the C/C++ regex backends.
 ort = { version = "=2.0.0-rc.12", optional = true, features = ["download-binaries"] }
 tokenizers = { version = "0.23", optional = true, default-features = false, features = ["fancy-regex"] }
+# HuggingFace Hub client (M2.5): opt-in, revision-pinned model fetch into the
+# standard HF cache. Async API (default features), built on the `reqwest` already
+# in the tree — no extra native deps. Only pulled with the `onnx` feature.
+hf-hub = { version = "1", optional = true }
 
 [features]
 default = []
-onnx = ["dep:ort", "dep:tokenizers"]
+onnx = ["dep:ort", "dep:tokenizers", "dep:hf-hub"]
 
 [dev-dependencies]
 # Property-based testing — the faithful port of the old proxy's Hypothesis suite
