@@ -317,12 +317,26 @@ async fn stream_chat_completions(
     };
 
     let code = StatusCode::from_u16(response.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+
+    // M3-R1: only stream if the upstream actually answered with SSE. A JSON error
+    // (401/429/…) or a provider that ignored `stream` is served through the buffered
+    // path instead — the client gets the real content-type + status, with de-masking.
+    let is_sse = response
+        .headers()
+        .get(CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(|ct| ct.to_ascii_lowercase().contains("text/event-stream"))
+        .unwrap_or(false);
+    if !is_sse {
+        return buffered_fallback(state, response, code, ctx).await;
+    }
+
     let mut out_headers = forwardable_headers(response.headers());
     out_headers.insert(CONTENT_TYPE, HeaderValue::from_static("text/event-stream"));
 
     let upstream = response.bytes_stream();
     // Clean request (nothing masked) or debug-skip → stream through untouched;
-    // otherwise de-anonymize each `delta.content` with the hold-back buffer.
+    // otherwise de-anonymize each delta with the hold-back buffer.
     let body = if state.debug_skip_demask || ctx.vault.is_empty() {
         if state.debug_skip_demask {
             tracing::debug!("skipping response de-mask (PII_DEBUG_SKIP_DEMASK)");
@@ -335,10 +349,46 @@ async fn stream_chat_completions(
     (code, out_headers, body).into_response()
 }
 
+/// A `stream:true` request the upstream answered without SSE (a JSON error, or a
+/// provider that ignored `stream`): buffer it, de-mask, and forward like a normal
+/// non-streaming reply so the client sees the real status + content-type (M3-R1).
+async fn buffered_fallback(
+    state: &AppState,
+    response: reqwest::Response,
+    code: StatusCode,
+    ctx: &mut RequestContext,
+) -> Response {
+    let upstream_headers = response.headers().clone();
+    match response.json::<Value>().await {
+        Ok(json) => {
+            let mut resp = ProxyResponse { body: json };
+            if state.debug_skip_demask {
+                tracing::debug!("skipping response de-mask (PII_DEBUG_SKIP_DEMASK)");
+            } else {
+                for stage in state.stages.iter().rev() {
+                    stage.on_response(&mut resp, ctx);
+                }
+            }
+            let forwarded = forwardable_headers(&upstream_headers);
+            (code, forwarded, Json(resp.body)).into_response()
+        }
+        Err(err) => {
+            tracing::error!(error = %err, "streaming request: upstream returned neither SSE nor JSON");
+            error_response(code, "upstream returned a non-SSE, non-JSON response", "proxy_error")
+        }
+    }
+}
+
 /// Wrap an upstream SSE byte stream in an incremental de-anonymizer (M3).
-fn demasking_sse_body<S>(upstream: S, vault: crate::pii::anonymizer::Vault) -> Body
+///
+/// Generic over the stream error so it is unit-testable without a real HTTP round
+/// trip. A mid-stream upstream error is turned into a **terminal SSE `event: error`**
+/// (after flushing any buffered content) and the stream ends cleanly, rather than
+/// aborting the client connection.
+fn demasking_sse_body<S, E>(upstream: S, vault: crate::pii::anonymizer::Vault) -> Body
 where
-    S: futures_util::Stream<Item = reqwest::Result<Bytes>> + Send + 'static,
+    S: futures_util::Stream<Item = Result<Bytes, E>> + Send + 'static,
+    E: std::fmt::Display + Send + 'static,
 {
     struct StreamState<S> {
         inner: std::pin::Pin<Box<S>>,
@@ -363,12 +413,14 @@ where
                     if out.is_empty() {
                         continue; // no complete line yet — pull more
                     }
-                    return Some((Ok::<Bytes, std::io::Error>(Bytes::from(out)), st));
+                    return Some((Ok::<Bytes, std::convert::Infallible>(Bytes::from(out)), st));
                 }
                 Some(Err(err)) => {
                     st.ended = true;
-                    let io = std::io::Error::other(err.to_string());
-                    return Some((Err(io), st));
+                    // Flush buffered content, then a terminal error event; end clean.
+                    let mut out = st.demasker.flush();
+                    out.extend_from_slice(sse_error_event(&err.to_string()).as_bytes());
+                    return Some((Ok(Bytes::from(out)), st));
                 }
                 None => {
                     st.ended = true;
@@ -383,6 +435,15 @@ where
     });
 
     Body::from_stream(stream)
+}
+
+/// A terminal SSE error event. The message is an upstream transport/decoding error
+/// (no input text / PII).
+fn sse_error_event(message: &str) -> String {
+    let payload = json!({
+        "error": { "message": format!("upstream stream error: {message}"), "type": "proxy_error" }
+    });
+    format!("event: error\ndata: {payload}\n\n")
 }
 
 /// Collect the allowlisted client request headers to pass through upstream (M3).
@@ -449,7 +510,8 @@ fn is_forwardable(name: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::build_detector;
+    use super::{Bytes, build_detector, demasking_sse_body};
+    use crate::pii::anonymizer::Vault;
 
     #[tokio::test]
     async fn required_ner_is_fatal_when_absent() {
@@ -458,5 +520,29 @@ mod tests {
         assert!(build_detector(true).await.is_err());
         // Not requiring it always yields a structured-only detector.
         assert!(build_detector(false).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn mid_stream_upstream_error_becomes_terminal_sse_event() {
+        // M3 follow-up: an error partway through the stream is turned into a
+        // terminal `event: error` (after flushing buffered content), not a broken
+        // connection. Injected via a synthetic stream — no HTTP round-trip.
+        let chunk = Bytes::from(
+            "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"}}]}\n\n".to_string(),
+        );
+        let upstream = futures_util::stream::iter(vec![
+            Ok::<Bytes, std::io::Error>(chunk),
+            Err(std::io::Error::other("boom")),
+        ]);
+        let body = demasking_sse_body(upstream, Vault::new());
+        let bytes = axum::body::to_bytes(body, usize::MAX).await.unwrap();
+        let text = String::from_utf8(bytes.to_vec()).unwrap();
+
+        assert!(
+            text.contains("\"content\":\"hi\""),
+            "content received before the error must survive: {text}"
+        );
+        assert!(text.contains("event: error"), "a terminal SSE error event must be emitted: {text}");
+        assert!(text.contains("proxy_error"), "error payload present: {text}");
     }
 }

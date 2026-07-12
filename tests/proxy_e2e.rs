@@ -340,6 +340,51 @@ async fn e2e_streaming_deanonymizes_split_placeholder() {
     assert!(raw.contains("[DONE]"), "terminator preserved");
 }
 
+/// Mock upstream that answers *any* request (even `stream:true`) with a non-2xx
+/// `application/json` error — a provider rate-limit / auth error.
+async fn spawn_json_error_mock() -> SocketAddr {
+    async fn handler() -> impl IntoResponse {
+        (
+            axum::http::StatusCode::TOO_MANY_REQUESTS,
+            Json(json!({ "error": { "message": "rate limited", "type": "rate_limit" } })),
+        )
+    }
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let app = Router::new().route("/v1/chat/completions", post(handler));
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    addr
+}
+
+#[tokio::test]
+async fn e2e_streaming_non_sse_error_falls_back_to_json() {
+    // M3-R1: a `stream:true` request the upstream answers with a non-SSE JSON error
+    // must reach the client as that JSON error (real status + content-type), not be
+    // force-wrapped as an event-stream.
+    let proxy = spawn_proxy(spawn_json_error_mock().await).await;
+
+    let resp = reqwest::Client::new()
+        .post(format!("http://{proxy}/v1/chat/completions"))
+        .json(&json!({
+            "model": "gpt-x",
+            "stream": true,
+            "messages": [{ "role": "user", "content": "hi" }]
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 429);
+    let ct = resp
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default();
+    assert!(ct.contains("application/json"), "got content-type: {ct}");
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["error"]["type"], "rate_limit");
+}
+
 #[tokio::test]
 async fn e2e_clean_request_passes_through_unchanged() {
     let proxy = spawn_proxy(spawn_mock_upstream().await).await;

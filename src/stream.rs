@@ -41,13 +41,38 @@ pub(crate) fn split_demaskable(pending: &str) -> usize {
     }
 }
 
+/// Which streamed text field a hold-back buffer belongs to. Content and each
+/// tool-call's arguments stream independently, so each gets its own buffer.
+#[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+enum StreamKey {
+    /// `choices[choice].delta.content`
+    Content { choice: usize },
+    /// `choices[choice].delta.tool_calls[tool].function.arguments`
+    ToolArg { choice: usize, tool: u64 },
+}
+
+/// Build a synthesized final chunk carrying the flushed de-masked `text` for a key.
+fn flush_chunk(key: &StreamKey, text: &str) -> Value {
+    match key {
+        StreamKey::Content { choice } => {
+            json!({ "choices": [ { "index": choice, "delta": { "content": text } } ] })
+        }
+        StreamKey::ToolArg { choice, tool } => json!({
+            "choices": [ {
+                "index": choice,
+                "delta": { "tool_calls": [ { "index": tool, "function": { "arguments": text } } ] }
+            } ]
+        }),
+    }
+}
+
 /// Incremental SSE de-anonymizer for one response stream.
 pub struct SseDemasker {
     vault: Vault,
     /// Bytes of a not-yet-complete line (split across upstream chunks).
     line_buf: Vec<u8>,
-    /// Per-choice held-back content (a possible split placeholder tail).
-    pending: HashMap<usize, String>,
+    /// Held-back text per streamed field (a possible split-placeholder tail).
+    pending: HashMap<StreamKey, String>,
     /// Whether the held-back content was already flushed (at `[DONE]`).
     flushed: bool,
 }
@@ -119,49 +144,66 @@ impl SseDemasker {
         }
     }
 
-    /// De-mask each `choices[].delta.content` in a parsed chunk, with hold-back.
+    /// De-mask each `choices[].delta.content` **and** each streamed
+    /// `delta.tool_calls[].function.arguments` in a parsed chunk, with hold-back.
     fn rewrite_deltas(&mut self, value: &mut Value) {
         let Some(choices) = value.get_mut("choices").and_then(Value::as_array_mut) else {
             return;
         };
         for (pos, choice) in choices.iter_mut().enumerate() {
-            let idx = choice
+            let choice_idx = choice
                 .get("index")
                 .and_then(Value::as_u64)
                 .map(|n| n as usize)
                 .unwrap_or(pos);
-            if let Some(content) = choice.pointer_mut("/delta/content") {
-                if let Value::String(text) = content {
-                    *text = self.push_content(idx, text);
+            let Some(delta) = choice.get_mut("delta") else {
+                continue;
+            };
+            if let Some(Value::String(text)) = delta.get_mut("content") {
+                *text = self.push_buffered(StreamKey::Content { choice: choice_idx }, text);
+            }
+            if let Some(tool_calls) = delta.get_mut("tool_calls").and_then(Value::as_array_mut) {
+                for (tpos, tool_call) in tool_calls.iter_mut().enumerate() {
+                    let tool = tool_call
+                        .get("index")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(tpos as u64);
+                    if let Some(Value::String(args)) = tool_call.pointer_mut("/function/arguments") {
+                        *args = self.push_buffered(
+                            StreamKey::ToolArg { choice: choice_idx, tool },
+                            args,
+                        );
+                    }
                 }
             }
         }
     }
 
-    /// Append `incoming` to a choice's buffer and return the safe, de-masked
+    /// Append `incoming` to a field's buffer and return the safe, de-masked
     /// prefix; the possible-incomplete-placeholder tail stays buffered.
-    fn push_content(&mut self, idx: usize, incoming: &str) -> String {
+    fn push_buffered(&mut self, key: StreamKey, incoming: &str) -> String {
         let combined = {
-            let pending = self.pending.entry(idx).or_default();
+            let pending = self.pending.entry(key.clone()).or_default();
             pending.push_str(incoming);
             std::mem::take(pending)
         };
         let split = split_demaskable(&combined);
         let emitted = self.vault.demask(&combined[..split]);
-        self.pending.insert(idx, combined[split..].to_string());
+        self.pending.insert(key, combined[split..].to_string());
         emitted
     }
 
-    /// Emit any held-back content as synthesized delta chunks (once).
+    /// Emit any held-back text as synthesized delta chunks (once), in a stable
+    /// order so multi-choice / multi-tool streams are deterministic.
     fn flush_pending(&mut self, out: &mut Vec<u8>) {
         if self.flushed {
             return;
         }
         self.flushed = true;
-        let mut indices: Vec<usize> = self.pending.keys().copied().collect();
-        indices.sort_unstable();
-        for idx in indices {
-            let pending = self.pending.get_mut(&idx).map(std::mem::take).unwrap_or_default();
+        let mut keys: Vec<StreamKey> = self.pending.keys().cloned().collect();
+        keys.sort_unstable();
+        for key in keys {
+            let pending = self.pending.get_mut(&key).map(std::mem::take).unwrap_or_default();
             if pending.is_empty() {
                 continue;
             }
@@ -169,7 +211,7 @@ impl SseDemasker {
             if text.is_empty() {
                 continue;
             }
-            let chunk = json!({ "choices": [ { "index": idx, "delta": { "content": text } } ] });
+            let chunk = flush_chunk(&key, &text);
             out.extend_from_slice(format!("data: {chunk}\n\n").as_bytes());
         }
     }
@@ -243,6 +285,55 @@ mod tests {
         let raw = String::from_utf8(out).unwrap();
         assert!(!raw.contains("[EMAIL_1]"), "placeholder leaked to client: {raw}");
         assert!(raw.contains("data: [DONE]"), "terminator must be preserved");
+    }
+
+    /// Sum a streamed `tool_calls[0].function.arguments` across `data:` chunks.
+    fn collect_tool_args(bytes: &[u8]) -> String {
+        let text = String::from_utf8(bytes.to_vec()).unwrap();
+        let mut acc = String::new();
+        for line in text.lines() {
+            if let Some(data) = line.strip_prefix("data:") {
+                let data = data.trim();
+                if data == "[DONE]" {
+                    continue;
+                }
+                let v: Value = serde_json::from_str(data).unwrap();
+                if let Some(a) = v
+                    .pointer("/choices/0/delta/tool_calls/0/function/arguments")
+                    .and_then(Value::as_str)
+                {
+                    acc.push_str(a);
+                }
+            }
+        }
+        acc
+    }
+
+    fn sse_event(v: Value) -> Vec<u8> {
+        format!("data: {v}\n\n").into_bytes()
+    }
+
+    #[test]
+    fn tool_call_arguments_split_across_deltas_are_restored() {
+        let mut d = SseDemasker::new(vault_with_email());
+        let mut out = Vec::new();
+        // The tool-call arguments JSON carries `[EMAIL_1]`, split across two events.
+        out.extend(d.push(&sse_event(json!({
+            "choices": [ { "index": 0, "delta": {
+                "tool_calls": [ { "index": 0, "function": { "arguments": "{\"to\":\"[EMA" } } ]
+            } } ]
+        }))));
+        out.extend(d.push(&sse_event(json!({
+            "choices": [ { "index": 0, "delta": {
+                "tool_calls": [ { "index": 0, "function": { "arguments": "IL_1]\"}" } } ]
+            } } ]
+        }))));
+        out.extend(d.push(b"data: [DONE]\n\n"));
+        out.extend(d.flush());
+
+        assert_eq!(collect_tool_args(&out), r#"{"to":"bob@test.com"}"#);
+        let raw = String::from_utf8(out).unwrap();
+        assert!(!raw.contains("[EMAIL_1]"), "placeholder leaked in tool args: {raw}");
     }
 
     #[test]
