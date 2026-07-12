@@ -297,13 +297,26 @@ the OpenAI-compat *shape* (path / client-header allowlist / static headers) — 
 provider-independent, so no preset bypasses it. Log sweep: `src/stream.rs` emits **no** logs, and every
 streaming/routing log site carries only static text / an error object / the placeholder-only masked body.
 Deferred M3 follow-ups (tool-call-arg de-anon, request-level routing, terminal SSE error events) are all
-genuine non-leaks. One **non-blocking** follow-up found:
+genuine non-leaks. **Non-blocking** follow-ups found:
 - [x] **M3-R1 (low, robustness — not a leak).** Fixed: `stream_chat_completions` now branches on the
   upstream response `content-type` — when it isn't `text/event-stream`, it falls back to the buffered
   path (`buffered_fallback`: forward the real status + content-type and run the `on_response` de-mask)
   instead of forcing SSE. So a `stream:true` request the upstream answers with a JSON error (401/429/…)
   reaches the client as that JSON error. Test `e2e_streaming_non_sse_error_falls_back_to_json` (upstream
   429 `application/json` → client sees 429 + `application/json` + the error body).
+- [ ] **M3-R2 (low-medium, correctness — not a leak; pre-existing).** `Vault::demask` substitutes
+  `[KIND_N]` → the raw value as a **plain string replacement**. When the surrounding text is a
+  **JSON-encoded string** — notably `tool_calls[].function.arguments` (and legacy
+  `function_call.arguments`) — a de-masked value containing a `"`, `\`, or a control char yields
+  **invalid inner JSON**, so the client fails to parse the tool-call arguments. Affects **both** the
+  buffered path (M1 Part B, `src/pipeline/privacy.rs`) **and** the M3 streaming tool-arg de-anon
+  (`src/stream.rs`); it is **pre-existing**, surfaced during the M3 review. Not a leak (client-facing;
+  request-side masking is unaffected) and low-probability (structured PII never carries these chars;
+  NER Person/Org/Location values rarely do). **Fix:** make de-mask **JSON-aware** for JSON-string
+  fields — JSON-escape the substituted value when demasking into an `arguments` field (covers buffered
+  *and* streaming), or on the buffered path parse → demask the string leaves → re-serialize. **Test:** a
+  Person/Org value containing a quote (e.g. `Ac"me Corp`) de-masked into a tool-call `arguments` → assert
+  the resulting `arguments` is still valid JSON carrying the correct value.
 
 ## M4 — Broad locale & language coverage (future)
 Goal: extend PII coverage beyond IT + US to a wide set of locales and languages,
