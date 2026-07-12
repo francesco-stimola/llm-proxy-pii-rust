@@ -148,9 +148,11 @@ unset. Two non-blocking follow-ups:
   `rustls` + **`aws-lc-rs`** (a new native C/asm crypto lib), `hf-xet`, and
   `reqwest-middleware`. So the "built on the `reqwest` already in the tree — no new native
   deps" claim (`Cargo.toml` comment, `docs/DEVLOG.md`, this file) is inaccurate. The
-  **default** build is unaffected (hf-hub is `onnx`-gated). **Fix:** either trim via
-  `hf-hub = { …, default-features = false, features = [ minimal ] }` to drop `hf-xet` /
-  the duplicate reqwest / `aws-lc-rs`, **or** correct the three claims to state the real
+  **default** build is unaffected (hf-hub is `onnx`-gated). **Fix (DECIDED 2026-07-12 —
+  trim, per the lean bar):** set `hf-hub = { …, default-features = false, features = [ … ] }`
+  with a minimal/leaner-TLS feature set (align the TLS backend with the in-tree `reqwest`;
+  **drop `aws-lc-rs` / `hf-xet` / the duplicate `reqwest`**), **and** correct the three
+  inaccurate claims (`Cargo.toml` comment, `docs/DEVLOG.md`, this file) to the real
   onnx-only footprint. **Test:** a guard asserting `cargo tree` (no features) contains no
   `hf-hub`, plus a note pinning the intended `cargo tree --features onnx` set.
 - [ ] **M2.5-R2 (fail-closed hygiene, minor).** `parse_id2label` returns `Ok(vec![])` for
@@ -161,7 +163,7 @@ unset. Two non-blocking follow-ups:
   `src/pii/hf.rs`. **Test:** `empty_id2label_is_an_error` asserts
   `parse_id2label(r#"{"id2label":{}}"#).is_err()`.
 
-## Debug & observability modes  🔍 *(small, pullable — verify the round-trip by eye)*
+## M2.6 — Debug & observability modes  🔍 *(small, pullable — independent of M3)*
 Opt-in developer tools to confirm, with your own eyes, that masking holds end-to-end.
 **Off by default; neither weakens the fail-closed posture** (request-side masking always
 runs). Small and independent of M3 — can be pulled early to eyeball that the system holds.
