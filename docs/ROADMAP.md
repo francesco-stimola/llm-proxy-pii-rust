@@ -74,91 +74,31 @@ default build stays feature-off and native-dep-free.
 - [x] **NER concurrency**: `OnnxNerDetector` holds a round-robin **pool of sessions** (`NER_POOL_SIZE`) so inference isn't a single-threaded bottleneck.
 - [x] *(micro, from M1.5 review)* **Symmetric response de-masking** — `demask_content` now mirrors `mask_content` (bare-string array elements restored too).
 
-**Fail-closed for NER — RESOLVED (M2-R1/R2, see below).** A `NER_REQUIRED` switch
-now makes the NER fail closed: a required detector's load *or* inference error is
-fatal / blocks the request via a new `PiiDetector::try_detect` error channel; when
-not required, a `FailOpen` wrapper keeps the old fail-open behaviour explicitly.
+**Fail-closed for NER — RESOLVED.** A `NER_REQUIRED` switch makes the NER fail
+closed: a required detector's load *or* inference error is fatal / blocks the
+request via the `PiiDetector::try_detect` error channel; when unset (the default),
+a `FailOpen` wrapper keeps the explicit fail-open posture for names.
 
 ### M2 review findings — ALL 9 closed ✅
-Closed R1–R9 with tests (see DEVLOG 2026-07-12); **65 tests green (default),
-`--features onnx` builds + runs a live model clean, no warnings**. R6 was closed by
-downloading the XLM-R model and confirming non-ASCII ("Müller", 2-byte `ü`) extracts
-on exact byte boundaries — plus a whitespace-trim fix so SentencePiece leading-space
-offsets don't leak into the span. The closed findings are left inline for the
-reviewer to collapse to a DEVLOG pointer per the lifecycle.
+R1–R9 (fail-closed NER via `NER_REQUIRED`/`try_detect`, decode/onnx robustness, the
+eval harness) are all closed with tests. Full detail + the measured model pick
+(XLM-R int8) in `docs/DEVLOG.md` (2026-07-12); commits `244b49e`, `1e473ce`.
 
-- [x] **M2-R1 — load-time NER downgrade is silent (fail-open).** *(closed: `NER_REQUIRED` makes a configured-but-unloadable NER fatal at startup; `build_detector`/`AppState::new` now return `Result`. Test: `required_ner_is_fatal_when_absent`.)* `build_detector` /
-  `load_onnx_ner` (`src/server.rs:78-100`) fall back to structured-only when a
-  *configured* NER fails to load: it logs at `error` but the server then runs with
-  weakened protection and forwards names upstream. The ROADMAP "Open" note above
-  only covers the *request-time* inference error, not this *load-time* case. **Fix:**
-  add a `NER_REQUIRED` (or fail-closed-by-default) switch so a configured-but-
-  unloadable NER is fatal at startup, and broaden the deferred fail-closed decision
-  to cover **both** the load path and the request path (one detector→pipeline error
-  channel serves both). **Test:** with `NER_REQUIRED` set and a bad model path,
-  `AppState::new` / `run` returns an error instead of a structured-only server.
-- [x] **M2-R2 — NER inference error silently drops all names (fail-open leak).** *(closed: added `PiiDetector::try_detect -> Result<_, DetectError>`; the composite propagates, `PrivacyStage` blocks the request on a required-detector error, and a `FailOpen` wrapper opts a non-critical detector out. Tests: `required_detector_error_propagates`, `fail_open_wrapped_detector_is_swallowed`, `required_detector_error_blocks_request_fail_closed`.)*
-  `OnnxNerDetector::detect` (`src/pii/onnx.rs:146-161`) returns `Vec::new()` on any
-  `infer` error, so unstructured PII in that request is forwarded raw (structured
-  PII is still masked). The `PiiDetector::detect` signature has no error channel, so
-  the pipeline can't fail closed. **Fix (the deferred decision, spelled out):** change
-  the trait to `fn detect(&self, input: &str) -> Result<Vec<PiiEntity>, DetectError>`
-  (or add a fallible method), and in `PrivacyStage::on_request` set `ctx.block` when a
-  *required* detector errors. **Test:** a stub detector that returns `Err` on a text
-  with a name → request is blocked (400), not forwarded.
-- [x] **M2-R3 — `NER_LABELS` length/order not validated against the model.** *(closed: `ner_decode::validate_label_count` fails inference when `NER_LABELS.len() != num_labels`. Test: `label_count_validation`.)*
-  `infer` (`src/pii/onnx.rs:120-129`) does `id2label.get(best).unwrap_or("O")`, so if
-  the configured label list is shorter than (or misordered vs.) the model's real
-  output dimension, out-of-range class ids silently become `O` — a `Person` token is
-  dropped and the name leaks. Model selection sets `NER_LABELS` by hand, so this is
-  an easy misconfiguration. **Fix:** validate `id2label.len() == num_labels` on the
-  first inference (or at load); on mismatch fail closed / return an error rather than
-  silently degrading. **Test:** a detector built with a too-short `id2label` errors
-  instead of returning zero entities.
-- [x] **M2-R4 — hardcoded model I/O couples the detector to one export shape.** *(closed: `outputs.get("logits")` returns a graceful `Err` instead of panicking; `token_type_ids` is threaded when `NER_TOKEN_TYPE_IDS` is set (BERT-family); the required input/output contract is documented in `onnx.rs`. A fixture-model test for a non-`logits` output is deferred to model landing.)*
-  `outputs["logits"]` (`src/pii/onnx.rs:117`) **panics** (`no output named
-  \`logits\``) if the model's output node has another name; and `ort::inputs!`
-  (`onnx.rs:108-113`) supplies only `input_ids` + `attention_mask`, so a model that
-  requires `token_type_ids` fails **every** inference and (via M2-R2) silently falls
-  open. **Fix:** read the output by index or a configurable name and return a graceful
-  error instead of panicking; document the required-input/output contract and
-  constrain model selection to models matching it (or thread `token_type_ids` when
-  present). **Test:** decode against a tiny fixture whose output node isn't `logits`
-  → graceful `Err`, not a panic.
-- [x] **M2-R5 — `is_begin` misses underscore BIO prefixes.** *(closed: `is_begin` now treats the first `-`/`_`-separated segment `B` (case-insensitive) as a begin. Test: `underscore_bio_prefix_also_splits_entities`.)* `label_to_kind`
-  (`src/pii/ner_decode.rs:22-30`) accepts both `-` and `_` separators, but `is_begin`
-  (`ner_decode.rs:32-35`) only recognises `b-`. A model using `B_PER`/`I_PER` labels
-  decodes kinds correctly yet never sees a "begin", so two adjacent same-type entities
-  (e.g. `New York` then `London`) glue into one span. **Fix:** make `is_begin` treat
-  the first `-`/`_`-separated segment `B` (case-insensitive) as a begin. **Test:** the
-  existing `adjacent_same_type_entities_are_split_by_begin` case, re-run with
-  `B_LOC`/`I_LOC`/`B_LOC`, still splits.
-- [x] **M2-R6 — offset units unverified for non-ASCII (recall/robustness).** *(closed with the real model: XLM-R extracts "Müller"/"Berlin" on exact byte boundaries — the tokenizer emits byte offsets, so the `&str` slicing is correct for non-ASCII. Added a **whitespace-trim** in `decode_entities` (SentencePiece includes the leading space in a token offset, e.g. `▁Mario` spans " Mario") so the span is exact and masking preserves surrounding spaces. Tests: `leading_space_in_token_offset_is_trimmed` + the live `ner_eval` on the DE case. A dropped off-boundary span still `warn`s as a backstop.)*
-- [x] **M2-R7 — partial-overlap drops the NER remainder (recall, by-design).** *(closed as a conscious choice: `resolve_overlaps` drops the whole lower-priority span — documented in the function + tested (`ner_span_enclosing_a_structured_span_is_dropped_whole`). Structured PII is never lost; only the non-overlapping unstructured remainder.)*
-  `resolve_overlaps` (`src/pii/overlap.rs:26-33`) discards a whole lower-priority NER
-  span when it overlaps a kept structured span — including the non-overlapping part,
-  which may be a real name (e.g. a `Person` span that happens to enclose an email
-  keeps only the email). Deterministic-wins is preserved (correct); the remainder loss
-  is an acceptable lean choice but should be a conscious, tested one. **Fix:** decide
-  keep-vs-trim when the model lands; if kept, document it. **Test:** an NER span that
-  strictly encloses a structured span asserts the intended remainder behaviour.
-- [x] **M2-R8 — inference-error log may format input-derived text.** *(closed: the tokenize path now maps to a fixed `"tokenizer error"` (no `{e}`), so no input text can reach a log or the `DetectError` message / 400 body.)* `detect`'s
-  `warn!(error = %err, …)` (`src/pii/onnx.rs:156`) prints the full `anyhow` error; the
-  `tokenize: {e}` variant (`onnx.rs:85-86`) could embed input text, which for a
-  "never log raw PII" tool is a leak vector. **Fix:** log the error *category* on the
-  tokenize path, not the formatted error. **Test:** n/a (hardening) — or assert the
-  warn payload contains no input substring.
-- [x] **M2-R9 (minor, non-leak) — poisoned session mutex disables a pool slot.** *(closed: `.lock().unwrap_or_else(|p| p.into_inner())` recovers a poisoned lock instead of panicking for the process lifetime.)*
-  `self.sessions[idx].lock().expect("session mutex poisoned")` (`src/pii/onnx.rs:107`)
-  panics for the life of the process if an `ort` panic ever poisons that mutex,
-  permanently removing 1/`pool_size` of capacity. No leak (the panic precedes
-  forwarding), but an availability cliff. **Fix:** recover via `into_inner()` on a
-  poisoned lock. **Test:** n/a (robustness).
-
-**Doc follow-up (done in this review):** `docs/ARCHITECTURE.md` "Robustness &
-fail-closed" now records the known M2 gap that NER load/inference errors fail
-**open** for unstructured PII (cross-links M2-R1/R2), so the strong fail-closed
-posture there is no longer misleading.
+### M2 completion review (2026-07-12) — new findings
+Verified independently: **65 tests green (default), no warnings**;
+`cargo build --features onnx` + the onnx test targets compile clean. The chosen
+model is off-repo and was **not** locally available, so the DEVLOG recall numbers
+were **not** independently reproduced — the eval harness and rejection reasoning were
+code-reviewed instead and are sound. One minor follow-up:
+- [ ] **M2-R10 (minor, harness precision) — eval TP/FP/FN use `Vec::contains`, so a
+  case with a duplicate `(kind, text)` entity mis-counts.** `tests/ner_eval.rs:118-130`
+  scores membership, not multiset: two identical expected entities both match a single
+  detection (recall inflated 0.5→1.0), and a spurious duplicate detection isn't an FP.
+  No current corpus case has duplicate `(kind, text)` in one sentence, so the recorded
+  numbers are unaffected — but a future case would silently inflate recall in a
+  leak-measurement harness. **Fix:** count against a consumed multiset (drain matched
+  detections, e.g. a per-`(kind,text)` count map). **Test:** a synthetic case with a
+  repeated entity where the model finds it once asserts recall 0.5, not 1.0.
 
 ## M2.5 — HuggingFace model management (auto-download via `hf-hub`)
 Ergonomics + reproducibility, **not a correctness gap** (M2 works). Today the NER
