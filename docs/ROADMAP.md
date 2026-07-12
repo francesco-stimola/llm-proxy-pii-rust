@@ -108,7 +108,8 @@ that standard cache — conventional location, dedup, reproducible. Pure Rust: t
 default build stays native-dep-free. Implemented in `src/pii/hf.rs`, wired in
 `src/server.rs::load_onnx_ner`; verified end-to-end (`docs/DEVLOG.md` 2026-07-12).
 - [x] Added `hf-hub = { version = "1", optional = true }`, wired into the `onnx`
-  feature only (async API on the `reqwest` already in the tree — no new native deps).
+  feature only (async API; **default features**). *Its real dep footprint is heavier
+  than first recorded — see **M2.5-R1**.* The **default** build stays native-dep-free.
 - [x] Resolve `(repo, revision, filename)` → a local cache path (`HfModelSpec::resolve`).
   **`NER_MODEL_PATH` (explicit local file) keeps priority** — set it for zero outbound
   calls, exactly as before.
@@ -129,6 +130,36 @@ default build stays native-dep-free. Implemented in `src/pii/hf.rs`, wired in
   **without network**; the real download is exercised only by the `#[ignore]`d eval
   harness (which grew a `NER_MODEL_REPO` path). Manual model copies removed; the model
   now lives in the standard HF cache.
+
+### M2.5 review findings (2026-07-12)
+Independently verified: **65 tests green (default) / 72 + 1 `#[ignore]`d (`--features
+onnx`) / no warnings**; `cargo build --features onnx` clean. **Live numbers reproduced**
+through the auto-download path (model resolved from the standard HF cache — no
+re-download): **Org 1.00 / Loc 1.00 / Person 0.75** on the required corpus (the printed
+aggregate 0.60/0.50/0.545 folds in the DE `multilingual_preview` "Herr Müller" case, as
+DEVLOG notes) — this closes the prior review's "numbers not independently reproduced"
+caveat. The fail-closed paths all hold: required-fetch failure is fatal at startup
+(`load_onnx_ner → build_detector → AppState::new → run`); `parse_id2label` fails closed on
+missing / non-contiguous / non-integer `id2label`; the outbound fetch is opt-in
+(`NER_MODEL_REPO` only), logged, and never fires when `NER_MODEL_PATH` wins or the repo is
+unset. Two non-blocking follow-ups:
+- [ ] **M2.5-R1 (leanness + docs accuracy).** `hf-hub` 1.0 does **not** reuse the in-tree
+  `reqwest 0.12`; under `--features onnx` it pulls a **second** `reqwest 0.13.4`, plus
+  `rustls` + **`aws-lc-rs`** (a new native C/asm crypto lib), `hf-xet`, and
+  `reqwest-middleware`. So the "built on the `reqwest` already in the tree — no new native
+  deps" claim (`Cargo.toml` comment, `docs/DEVLOG.md`, this file) is inaccurate. The
+  **default** build is unaffected (hf-hub is `onnx`-gated). **Fix:** either trim via
+  `hf-hub = { …, default-features = false, features = [ minimal ] }` to drop `hf-xet` /
+  the duplicate reqwest / `aws-lc-rs`, **or** correct the three claims to state the real
+  onnx-only footprint. **Test:** a guard asserting `cargo tree` (no features) contains no
+  `hf-hub`, plus a note pinning the intended `cargo tree --features onnx` set.
+- [ ] **M2.5-R2 (fail-closed hygiene, minor).** `parse_id2label` returns `Ok(vec![])` for
+  an **empty** `id2label` object instead of failing closed — the empty-map case is caught
+  only later, by `validate_label_count` at **request** time (and only `NER_REQUIRED` turns
+  that into a block; otherwise names silently go undetected). **Fix:**
+  `anyhow::ensure!(!pairs.is_empty(), "id2label is empty")` after the contiguity check in
+  `src/pii/hf.rs`. **Test:** `empty_id2label_is_an_error` asserts
+  `parse_id2label(r#"{"id2label":{}}"#).is_err()`.
 
 ## Debug & observability modes  🔍 *(small, pullable — verify the round-trip by eye)*
 Opt-in developer tools to confirm, with your own eyes, that masking holds end-to-end.
