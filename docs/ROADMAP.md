@@ -64,8 +64,8 @@ that genuinely needs real model files (measure, don't guess). See DEVLOG 2026-07
 - [x] `OnnxNerDetector` behind the `onnx` feature (CPU EP) — `src/pii/onnx.rs`: HF tokenizer + `ort` session, per-token argmax → BIO decode; `--features onnx` compiles clean. Runtime verification is gated on a chosen model.
 - [ ] **Evaluate candidate models & pick one** — the remaining measured step (needs real model files; measure, don't guess). Locked set (2026-07-12 — XLM-R baseline + Piiranha specialist, head-to-head; GLiNER in escalation): see [docs/M2-NER-EVALUATION.md](M2-NER-EVALUATION.md).
   - [ ] **Eval harness** — an `#[ignore]`d test / small bin gated on `NER_MODEL_PATH` that scores a live candidate against `ner_cases.json` (recall/precision/F1 per type + CPU latency/RAM/size, fp32 + int8), run through the hybrid resolver. `ner_corpus.rs` only guards the negatives today.
-  - [ ] **Candidate A — XLM-R multilingual NER** (drop-in baseline): export → ONNX + int8, run, record numbers.
-  - [ ] **Candidate B — Piiranha** (PII specialist): export → ONNX + int8, run, record numbers. Pulls in **M2-R4** (token_type_ids) and **M2-R3** (label mapping/validation).
+  - [ ] **Candidate A — XLM-R multilingual NER** (drop-in baseline): download pre-converted ONNX (`jiting/xlm-roberta-base-ner-hrl_onnx`, int8 available — no export needed), run, record numbers.
+  - [ ] **Candidate B — Piiranha** (PII specialist): download pre-converted ONNX (`onnx-community/piiranha-v1-detect-personal-information-ONNX`, int8 available), run, record numbers. Pulls in **M2-R4** (token_type_ids) and **M2-R3** (label mapping).
   - [ ] **Pick + record** the choice and the numbers in `docs/DEVLOG.md`. GLiNER escalation only if neither clears the recall bar.
 - [x] Combine deterministic + ML detectors behind one `PiiDetector` — `CompositeDetector` fans out to N detectors and merges via the shared `overlap::resolve_overlaps` (structured PII outranks NER via `PiiKind::priority`)
 - [x] Extend the corpus with unstructured-entity cases — `tests/corpus/ner_cases.json` (Person/Org/Location, IT+EN, single-word names, REG-03 negatives, a DE multilingual preview)

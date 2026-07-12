@@ -75,6 +75,34 @@ against the corpus and prints the P/R/F1 + latency/RAM table — the artifact th
 decision is made from. Wiring the live model here is also where the fail-closed
 hardening (M2-R1…R4) naturally lands.
 
+### Pre-converted ONNX exists — export step is skipped (verified 2026-07-12)
+
+Both candidates are already on the Hub in ONNX **with int8 variants and a fast
+`tokenizer.json`**, so the Python export/quantization step is **not needed**. The
+builder just downloads three artifacts (one `.onnx` + `tokenizer.json` + the labels
+from `config.json`) and points `NER_MODEL_PATH` / `NER_TOKENIZER_PATH` / `NER_LABELS`
+at them. **Pin the exact repo revision (commit hash)** used, for reproducibility.
+
+- **XLM-R baseline** → [`jiting/xlm-roberta-base-ner-hrl_onnx`](https://huggingface.co/jiting/xlm-roberta-base-ner-hrl_onnx)
+  (Xenova/Transformers.js conversion): `onnx/model.onnx` (fp32, 1.11 GB) +
+  `onnx/model_quantized.onnx` (**int8**, 279 MB) + `tokenizer.json` + `config.json`
+  (clean PER/ORG/LOC labels — feeds today's `onnx.rs` unchanged). Alternate mirror:
+  `tjruesch/xlm-roberta-base-ner-hrl-onnx`.
+- **Piiranha** → [`onnx-community/piiranha-v1-detect-personal-information-ONNX`](https://huggingface.co/onnx-community/piiranha-v1-detect-personal-information-ONNX):
+  `onnx/` ships the full spread — `model.onnx`, `model_fp16.onnx`, `model_int8.onnx`,
+  `model_quantized.onnx`, `model_uint8.onnx`, `model_q4*.onnx` — plus `tokenizer.json`
+  and `config.json`. **Caveat:** Piiranha's labels are PII-granular (given name /
+  surname / city / email / phone / …), **not** plain PER/ORG/LOC — `label_to_kind`
+  must map given+surname → Person, city/etc. → Location, and Piiranha may **not**
+  cover `Organization` the same way (the eval quantifies this). Its email/phone/etc.
+  labels overlap the structured layer and are resolved by the hybrid. This is the
+  **M2-R3** label-mapping work; being mDeBERTa-v3 it also needs `token_type_ids`
+  (**M2-R4**).
+
+Trust note: these are community/auto conversions, not the original authors'. No
+separate trust step is required — scoring each against `ner_cases.json` **is** the
+correctness check (a bad conversion surfaces as low recall) — but pin the revision.
+
 ## Evaluation data
 
 The current corpus (`tests/corpus/pii_cases.json`) is structured-PII focused. M2
