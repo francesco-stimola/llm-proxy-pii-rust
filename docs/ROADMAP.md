@@ -356,16 +356,19 @@ and is wired **only** to the `arguments` fields (buffered `demask_response` + st
 `ToolArg`); `content` keeps the plain `demask`; the round-trip is exact and
 `demask_json_string_keeps_inner_json_valid` is **non-vacuous** (it asserts the plain path *would*
 produce invalid JSON). Non-blocking follow-ups:
-- [ ] **M4-R1 (design decision — make it explicit).** Locale-gating **all** national IDs means a
-  GB NINO (or any non-active-locale ID) flows through **un-masked** under the default `it,us` — a
-  scoped recall gap (documented as deliberate, but not a fail-closed breach: it's coverage scope,
-  not unexpected-input handling). For a privacy tool (recall > precision), **decide + record
-  explicitly** whether very-specific, near-zero-FP national-ID recognizers (e.g. IT Codice Fiscale,
-  16-char interleaved) should run **regardless of locale** while looser ones (GB NINO) stay
-  locale-gated — vs keeping uniform gating.
-- [ ] **M4-R2 (precision — GB NINO over-match; fix + test).** `\b[A-Za-z]{2}\d{6}[A-Da-d]\b` masks
-  any 2-letter + 6-digit + A–D token (e.g. an order/reference code `PO123456A`) as `[NATID_N]` when
-  the `gb` locale is on — an over-mask on legit text (not a leak; GB is off by default). Tighten with
+- [ ] **M4-R1 (DECIDED 2026-07-12 — Option A: national IDs always-on, privacy-first).** National-ID
+  recognizers run **regardless of `PII_LOCALES`** — a national ID that reaches the proxy is masked even
+  if its locale isn't configured (recall > precision; "a miss is a leak"). `PII_LOCALES` is narrowed to
+  gate only genuinely **FP-prone** recognizers (e.g. national *phone* formats, once added). **Prerequisite:
+  M4-R2** — an always-on loose recognizer over-masks globally, so the NINO (and any future loose ID) must
+  be tightened first. **Builder tasks:** move the national-ID recognizers out of `PII_LOCALES` gating into
+  an always-on set; keep the locale-gating mechanism for FP-prone recognizers; update the scoping tests
+  (`uk_nino_needs_the_gb_locale` / `locale_selection_is_scoped` change meaning) and the `PII_LOCALES` docs
+  (SETUP §6, ARCHITECTURE) to the new semantics.
+- [ ] **M4-R2 (precision — GB NINO over-match; PREREQUISITE for M4-R1's always-on).** `\b[A-Za-z]{2}\d{6}[A-Da-d]\b`
+  masks any 2-letter + 6-digit + A–D token (e.g. an order/reference code `PO123456A`) as `[NATID_N]` — an
+  over-mask on legit text (not a leak). Under M4-R1's always-on policy it fires **globally**, so it must be
+  tightened first. Tighten with
   the real NINO prefix rules (invalid 1st letter D/F/I/Q/U/V; 2nd letter D/F/I/O/Q/U/V; disallowed
   pairs BG/GB/KN/NK/NT/TN/ZZ) via a `validate` fn. Test: `PO123456A` (and a disallowed-prefix NINO)
   not masked; a valid NINO still is.
