@@ -160,6 +160,29 @@ fail-closed" now records the known M2 gap that NER load/inference errors fail
 **open** for unstructured PII (cross-links M2-R1/R2), so the strong fail-closed
 posture there is no longer misleading.
 
+## M2.5 — HuggingFace model management (auto-download via `hf-hub`)
+Ergonomics + reproducibility, **not a correctness gap** (M2 works). Today the NER
+model is downloaded by hand and lives in a plain folder; the standard HF cache
+(`~/.cache/huggingface/hub`) is a **library-managed** content-addressed tree
+(`refs`/`blobs`/`snapshots`) you must not hand-populate. Use the official **`hf-hub`
+Rust crate** (behind the `onnx` feature) to fetch the **revision-pinned** model into
+that standard cache — conventional location, dedup, reproducible. Pure Rust: the
+default build stays native-dep-free.
+- [ ] Add `hf-hub` as an **optional** dep, wired into the `onnx` feature only.
+- [ ] Resolve a model file from `(repo, revision, filename)` → a local path in the HF
+  cache. **`NER_MODEL_PATH` (explicit local file) keeps priority** — anyone wanting
+  zero outbound calls just sets it, exactly as today.
+- [ ] **Opt-in** auto-download: when `NER_MODEL_PATH` is unset but `NER_MODEL_REPO`
+  (+ pinned `NER_MODEL_REVISION`, default `478a2a3`, + `NER_MODEL_FILE` e.g.
+  `onnx/model_quantized.onnx`, + tokenizer file) is set, fetch via `hf-hub`. It's a
+  **one-time model fetch (not user data)** — log it; never silent.
+- [ ] Derive `NER_LABELS` from the model's `config.json` `id2label` (in class-id
+  order) so the hand-typed list is optional (keep an explicit override).
+- [ ] Docs: record the env contract + the privacy note (single opt-in outbound model
+  fetch) in `ARCHITECTURE.md` / `SETUP.md`; default XLM-R repo/revision pinned.
+- [ ] Tests: path-resolution + `id2label`-ordering logic unit-tested **without
+  network**; the actual download exercised only by the `#[ignore]`d eval harness.
+
 ## M3 — Streaming
 Goal: SSE token streaming with incremental de-anonymization.
 - [ ] Streaming passthrough of provider responses

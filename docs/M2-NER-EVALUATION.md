@@ -117,6 +117,10 @@ Trust note: these are community/auto conversions, not the original authors'. No
 separate trust step is required — scoring each against `ner_cases.json` **is** the
 correctness check (a bad conversion surfaces as low recall) — but pin the revision.
 
+> The manual `curl` download here is superseded by **M2.5** (ROADMAP): an opt-in,
+> revision-pinned `hf-hub` fetch into the standard HF cache. The hand steps below
+> remain the fallback / reference.
+
 ### Quantization inventory & weight tuning (verified 2026-07-12)
 
 Every variant below ships in each repo's `onnx/` folder (Transformers.js naming), so
