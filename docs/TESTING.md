@@ -176,12 +176,21 @@ Three tiers: universal (always), national IDs (always, off `PII_LOCALES`), FP-pr
 - LOC-05 — `french_nir_key_check` + `french_nir_detected`: FR NIR mod-97 key (valid masked, wrong-key rejected).
 - LOC-06 *(live, `#[ignore]`d)* — **10-language NER validation** via `ner_eval` over `multilingual_preview` (ar/de/es/fr/lv/nl/pt/zh): Person 0.83 / Org 1.00 / Loc 0.91 (recorded in DEVLOG 2026-07-13).
 
+### M5 — integration & performance (planned)
+- E2E-INT-01 *(planned)* — real-provider smoke against **Anthropic** (OpenAI-compat endpoint; opt-in, needs a key, never in CI): a PII round-trip returns the restored value while the request left masked.
+- E2E-INT-02 *(planned, manual)* — the **dual-run** check with `RUST_LOG=…=trace`: Run A (`PII_DEBUG_SKIP_DEMASK=1`) → client gets the placeholders; Run B (normal) → client gets the restored values. Proves the whole chain end-to-end; trace logging re-checks DBG-02 (never-log-raw-PII) on **real** data.
+- E2E-02 / E2E-04 *(to implement in M5)* — the two cataloged old-proxy scenarios (CSV `tool_result`; `SELECT … FROM DUAL`) against a mock — still pending.
+- PERF-01 *(planned)* — load / throughput harness: concurrent connections, large bodies, streaming throughput; latency / RAM of the mask → forward → de-mask path (NER on/off).
+
 ### Dependency footprint (M2.5-R1)
 - DEP-01 — `tests/dependency_footprint.rs` (`default_build_excludes_the_onnx_and_hf_stack`): `cargo tree` on the **default** features must contain no `hf-hub`/`hf-xet`/`aws-lc`/`ort`/`tokenizers` — the ONNX/HF stack (heavy, native) stays behind the `onnx` feature so the shipped default build is native-dep-free.
 
 ### Decisions & open points
-- **Locale coverage — DECIDED: IT + US.** Italian and US phone numbers; IBAN
-  including Italian; US SSN. The corpus carries both.
+- **Coverage scope — DECIDED (2026-07-13; see ROADMAP M4).** *Language (NER):* XLM-R's
+  10 languages (ar/de/en/es/fr/it/lv/nl/pt/zh). *Structured — three tiers:* universal
+  (email/IBAN/card/secret) always on; national IDs (US SSN, IT CF, GB NINO, ES DNI/NIE,
+  FR NIR) **always on regardless of `PII_LOCALES`**; FP-prone recognizers (national *phone*
+  formats) opt-in via `PII_LOCALES` — none yet. Phone: US + `+CC` are universal.
 - **Placeholder format — DECIDED: `[KIND_N]`** (e.g. `[EMAIL_1]`), ASCII. Tests
   still assert invariants (raw absent, typed placeholder present, exact roundtrip)
   rather than literal tokens, so they stay robust to future tweaks.

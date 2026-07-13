@@ -403,10 +403,20 @@ produce invalid JSON). Non-blocking follow-ups:
 ## M5 — Integration & performance testing
 Goal: prove the whole system holds **end-to-end** and **under load**, then document it. Comes after M4 —
 the feature set (structured + NER + streaming + multi-provider) is complete enough to test as a product.
-- [ ] **Real integration tests** — end-to-end scenarios beyond today's mock-upstream e2e: full
-  mask → forward → (stream) → de-mask round-trips across the provider presets (OpenAI / Copilot /
-  Anthropic shapes), tool-call round-trips, multi-turn determinism, and the fail-closed paths. Mock
-  upstreams by default; optionally a smoke against a real provider (opt-in, never in CI without a key).
+- [ ] **Real integration tests.** End-to-end beyond today's mock-upstream e2e: full
+  mask → forward → (stream) → de-mask round-trips, tool-call round-trips, multi-turn determinism, and
+  the fail-closed paths. **Mock upstreams cover all three preset shapes** (OpenAI / Copilot / Anthropic)
+  — no accounts needed. The **real-provider smoke is Anthropic-only for now** (the only provider we have;
+  opt-in, needs a key, never in CI without one), via its OpenAI-compat endpoint.
+  - [ ] Implement the two cataloged-but-missing e2e cases **E2E-02** (CSV `tool_result`) and **E2E-04**
+    (`SELECT … FROM DUAL`) against a mock.
+- [ ] **Manual "does the whole structure hold?" procedure (real Anthropic + max logging).** Run the same
+  PII prompt twice with `RUST_LOG=llm_proxy_pii_rust=trace`:
+  - **Run A** — `PII_DEBUG_SKIP_DEMASK=1`: the client gets the **placeholders** → proof the request left
+    masked (Anthropic saw only `[…]`) and the round-trip is wired.
+  - **Run B** — normal: the client gets the **restored real values** → proof the full round-trip. Comparing
+    A vs B on the same input shows the whole chain holds end-to-end against a real provider.
+  Trace-level logging also exercises the never-log-raw-PII rule (DBG-02) on **real** data.
 - [ ] **Performance / load harness** (pulled up from Backlog) — concurrent connections, large bodies,
   streaming throughput; measure latency / RAM of the mask → forward → de-mask path (NER on/off).
   Stability under load was the founding motivation — measure it, don't assume it.
