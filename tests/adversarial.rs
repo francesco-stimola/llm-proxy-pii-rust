@@ -6,10 +6,10 @@
 //! ML/NER (M2) or dedicated heuristics can close — asserting them here keeps the
 //! boundary honest and flags the day behaviour changes.
 
-use llm_proxy_pii_rust::pii::PiiDetector;
-use llm_proxy_pii_rust::pii::PiiKind;
 use llm_proxy_pii_rust::pii::anonymizer::Vault;
 use llm_proxy_pii_rust::pii::recognizers::StructuredRecognizers;
+use llm_proxy_pii_rust::pii::PiiDetector;
+use llm_proxy_pii_rust::pii::PiiKind;
 
 fn detect(input: &str) -> Vec<(PiiKind, String)> {
     StructuredRecognizers::new()
@@ -56,7 +56,10 @@ fn grouped_pii_glued_to_a_domain_leaks_nothing() {
     // The containment case still resolves the other way (whole email masked), so a
     // continuous card glued to a domain leaks neither the digits nor the domain.
     let out = masked("card 4111111111111111@example.com");
-    assert!(!out.contains("4111111111111111"), "card left in clear: {out}");
+    assert!(
+        !out.contains("4111111111111111"),
+        "card left in clear: {out}"
+    );
     assert!(!out.contains("example.com"), "domain left in clear: {out}");
 }
 
@@ -69,7 +72,10 @@ fn structured_pii_is_detected_in_cjk_and_cyrillic_prose() {
     // every anchored recognizer was simply inert, forwarding the PII in clear. The fix
     // is ASCII boundaries, `(?-u:\b)`. Asserted on the masked body.
     let out = masked("我的信用卡号是4111111111111111");
-    assert!(!out.contains("4111111111111111"), "card in clear in Chinese: {out}");
+    assert!(
+        !out.contains("4111111111111111"),
+        "card in clear in Chinese: {out}"
+    );
 
     let out = masked("我的身份证号是11010519491231002X");
     assert!(
@@ -78,19 +84,34 @@ fn structured_pii_is_detected_in_cjk_and_cyrillic_prose() {
     );
 
     let out = masked("密钥sk-abcdef123456");
-    assert!(!out.contains("sk-abcdef123456"), "secret in clear in Chinese: {out}");
+    assert!(
+        !out.contains("sk-abcdef123456"),
+        "secret in clear in Chinese: {out}"
+    );
 
     let out = masked("账号DE89370400440532013000");
-    assert!(!out.contains("DE89370400440532013000"), "IBAN in clear in Chinese: {out}");
+    assert!(
+        !out.contains("DE89370400440532013000"),
+        "IBAN in clear in Chinese: {out}"
+    );
 
     let out = masked("编号123-45-6789");
-    assert!(!out.contains("123-45-6789"), "SSN in clear in Chinese: {out}");
+    assert!(
+        !out.contains("123-45-6789"),
+        "SSN in clear in Chinese: {out}"
+    );
 
     let out = masked("カード番号は4111111111111111です");
-    assert!(!out.contains("4111111111111111"), "card in clear in Japanese: {out}");
+    assert!(
+        !out.contains("4111111111111111"),
+        "card in clear in Japanese: {out}"
+    );
 
     let out = masked("Карта4111111111111111");
-    assert!(!out.contains("4111111111111111"), "card in clear in Cyrillic: {out}");
+    assert!(
+        !out.contains("4111111111111111"),
+        "card in clear in Cyrillic: {out}"
+    );
 
     // Round-trip must survive the multi-byte context exactly.
     let input = "我的信用卡号是4111111111111111，谢谢";
@@ -106,10 +127,22 @@ fn ascii_token_anti_false_positive_guarantee_survives_the_ascii_boundary() {
     // The flip side of M4-R13: switching to `(?-u:\b)` must NOT weaken the deliberate
     // anti-FP rule that an ID can't fire inside a longer *ASCII* token (API key / hash /
     // UUID / base64). Only a non-ASCII letter stops counting as part of a number.
-    assert!(detect("card4111111111111111").is_empty(), "glued to an ASCII word");
-    assert!(detect("abc4111111111111111abc").is_empty(), "inside an ASCII token");
-    assert!(detect("hash a4111111111111111b").is_empty(), "inside an ASCII token");
-    assert!(detect("ref PO123456A shipped").is_empty(), "NINO look-alike, ASCII");
+    assert!(
+        detect("card4111111111111111").is_empty(),
+        "glued to an ASCII word"
+    );
+    assert!(
+        detect("abc4111111111111111abc").is_empty(),
+        "inside an ASCII token"
+    );
+    assert!(
+        detect("hash a4111111111111111b").is_empty(),
+        "inside an ASCII token"
+    );
+    assert!(
+        detect("ref PO123456A shipped").is_empty(),
+        "NINO look-alike, ASCII"
+    );
 }
 
 #[test]
@@ -122,11 +155,17 @@ fn partially_overlapping_pii_abandons_no_bytes() {
     // email's LOCAL PART (a person's handle). A left-over bare `@domain` would be fine;
     // a left-over local part is not.
     let out = masked("call 555 867 5309john.doe@example.com now");
-    assert!(!out.contains("john.doe"), "email local part in clear: {out}");
+    assert!(
+        !out.contains("john.doe"),
+        "email local part in clear: {out}"
+    );
     assert!(!out.contains("867"), "phone in clear: {out}");
 
     let out = masked("tel +39 333 1234567.mario.rossi@example.com");
-    assert!(!out.contains("mario.rossi"), "email local part in clear: {out}");
+    assert!(
+        !out.contains("mario.rossi"),
+        "email local part in clear: {out}"
+    );
     assert!(!out.contains("1234567"), "phone in clear: {out}");
 
     let out = masked("id AB 12 34 56 C.bob@x.com");
@@ -138,16 +177,25 @@ fn partially_overlapping_pii_abandons_no_bytes() {
     // and the already-deleted span was masked by NOTHING. Nothing is deleted now — an
     // enclosed span merges into its enclosing email — so its bytes always stay covered.
     let out = masked("call 555 867 5309.4111111111111111@x.com");
-    assert!(!out.contains("4111111111111111"), "stranded card in clear: {out}");
+    assert!(
+        !out.contains("4111111111111111"),
+        "stranded card in clear: {out}"
+    );
 
     let out = masked("call 555 867 5309.sk-abcdef123456@x.com");
-    assert!(!out.contains("sk-abcdef123456"), "stranded secret in clear: {out}");
+    assert!(
+        !out.contains("sk-abcdef123456"),
+        "stranded secret in clear: {out}"
+    );
 
     let out = masked("call 555 867 5309.123456789@x.com");
     assert!(!out.contains("123456789"), "stranded NIF in clear: {out}");
 
     let out = masked("card 4111 1111 1111 1111.4111111111111111@example.com");
-    assert!(!out.contains("4111111111111111"), "stranded second card in clear: {out}");
+    assert!(
+        !out.contains("4111111111111111"),
+        "stranded second card in clear: {out}"
+    );
 }
 
 #[test]
@@ -160,7 +208,10 @@ fn a_value_hidden_behind_an_earlier_match_is_not_left_in_clear() {
     // Luhn-valid and matches first, hiding the real trailing card that begins inside it:
     // masked output used to be `[CARD_1]@[CARD_2] 1111`, leaking a card digit group.
     let out = masked("4111 1111 1111 1111@123-45-6789-4111 1111 1111 1111");
-    assert!(!out.contains("1111"), "a card digit group is in clear: {out}");
+    assert!(
+        !out.contains("1111"),
+        "a card digit group is in clear: {out}"
+    );
 
     // The generic form of the same class: re-running the detector over the masked body must
     // find nothing PII-shaped left.
@@ -190,8 +241,16 @@ fn masking_partially_overlapping_pii_still_round_trips() {
 
 #[test]
 fn caught_email_variants() {
-    assert!(detects("ping john+tag@example.com now", PiiKind::Email, "john+tag@example.com"));
-    assert!(detects("MAIL JOHN@EXAMPLE.COM", PiiKind::Email, "JOHN@EXAMPLE.COM"));
+    assert!(detects(
+        "ping john+tag@example.com now",
+        PiiKind::Email,
+        "john+tag@example.com"
+    ));
+    assert!(detects(
+        "MAIL JOHN@EXAMPLE.COM",
+        PiiKind::Email,
+        "JOHN@EXAMPLE.COM"
+    ));
     assert!(detects(
         "user_name.surname@sub.domain.co.uk here",
         PiiKind::Email,
@@ -201,8 +260,16 @@ fn caught_email_variants() {
 
 #[test]
 fn caught_phone_and_iban_edge_shapes() {
-    assert!(detects("tel (555) 867-5309.", PiiKind::Phone, "(555) 867-5309"));
-    assert!(detects("+1 555.867.5309 ok", PiiKind::Phone, "+1 555.867.5309"));
+    assert!(detects(
+        "tel (555) 867-5309.",
+        PiiKind::Phone,
+        "(555) 867-5309"
+    ));
+    assert!(detects(
+        "+1 555.867.5309 ok",
+        PiiKind::Phone,
+        "+1 555.867.5309"
+    ));
     // IBAN immediately before a currency word must not swallow it.
     assert!(detects(
         "send IT60X0542811101000000123456 EUR",

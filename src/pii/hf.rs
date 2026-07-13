@@ -16,7 +16,7 @@
 
 use std::path::PathBuf;
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{anyhow, Context, Result};
 use hf_hub::{HFClient, HFClientBuilder};
 
 /// What to fetch: a repo pinned to a revision, plus the file names within it.
@@ -63,18 +63,30 @@ impl HfModelSpec {
         );
 
         let model_path = self.fetch(&client, owner, name, &self.model_file).await?;
-        let tokenizer_path = self.fetch(&client, owner, name, &self.tokenizer_file).await?;
+        let tokenizer_path = self
+            .fetch(&client, owner, name, &self.tokenizer_file)
+            .await?;
         let config_path = self.fetch(&client, owner, name, &self.config_file).await?;
 
         let config = std::fs::read_to_string(&config_path)
             .with_context(|| format!("read cached config {}", config_path.display()))?;
         let id2label = parse_id2label(&config)?;
 
-        Ok(ResolvedModel { model_path, tokenizer_path, id2label })
+        Ok(ResolvedModel {
+            model_path,
+            tokenizer_path,
+            id2label,
+        })
     }
 
     /// Resolve one file to a local cache path at the pinned revision.
-    async fn fetch(&self, client: &HFClient, owner: &str, name: &str, filename: &str) -> Result<PathBuf> {
+    async fn fetch(
+        &self,
+        client: &HFClient,
+        owner: &str,
+        name: &str,
+        filename: &str,
+    ) -> Result<PathBuf> {
         client
             .model(owner, name)
             .download_file()
@@ -83,7 +95,12 @@ impl HfModelSpec {
             .send()
             .await
             // The error carries repo/revision/filename only — never input text.
-            .map_err(|e| anyhow!("hf-hub fetch {owner}/{name}@{} :: {filename}: {e}", self.revision))
+            .map_err(|e| {
+                anyhow!(
+                    "hf-hub fetch {owner}/{name}@{} :: {filename}: {e}",
+                    self.revision
+                )
+            })
     }
 }
 
@@ -143,7 +160,9 @@ fn build_client() -> Result<HFClient> {
             builder = builder.cache_dir(cache);
         }
     }
-    builder.build().map_err(|e| anyhow!("hf-hub client init: {e}"))
+    builder
+        .build()
+        .map_err(|e| anyhow!("hf-hub client init: {e}"))
 }
 
 /// The conventional HF *hub* cache root, `<home>/.cache/huggingface/hub`, where

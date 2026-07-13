@@ -10,20 +10,19 @@
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
-use axum::{Json, Router, http::HeaderMap, response::IntoResponse, routing::post};
-use serde_json::{Value, json};
+use axum::{http::HeaderMap, response::IntoResponse, routing::post, Json, Router};
+use serde_json::{json, Value};
 use tokio::net::TcpListener;
 
 use llm_proxy_pii_rust::config::Config;
-use llm_proxy_pii_rust::server::{AppState, build_router};
+use llm_proxy_pii_rust::server::{build_router, AppState};
 
 async fn mock_upstream_handler(Json(body): Json<Value>) -> Json<Value> {
     let last_user = body["messages"]
         .as_array()
         .into_iter()
         .flatten()
-        .filter(|m| m["role"] == "user")
-        .next_back()
+        .rfind(|m| m["role"] == "user")
         .and_then(|m| m["content"].as_str())
         .unwrap_or_default()
         .to_string();
@@ -170,8 +169,14 @@ async fn e2e_debug_skip_demask_returns_placeholders_to_client() {
 
     // The client gets the placeholder back, NOT the real value (de-mask skipped).
     let content = reply["choices"][0]["message"]["content"].as_str().unwrap();
-    assert!(content.contains("[EMAIL_1]"), "expected placeholder, got: {content}");
-    assert!(!content.contains("bob@test.com"), "value leaked to client: {content}");
+    assert!(
+        content.contains("[EMAIL_1]"),
+        "expected placeholder, got: {content}"
+    );
+    assert!(
+        !content.contains("bob@test.com"),
+        "value leaked to client: {content}"
+    );
 }
 
 #[tokio::test]
@@ -199,7 +204,10 @@ async fn e2e03_secret_and_email_masked_before_upstream() {
 
     let content = reply["choices"][0]["message"]["content"].as_str().unwrap();
     assert!(content.contains(secret), "secret not restored: {content}");
-    assert!(content.contains("ops@corp.com"), "email not restored: {content}");
+    assert!(
+        content.contains("ops@corp.com"),
+        "email not restored: {content}"
+    );
 }
 
 /// Mock upstream that sets one allowlisted header and one that must be dropped.
@@ -236,7 +244,9 @@ async fn e2e_forwards_safe_response_headers_only() {
 
     // Allowlisted informational header is forwarded…
     assert_eq!(
-        resp.headers().get("x-ratelimit-remaining").map(|v| v.to_str().unwrap()),
+        resp.headers()
+            .get("x-ratelimit-remaining")
+            .map(|v| v.to_str().unwrap()),
         Some("42")
     );
     // …but an arbitrary upstream header is not.
@@ -283,8 +293,7 @@ async fn spawn_sse_mock() -> (SocketAddr, Arc<Mutex<String>>) {
                 .as_array()
                 .into_iter()
                 .flatten()
-                .filter(|m| m["role"] == "user")
-                .next_back()
+                .rfind(|m| m["role"] == "user")
                 .and_then(|m| m["content"].as_str())
                 .unwrap_or_default()
                 .to_string();
@@ -322,7 +331,10 @@ fn sse_content(raw: &str) -> String {
                 continue;
             }
             if let Ok(v) = serde_json::from_str::<Value>(data) {
-                if let Some(c) = v.pointer("/choices/0/delta/content").and_then(Value::as_str) {
+                if let Some(c) = v
+                    .pointer("/choices/0/delta/content")
+                    .and_then(Value::as_str)
+                {
                     acc.push_str(c);
                 }
             }
@@ -352,14 +364,23 @@ async fn e2e_streaming_deanonymizes_split_placeholder() {
 
     // Upstream saw the masked value, never the raw email.
     let upstream_saw = seen.lock().unwrap().clone();
-    assert!(!upstream_saw.contains("bob@test.com"), "leaked email upstream");
-    assert!(upstream_saw.contains("[EMAIL_1]"), "expected placeholder upstream");
+    assert!(
+        !upstream_saw.contains("bob@test.com"),
+        "leaked email upstream"
+    );
+    assert!(
+        upstream_saw.contains("[EMAIL_1]"),
+        "expected placeholder upstream"
+    );
 
     // The client's reassembled stream carries the real value, no placeholder —
     // even though `[EMAIL_1]` was split across SSE events.
     let content = sse_content(&raw);
     assert_eq!(content, "please email bob@test.com now", "got: {content}");
-    assert!(!raw.contains("[EMAIL_1]"), "placeholder leaked to client: {raw}");
+    assert!(
+        !raw.contains("[EMAIL_1]"),
+        "placeholder leaked to client: {raw}"
+    );
     assert!(raw.contains("[DONE]"), "terminator preserved");
 }
 
@@ -422,7 +443,11 @@ async fn e2e_masking_is_provider_agnostic() {
         }]
     });
 
-    let via_openai = chat(spawn_proxy_provider(upstream, "openai").await, request.clone()).await;
+    let via_openai = chat(
+        spawn_proxy_provider(upstream, "openai").await,
+        request.clone(),
+    )
+    .await;
     let via_anthropic = chat(spawn_proxy_provider(upstream, "anthropic").await, request).await;
 
     assert_eq!(

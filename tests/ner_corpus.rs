@@ -10,9 +10,9 @@ use std::collections::HashMap;
 
 use serde::Deserialize;
 
+use llm_proxy_pii_rust::pii::recognizers::StructuredRecognizers;
 use llm_proxy_pii_rust::pii::PiiDetector;
 use llm_proxy_pii_rust::pii::PiiKind;
-use llm_proxy_pii_rust::pii::recognizers::StructuredRecognizers;
 
 const CORPUS_JSON: &str = include_str!("corpus/ner_cases.json");
 
@@ -71,7 +71,10 @@ fn corpus_is_well_formed_and_labels_are_unstructured() {
             }
         }
     }
-    assert!(positives >= 6, "expected a few labelled positives, got {positives}");
+    assert!(
+        positives >= 6,
+        "expected a few labelled positives, got {positives}"
+    );
     assert!(!corpus.multilingual_preview.is_empty());
 }
 

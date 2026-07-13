@@ -136,7 +136,7 @@ impl Vault {
         // Second pass, right→left: splice placeholders in without shifting the
         // byte offsets of not-yet-processed spans.
         let mut out = text.to_string();
-        ordered.sort_by(|a, b| b.span.start.cmp(&a.span.start));
+        ordered.sort_by_key(|e| std::cmp::Reverse(e.span.start));
         for entity in ordered {
             let placeholder = self.to_placeholder[&entity.text].clone();
             out.replace_range(entity.span.clone(), &placeholder);
@@ -221,8 +221,8 @@ fn json_string_body(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pii::{Confidence, PiiDetector, PiiEntity, PiiKind};
     use crate::pii::recognizers::StructuredRecognizers;
+    use crate::pii::{Confidence, PiiDetector, PiiEntity, PiiKind};
 
     /// Build a vault mapping a `[PERSON_1]` placeholder to a value with a quote.
     fn vault_with_quoted_person(value: &str) -> Vault {
@@ -343,13 +343,18 @@ mod tests {
 
         // The block reason must carry no input text (the never-log-raw-PII rule).
         let rendered = err.to_string();
-        assert!(!rendered.contains("still here"), "error leaked the input: {rendered}");
+        assert!(
+            !rendered.contains("still here"),
+            "error leaked the input: {rendered}"
+        );
 
         // …and a detector that *does* converge still returns Ok, so this didn't just break
         // masking for everyone.
         let detector = StructuredRecognizers::new();
         let mut vault = Vault::new();
-        let masked = vault.mask_all("mail bob@test.com", &detector).expect("converges");
+        let masked = vault
+            .mask_all("mail bob@test.com", &detector)
+            .expect("converges");
         assert_eq!(masked, "mail [EMAIL_1]");
     }
 
@@ -361,6 +366,9 @@ mod tests {
         let _ = vault.mask("mail bob@test.com", &entities);
 
         // Not a known placeholder → passed through verbatim.
-        assert_eq!(vault.demask("see [TODO 3] and [EMAIL_1]"), "see [TODO 3] and bob@test.com");
+        assert_eq!(
+            vault.demask("see [TODO 3] and [EMAIL_1]"),
+            "see [TODO 3] and bob@test.com"
+        );
     }
 }

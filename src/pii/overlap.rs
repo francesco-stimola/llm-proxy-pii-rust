@@ -153,7 +153,10 @@ fn materialize(input: &str, group: Vec<PiiEntity>) -> Vec<PiiEntity> {
         // prevent. Never a panic: this is a proxy, and the input is attacker-influenced.
         None => {
             debug_assert!(false, "merged span is not sliceable from the input");
-            tracing::warn!(?kind, "un-sliceable merged span — keeping constituents unmerged");
+            tracing::warn!(
+                ?kind,
+                "un-sliceable merged span — keeping constituents unmerged"
+            );
             group
         }
     }
@@ -312,7 +315,11 @@ mod tests {
             entity(PiiKind::Email, 8..34),
         ]);
         assert_eq!(kept.len(), 1);
-        assert_eq!(kept[0].span, 0..34, "the card's bytes (13..29) must be covered");
+        assert_eq!(
+            kept[0].span,
+            0..34,
+            "the card's bytes (13..29) must be covered"
+        );
         assert_eq!(
             kept[0].kind,
             PiiKind::CreditCard,
@@ -333,7 +340,11 @@ mod tests {
         ]);
         assert_eq!(kept.len(), 1);
         assert_eq!(kept[0].span, 0..34);
-        assert_eq!(kept[0].kind, PiiKind::Secret, "Secret outranks Phone and Email");
+        assert_eq!(
+            kept[0].kind,
+            PiiKind::Secret,
+            "Secret outranks Phone and Email"
+        );
     }
 
     #[test]
@@ -352,16 +363,17 @@ mod tests {
         // Union = 0..5, and byte 5 is *inside* '€'.
         let kept = resolve_overlaps(
             input,
-            vec![
-                raw(PiiKind::CreditCard, 0..4),
-                raw(PiiKind::Phone, 2..5),
-            ],
+            vec![raw(PiiKind::CreditCard, 0..4), raw(PiiKind::Phone, 2..5)],
         );
         assert_eq!(kept.len(), 1);
         assert_eq!(kept[0].span, 0..6, "widened out to the char boundary");
         assert_eq!(kept[0].text, "abc€", "text re-sliced from the input");
         // Both constituents' bytes (0..4 and 2..5) are inside the kept span.
-        assert!(kept[0].span.start <= 0 && 5 <= kept[0].span.end);
+        assert!(
+            kept[0].span.start == 0 && kept[0].span.end >= 5,
+            "the kept span must cover both constituents: {:?}",
+            kept[0].span
+        );
     }
 
     #[test]

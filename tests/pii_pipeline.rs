@@ -2,7 +2,7 @@
 //! (INT-01…06 in `docs/TESTING.md`). These drive `PrivacyStage` directly — no
 //! network — asserting the mask / augment / restore behaviour.
 
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 use llm_proxy_pii_rust::pii::recognizers::StructuredRecognizers;
 use llm_proxy_pii_rust::pii::{DetectError, PiiDetector, PiiEntity};
@@ -127,19 +127,18 @@ fn int04_augmentation_system_message_injected_when_pii_present() {
 
     let first = &req.body["messages"][0];
     assert_eq!(first["role"], "system");
-    assert!(
-        first["content"]
-            .as_str()
-            .unwrap()
-            .to_lowercase()
-            .contains("placeholder")
-    );
+    assert!(first["content"]
+        .as_str()
+        .unwrap()
+        .to_lowercase()
+        .contains("placeholder"));
 }
 
 #[test]
 fn no_pii_means_no_injection_and_no_change() {
     let mut ctx = RequestContext::new();
-    let original = json!({ "messages": [{ "role": "user", "content": "hello world, nothing here" }] });
+    let original =
+        json!({ "messages": [{ "role": "user", "content": "hello world, nothing here" }] });
     let mut req = ProxyRequest {
         body: original.clone(),
     };
@@ -157,8 +156,7 @@ fn int05_masking_is_deterministic_across_turns() {
 
     assert_eq!(first, second, "same input must yield the same tokens");
     assert_eq!(
-        first,
-        "from [EMAIL_1] and [EMAIL_2], again [EMAIL_1]",
+        first, "from [EMAIL_1] and [EMAIL_2], again [EMAIL_1]",
         "repeated value reuses its token; numbering follows reading order"
     );
 }
@@ -180,7 +178,9 @@ fn int06_response_text_is_deanonymized() {
     };
     s.on_response(&mut resp, &mut ctx);
 
-    let content = resp.body["choices"][0]["message"]["content"].as_str().unwrap();
+    let content = resp.body["choices"][0]["message"]["content"]
+        .as_str()
+        .unwrap();
     assert_eq!(content, "I emailed bob@test.com for you.");
 }
 
@@ -313,10 +313,19 @@ fn content_array_bare_string_is_masked_not_leaked() {
 
     assert!(ctx.block.is_none(), "well-formed array must not block");
     let whole = req.body.to_string();
-    assert!(!whole.contains("bob@test.com"), "bare-string PII leaked: {whole}");
-    assert!(!whole.contains("alice@a.com"), "text-part PII leaked: {whole}");
+    assert!(
+        !whole.contains("bob@test.com"),
+        "bare-string PII leaked: {whole}"
+    );
+    assert!(
+        !whole.contains("alice@a.com"),
+        "text-part PII leaked: {whole}"
+    );
     assert!(whole.contains("[EMAIL_1]") && whole.contains("[EMAIL_2]"));
-    assert!(whole.contains("http://example/x.png"), "non-text part must be untouched");
+    assert!(
+        whole.contains("http://example/x.png"),
+        "non-text part must be untouched"
+    );
 }
 
 #[test]
@@ -356,7 +365,10 @@ fn required_detector_error_blocks_request_fail_closed() {
     stage.on_request(&mut req, &mut ctx);
 
     let reason = ctx.block.expect("required detector error must fail closed");
-    assert!(!reason.contains("Mario Rossi"), "block reason leaked input: {reason}");
+    assert!(
+        !reason.contains("Mario Rossi"),
+        "block reason leaked input: {reason}"
+    );
 }
 
 #[test]
@@ -381,7 +393,9 @@ fn response_content_array_is_symmetrically_demasked() {
     };
     s.on_response(&mut resp, &mut ctx);
 
-    let parts = resp.body["choices"][0]["message"]["content"].as_array().unwrap();
+    let parts = resp.body["choices"][0]["message"]["content"]
+        .as_array()
+        .unwrap();
     assert_eq!(parts[0].as_str().unwrap(), "sent to bob@test.com");
     assert_eq!(parts[1]["text"].as_str().unwrap(), "and again bob@test.com");
 }

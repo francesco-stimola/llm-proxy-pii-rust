@@ -300,6 +300,11 @@ fn national_id_recognizers() -> Vec<Recognizer> {
 /// via `PII_LOCALES` (unlike national IDs, which are always on). None yet: the seam
 /// is kept for national *phone* formats (numbers with no `+CC`), which need careful
 /// precision work before they can run globally. Unknown codes yield nothing.
+///
+/// The `match` **is** the seam, which is why it stays even though every arm but the
+/// wildcard is still missing: dissolving it (as clippy suggests) would drop `code` on the
+/// floor and leave the next locale nowhere to land.
+#[allow(clippy::match_single_binding)]
 fn fp_prone_recognizers(code: &str) -> Vec<Recognizer> {
     match code.trim().to_ascii_lowercase().as_str() {
         // e.g. "gb" => vec![ UK national phone formats ] — deferred to the
@@ -458,6 +463,10 @@ fn iban_length_ok(text: &str) -> bool {
 }
 
 /// Fixed IBAN length per country (the SEPA / common set; extend as needed).
+///
+/// Hand-aligned as a lookup **table** — rustfmt would give each country its own line and
+/// turn six scannable rows into thirty-six.
+#[rustfmt::skip]
 fn iban_country_length(cc: &str) -> Option<usize> {
     Some(match cc {
         "AD" => 24, "AE" => 23, "AT" => 20, "BE" => 16, "BG" => 22, "CH" => 21,
@@ -558,7 +567,8 @@ fn cf_check_valid(matched: &str) -> bool {
     }
     // Odd-position value, indexed by the even code (0 ≡ '0'/'A', … 9 ≡ '9'/'J').
     const ODD: [u32; 26] = [
-        1, 0, 5, 7, 9, 13, 15, 17, 19, 21, 2, 4, 18, 20, 11, 3, 6, 8, 12, 14, 16, 10, 22, 25, 24, 23,
+        1, 0, 5, 7, 9, 13, 15, 17, 19, 21, 2, 4, 18, 20, 11, 3, 6, 8, 12, 14, 16, 10, 22, 25, 24,
+        23,
     ];
 
     let bytes = matched.to_ascii_uppercase().into_bytes();
@@ -567,7 +577,9 @@ fn cf_check_valid(matched: &str) -> bool {
     }
     let mut sum = 0u32;
     for (i, &c) in bytes[..15].iter().enumerate() {
-        let Some(even) = even_val(c) else { return false };
+        let Some(even) = even_val(c) else {
+            return false;
+        };
         // Char index 0 is 1-indexed position 1 → odd.
         sum += if i % 2 == 0 { ODD[even as usize] } else { even };
     }
@@ -581,7 +593,11 @@ fn nine_digit_id_valid(matched: &str) -> bool {
 
 /// Dutch BSN 11-proef: Σ dᵢ·wᵢ ≡ 0 (mod 11), weights 9,8,…,2,−1; nonzero.
 fn nl_bsn_valid(matched: &str) -> bool {
-    let d: Vec<i32> = matched.bytes().filter(u8::is_ascii_digit).map(|b| (b - b'0') as i32).collect();
+    let d: Vec<i32> = matched
+        .bytes()
+        .filter(u8::is_ascii_digit)
+        .map(|b| (b - b'0') as i32)
+        .collect();
     if d.len() != 9 {
         return false;
     }
@@ -592,7 +608,11 @@ fn nl_bsn_valid(matched: &str) -> bool {
 
 /// Portuguese NIF mod-11 control digit (weights 9..2; control ≥10 → 0).
 fn pt_nif_valid(matched: &str) -> bool {
-    let d: Vec<u32> = matched.bytes().filter(u8::is_ascii_digit).map(|b| (b - b'0') as u32).collect();
+    let d: Vec<u32> = matched
+        .bytes()
+        .filter(u8::is_ascii_digit)
+        .map(|b| (b - b'0') as u32)
+        .collect();
     if d.len() != 9 {
         return false;
     }
@@ -612,7 +632,11 @@ fn eleven_digit_id_valid(matched: &str) -> bool {
 /// Per the 2016+ spec (M4-R8), a digit that appears three times must **not** occupy
 /// three *consecutive* positions.
 fn de_steuerid_valid(matched: &str) -> bool {
-    let d: Vec<u32> = matched.bytes().filter(u8::is_ascii_digit).map(|b| (b - b'0') as u32).collect();
+    let d: Vec<u32> = matched
+        .bytes()
+        .filter(u8::is_ascii_digit)
+        .map(|b| (b - b'0') as u32)
+        .collect();
     if d.len() != 11 || d[0] == 0 {
         return false;
     }
@@ -646,7 +670,11 @@ fn de_steuerid_valid(matched: &str) -> bool {
 /// Latvian personal code: the post-2017 randomized form starts with `32` and has no
 /// checksum (shape-only); the classic form carries a mod-11 check digit.
 fn lv_code_valid(matched: &str) -> bool {
-    let d: Vec<i64> = matched.bytes().filter(u8::is_ascii_digit).map(|b| (b - b'0') as i64).collect();
+    let d: Vec<i64> = matched
+        .bytes()
+        .filter(u8::is_ascii_digit)
+        .map(|b| (b - b'0') as i64)
+        .collect();
     if d.len() != 11 {
         return false;
     }
@@ -835,7 +863,10 @@ mod tests {
     fn french_nir_special_month_is_not_missed() {
         // M4-R5: INSEE special month `20` (born abroad / unknown) must still match.
         let nir = fr_nir("1852075116001");
-        assert!(!kinds(&format!("NIR {nir}")).is_empty(), "special-month NIR must not be missed");
+        assert!(
+            !kinds(&format!("NIR {nir}")).is_empty(),
+            "special-month NIR must not be missed"
+        );
     }
 
     #[test]
@@ -925,7 +956,10 @@ mod tests {
         );
         assert_eq!(
             kinds("iban DE89370400440532013000@example.com"),
-            vec![(PiiKind::Email, "DE89370400440532013000@example.com".to_string())]
+            vec![(
+                PiiKind::Email,
+                "DE89370400440532013000@example.com".to_string()
+            )]
         );
         assert_eq!(
             kinds("key sk-abcdef123456@example.com"),
@@ -960,10 +994,7 @@ mod tests {
         );
         assert_eq!(
             kinds("nino AB 12 34 56 C@example.com"),
-            vec![(
-                PiiKind::NationalId,
-                "AB 12 34 56 C@example.com".to_string()
-            )],
+            vec![(PiiKind::NationalId, "AB 12 34 56 C@example.com".to_string())],
             "a spaced NINO + the overlapping email must merge"
         );
     }
@@ -986,7 +1017,11 @@ mod tests {
         );
 
         let got = kinds("tel +39 333 1234567.mario.rossi@example.com");
-        assert_eq!(got.len(), 1, "phone + email must merge into one span: {got:?}");
+        assert_eq!(
+            got.len(),
+            1,
+            "phone + email must merge into one span: {got:?}"
+        );
         assert!(
             got[0].1.contains("mario.rossi@example.com"),
             "the email must be inside the masked span: {got:?}"
@@ -1067,7 +1102,10 @@ mod tests {
             !masked.contains("4111111111111111"),
             "masking the phone exposed the card in clear: {masked}"
         );
-        assert!(detector.detect(&masked).is_empty(), "PII survived: {masked}");
+        assert!(
+            detector.detect(&masked).is_empty(),
+            "PII survived: {masked}"
+        );
         assert_eq!(vault.demask(&masked), input, "round-trip must stay exact");
     }
 
@@ -1101,7 +1139,10 @@ mod tests {
         // which is the identifying half, must be gone.
         let mut vault = crate::pii::anonymizer::Vault::new();
         let masked = vault.mask_all("a@b.com@c.com", &detector).unwrap();
-        assert!(!masked.contains("a@b.com"), "the email must be masked: {masked}");
+        assert!(
+            !masked.contains("a@b.com"),
+            "the email must be masked: {masked}"
+        );
     }
 
     #[test]
@@ -1115,8 +1156,14 @@ mod tests {
         let mut vault = crate::pii::anonymizer::Vault::new();
         let masked = vault.mask_all(input, &detector).unwrap();
 
-        assert!(!masked.contains("sk-"), "no secret fragment may survive: {masked}");
-        assert!(detector.detect(&masked).is_empty(), "PII survived: {masked}");
+        assert!(
+            !masked.contains("sk-"),
+            "no secret fragment may survive: {masked}"
+        );
+        assert!(
+            detector.detect(&masked).is_empty(),
+            "PII survived: {masked}"
+        );
         assert_eq!(vault.demask(&masked), input, "round-trip must stay exact");
     }
 
@@ -1181,7 +1228,10 @@ mod tests {
             kinds("order PO123456A shipped").is_empty(),
             "second letter O is invalid — must not mask"
         );
-        assert!(kinds("ref GB123456A").is_empty(), "GB is an invalid prefix pair");
+        assert!(
+            kinds("ref GB123456A").is_empty(),
+            "GB is an invalid prefix pair"
+        );
         assert!(kinds("DA123456A").is_empty(), "first letter D is invalid");
         // A valid NINO still masks.
         assert_eq!(
@@ -1269,9 +1319,9 @@ mod tests {
         // Correct country length…
         assert!(iban_length_ok("IT60X0542811101000000123456")); // 27, IT
         assert!(iban_length_ok("DE89370400440532013000")); // 22, DE
-        // …wrong length for a known country → not length-ok (masked, but Structural).
+                                                           // …wrong length for a known country → not length-ok (masked, but Structural).
         assert!(!iban_length_ok("DE8937040044053201300")); // 21
-        // Unknown country → not penalized (rely on mod-97 alone).
+                                                           // Unknown country → not penalized (rely on mod-97 alone).
         assert!(iban_length_ok("ZZ0012345678"));
         // A real, correctly-sized, mod-97-valid IBAN stays Verified.
         let e = StructuredRecognizers::new().detect("IBAN IT60X0542811101000000123456");
@@ -1310,8 +1360,20 @@ mod tests {
     /// guarantee rests on. Multi-byte glue is what exercises `widen_to_char_boundaries`, the
     /// union re-slice, and a union endpoint landing *inside* a multi-byte character.
     const GLUE: &[&str] = &[
-        "", ".", "-", " ", "@", ", ", "x", // ASCII
-        "我的信用卡号是", "です", "、", "，", "Карта", "café", "—", // multi-byte
+        "",
+        ".",
+        "-",
+        " ",
+        "@",
+        ", ",
+        "x", // ASCII
+        "我的信用卡号是",
+        "です",
+        "、",
+        "，",
+        "Карта",
+        "café",
+        "—", // multi-byte
     ];
 
     proptest::proptest! {

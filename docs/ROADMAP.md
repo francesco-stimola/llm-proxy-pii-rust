@@ -273,7 +273,10 @@ Prove the whole system holds **end-to-end** and **under load**, then document it
   three-tier detection + NER, streaming, multi-provider usage, config/env, status. It is intentionally
   high-level today ("early development"); this is the pass that makes it describe a working system.
 - [ ] **CI + release binaries (GitHub Actions).** CI on push/PR (`cargo test` + `fmt` + `clippy`; one job
-  for the default build, one for `--features onnx`). A release workflow on a version tag
+  for the default build, one for `--features onnx`). **All three are already green on both feature sets**
+  (2026-07-13) — `fmt` and `clippy` had never been run, and `clippy` was in fact *erroring*, so the CI
+  would have failed on its first run; that is cleared, and the MSRV is declared
+  ([M4-R22](reviews/M4.md#m4-r22)), so this item is now pure workflow YAML. A release workflow on a version tag
   **cross-compiles the full `--features onnx` product** for Linux / macOS / Windows and attaches the
   binaries to GitHub Releases. **The first tagged release is `1.0.0`** (bump from `0.4.0`) — cut when M5's
   integration + performance passes are green and the README reflects reality.

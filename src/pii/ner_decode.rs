@@ -151,11 +151,7 @@ mod tests {
     #[test]
     fn merges_multi_token_person() {
         let text = "Mario Rossi called";
-        let tokens = [
-            tag("B-PER", 0, 5),
-            tag("I-PER", 6, 11),
-            tag("O", 12, 18),
-        ];
+        let tokens = [tag("B-PER", 0, 5), tag("I-PER", 6, 11), tag("O", 12, 18)];
         let got = decode_entities(text, &tokens);
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].kind, PiiKind::Person);
@@ -168,11 +164,7 @@ mod tests {
     fn adjacent_same_type_entities_are_split_by_begin() {
         // "New York" then "London" — two LOCs must not glue into one span.
         let text = "New York London";
-        let tokens = [
-            tag("B-LOC", 0, 3),
-            tag("I-LOC", 4, 8),
-            tag("B-LOC", 9, 15),
-        ];
+        let tokens = [tag("B-LOC", 0, 3), tag("I-LOC", 4, 8), tag("B-LOC", 9, 15)];
         let got = decode_entities(text, &tokens);
         assert_eq!(
             got.iter().map(|e| e.text.as_str()).collect::<Vec<_>>(),
@@ -191,11 +183,7 @@ mod tests {
     fn underscore_bio_prefix_also_splits_entities() {
         // M2-R5: a model using `B_LOC`/`I_LOC` must still split adjacent LOCs.
         let text = "New York London";
-        let tokens = [
-            tag("B_LOC", 0, 3),
-            tag("I_LOC", 4, 8),
-            tag("B_LOC", 9, 15),
-        ];
+        let tokens = [tag("B_LOC", 0, 3), tag("I_LOC", 4, 8), tag("B_LOC", 9, 15)];
         let got = decode_entities(text, &tokens);
         assert_eq!(
             got.iter().map(|e| e.text.as_str()).collect::<Vec<_>>(),

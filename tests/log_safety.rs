@@ -15,14 +15,14 @@
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
-use axum::{Json, Router, routing::post};
-use serde_json::{Value, json};
+use axum::{routing::post, Json, Router};
+use serde_json::{json, Value};
 use tokio::net::TcpListener;
-use tracing_subscriber::EnvFilter;
 use tracing_subscriber::fmt::MakeWriter;
+use tracing_subscriber::EnvFilter;
 
 use llm_proxy_pii_rust::config::{Config, DEFAULT_MAX_BODY_BYTES};
-use llm_proxy_pii_rust::server::{AppState, build_router};
+use llm_proxy_pii_rust::server::{build_router, AppState};
 
 type Buf = Arc<Mutex<Vec<u8>>>;
 
@@ -55,8 +55,7 @@ async fn spawn_mock_upstream() -> SocketAddr {
             .as_array()
             .into_iter()
             .flatten()
-            .filter(|m| m["role"] == "user")
-            .next_back()
+            .rfind(|m| m["role"] == "user")
             .and_then(|m| m["content"].as_str())
             .unwrap_or_default()
             .to_string();
@@ -121,7 +120,10 @@ async fn crate_logs_carry_placeholders_never_raw_pii() {
     // Sanity: the client really did get the de-masked value back (so if it were
     // ever logged, the assertion below would catch it).
     let content = reply["choices"][0]["message"]["content"].as_str().unwrap();
-    assert!(content.contains(raw_email), "expected de-masked value in the reply: {content}");
+    assert!(
+        content.contains(raw_email),
+        "expected de-masked value in the reply: {content}"
+    );
 
     let logs = String::from_utf8(buf.lock().unwrap().clone()).unwrap();
     assert!(

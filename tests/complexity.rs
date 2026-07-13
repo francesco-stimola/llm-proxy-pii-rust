@@ -18,9 +18,9 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use llm_proxy_pii_rust::pii::PiiDetector;
 use llm_proxy_pii_rust::pii::anonymizer::Vault;
 use llm_proxy_pii_rust::pii::recognizers::StructuredRecognizers;
+use llm_proxy_pii_rust::pii::PiiDetector;
 
 /// Wall-clock budget per case. Deliberately generous — `cargo test` builds unoptimized, and
 /// the bar is *linear vs quadratic*, not a benchmark. It is still orders of magnitude below
@@ -53,7 +53,9 @@ fn detect_and_mask(input: String) -> (usize, String, bool) {
     let detector = StructuredRecognizers::new();
     let found = detector.detect(&input).len();
     let mut vault = Vault::new();
-    let masked = vault.mask_all(&input, &detector).expect("masking must succeed");
+    let masked = vault
+        .mask_all(&input, &detector)
+        .expect("masking must succeed");
     let round_trips = vault.demask(&masked) == input;
     (found, masked, round_trips)
 }
@@ -67,8 +69,14 @@ fn a_huge_email_local_part_does_not_blow_up() {
 
     let (found, masked, round_trips) = within_budget("email", move || detect_and_mask(input));
 
-    assert_eq!(found, 1, "the oversized email must still be detected, not skipped");
-    assert_eq!(masked, "[EMAIL_1]", "it must be masked whole, not left in clear");
+    assert_eq!(
+        found, 1,
+        "the oversized email must still be detected, not skipped"
+    );
+    assert_eq!(
+        masked, "[EMAIL_1]",
+        "it must be masked whole, not left in clear"
+    );
     assert!(round_trips, "the round-trip must stay exact");
     assert!(expected.ends_with("@b.co")); // the value really was the pathological one
 }
@@ -83,11 +91,17 @@ fn a_huge_run_of_secret_prefixes_does_not_blow_up() {
     let (found, masked, round_trips) = within_budget("secret", move || detect_and_mask(input));
 
     assert_eq!(found, 1, "the secret run must still be detected");
-    assert!(!masked.contains("sk-"), "no secret fragment may survive in clear: {masked}");
+    assert!(
+        !masked.contains("sk-"),
+        "no secret fragment may survive in clear: {masked}"
+    );
     // The whole ~1 MB run collapsed into one placeholder. (It masks as `[SECRET_1]-`: the
     // input ends in `-`, and the trailing ASCII `\b` correctly leaves that dangling hyphen —
     // not PII — outside the match.)
-    assert!(masked.len() < 32, "the run must be masked whole, not partially: {masked}");
+    assert!(
+        masked.len() < 32,
+        "the run must be masked whole, not partially: {masked}"
+    );
     assert!(round_trips, "the round-trip must stay exact");
 }
 
@@ -103,6 +117,9 @@ fn a_long_row_of_card_groups_stays_linear() {
     let (found, masked, round_trips) = within_budget("cards", move || detect_and_mask(input));
 
     assert!(found >= 1, "the cards must still be detected");
-    assert!(!masked.contains("4111"), "no card digit group may survive in clear");
+    assert!(
+        !masked.contains("4111"),
+        "no card digit group may survive in clear"
+    );
     assert!(round_trips, "the round-trip must stay exact");
 }

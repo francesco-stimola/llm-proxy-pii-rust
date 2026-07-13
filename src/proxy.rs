@@ -6,7 +6,7 @@
 //! non-streaming JSON goes through [`Upstream::forward_chat_completions`].
 
 use anyhow::Context;
-use reqwest::header::{AUTHORIZATION, HeaderName, HeaderValue};
+use reqwest::header::{HeaderName, HeaderValue, AUTHORIZATION};
 use serde_json::Value;
 
 /// Minimal view of an outgoing request we need to inspect and rewrite before
@@ -79,11 +79,7 @@ impl Upstream {
         client_auth: Option<&str>,
         passthrough: &[(HeaderName, HeaderValue)],
     ) -> reqwest::RequestBuilder {
-        let url = format!(
-            "{}{}",
-            self.base_url.trim_end_matches('/'),
-            self.chat_path
-        );
+        let url = format!("{}{}", self.base_url.trim_end_matches('/'), self.chat_path);
         let mut request = self.client.post(&url).json(body);
         // Prefer the client's own credential; else inject the configured key.
         if let Some(auth) = client_auth {

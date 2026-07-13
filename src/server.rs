@@ -8,24 +8,24 @@
 use std::sync::Arc;
 
 use axum::{
-    Json, Router,
     body::{Body, Bytes},
     extract::{DefaultBodyLimit, State},
     http::{
-        HeaderMap, HeaderName, HeaderValue, StatusCode,
         header::{AUTHORIZATION, CONTENT_TYPE},
+        HeaderMap, HeaderName, HeaderValue, StatusCode,
     },
     response::{IntoResponse, Response},
     routing::{get, post},
+    Json, Router,
 };
 use futures_util::StreamExt;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use tower_http::trace::TraceLayer;
 
-use crate::config::{Config, env_flag};
-use crate::pii::PiiDetector;
+use crate::config::{env_flag, Config};
 use crate::pii::composite::CompositeDetector;
 use crate::pii::recognizers::StructuredRecognizers;
+use crate::pii::PiiDetector;
 use crate::pipeline::privacy::PrivacyStage;
 use crate::pipeline::{RequestContext, Stage};
 use crate::proxy::{ProxyRequest, ProxyResponse, Upstream};
@@ -191,8 +191,13 @@ async fn load_onnx_ner() -> anyhow::Result<Option<Box<dyn PiiDetector>>> {
         return Ok(None); // not configured
     };
 
-    let detector =
-        OnnxNerDetector::load(&model, &tokenizer, id2label, pool_size, needs_token_type_ids)?;
+    let detector = OnnxNerDetector::load(
+        &model,
+        &tokenizer,
+        id2label,
+        pool_size,
+        needs_token_type_ids,
+    )?;
     tracing::info!(model, pool_size, "ONNX NER detector loaded");
     Ok(Some(Box::new(detector)))
 }
@@ -310,7 +315,9 @@ async fn chat_completions(
         }
     };
 
-    let mut response = ProxyResponse { body: upstream_body };
+    let mut response = ProxyResponse {
+        body: upstream_body,
+    };
     // M2.6 debug: when skipping de-mask, the client deliberately receives the
     // placeholders the provider saw. Request-side masking already ran, so this
     // never leaks raw PII upstream — it only changes what the (local) client sees.
@@ -403,7 +410,11 @@ async fn buffered_fallback(
         }
         Err(err) => {
             tracing::error!(error = %err, "streaming request: upstream returned neither SSE nor JSON");
-            error_response(code, "upstream returned a non-SSE, non-JSON response", "proxy_error")
+            error_response(
+                code,
+                "upstream returned a non-SSE, non-JSON response",
+                "proxy_error",
+            )
         }
     }
 }
@@ -539,7 +550,7 @@ fn is_forwardable(name: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{Bytes, build_detector, demasking_sse_body};
+    use super::{build_detector, demasking_sse_body, Bytes};
     use crate::pii::anonymizer::Vault;
 
     #[tokio::test]
@@ -571,7 +582,13 @@ mod tests {
             text.contains("\"content\":\"hi\""),
             "content received before the error must survive: {text}"
         );
-        assert!(text.contains("event: error"), "a terminal SSE error event must be emitted: {text}");
-        assert!(text.contains("proxy_error"), "error payload present: {text}");
+        assert!(
+            text.contains("event: error"),
+            "a terminal SSE error event must be emitted: {text}"
+        );
+        assert!(
+            text.contains("proxy_error"),
+            "error payload present: {text}"
+        );
     }
 }

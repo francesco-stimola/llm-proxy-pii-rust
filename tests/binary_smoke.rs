@@ -13,8 +13,8 @@ use std::net::{SocketAddr, TcpListener};
 use std::process::{Child, Command};
 use std::time::Duration;
 
-use axum::{Json, Router, routing::post};
-use serde_json::{Value, json};
+use axum::{routing::post, Json, Router};
+use serde_json::{json, Value};
 use tokio::net::TcpListener as TokioListener;
 
 /// Kills the spawned proxy process when the test ends, even on a panic.
@@ -35,8 +35,7 @@ async fn mock_upstream_handler(Json(body): Json<Value>) -> Json<Value> {
         .as_array()
         .into_iter()
         .flatten()
-        .filter(|m| m["role"] == "user")
-        .next_back()
+        .rfind(|m| m["role"] == "user")
         .and_then(|m| m["content"].as_str())
         .unwrap_or_default()
         .to_string();
@@ -112,12 +111,18 @@ async fn binary_boots_and_does_the_pii_roundtrip() {
 
     // 1) What the upstream saw (echoed, outside the restore path): masked + augmented.
     let seen = reply["upstream_received"].to_string();
-    assert!(!seen.contains("mario.rossi@example.com"), "email leaked upstream");
+    assert!(
+        !seen.contains("mario.rossi@example.com"),
+        "email leaked upstream"
+    );
     assert!(
         !seen.contains("IT60X0542811101000000123456"),
         "IBAN leaked upstream"
     );
-    assert!(!seen.contains("sk-ant-api01-test0"), "secret leaked upstream");
+    assert!(
+        !seen.contains("sk-ant-api01-test0"),
+        "secret leaked upstream"
+    );
     assert!(
         seen.contains("[EMAIL_1]") && seen.contains("[IBAN_1]") && seen.contains("[SECRET_1]"),
         "expected typed placeholders upstream, got: {seen}"

@@ -16,16 +16,16 @@
 //! shape `[1, seq, num_labels]`. `NER_LABELS` must list exactly `num_labels`
 //! labels in class-id order — a mismatch is rejected (never silently degraded).
 
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
 
-use anyhow::{Result, anyhow};
-use ort::session::Session;
+use anyhow::{anyhow, Result};
 use ort::session::builder::GraphOptimizationLevel;
+use ort::session::Session;
 use ort::value::Tensor;
 use tokenizers::Tokenizer;
 
-use super::ner_decode::{TokenTag, decode_entities, validate_label_count};
+use super::ner_decode::{decode_entities, validate_label_count, TokenTag};
 use super::{DetectError, PiiDetector, PiiEntity};
 
 /// NER-based detector backed by an ONNX Runtime session.

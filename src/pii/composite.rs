@@ -55,7 +55,10 @@ impl PiiDetector for FailOpen {
     fn try_detect(&self, input: &str) -> Result<Vec<PiiEntity>, DetectError> {
         Ok(self.0.try_detect(input).unwrap_or_else(|err| {
             // Log the detector label only — never the input.
-            tracing::warn!(detector = err.detector, "detector failed; continuing without it");
+            tracing::warn!(
+                detector = err.detector,
+                "detector failed; continuing without it"
+            );
             Vec::new()
         }))
     }
@@ -159,7 +162,9 @@ mod tests {
             Box::new(StructuredRecognizers::new()),
             Box::new(super::FailOpen(Box::new(FailingDetector))),
         ]);
-        let got = composite.try_detect("mail bob@test.com").expect("must not error");
+        let got = composite
+            .try_detect("mail bob@test.com")
+            .expect("must not error");
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].kind, PiiKind::Email);
     }

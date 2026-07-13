@@ -5,14 +5,17 @@
 
 use proptest::prelude::*;
 
-use llm_proxy_pii_rust::pii::PiiDetector;
-use llm_proxy_pii_rust::pii::PiiKind;
 use llm_proxy_pii_rust::pii::anonymizer::Vault;
 use llm_proxy_pii_rust::pii::recognizers::StructuredRecognizers;
+use llm_proxy_pii_rust::pii::PiiDetector;
+use llm_proxy_pii_rust::pii::PiiKind;
 
 /// Detect the single expected entity, then assert the mask/demask round-trip is
 /// exact and the raw value is gone from the masked text.
-fn assert_single_entity_roundtrip(input: &str, expected_kind: PiiKind) -> Result<(), TestCaseError> {
+fn assert_single_entity_roundtrip(
+    input: &str,
+    expected_kind: PiiKind,
+) -> Result<(), TestCaseError> {
     let detector = StructuredRecognizers::new();
     let entities = detector.detect(input);
 

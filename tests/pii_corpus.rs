@@ -9,10 +9,10 @@ use std::collections::HashMap;
 
 use serde::Deserialize;
 
+use llm_proxy_pii_rust::pii::anonymizer::Vault;
+use llm_proxy_pii_rust::pii::recognizers::{iban_mod97, luhn_valid, StructuredRecognizers};
 use llm_proxy_pii_rust::pii::PiiDetector;
 use llm_proxy_pii_rust::pii::PiiKind;
-use llm_proxy_pii_rust::pii::anonymizer::Vault;
-use llm_proxy_pii_rust::pii::recognizers::{StructuredRecognizers, iban_mod97, luhn_valid};
 
 /// The corpus is embedded at compile time so the test never depends on the cwd.
 const CORPUS_JSON: &str = include_str!("corpus/pii_cases.json");
@@ -146,10 +146,18 @@ fn vault_roundtrip_is_exact() {
         let masked = vault.mask(&case.input, &entities);
         let restored = vault.demask(&masked);
 
-        assert_eq!(restored, case.input, "[{}] round-trip must be exact", case.id);
+        assert_eq!(
+            restored, case.input,
+            "[{}] round-trip must be exact",
+            case.id
+        );
 
         if case.no_pii {
-            assert_eq!(masked, case.input, "[{}] no-PII text must be unchanged", case.id);
+            assert_eq!(
+                masked, case.input,
+                "[{}] no-PII text must be unchanged",
+                case.id
+            );
         } else {
             assert_ne!(masked, case.input, "[{}] PII must be masked", case.id);
             for entity in &entities {

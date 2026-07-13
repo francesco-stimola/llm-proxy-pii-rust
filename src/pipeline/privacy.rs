@@ -28,10 +28,10 @@
 //! and the legacy `function_call.arguments` — so the client runs tools and reads
 //! text with the real values.
 
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
-use crate::pii::PiiDetector;
 use crate::pii::anonymizer::Vault;
+use crate::pii::PiiDetector;
 use crate::pipeline::{RequestContext, Stage};
 use crate::proxy::{ProxyRequest, ProxyResponse};
 
@@ -179,9 +179,7 @@ fn mask_content(content: &mut Value, f: &mut dyn FnMut(&str) -> String) -> Resul
                     }
                 } else {
                     // number / bool / null / nested array — uninterpretable.
-                    return Err(
-                        "message `content` array has an unrecognized element".to_string()
-                    );
+                    return Err("message `content` array has an unrecognized element".to_string());
                 }
             }
             Ok(())
@@ -301,7 +299,10 @@ fn inject_augmentation(body: &mut Value) {
         }
     }
 
-    messages.insert(0, json!({ "role": "system", "content": AUGMENTATION_PROMPT }));
+    messages.insert(
+        0,
+        json!({ "role": "system", "content": AUGMENTATION_PROMPT }),
+    );
 }
 
 /// Append the augmentation to an existing system/developer message's content.
@@ -367,7 +368,8 @@ mod tests {
         });
         demask_response(&mut body, &vault);
         assert_eq!(
-            body.pointer("/choices/0/message/content").and_then(Value::as_str),
+            body.pointer("/choices/0/message/content")
+                .and_then(Value::as_str),
             Some(r#"from O'Ac"me today"#)
         );
     }

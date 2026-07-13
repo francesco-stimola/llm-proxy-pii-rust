@@ -15,7 +15,7 @@ use std::collections::HashMap;
 
 use once_cell::sync::Lazy;
 use regex::Regex;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 use crate::pii::anonymizer::Vault;
 
@@ -168,9 +168,13 @@ impl SseDemasker {
                         .get("index")
                         .and_then(Value::as_u64)
                         .unwrap_or(tpos as u64);
-                    if let Some(Value::String(args)) = tool_call.pointer_mut("/function/arguments") {
+                    if let Some(Value::String(args)) = tool_call.pointer_mut("/function/arguments")
+                    {
                         *args = self.push_buffered(
-                            StreamKey::ToolArg { choice: choice_idx, tool },
+                            StreamKey::ToolArg {
+                                choice: choice_idx,
+                                tool,
+                            },
                             args,
                         );
                     }
@@ -212,7 +216,11 @@ impl SseDemasker {
         let mut keys: Vec<StreamKey> = self.pending.keys().cloned().collect();
         keys.sort_unstable();
         for key in keys {
-            let pending = self.pending.get_mut(&key).map(std::mem::take).unwrap_or_default();
+            let pending = self
+                .pending
+                .get_mut(&key)
+                .map(std::mem::take)
+                .unwrap_or_default();
             if pending.is_empty() {
                 continue;
             }
@@ -235,8 +243,8 @@ fn emit_line(out: &mut Vec<u8>, line: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pii::PiiDetector;
     use crate::pii::recognizers::StructuredRecognizers;
+    use crate::pii::PiiDetector;
 
     #[test]
     fn split_holds_back_only_a_possible_placeholder_tail() {
@@ -244,7 +252,7 @@ mod tests {
         assert_eq!(split_demaskable("hi [EMA"), 3); // hold from the '['
         assert_eq!(split_demaskable("hi [EMAIL_1]"), 12); // closed ']' → emit all
         assert_eq!(split_demaskable("a [EMAIL_1] b [PH"), 14); // hold the trailing partial
-        // A '[' followed by clearly non-placeholder text is emitted, not held.
+                                                               // A '[' followed by clearly non-placeholder text is emitted, not held.
         assert_eq!(split_demaskable("see [note] here"), 15);
         // Bounded: a very long '[' run is not treated as a placeholder.
         let long = format!("x [{}", "A".repeat(40));
@@ -271,7 +279,10 @@ mod tests {
                     continue;
                 }
                 let v: Value = serde_json::from_str(data).unwrap();
-                if let Some(c) = v.pointer("/choices/0/delta/content").and_then(Value::as_str) {
+                if let Some(c) = v
+                    .pointer("/choices/0/delta/content")
+                    .and_then(Value::as_str)
+                {
                     acc.push_str(c);
                 }
             }
@@ -284,15 +295,22 @@ mod tests {
         let mut d = SseDemasker::new(vault_with_email());
         let mut out = Vec::new();
         // `[EMAIL_1]` arrives split across two SSE events.
-        out.extend(d.push(b"data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"mail [EMA\"}}]}\n\n"));
-        out.extend(d.push(b"data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"IL_1] now\"}}]}\n\n"));
+        out.extend(d.push(
+            b"data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"mail [EMA\"}}]}\n\n",
+        ));
+        out.extend(d.push(
+            b"data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"IL_1] now\"}}]}\n\n",
+        ));
         out.extend(d.push(b"data: [DONE]\n\n"));
         out.extend(d.flush());
 
         let content = collect_content(&out);
         assert_eq!(content, "mail bob@test.com now");
         let raw = String::from_utf8(out).unwrap();
-        assert!(!raw.contains("[EMAIL_1]"), "placeholder leaked to client: {raw}");
+        assert!(
+            !raw.contains("[EMAIL_1]"),
+            "placeholder leaked to client: {raw}"
+        );
         assert!(raw.contains("data: [DONE]"), "terminator must be preserved");
     }
 
@@ -342,7 +360,10 @@ mod tests {
 
         assert_eq!(collect_tool_args(&out), r#"{"to":"bob@test.com"}"#);
         let raw = String::from_utf8(out).unwrap();
-        assert!(!raw.contains("[EMAIL_1]"), "placeholder leaked in tool args: {raw}");
+        assert!(
+            !raw.contains("[EMAIL_1]"),
+            "placeholder leaked in tool args: {raw}"
+        );
     }
 
     #[test]

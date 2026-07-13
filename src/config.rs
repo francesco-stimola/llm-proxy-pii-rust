@@ -94,7 +94,11 @@ impl Config {
 
         let forward_request_headers = match std::env::var("UPSTREAM_FORWARD_HEADERS") {
             Ok(raw) => parse_header_list(&raw),
-            Err(_) => preset.forward_headers.iter().map(|h| h.to_string()).collect(),
+            Err(_) => preset
+                .forward_headers
+                .iter()
+                .map(|h| h.to_string())
+                .collect(),
         };
 
         let upstream_extra_headers = match std::env::var("UPSTREAM_EXTRA_HEADERS") {
@@ -106,7 +110,11 @@ impl Config {
         let pii_locales = match std::env::var("PII_LOCALES") {
             Ok(raw) => {
                 let list = parse_header_list(&raw); // same shape: comma-split, lowercased
-                if list.is_empty() { default_locales() } else { list }
+                if list.is_empty() {
+                    default_locales()
+                } else {
+                    list
+                }
             }
             Err(_) => default_locales(),
         };
@@ -198,7 +206,12 @@ fn parse_extra_headers(raw: &str) -> Vec<(String, String)> {
 /// `NER_TOKEN_TYPE_IDS`) parses identically and can't diverge.
 pub(crate) fn env_flag(key: &str) -> bool {
     std::env::var(key)
-        .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+        .map(|v| {
+            matches!(
+                v.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
         .unwrap_or(false)
 }
 
