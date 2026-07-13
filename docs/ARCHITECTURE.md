@@ -242,7 +242,7 @@ env-driven. Auth: the client's own `Authorization` wins, else the configured key
 | `src/pipeline/privacy.rs` | the privacy stage (only one wired) |
 | `src/pii/mod.rs` | `PiiDetector` trait, `PiiEntity` / `PiiKind` / `Confidence` |
 | `src/pii/recognizers.rs` | deterministic structured-PII recognizers (M1) |
-| `src/pii/overlap.rs` | shared span overlap resolution — the *no-abandoned-bytes* invariant: Email containment gate → structured union-merge → NER drop (`PiiKind::priority` only *labels* a union) |
+| `src/pii/overlap.rs` | shared span overlap resolution — the *no-abandoned-bytes* invariant: structured union-merge → NER drop (`PiiKind::priority` only *labels* a union; enclosure by an email is a **naming** rule, `name_of` — the containment *gate* was removed in M4-R15) |
 | `src/pii/composite.rs` | `CompositeDetector` — combine detectors behind one trait |
 | `src/pii/anonymizer.rs` | `Vault`: mask / demask |
 | `src/pii/ner_decode.rs` | pure NER decode (label→kind, BIO→spans) — model-independent |

@@ -791,6 +791,125 @@ builder's claim exactly.
   the gate dropped), not by the surviving set. **Test:** the above input resolves to a single span labelled
   `Secret`.
 
+### M4-R13/R14/R15 review (2026-07-13) — the CJK leak is CLOSED, with **no FP regression**; no blockers
+The **fifth** review of this area. Reviewed `7388929` (fix) + `3765f71` (docs). Independently verified:
+**115 tests green (default) / 123 + 1 `#[ignore]`d (`--features onnx`), 0 failed**; a from-scratch
+`cargo check --all-targets` on **both** feature sets emits **no warnings**. Both counts match the builder's
+claim exactly.
+
+**(A) M4-R13 — the CJK leak is genuinely closed, and the anti-FP guarantee survives.**
+- All seven inputs now mask, reproduced through `Vault::mask` (the exact bytes the upstream receives), each
+  round-tripping exactly: `我的信用卡号是4111111111111111` → `我的信用卡号是[CARD_1]`; `密钥sk-abcdef123456` →
+  `密钥[SECRET_1]`; `我的身份证号是11010519491231002X` → `我的身份证号是[NATID_1]`; `账号DE89370400440532013000`
+  → `账号[IBAN_1]`; `编号123-45-6789` → `编号[SSN_1]`; `カード番号は4111111111111111です` →
+  `カード番号は[CARD_1]です`; `Карта4111111111111111` → `Карта[CARD_1]`.
+- **All 12 anchored recognizers converted** — verified by grep: no bare `\b` survives in any `Regex::new` in
+  `src/`. `Email` (`recognizers.rs:126`) and `Phone` (`:136`) genuinely carry no `\b` (character classes only).
+  The `recognizers.rs` diff is *exactly* the 12 boundary swaps + tests + comments: **zero** change to any
+  validator or to the recognizer set.
+- **Anti-FP guarantee intact:** `card4111111111111111`, `abc4111111111111111abc`, `hash a4111…b`, a SHA-256 hex
+  hash, a base64 blob, a UUID and `PO123456A` all still match **nothing**.
+- **Non-vacuity confirmed independently** (isolated clone, `(?-u:\b)` → `\b`): the detector returns `[]` on all
+  seven inputs, and exactly the claimed tests fail — `cjk_prose_does_not_hide_structured_pii`,
+  `structured_pii_is_detected_in_cjk_and_cyrillic_prose`, corpus `[non_ascii_scripts/CJK-01]` and
+  `[RT-05] PII must be masked`. The fix is load-bearing.
+- **The new FP surface is real but is NOT a precision regression — quantified.** With ASCII boundaries any
+  non-ASCII char is a boundary, so a token glued to an *accented Latin* letter can now match
+  (`café4111111111111111` → `[CARD_1]`; `Nº123456789` → `[NATID_1]`). It affects the 10 anchored
+  ID/card/IBAN/secret recognizers, and it requires **zero separator** between a non-ASCII **letter** and the
+  token. Measured over 100k random 9-digit numbers: `nº123456789` (glued — the new surface) masks **18.10%**,
+  and `nº 123456789` (separated) masks **18.10%** — *identical*, and the separated form **already matched before
+  the fix**. So the boundary change adds *positions*, and in every one of them the FP rate is governed entirely
+  by the checksum — i.e. it is the **already-accepted M4-R6 over-mask** (~18% of arbitrary 9-digit tokens),
+  reaching a few more places. Nine realistic FR/DE/ES/PT sentences with numbers (`Le café a été payé 12 euros…`,
+  `Herr Müller wohnt in der Bahnhofstraße 12…`, `El señor Núñez… desde 1998…`, `Der Preis beträgt 1234567890
+  Cent.`) produce **zero** false positives — prose separates numbers from words. Words whose accent is *not*
+  final (`Müller123456789`, `Straße123456789`, `señor12345678Z`) are unaffected (the adjacent char is ASCII).
+  Verdict: **acceptable over-mask**, squarely inside the project's stated direction; no fix needed. *(The one
+  idiomatic zero-separator form, ES/PT `nº`/`Nº` + digits, carries exactly the M4-R6 rate it already had.)*
+
+**(B) The gate removal is sound — containment is preserved and the invariant still holds after the rewrite.**
+- **Containment without the gate:** `4111111111111111@x.com`, `123456789@x.com`, `sk-abcdef@x.com` and
+  `555.867.5309@x.com` each mask as **one `[EMAIL_1]`** covering the whole email — nothing fragmented, no
+  `@domain` in clear, exact round-trip. The union-merge subsumes the gate exactly as claimed: an enclosed span
+  merges *into* its email, so the union **is** the email span, and `name_of`'s `union == Email span` exception
+  keeps the label. Deleting nothing structurally removes the M4-R10 stranding trap.
+- **The whole historical leak set is still clean:** `card 4111 1111 1111 1111@example.com` → `card [CARD_1]`;
+  `AB 12 34 56 C@x.com` → `[NATID_1]`; `555 867 5309.4111111111111111@x.com` → `[CARD_1]`;
+  `555 867 5309.sk-abcdef123456@x.com` → `[SECRET_1]`; `555 867 5309john.doe@example.com` → `[PHONE_1]`.
+- **Re-fuzzed the invariant after the +253-line rewrite — I could not break it.** **400,000** randomized
+  synthetic candidate sets (1–6 spans, all 10 kinds incl. NER, duplicates, full containment, chains, 3+ mutual
+  overlaps, multi-byte inputs) straight into `resolve_overlaps` → **zero** violations of: output spans pairwise
+  non-overlapping · every structured candidate fully covered by **exactly one** output span · `text ==
+  input[span]` · exact round-trip. Plus **200,000** end-to-end cases gluing real PII with **non-ASCII** prose
+  fragments (CJK / Cyrillic / accented) → same four invariants hold; widest union 99 bytes. The new overlap
+  surface M4-R13 opens (recognizers now firing inside CJK, e.g. a card and a zh Resident ID adjacent with no
+  spaces) is covered.
+
+**(C) M4-R15 union naming — an improvement, not a regression.** The feared relabelling does **not** happen:
+`4111111111111111@x.com` still masks as `[EMAIL_1]`, not `[CARD_1]` — `name_of`'s exception (union *exactly*
+an `Email` span ⇒ the email keeps the label) preserves the M4-R7/R9 behaviour every earlier review ratified.
+The relabellings that *do* occur are strictly better for both the augmentation prompt and the audit log:
+`555 867 5309.sk-abcdef123456@x.com` → `[SECRET_1]` (was `[PHONE_1]`) and `555 867 5309.4111111111111111@x.com`
+→ `[CARD_1]` (was `[PHONE_1]`) — the model and the kind-only `debug!` now see the **most sensitive** kind in the
+blob. *(Residual, not worth changing: a genuine email whose local part really is a secret — `sk-…@x.com` — is
+labelled `Email`, so the audit under-reports it. Masked either way; consistent with M4-R7/R9.)*
+
+**(D) M4-R14 verified.** `widen_to_char_boundaries` (`overlap.rs:202`) is **total** — it clamps to `input.len()`
+and walks outward to real char boundaries, so `input.get(span)` in `materialize` always succeeds and the `None`
+arm is genuinely unreachable; widening can only *add* bytes, so it cannot abandon a constituent. The fallback
+now returns the group **unmerged** (coverage preserved) rather than the winner alone.
+
+**(E) All clear.** The only new log site is `tracing::warn!(?kind, …)` — kind only, never a value; `log_safety`
+(DBG-02) passes. `server.rs` / `privacy.rs` / `config.rs` are untouched, so fail-closed is unchanged. Corpus /
+adversarial / proptest / PROP-01 / PROP-02 / VAULT-02 and the containment guards all pass. The
+`non_ascii_scripts` corpus category (CJK-01…05, JA-01, CYR-01 + 2 ASCII-token negatives) and RT-05/RT-06 are
+real and are picked up by the data-driven `pii_corpus.rs` (they fail when the fix is reverted).
+
+Three **non-blocking** follow-ups (none is a leak; the first is a missing *guard*, the second is pre-existing):
+- [ ] **M4-R16 (medium — the ASCII blind spot is *not* fully closed: PROP-03 itself is still ASCII-only).**
+  The corpus grew a `non_ascii_scripts` category, but **PROP-03** — the property test that encodes the resolver's
+  core invariant (`every_structured_candidate_byte_is_covered`, `src/pii/recognizers.rs:1055-1120`) — still has
+  **zero non-ASCII characters** in its `PII_SAMPLES` and `GLUE` tables (verified by counting: 0). That is the
+  *exact* blind spot that let M4-R13 survive four reviews, now sitting in the one test the whole
+  no-abandoned-bytes guarantee rests on — and `docs/TESTING.md` even states "**Any new recognizer must be
+  exercised in a non-ASCII context here**" while the invariant test is not. Not a live leak (my own 200k-case
+  fuzz with CJK/Cyrillic/accented glue found no violation), but the **guard is missing**: nothing in the suite
+  would catch a future regression in the multi-byte paths the rewrite added (`widen_to_char_boundaries`, the
+  union re-slice, a union endpoint landing inside a multi-byte char). **Fix:** add non-ASCII entries to PROP-03's
+  `GLUE` (e.g. `"我的信用卡号是"`, `"です"`, `"Карта"`, `"café"`, `"，"`) and at least one non-ASCII-context
+  sample, so the invariant is exercised on multi-byte input. **Test:** PROP-03 itself, with the widened tables
+  (it must stay green; verify non-vacuity by breaking `widen_to_char_boundaries`).
+- [ ] **M4-R17 (low-medium — PRE-EXISTING, not a regression: `find_iter` can *hide* a real value from the
+  candidate set, so the invariant never sees it).** `raw_candidates` (`src/pii/recognizers.rs:258-277`) drives
+  each recognizer with `regex::find_iter`, which is **leftmost and non-overlapping per recognizer**. A real PII
+  value that *starts inside* an earlier match of the **same** recognizer is therefore **never emitted as a
+  candidate at all** — and PROP-03's invariant ("every raw candidate is covered") is then *vacuously* satisfied
+  for it. The invariant is only ever as strong as the candidate set. Reproduced through `Vault::mask`:
+  `4111 1111 1111 1111@123-45-6789-4111 1111 1111 1111` → masked **`[CARD_1]@[CARD_2] 1111`** — the *shifted*
+  16-digit window `6789-4111 1111 1111` happens to be Luhn-valid and is matched first, so the real trailing card
+  is never a candidate and its last group **` 1111` is forwarded in clear**. **Verified pre-existing:** it
+  reproduces byte-identically at `3e1aa07` (pre-fix), so it is *not* caused by these commits — it is a limit of
+  the **candidate-generation** layer, not of the resolver (the resolver's own invariant holds; see the fuzz
+  above). Severity is bounded: the input is pathological, and only a trailing 4-digit group escapes. *(A second
+  instance of the same class leaves only a bare `@domain.tld`, which the project explicitly accepts as not-PII —
+  M4-R11.)* **Fix (suggested):** after resolution, re-run the recognizers over the **uncovered gaps** to a
+  fixpoint (gaps are short, so this is cheap), so a value hidden behind an earlier non-overlapping match is still
+  caught. **Test:** the input above must leave no `1111` group in clear; plus a strong, cheap invariant that
+  would catch this whole class — **re-running the detector on the masked output must yield no structured
+  candidates** (add as a proptest sibling of PROP-03).
+- [ ] **M4-R18 (low — stale references to the REMOVED containment gate, in `src/` + `tests/`).** The gate is
+  gone, but five live comments still describe it as the current mechanism — which is precisely the mis-reasoning
+  that produced M4-R10, so it is worth keeping honest: `src/pii/mod.rs:79` ("handled *ahead* of priority by the
+  containment gate") and `:102` ("Used by the containment gate in `overlap::resolve_overlaps`");
+  `src/pii/overlap.rs:259` ("// Containment gate: …"); `src/pii/recognizers.rs:864` ("the containment gate
+  deletes the card") **and the test name `a_span_deleted_by_the_containment_gate_is_never_stranded`**;
+  `tests/adversarial.rs:133` (same). **Fix:** update the five comments to the naming-rule mechanism and rename
+  the test (e.g. `a_span_enclosed_by_an_email_is_never_stranded`). *(The four **doc** occurrences —
+  `ARCHITECTURE.md` module table and `TESTING.md` LOC-10 / LOC-12 / LOC-15 / LOC-16 — were fixed by the reviewer
+  in this review's doc commit; LOC-15 also catalogued `email_partially_overlapping_a_structured_span_loses_it`,
+  a test deleted back at `0ed0c7c`.)* **Test:** none needed (comments).
+
 ## M5 — Integration & performance testing
 Goal: prove the whole system holds **end-to-end** and **under load**, then document it. Comes after M4 —
 the feature set (structured + NER + streaming + multi-provider) is complete enough to test as a product.
