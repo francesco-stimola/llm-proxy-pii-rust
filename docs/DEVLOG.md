@@ -3,6 +3,18 @@
 Newest first. One entry per meaningful change — note *what* and *why*, not just
 *what*. This is the running history so context is never lost between sessions.
 
+## 2026-07-14 — Review 11: M4-R24 closure verified — DoS class closed on both axes
+
+Independent reviewer pass over the builder's M4-R24 fix (`eed9949`). **Holds.** Read the rewritten
+`Vault::mask` (one L→R copy into a capacity-reserved buffer, O(n + k)) and reproduced both splice strategies
+in a standalone probe: old `replace_range` R→L is **×4 per doubling** of entity count (O(n²), 18 s at 400 K —
+past DOS-04's budget), new forward copy is **×2** (linear), and the two produce **byte-identical** output, so
+it is a pure speedup. Confirmed no third quadratic hides behind it (`demask` = linear `replace_all`,
+`placeholder_for` = O(1)), DOS-04 is non-vacuous (`entities.len() == reps`, 600 K entities → 214 ms), the
+malformed-span guard is drop-never-leak-never-panic, and MSRV `1.82` is untouched. Both feature sets green
+(126 default / 134 + 1 ignored onnx), `fmt` + `clippy` clean. No new finding — **M4's ledger is genuinely
+clean, 24/24**. Full round: [`reviews/M4.md#review-11`](reviews/M4.md#review-11).
+
 ## 2026-07-14 — M4-R24: the *other* quadratic — ask what a guard holds constant, not what it varies
 
 **M4 is done — all 24 findings closed, and M5 is unblocked.** (This supersedes the "M4 is NOT done" line in
