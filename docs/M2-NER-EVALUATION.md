@@ -212,5 +212,21 @@ The `PiiDetector` trait keeps all of these swappable without touching the proxy:
 - a small **local** LLM with constrained/structured output for hard cases,
 - confidence-threshold tuning, or an ensemble of two NERs.
 
+**GLiNER — the contextual / open-label option (not yet evaluated; ≠ Piiranha).** Two very
+different architectures both get called "a PII model":
+- **Piiranha** (evaluated at M2, **rejected**): an mDeBERTa **token-classifier** with a *fixed*
+  PII label set — scored ~0 recall on natural-sentence text (fired on subword fragments). A dead end.
+- **GLiNER** (**not yet evaluated**): a *zero-shot, open-label* span extractor — you pass **arbitrary
+  labels at inference** ("person", "phone number", "address", …) and it matches spans by **context**,
+  not a baked-in list. This is the natural tool for **ambiguous, anchor-less PII** the deterministic
+  layer can't disambiguate — e.g. a bare national phone number, or a free-form postal address.
+
+So GLiNER is a genuinely open candidate, and potentially a **single more-capable successor to XLM-R**
+(named entities *and* contextual PII in one model). Worth a **measured evaluation** — same rigor as the
+M2 pick (score `gliner_multi_pii-v1` int8 through the hybrid on the corpus; check CPU latency / RAM
+against our lean bar) — but it is a **project, not a drop-in**: GLiNER is not token-classification, so it
+needs a **separate detector + span decode** (see the pre-converted-ONNX note above). Don't swap XLM-R on
+flexibility alone — measure first.
+
 Do **not** reach for a heavy model pre-emptively — measure first, then escalate
 only if the data says so (textbook / lean principle).

@@ -499,7 +499,20 @@ before routing, so a mis-route is a wrong-provider error, never a leak.
 National phone numbers without a `+CC` anchor (e.g. UK `020 …`, DE `030 …`) collide with ordinary number
 sequences, so they're false-positive-prone. The `fp_prone_recognizers(code)` seam is wired and empty,
 gated by `PII_LOCALES`. The universal `+CC` international arm already catches the unambiguous case; add a
-specific country's national format here only when a concrete need justifies the precision work.
+specific country's national format here only when a concrete need justifies the precision work. **The clean
+way to catch the ambiguous form is *context*, not regex** — the current XLM-R NER only does PER/ORG/LOC
+(no phone), so this really belongs to the **GLiNER escalation** below (open-label, context-based).
+
+### Evaluate GLiNER — contextual-PII detector / potential XLM-R successor  *(2026-07-13)*
+The path for **ambiguous, anchor-less PII** (a bare national phone, a free-form postal address) that the
+deterministic layer can't disambiguate and the current XLM-R (PER/ORG/LOC only) doesn't cover. **GLiNER ≠
+Piiranha:** Piiranha (a *fixed-label* mDeBERTa token-classifier) was evaluated at M2 and **rejected** (~0
+recall on natural sentences); GLiNER is a *zero-shot, **open-label*** span extractor — you pass labels like
+`"phone number"` at inference and it matches by context — and is **not yet evaluated**. It could be a single
+more-capable **successor to XLM-R** (named entities *and* contextual PII in one model). Needs a **measured
+eval** (score `gliner_multi_pii-v1` int8 through the hybrid on the corpus; CPU latency / RAM vs the lean bar)
+and a **separate detector + span decode** (it is *not* token-classification, so not a drop-in). Full detail
+in [`docs/M2-NER-EVALUATION.md`](M2-NER-EVALUATION.md) (Escalation path).
 
 ### Other later items
 Auth & rate-limiting stages, **TLS / running behind a TLS terminator**, structured
