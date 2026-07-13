@@ -88,9 +88,16 @@ before:
 
 `Vault::mask_all` therefore re-detects until the text yields nothing. It converges because a
 placeholder is **inert** (no recognizer can match `[KIND_N]` or span across it), so each pass strictly
-shrinks the un-masked text; `MAX_MASK_PASSES` is a safety bound and hitting it can only mean
-*over*-masking. The round-trip stays exact — every pass records raw value → placeholder, and `demask`
-restores them all in one tolerant pass.
+shrinks the un-masked text. The round-trip stays exact — every pass records raw value → placeholder, and
+`demask` restores them all in one tolerant pass.
+
+> ⚠️ **`MAX_MASK_PASSES` currently fails *open* — [M4-R20](reviews/M4.md#m4-r20), open.** On exhaustion the
+> loop returns the text **without a final re-detect**, so anything still un-masked is forwarded. "Each pass
+> strictly shrinks the un-masked text" guarantees *eventual* convergence — **not** convergence within the
+> bound, so the reassuring reading ("hitting it can only mean over-masking") is **unproven**. Not shown
+> reachable (an exhaustive search over 314k glued inputs never exceeded **2** passes — masking *fragments* a
+> digit run rather than peeling it, so exposure depth stays tiny), but it contradicts the fail-closed bar and
+> the fix is to `Err` out and block.
 
 **Overlap resolution (`src/pii/overlap.rs`).** Detectors produce overlapping candidate spans;
 `resolve_overlaps` reduces them to a non-overlapping set. Its governing rule is an **invariant,
@@ -316,8 +323,20 @@ Runtime native library at M2.
 ## Decisions & open points
 
 - **Placeholder format: `[KIND_N]`** (e.g. `[EMAIL_1]`) — ASCII, tokenizer-friendly.
-- **Locales: IT + US** — Italian and US phone numbers; IBAN including Italian; US SSN.
+- **Coverage (M4, supersedes the original "IT + US")** — three tiers; see *Hybrid
+  detection → Locale coverage* above. The NER's domain is its **model's** 10 languages;
+  structured PII is language-independent and always on. `PII_LOCALES` gates only
+  *FP-prone* recognizers — of which there are none yet, so it is a documented **no-op**.
+- **Over-mask, never leak** — the standing tie-breaker. Where precision and recall
+  conflict, recall wins: the pure-numeric national IDs accept ~18% of arbitrary 9-digit
+  tokens (M4-R6) and a union may swallow a bare `@domain`. Both are **accepted on
+  purpose**. The precision path is *context* (GLiNER, Backlog), never a keyword gate —
+  gating a recognizer on nearby words reintroduces leaks.
 - **Resolved (M1)**: the `Stage` signature threads a per-request `RequestContext`
   (carrying the `Vault`) from request to response.
 - **Resolved (M1.5)**: the scanned text fields are fixed — see *Robustness &
   fail-closed → Field coverage* above.
+- **Open (M4-R19, BLOCKER)**: candidate generation is **O(n²)** on the two
+  unbounded-length recognizers (Email, Secret), and masking runs **inline** on the tokio
+  worker with no per-field size cap — an unauthenticated DoS. See
+  [`reviews/M4.md`](reviews/M4.md#m4-r19).
