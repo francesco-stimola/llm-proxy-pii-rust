@@ -1,18 +1,32 @@
-//! **Algorithmic-complexity guards (M4-R19)** — detection must stay *linear* in the size
-//! of the field it scans.
+//! **Algorithmic-complexity guards (M4-R19, M4-R24)** — the masking path must stay *linear*
+//! in **both** of its dimensions. Availability is a privacy property here: a proxy pegged
+//! for minutes on an unauthenticated path protects nothing.
 //!
-//! The overlap rescan (M4-R17) resumes the regex one `char` past every match's **start**,
-//! so a value hidden *inside* an earlier match of the same recognizer still becomes a
-//! candidate. That probes O(n) start positions — harmless while a match is **bounded** in
-//! length (a card is ≤ 19 digits, an ID ≤ 18 chars), but the two **unbounded** patterns —
-//! Email (`local@domain`) and Secret (`sk-…`) — re-matched an O(n)-long value at every one
-//! of them: **O(n²)**. A ~1 MB `content` field, trivially under the 16 MiB body limit,
-//! pegged a core for *minutes* on an unauthenticated path (151 s at 200 KB).
+//! **The two dimensions, and why it takes two kinds of test:**
 //!
-//! These are **timing** guards, so they run the work on a worker thread against a
-//! wall-clock budget: a quadratic regression fails the suite in seconds instead of sitting
-//! there for hours. Each one also asserts the value is still *masked and round-tripped* —
-//! a "fix" that made detection fast by making it blind must fail here too.
+//! 1. **Field size *n*** (**DOS-01…03**, M4-R19). The overlap rescan (M4-R17) resumes the
+//!    regex one `char` past every match's **start**, so a value hidden *inside* an earlier
+//!    match still becomes a candidate. That probes O(n) start positions — harmless while a
+//!    match is **bounded** (a card is ≤ 19 digits), but the two **unbounded** patterns,
+//!    Email and Secret, re-matched an O(n)-long value at every one: **O(n²)**. 151 s on a
+//!    200 KB field.
+//! 2. **Entity count *k*** (**DOS-04**, M4-R24). `Vault::mask` spliced placeholders in
+//!    right-to-left with `replace_range`, and every splice memmoves the whole tail: Θ(n·k).
+//!    A field of many *small* values (`a@b.co `) has k growing with n, so that is **Θ(n²)**
+//!    again — 13 MiB of repeated emails burned **~7 minutes**.
+//!
+//! **DOS-01…03 were blind to (2), and that is the lesson worth keeping.** Every one of them
+//! pins a *single* entity (DOS-03's card row coalesces to k≈1), so they held n large and k
+//! at one — and a per-entity quadratic lived right underneath them. *The complexity guards
+//! must vary the entity **count**, not just the field **size***: it is the M4-R13 lesson
+//! ("a test corpus has a shape, and that shape is a blind spot") recurring on the DoS guards
+//! themselves. The smoking gun: 13.4 MiB as **one** email masks in 219 ms; the **same**
+//! 13.4 MiB as many small emails took 421 s.
+//!
+//! These are **timing** guards, so they run the work on a worker thread against a wall-clock
+//! budget: a quadratic regression fails the suite in seconds instead of sitting there for
+//! hours. Each one also asserts the value is still *masked and round-tripped* — a "fix" that
+//! bought speed with blindness must fail here too.
 
 use std::sync::mpsc;
 use std::thread;
@@ -23,14 +37,15 @@ use llm_proxy_pii_rust::pii::recognizers::StructuredRecognizers;
 use llm_proxy_pii_rust::pii::PiiDetector;
 
 /// Wall-clock budget per case. Deliberately generous — `cargo test` builds unoptimized, and
-/// the bar is *linear vs quadratic*, not a benchmark. It is still orders of magnitude below
-/// the pre-fix behaviour: these inputs are ~1 MB, and 200 KB alone took 151 s.
+/// the bar is *linear vs quadratic*, not a benchmark. Every case sits orders of magnitude on
+/// either side of it (measured, debug profile): DOS-04's splice, for instance, is **~0.2 s**
+/// linear against **~52 s** quadratic.
 const BUDGET: Duration = Duration::from_secs(10);
 
 /// Run `work` on a worker thread and fail if it doesn't finish inside [`BUDGET`].
 ///
-/// A plain `Instant::elapsed()` assertion would only fail *after* the quadratic scan
-/// finished — which, on these inputs, is hours. Timing out is the point.
+/// A plain `Instant::elapsed()` assertion would only fail *after* the quadratic work
+/// finished — which, on these inputs, is minutes to hours. Timing out is the point.
 fn within_budget<T: Send + 'static>(label: &str, work: impl FnOnce() -> T + Send + 'static) -> T {
     let (tx, rx) = mpsc::channel();
     thread::spawn(move || {
@@ -43,7 +58,8 @@ fn within_budget<T: Send + 'static>(label: &str, work: impl FnOnce() -> T + Send
             value
         }
         Err(_) => panic!(
-            "{label}: still running after {BUDGET:?} — the candidate scan is super-linear (M4-R19)"
+            "{label}: still running after {BUDGET:?} — the masking path went super-linear \
+             (M4-R19 / M4-R24)"
         ),
     }
 }
@@ -122,4 +138,51 @@ fn a_long_row_of_card_groups_stays_linear() {
         "no card digit group may survive in clear"
     );
     assert!(round_trips, "the round-trip must stay exact");
+}
+
+#[test]
+fn masking_many_small_entities_stays_linear() {
+    // DOS-04 (M4-R24) — the guard DOS-01…03 could not be: it varies the entity **count**.
+    //
+    // `Vault::mask` used to splice right-to-left with `String::replace_range`, and each
+    // splice memmoves the entire tail of the string. With k entities in n bytes that shifts
+    // Θ(n·k) bytes, and a field of many *small* values has k growing with n — so Θ(n²). A
+    // 13 MiB body of repeated `a@b.co ` burned ~7 minutes of CPU on the unauthenticated
+    // masking path. Detection being linear (DOS-01…03) does NOT bound this: the splice is a
+    // separate cost, which is exactly why it survived the M4-R19 pass.
+    //
+    // We time the **splice alone**, because that is the code under test and it makes the
+    // guard decisive rather than marginal: measured in the debug profile these tests run in,
+    // 600 K entities splice in ~0.2 s linear against ~52 s quadratic (~250×). Detection and
+    // de-masking are linear in n and are pinned elsewhere, so they stay outside the clock.
+    let reps = 600_000;
+    let input = "a@b.co ".repeat(reps); // ~4.2 MB, one entity every 7 bytes
+    let expected = input.clone();
+
+    let detector = StructuredRecognizers::new();
+    let entities = detector.detect(&input);
+    assert_eq!(
+        entities.len(),
+        reps,
+        "the corpus must really carry one entity per repetition — otherwise this guard is \
+         back to testing k=1 and is blind all over again"
+    );
+
+    let (vault, masked) = within_budget("many-entities-splice", move || {
+        let mut vault = Vault::new();
+        let masked = vault.mask(&input, &entities);
+        (vault, masked)
+    });
+
+    // Fast is worthless if it stopped masking: every value is gone, and it all comes back.
+    assert!(
+        !masked.contains("a@b.co"),
+        "an email survived masking in clear"
+    );
+    assert!(masked.contains("[EMAIL_1]"), "expected typed placeholders");
+    assert_eq!(
+        vault.demask(&masked),
+        expected,
+        "the round-trip must stay exact across {reps} entities"
+    );
 }

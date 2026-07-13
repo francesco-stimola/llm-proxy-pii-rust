@@ -117,30 +117,62 @@ impl Vault {
     /// This is **one pass**. Prefer [`mask_all`](Self::mask_all), which re-detects until the
     /// text stops changing — masking can expose PII that was not recognizable before.
     ///
-    /// Placeholders are numbered in reading order (left to right), but the
-    /// splice happens right to left so earlier byte offsets stay valid. Text
-    /// with no entities is returned unchanged.
+    /// **One left-to-right copy into a fresh buffer — O(n + k), never O(n·k) (M4-R24).**
+    /// This used to splice in place, right-to-left, with `String::replace_range`. That is
+    /// correct but **quadratic in the entity count**: every splice memmoves the entire tail
+    /// of the string, so *k* entities in *n* bytes shift Θ(n·k) bytes — and when a field
+    /// holds many small values (`a@b.co `, an SSN, a phone) *k* grows with *n*, so it is
+    /// Θ(n²). A 13 MiB body of repeated emails burned **~7 minutes** of CPU; the *same*
+    /// 13 MiB as one giant email masked in 219 ms. Linear *detection* does not bound this —
+    /// the splice is a separate cost on the same unauthenticated path, which is why M4-R19
+    /// (the quadratic in *candidate generation*) closed without touching it. Copying forward
+    /// once touches each byte exactly once instead.
+    ///
+    /// Placeholders are still numbered in **reading order**: we walk the entities sorted by
+    /// start, so the *n*-th distinct value seen left-to-right gets `[KIND_n]`, exactly as
+    /// before. Splice order was never what made numbering deterministic.
+    ///
+    /// **Precondition** (guaranteed by [`resolve_overlaps`](crate::pii::overlap::resolve_overlaps),
+    /// the only production caller): spans are in-bounds, on `char` boundaries, and pairwise
+    /// **non-overlapping**. A caller that breaks it gets no panic and no leak — see the guard
+    /// below. Text with no entities is returned unchanged.
     pub fn mask(&mut self, text: &str, entities: &[PiiEntity]) -> String {
         if entities.is_empty() {
             return text.to_string();
         }
 
-        // First pass, left→right: assign (or reuse) a placeholder per value so
-        // numbering follows reading order.
         let mut ordered: Vec<&PiiEntity> = entities.iter().collect();
         ordered.sort_by_key(|e| e.span.start);
-        for entity in &ordered {
-            self.placeholder_for(entity);
-        }
 
-        // Second pass, right→left: splice placeholders in without shifting the
-        // byte offsets of not-yet-processed spans.
-        let mut out = text.to_string();
-        ordered.sort_by_key(|e| std::cmp::Reverse(e.span.start));
+        let mut out = String::with_capacity(text.len());
+        let mut cursor = 0usize;
         for entity in ordered {
-            let placeholder = self.to_placeholder[&entity.text].clone();
-            out.replace_range(entity.span.clone(), &placeholder);
+            let (start, end) = (entity.span.start, entity.span.end);
+
+            // Unreachable via the resolver (see the precondition). If it ever happens, the
+            // one thing we must not do is emit the span's bytes in clear, so we advance past
+            // them rather than copying them — drop, never leak — and we never panic on a
+            // slice: this is a proxy, and the input is attacker-influenced.
+            let well_formed = cursor <= start
+                && start <= end
+                && end <= text.len()
+                && text.is_char_boundary(start)
+                && text.is_char_boundary(end);
+            if !well_formed {
+                debug_assert!(false, "mask(): spans must be in-bounds and non-overlapping");
+                tracing::warn!(kind = ?entity.kind, "malformed span in mask(); skipping it");
+                // Widening to a `char` boundary only ever drops *more*, so it can't leak —
+                // and it keeps `cursor` sliceable for the copies below.
+                cursor = cursor.max(char_boundary_at_or_after(text, end));
+                continue;
+            }
+
+            let placeholder = self.placeholder_for(entity);
+            out.push_str(&text[cursor..start]);
+            out.push_str(&placeholder);
+            cursor = end;
         }
+        out.push_str(&text[cursor..]);
         out
     }
 
@@ -205,6 +237,16 @@ impl Vault {
             .insert(placeholder.clone(), entity.text.clone());
         placeholder
     }
+}
+
+/// The first `char` boundary at or after `i`, clamped to `s.len()`. Used only by
+/// [`Vault::mask`]'s malformed-span guard, to keep its cursor sliceable.
+fn char_boundary_at_or_after(s: &str, i: usize) -> usize {
+    let mut at = i.min(s.len());
+    while at < s.len() && !s.is_char_boundary(at) {
+        at += 1;
+    }
+    at
 }
 
 /// Escape `s` as the **body** of a JSON string (no surrounding quotes) — i.e. the
