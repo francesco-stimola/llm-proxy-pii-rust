@@ -344,9 +344,10 @@ traffic — priority can be pulled earlier if real usage demands it.
   `32…` shape-only random form), **zh** China Resident ID (ISO 7064 MOD 11-2, 18 chars). **`ar` gets no
   pack** — the language spans ~20 countries with different ID schemes, so there is no single "Arabic"
   national ID; Arabic names/locations stay covered by NER. *(Overlap note: a numeric national ID that is a
-  substring of an email local part is dropped by the **containment gate**, so a numeric email local part is
-  never fragmented — see `overlap::drop_spans_contained_in_an_email`. This used to be a `Email`>national-ID
-  **priority** rule; since M4-R9 `Email` is the lowest structured priority and the gate carries the case.)*
+  substring of an email local part merges **into** the email — their union is exactly the email span, so a
+  numeric email local part is never fragmented; `overlap::name_of` keeps the `Email` label. This was a
+  `Email`>national-ID **priority** rule (pre-M4-R9), then the M4-R9 containment gate; since M4-R15 both are gone
+  — the union-merge produces the span and the naming rule carries the label.)*
 - **Locale phone national formats** → **moved to Backlog** (user's call 2026-07-13): the FP-prone tier's
   first recognizer. The `+CC` international arm already covers the unambiguous case; the `fp_prone_recognizers`
   seam stays ready. Add a specific national format only on concrete need. See Backlog.
@@ -949,6 +950,53 @@ Three **non-blocking** follow-ups (none is a leak; the first is a missing *guard
   `ARCHITECTURE.md` module table and `TESTING.md` LOC-10 / LOC-12 / LOC-15 / LOC-16 — were fixed by the reviewer
   in this review's doc commit; LOC-15 also catalogued `email_partially_overlapping_a_structured_span_loses_it`,
   a test deleted back at `0ed0c7c`.)* **Test:** none needed (comments).
+
+### M4-R16/R17/R18 fix review (2026-07-13) — correctness SOUND, but a DoS regression + a latent fail-open
+The M4-R17 fix is real and **non-vacuous** (proven by source mutation): reverting `find_at`+`start()+1` to
+`find_iter` semantics reproduces the exact `[CARD_1]@[CARD_2] 1111` leak, and the fixpoint alone does not save it
+(the leftover ` 1111` is not independently detectable) — so **both** mechanisms are load-bearing. Round-trips are
+exact; **NER does not corrupt them** (H1 falsified: XLM-R int8, run live, never labels or spans a `[KIND_N]`
+placeholder, in bare form or in IT/EN/FR/DE/ES/CJK prose → no nested placeholders). No FP regression; `Confidence`
+downgrade on a coalesced run is a non-issue (its only consumer is a kind-only `debug!`). Tests: **127 passed / 1
+ignored** under `--features onnx`, zero warnings on both feature sets. **But** the new candidate scan is quadratic
+and runs inline on the request thread:
+
+- [ ] **M4-R19 (BLOCKER — algorithmic-complexity DoS, a regression introduced by `0c7193b`).**
+  `Recognizer::push_candidates` (`src/pii/recognizers.rs`) resumes `regex.find_at` at `m.start()+1` after every
+  hit. For the two **unbounded-length** recognizers — Email local part `[A-Za-z0-9._%+-]+@…` and Secret
+  `sk-[A-Za-z0-9_-]{6,}` — that is **O(n) start positions × O(n) match length = O(n²)**. Measured (release),
+  `"a"*N + "@b.co"`: N=16k → 982 ms, N=50k → 9.5 s, N=100k → 37 s, N=200k → **151 s** on HEAD, vs **~2–8 ms** at
+  `6c68150` (~18,000× at 200 KB; doubling N quadruples time — textbook O(n²)). `"sk-"*100k` → 135 s vs 18 ms
+  (~7,500×). The default body limit is **16 MiB with no per-field cap** (`DEFAULT_MAX_BODY_BYTES`, `config.rs:50`),
+  so a single ~1–2 MB `content` field — trivially under the limit — pegs a core for minutes; masking runs
+  **synchronously inline** on the tokio worker (`server.rs:251`, no `spawn_blocking`) and `mask_all` calls
+  `detect()` ≥2×, so a handful of concurrent such requests exhaust the executor and the proxy stops serving. This
+  is unauthenticated (masking precedes any upstream auth). Bounded-length recognizers (card/phone/IDs) stay linear
+  — the blowup is specific to the two unbounded patterns, which is why the overlap rescan buys them **no** coverage
+  (a value hidden inside an Email/Secret match merges into the same coalesced run regardless). **Fix (suggested):**
+  bound the overlap rescan — either resume at `run.end` for unbounded recognizers and only do the `start()+1`
+  rescan within a window of the recognizer's max plausible match length (card ≈19, ID ≈18 chars), or tag
+  recognizers `overlap_scan: bool` and leave Email/Secret on plain `find_iter`. Independently, move masking to
+  `spawn_blocking` and/or add a per-field size cap. **Test:** `detect()` and `mask_all` on `"a"*1_000_000 +
+  "@b.co"` and `"sk-"*350_000` must complete in well under a few hundred ms (a guard that fails on O(n²)).
+- [ ] **M4-R20 (low-medium — fail-OPEN on `mask_all` exhaustion; contradicts the fail-closed bar).** After
+  `MAX_MASK_PASSES` the loop returns `current` **with no final re-detect** (`src/pii/anonymizer.rs:83-95`), so any
+  PII still present is forwarded in clear. The ARCHITECTURE/comment claim *"hitting it can only mean over-masking …
+  not a leak"* is **unproven**: "each pass strictly shrinks the un-masked text" guarantees *eventual* convergence,
+  not convergence *within 4 passes*. **Not shown reachable** — an exhaustive search over 314,432 glued inputs (plus
+  handcrafted 5-value chains) never exceeded **2** passes, because masking *fragments* a digit run rather than
+  peeling it, keeping exposure depth tiny — so this is a **latent** fail-open, not a demonstrated leak. **Fix:**
+  after the loop, one final `try_detect(&current)`; if non-empty, return `Err(DetectError)` so `PrivacyStage`
+  blocks (fail closed). Keep the `warn!`; correct the ARCHITECTURE sentence. **Test:** a synthetic detector whose
+  masking always re-exposes one entity → `mask_all` must return `Err`, not forward.
+- [ ] **M4-R21 (low — perf note, not a bug).** `mask_all` runs the detector **≥2×** on every PII-bearing request
+  (one to mask, one to confirm the fixpoint). Under NER this ~doubles inference: single `detect()` **64 ms** vs full
+  `mask_all` **127 ms** (1.99×, 20 iters, XLM-R int8). Inherent to the fixpoint design and acceptable for
+  correctness; fold into M5's perf harness. Possible later optimization: skip the confirmation pass when the last
+  `mask` changed no bytes adjacent to un-masked digits.
+- [ ] **M4-R22 (low — M5 CI blocker-in-waiting).** No `rust-version`/MSRV in `Cargo.toml` (edition 2021), yet
+  `Option::is_none_or` (`recognizers.rs:304`) requires **Rust ≥1.82**. The planned M5 CI on an older toolchain
+  would fail to compile. **Fix:** add `rust-version = "1.82"` to `[package]`.
 
 ## M5 — Integration & performance testing
 Goal: prove the whole system holds **end-to-end** and **under load**, then document it. Comes after M4 —
