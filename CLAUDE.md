@@ -38,6 +38,10 @@ A privacy proxy in front of an OpenAI-compatible LLM: it masks PII locally
 ## Git
 - **Never commit with a real/work email.** A masked `user.email` is set
   repo-locally — keep it.
+- **No `Co-Authored-By: Claude` trailer, and no "generated with" footer** — not in
+  commits, not in PR bodies. This **overrides** the default Claude Code behavior, so
+  drop the trailer even when the harness suggests it. The commit message says *what
+  changed and why*; authorship of this repo is the human's.
 - **Batch commits** into coherent chunks (avoid spam); keep feature commits
   separate from docs/infra commits. **Don't push without asking.**
 - `.claude/settings.local.json` is gitignored (machine-specific) — never commit it.
