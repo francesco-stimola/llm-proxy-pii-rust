@@ -194,7 +194,8 @@ Three tiers: universal (always), national IDs (always, off `PII_LOCALES`), FP-pr
 - **Coverage scope — DECIDED (2026-07-13; see ROADMAP M4).** *Language (NER):* XLM-R's
   10 languages (ar/de/en/es/fr/it/lv/nl/pt/zh). *Structured — three tiers:* universal
   (email/IBAN/card/secret) always on; national IDs (US SSN, IT CF, GB NINO, ES DNI/NIE,
-  FR NIR) **always on regardless of `PII_LOCALES`**; FP-prone recognizers (national *phone*
+  FR NIR, DE Steuer-ID, NL BSN, PT NIF, LV code, zh Resident ID — full list in the mapping
+  table above) **always on regardless of `PII_LOCALES`**; FP-prone recognizers (national *phone*
   formats) opt-in via `PII_LOCALES` — none yet. Phone: US + `+CC` are universal.
 - **Placeholder format — DECIDED: `[KIND_N]`** (e.g. `[EMAIL_1]`), ASCII. Tests
   still assert invariants (raw absent, typed placeholder present, exact roundtrip)

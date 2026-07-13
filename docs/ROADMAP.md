@@ -450,6 +450,59 @@ warnings**; `cargo test --features onnx` links `ort` clean. *(DEVLOG/commit `80d
   document both as explicit known limitations like the deferred IBAN per-country work. Test: a NIR with
   month `20` + correct mod-97 key is masked (if broadened), or a doc note if scoped out.
 
+### M4 close-out review (2026-07-13) — M4 genuinely COMPLETE, no blockers
+Reviewed the close-out (`a474da8` recognizers + priority reorder + e2e, `2da01c0` docs, `91e67af`
+proptest seed). Independently verified: **96 tests green (default), 0 failed, no warnings**;
+`cargo build --features onnx` compiles **and** links `ort` clean, no warnings. *(The DEVLOG close-out
+entry says only "all tests green" — accurate; the exact default count is 96, up 9 from the 87 of the
+continuation review.)*
+- **All checksum validators audited against the official algorithms — correct.** Hand-verified with an
+  official test number each: **DE Steuer-ID** ISO 7064 Mod 11,10 (`86095742719` → check 9 ✓; the
+  structural "exactly one repeated digit in the first 10" gate never rejects a valid ID); **NL BSN**
+  11-proef (`111222333` → weighted sum 66, ✓; `sum != 0` excludes all-zeros); **PT NIF** mod-11
+  (`123456789` → control 9 ✓); **zh Resident ID** ISO 7064 MOD 11-2 (`11010519491231002X` → 'X' ✓);
+  **IT CF** odd/even table + mod-26 (`RSSMRA85T10A562S` → 'S' ✓, the full 26-entry ODD table matches);
+  **ES DNI/NIE** mod-23 and **FR NIR** mod-97 re-confirmed. The 9-digit recognizer masks only when BSN
+  **or** NIF accepts (a 9-digit that is neither is **not** masked — no over-mask); the 11-digit only when
+  DE **or** LV accepts. No validator leaks or globally over-masks.
+- **LV `32…` shape-only branch — conscious, documented tradeoff (confirmed).** It's the one always-on
+  recognizer with no checksum (returns `true` for any 11-digit starting `32`); flagged in the code comment
+  ("randomized form — no checksum to verify") and ROADMAP/ARCHITECTURE. FP surface = 1% of standalone
+  11-digit tokens masked unconditionally — acceptable under the privacy-first (over-mask, never leak) rule.
+- **Priority reorder is safe.** The only change is Email (2→3) crossing above Ssn/NationalId (3→2); Card/
+  Iban/Secret stay above Email, Phone below. Email and Ssn/NationalId only overlap when the ID is a
+  *substring of an email local part*, where the email is the complete correct match — so the reorder is a
+  strict fix (`123456789@x.com`, and the latent `123-45-6789@x.com` SSN case) with **no new regression**.
+  `Ssn ≈ NationalId` (tier 2) never share a span (SSN is dashed; the ID recognizers are letter-interleaved
+  or contiguous-digit), so the tie is moot and deterministic. Provider-agnostic e2e genuinely asserts a
+  byte-identical masked upstream body across the `openai`/`anthropic` presets. No raw PII in logs
+  (kind-only `debug!`); fail-closed unchanged.
+
+Three **non-blocking** precision follow-ups (all fail-safe — over-mask/utility, never a leak):
+- [ ] **M4-R6 (precision, low-med) — pure-numeric always-on recognizers over-mask ordinary numbers.**
+  `\b\d{9}\b` masks any standalone 9-digit token that passes BSN **or** NIF (~2/11 ≈ 18% of arbitrary
+  9-digit numbers — order refs, US routing/EIN, etc.); `\b\d{11}\b` similarly (DE ∪ LV, incl. the
+  unconditional LV `32…` 1%). Fail-safe (over-mask, never a leak) and the deliberate privacy-first choice,
+  but the utility cost isn't bounded/quantified. Fix: either **document the accepted FP magnitude** as an
+  explicit known tradeoff (like the LV shape-only note), and/or gate the checksum-weak numeric IDs on a
+  nearby context keyword, and/or defer to the Backlog GLiNER contextual path. Test: a negative corpus case
+  pinning that a bare ordinary 9-/11-digit number's masking is intentional (or, if context-gated, that an
+  un-anchored one is left alone).
+- [ ] **M4-R7 (precision, low) — the "Email beats a substring ID" fix isn't generalized to Card/Iban/Secret.**
+  The reorder put Email above Ssn/NationalId but Card/Iban/Secret still outrank Email, so an email whose
+  local part is exactly a Luhn-valid card / valid IBAN / API key still fragments (`4111111111111111@x.com`
+  → `[CARD_1]@x.com`, the `@domain` forwarded in clear). Pre-existing, vanishingly rare, low-sensitivity
+  (only the domain leaks; the identifying substring is masked). Fix: either raise Email above
+  Card/Iban/Secret **for the `@`-contained case** (a card/IBAN/secret is never genuinely an email — same
+  reasoning that justified Email > NationalId) or document the accepted edge. Test:
+  `4111111111111111@x.com` masks as a single `Email` (if generalized).
+- [ ] **M4-R8 (precision, very low) — DE Steuer-ID structural rule omits the consecutive-triple exclusion.**
+  `de_steuerid_valid` accepts one digit repeated 2–3× in the first 10 but doesn't enforce the 2016+ rule
+  that a 3× repeat must not sit in three *consecutive* positions. It only ever *over*-accepts (never rejects
+  a valid ID, never leaks) and the effect on top of the Mod 11,10 checksum is negligible. Fix: document as an
+  accepted simplification or add the consecutive-position check. Test: an 11-digit with a consecutive triple
+  + valid checksum is rejected (if tightened).
+
 ## M5 — Integration & performance testing
 Goal: prove the whole system holds **end-to-end** and **under load**, then document it. Comes after M4 —
 the feature set (structured + NER + streaming + multi-provider) is complete enough to test as a product.
