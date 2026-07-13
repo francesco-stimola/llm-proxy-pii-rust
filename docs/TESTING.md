@@ -255,6 +255,15 @@ asserts the value is still masked and round-trips, so a "fix" that buys speed wi
 > **The rule for a new recognizer:** if its match length has **no upper bound**, it must not take
 > `Scan::Overlapping`. Bounded recognizers rescan; unbounded ones rely on the fixpoint.
 
+> **The blind spot these guards had (M4-R24, open).** DOS-01…03 all pin *one* entity (DOS-03's card row
+> coalesces to k≈1), so they measure **detection** scaling in the field *length* — and were **blind** to
+> `Vault::mask` being **O(n²) in the entity *count***: its right-to-left `replace_range` splice shifts the
+> tail once per entity, so a 13 MiB field of many small values ≈ 7 min of CPU while the *same* 13 MiB as one
+> entity masks in ~0.2 s. **A complexity guard must vary entity count, not just field size** — this is the
+> M4-R13 "the corpus has a shape, and that shape is a blind spot" lesson, recurring on the DoS guards
+> themselves. The missing guard is **DOS-04** (e.g. `"a@b.co "`×1 M, or an SSN/phone repeat): `mask_all`
+> within budget, still masked and round-tripping. Add it with the M4-R24 fix (single-pass splice).
+
 ### Fail-closed — masking (`src/pii/anonymizer.rs`, M4-R20)
 - FC-06 — `mask_all_blocks_when_it_cannot_reach_a_fixpoint`: exhausting `MAX_MASK_PASSES` must return
   `Err` (→ `PrivacyStage` blocks, 400), **not** forward the text. A synthetic `NeverConverges` detector

@@ -19,21 +19,26 @@ invariants) and [`TESTING.md`](TESTING.md) (the guards) — read *those* to unde
 
 ## Status
 
-**M0 – M4 complete, and M4's ledger is clean — all 23 findings closed.** 125 tests green (default) /
-133 + 1 `#[ignore]`d (`--features onnx`), no warnings. `v0.4.0`, AGPL-3.0-or-later. The product masks
-structured PII (universal + national-ID packs for 10 countries) and unstructured entities (ONNX NER,
-XLM-R int8), streams, and fronts OpenAI / Copilot / Anthropic via their OpenAI-compatible endpoints.
+**M0 – M4 feature-complete, but M4's ledger is NOT clean — [M4-R24](reviews/M4.md#m4-r24) (BLOCKER) is
+open.** 125 tests green (default) / 133 + 1 `#[ignore]`d (`--features onnx`), no warnings. `v0.4.0`,
+AGPL-3.0-or-later. The product masks structured PII (universal + national-ID packs for 10 countries) and
+unstructured entities (ONNX NER, XLM-R int8), streams, and fronts OpenAI / Copilot / Anthropic via their
+OpenAI-compatible endpoints.
 
 ### Open work — everything not yet done
 
 | What | Where | Status |
 |---|---|---|
-| **M5** — integration & performance testing | [below](#m5) | [ ] not started |
+| **M4-R24** — masking O(n²) in entity count (a second DoS) | [record](reviews/M4.md#m4-r24) | [ ] **BLOCKER, open** |
+| **M5** — integration & performance testing | [below](#m5) | [ ] blocked on M4-R24 |
 
-**M5 is unblocked.** Its prerequisite was a clean M4 ledger — in particular
-[M4-R19](reviews/M4.md#m4-r19), the O(n²) candidate rescan: a perf harness over a known quadratic path
-would have measured the bug, not the product. Detection is now **linear** (measured), masking runs on the
-blocking pool, and the MSRV is declared, so the harness can start from a sound baseline.
+**M5 is blocked again.** Its prerequisite was a clean M4 ledger. Review 10 verified that
+[M4-R19](reviews/M4.md#m4-r19) (the O(n²) candidate *rescan*) is genuinely closed — detection is now
+**linear**, measured — but found [M4-R24](reviews/M4.md#m4-r24): **`Vault::mask` is itself O(n²) in the
+entity count**, a second quadratic on the same unauthenticated path (a 13 MiB field of small emails ≈ 7 min
+CPU). It is the *same* prerequisite problem M4-R19 was: a perf harness run today would measure this bug, not
+the product — and DOS-01…03 don't catch it because each pins a single entity. Close M4-R24 (and add DOS-04,
+a many-entity guard) first. R20/R21/R22/R23 all verified holding.
 
 ---
 
@@ -208,9 +213,10 @@ upstream provider.
 - **Locale phone national formats** → moved to Backlog (the FP-prone tier's first recognizer; the `+CC` arm already covers the unambiguous case)
 
 ### Review ledger — M4 → [`reviews/M4.md`](reviews/M4.md)
-**Six review rounds, 23 findings — all closed.** More than every other milestone combined, because
-**M4-R7 → R9 → R10/R11 → R13 → R17 → R19 is one bug rediscovered six times.** The
-[retrospective](reviews/M4.md#retrospective) is the most useful page in this repo.
+**Seven review rounds, 24 findings — 23 closed, [M4-R24](reviews/M4.md#m4-r24) open (BLOCKER).** More than
+every other milestone combined, because **M4-R7 → R9 → R10/R11 → R13 → R17 → R19 → R24 is one bug
+rediscovered again and again.** The [retrospective](reviews/M4.md#retrospective) is the most useful page in
+this repo.
 
 | ID | Title | Sev | Status |
 |---|---|---|---|
@@ -236,15 +242,19 @@ upstream provider.
 | [M4-R21](reviews/M4.md#m4-r21) | `mask_all` runs the detector ≥2× (~2× NER inference) → **accepted as designed** (it *is* the fixpoint confirmation); measured by M5's PERF-01 | low | [x] |
 | [M4-R22](reviews/M4.md#m4-r22) | No MSRV in `Cargo.toml` — an M5 CI blocker-in-waiting | low | [x] |
 | [M4-R23](reviews/M4.md#m4-r23) | Four code comments cite ROADMAP sections whose content moved to `docs/reviews/` | docs | [x] |
+| [M4-R24](reviews/M4.md#m4-r24) | **Masking is O(n²) in entity count** — a second DoS on the same path ([sibling of R19](reviews/M4.md#m4-r19)); DOS-01…03 miss it (each pins one entity) | **BLOCKER** | [ ] |
 
 <a id="m5"></a>
 ## M5 — Integration & performance testing
 Prove the whole system holds **end-to-end** and **under load**, then document it. The feature set
 (structured + NER + streaming + multi-provider) is complete enough to test as a product.
 
-> **Prerequisite met (2026-07-13): M4's ledger is clean.** A perf harness over a known O(n²) path
-> ([M4-R19](reviews/M4.md#m4-r19)) would have measured the bug, not the product — detection is now
-> **linear**, verified by `tests/complexity.rs`. CI has its MSRV ([M4-R22](reviews/M4.md#m4-r22)).
+> **Prerequisite NOT yet met (Review 10, 2026-07-13): M4's ledger is not clean.**
+> [M4-R19](reviews/M4.md#m4-r19) (the candidate *rescan*) is closed and detection is **linear**, verified by
+> `tests/complexity.rs`; CI has its MSRV ([M4-R22](reviews/M4.md#m4-r22)). But
+> [M4-R24](reviews/M4.md#m4-r24) found that **`Vault::mask` is O(n²) in the entity count** — a second
+> quadratic on the same path that DOS-01…03 miss (each pins one entity). A perf harness would measure *that*
+> bug, not the product. Close M4-R24 + add a many-entity guard (DOS-04) before starting M5.
 
 - [ ] **Real integration tests** — full mask → forward → (stream) → de-mask round-trips, tool-call
   round-trips, multi-turn determinism, and the fail-closed paths. **Mock upstreams cover all three preset
@@ -267,8 +277,10 @@ Prove the whole system holds **end-to-end** and **under load**, then document it
     detector ≥2×, which roughly **doubles NER inference** (64 ms → 127 ms measured). It is a deliberate
     correctness cost — that pass is what makes masking fail-closed — so this is a *measurement*, not a fix.
     Optimize only if load says so.
-  - [ ] Keep `tests/complexity.rs` (DOS-01…03) as the harness's floor: those pin detection at **linear**,
-    so a load result can never again be a measurement of an algorithmic bug.
+  - [ ] Keep `tests/complexity.rs` as the harness's floor — but **broaden it** ([M4-R24](reviews/M4.md#m4-r24)):
+    DOS-01…03 pin *detection* at **linear** yet each uses a **single** entity, so they were blind to the
+    O(n²) *mask splice*. Add **DOS-04** (many small entities, e.g. `"a@b.co "`×1 M) so a load result can
+    never again be a measurement of an algorithmic bug — the guard must vary entity **count**, not just size.
 - [ ] **Update the root `README.md`** (+ `README.it.md`) to describe the shipped product — what it does,
   three-tier detection + NER, streaming, multi-provider usage, config/env, status. It is intentionally
   high-level today ("early development"); this is the pass that makes it describe a working system.

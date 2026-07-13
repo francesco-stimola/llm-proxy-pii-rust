@@ -3,9 +3,30 @@
 Newest first. One entry per meaningful change — note *what* and *why*, not just
 *what*. This is the running history so context is never lost between sessions.
 
+## 2026-07-13 — Review 10: the DoS pass verified, and a *second* O(n²) found (M4-R24, reopens M4)
+
+**M4 is NOT done — [M4-R24](reviews/M4.md#m4-r24) (BLOCKER) is open; M5 is blocked again.** (Supersedes the
+"M4 is done" line in the entry below, which was true only of M4-R19…R23.)
+
+Independent verification of M4-R19…R23. **They hold:** M4-R19 (the candidate *rescan* quadratic) is
+genuinely closed — the two unbounded shapes are linear by measurement (email/secret ~15–30 ms at 1–2 MB),
+DOS-01…03 are non-vacuous, and the `Scan::Sequential` + fixpoint argument is sound. M4-R20 fails closed and
+is non-vacuous; **the R19↔R20 worry that Sequential-scanned chains could exhaust the passes into a 400 does
+not happen** — every chain converges in ≤ 2 passes. R21/R22/R23 all hold (MSRV `1.82` is the true floor; no
+stale ROADMAP pointers remain).
+
+**But the DoS class was not fully closed.** M4-R19 fixed the quadratic in *candidate generation*; masking
+itself — `Vault::mask`'s right-to-left `replace_range` splice (`anonymizer.rs:138-143`) — is **still
+O(n²)**, now in the **entity count**: each splice shifts the string tail, so *k* entities in an *n*-byte
+field cost Θ(n·k). Measured through the real `mask_all`: a 13 MiB `content` field of small emails ≈ **7
+minutes** of CPU, while the *same* 13 MiB as **one** email masks in **0.2 s** — that gap is why DOS-01…03,
+which each pin a single entity, never saw it. Same unauthenticated path as M4-R19; `spawn_blocking` keeps
+the async executor alive but the shared blocking pool still saturates. Fix: single-pass splice (O(n)) +
+**DOS-04** (a many-entity guard). Full record: [`reviews/M4.md`](reviews/M4.md#m4-r24).
+
 ## 2026-07-13 — M4-R19/R20/R22/R23: a safety fix has a cost, and the cost is part of the fix
 
-**M4 is done — all 23 findings closed, and M5 is unblocked.**
+**M4-R19…R23 closed** *(but see Review 10 above — M4-R24 later reopened M4).*
 
 **M4-R19 (BLOCKER) — the fix for M4-R17 was a denial of service.** Making candidate generation see *every*
 overlapping match meant resuming the regex one `char` past each match's **start** — O(n) start positions.

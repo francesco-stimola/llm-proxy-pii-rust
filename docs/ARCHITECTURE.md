@@ -220,8 +220,14 @@ For a privacy proxy the failure mode *is* the product: anything unexpected must
   handful of concurrent large bodies would starve the executor and the whole proxy would
   stop serving, so the request-stage loop goes through `tokio::task::spawn_blocking`. If
   that task itself dies (a panic in a stage), the request is **blocked**, never forwarded:
-  we'd be holding a body whose PII status is unknown. This bounds the *blast radius*; the
-  actual cost is bounded by keeping detection **linear** (above).
+  we'd be holding a body whose PII status is unknown. This bounds the *blast radius* (the
+  async executor survives; `/healthz` still answers). It does **not** by itself bound the
+  *cost*: detection is linear (above), but **`Vault::mask` itself is still O(n²) in the
+  entity count** — the right-to-left `replace_range` splice shifts the tail once per entity,
+  so a 13 MiB field of many small values burns minutes of CPU (**M4-R24, open** — see
+  [`reviews/M4.md`](reviews/M4.md#m4-r24)). Until that splice is made single-pass, a
+  many-entity body is a second unauthenticated DoS on this path, mediated by the blocking
+  pool rather than the async executor.
 - **Tolerant de-masking.** Restore accepts model-mangled placeholders
   (`[EMAIL 1]`, `[email-1]`, `[ EMAIL_1 ]`) in one pass; a placeholder that looks
   like ours but isn't in the vault is logged rather than silently shipped.
@@ -361,7 +367,13 @@ Runtime native library at M2.
   (carrying the `Vault`) from request to response.
 - **Resolved (M1.5)**: the scanned text fields are fixed — see *Robustness &
   fail-closed → Field coverage* above.
-- **Open (M4-R19, BLOCKER)**: candidate generation is **O(n²)** on the two
-  unbounded-length recognizers (Email, Secret), and masking runs **inline** on the tokio
-  worker with no per-field size cap — an unauthenticated DoS. See
-  [`reviews/M4.md`](reviews/M4.md#m4-r19).
+- **Resolved (M4-R19)**: candidate generation was **O(n²)** on the two unbounded-length
+  recognizers (Email, Secret) and masking ran **inline** on the tokio worker. Fixed: the
+  overlap rescan is now bounded-patterns-only (unbounded ones rely on the fixpoint), and
+  masking runs on `spawn_blocking`. Detection is linear, verified by `tests/complexity.rs`.
+- **Open (M4-R24, BLOCKER)**: masking is *still* **O(n²)**, but now in the **entity count**,
+  not the field length — `Vault::mask`'s right-to-left `replace_range` splice
+  (`src/pii/anonymizer.rs`) shifts the tail once per entity. A 13 MiB `content` field of many
+  small values ≈ 7 min of CPU on the unauthenticated path; the DOS-01…03 guards miss it
+  because each pins a single entity. Fix: splice in one left-to-right pass (O(n)). See
+  [`reviews/M4.md`](reviews/M4.md#m4-r24).
