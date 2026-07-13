@@ -23,11 +23,14 @@ fn detects(input: &str, kind: PiiKind, text: &str) -> bool {
     detect(input).contains(&(kind, text.to_string()))
 }
 
-/// Mask `input` with the structured recognizers — what the upstream would see.
+/// Mask `input` with the structured recognizers — exactly the bytes the upstream would see.
+/// `mask_all` (not `mask`) so this mirrors the real pipeline, which re-detects to a fixpoint.
 fn masked(input: &str) -> String {
     let detector = StructuredRecognizers::new();
     let mut vault = Vault::new();
-    vault.mask(input, &detector.detect(input))
+    vault
+        .mask_all(input, &detector)
+        .expect("the structured recognizers are infallible")
 }
 
 #[test]
@@ -130,8 +133,10 @@ fn partially_overlapping_pii_abandons_no_bytes() {
     assert!(!out.contains("bob@x.com"), "email in clear: {out}");
     assert!(!out.contains("34 56"), "NINO in clear: {out}");
 
-    // M4-R10: the containment gate deletes a span inside an email; if a third span then
-    // partially overlapped that email, the deleted span used to be masked by NOTHING.
+    // M4-R10: an earlier revision DELETED a span enclosed by an email before ranking the
+    // rest; if a third span then partially overlapped that email, the email was dropped too
+    // and the already-deleted span was masked by NOTHING. Nothing is deleted now — an
+    // enclosed span merges into its enclosing email — so its bytes always stay covered.
     let out = masked("call 555 867 5309.4111111111111111@x.com");
     assert!(!out.contains("4111111111111111"), "stranded card in clear: {out}");
 
@@ -143,6 +148,27 @@ fn partially_overlapping_pii_abandons_no_bytes() {
 
     let out = masked("card 4111 1111 1111 1111.4111111111111111@example.com");
     assert!(!out.contains("4111111111111111"), "stranded second card in clear: {out}");
+}
+
+#[test]
+fn a_value_hidden_behind_an_earlier_match_is_not_left_in_clear() {
+    // M4-R17 — a *candidate-generation* leak, not a resolver one. `find_iter` is
+    // leftmost-NON-OVERLAPPING, so a real value that starts INSIDE an earlier match of the
+    // same recognizer was never emitted as a candidate — and the resolver's invariant was
+    // then vacuously satisfied for it (an invariant is only as strong as the set it
+    // quantifies over). Here the shifted 16-digit window `6789-4111 1111 1111` is
+    // Luhn-valid and matches first, hiding the real trailing card that begins inside it:
+    // masked output used to be `[CARD_1]@[CARD_2] 1111`, leaking a card digit group.
+    let out = masked("4111 1111 1111 1111@123-45-6789-4111 1111 1111 1111");
+    assert!(!out.contains("1111"), "a card digit group is in clear: {out}");
+
+    // The generic form of the same class: re-running the detector over the masked body must
+    // find nothing PII-shaped left.
+    let detector = StructuredRecognizers::new();
+    assert!(
+        detector.detect(&out).is_empty(),
+        "structured PII survived masking: {out}"
+    );
 }
 
 #[test]

@@ -74,13 +74,14 @@ impl PiiKind {
     /// whole-span drop (M2-R7) — losing a `Person` remainder costs recall, never a leak.
     ///
     /// `Email` sits last on purpose. It is the only structured kind carrying `@`, so it
-    /// overlaps the others in two shapes: it either **contains** them (a card/ID as a
-    /// substring of its local part, `4111111111111111@x.com` — handled *ahead* of
-    /// priority by the containment gate, which lets the email keep the label), or it
-    /// **partially** overlaps them (`4111 1111 1111 1111@x.com`: a local part can't hold
-    /// a space, so the email is only `1111@x.com`). In that second shape the union is
-    /// better named by the checksum-backed card than by the fragmentary email — hence
-    /// last. Both spans are masked either way.
+    /// overlaps the others in two shapes: it either **encloses** them (a card/ID as a
+    /// substring of its local part, `4111111111111111@x.com`), or it **partially**
+    /// overlaps them (`4111 1111 1111 1111@x.com`: a local part can't hold a space, so the
+    /// email is only `1111@x.com`). In the second shape the union is better named by the
+    /// checksum-backed card than by the fragmentary email — hence last. The first shape is
+    /// handled by a **naming rule**, not by priority: when a union is *exactly* an `Email`
+    /// span the email keeps the label (see [`overlap::name_of`]). Both spans are masked
+    /// either way — nothing structured is ever dropped.
     pub fn priority(self) -> u8 {
         match self {
             PiiKind::Secret => 6,
@@ -98,8 +99,9 @@ impl PiiKind {
     }
 
     /// Whether this kind comes from the deterministic **structured** recognizers
-    /// (M1/M4) as opposed to the ML **NER** (`Person` / `Organization` /
-    /// `Location`). Used by the containment gate in [`overlap::resolve_overlaps`].
+    /// (M1/M4) as opposed to the ML **NER** (`Person` / `Organization` / `Location`).
+    /// [`overlap::resolve_overlaps`] uses it to split the two: structured spans are
+    /// union-merged (never dropped), NER spans keep the whole-span drop.
     pub fn is_structured(self) -> bool {
         !matches!(
             self,

@@ -75,8 +75,12 @@ impl Stage for PrivacyStage {
             let detector = self.detector.as_ref();
             let vault = &mut ctx.vault;
             let error_slot = &mut detect_error;
-            let mut mask = |text: &str| match detector.try_detect(text) {
-                Ok(entities) => vault.mask(text, &entities),
+            // `mask_all`, not `mask`: masking rewrites the bytes around what it replaced and
+            // can *expose* a value that was not recognizable before (a phone inside a longer
+            // digit run splits it and reveals a Luhn-valid card), so it re-detects to a
+            // fixpoint — M4-R17.
+            let mut mask = |text: &str| match vault.mask_all(text, detector) {
+                Ok(masked) => masked,
                 Err(err) => {
                     if error_slot.is_none() {
                         *error_slot = Some(err);

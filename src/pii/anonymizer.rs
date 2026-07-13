@@ -12,7 +12,12 @@ use std::collections::HashMap;
 use once_cell::sync::Lazy;
 use regex::{Captures, Regex};
 
-use super::{PiiEntity, PiiKind};
+use super::{DetectError, PiiDetector, PiiEntity, PiiKind};
+
+/// How many times [`Vault::mask_all`] re-detects before giving up. Masking exposes PII at
+/// most a handful of times in practice (each pass must break a token apart to reveal a new
+/// one); this is a safety bound, not an expected limit.
+const MAX_MASK_PASSES: usize = 4;
 
 /// Tolerant placeholder pattern used on the way back. It accepts the canonical
 /// `[EMAIL_1]` **and** the corruptions a model tends to introduce — a space or
@@ -44,8 +49,57 @@ impl Vault {
         self.to_original.is_empty()
     }
 
+    /// Mask everything `detector` finds in `text`, **iterating to a fixpoint** (M4-R17).
+    ///
+    /// A single pass is not enough, because **masking rewrites the bytes around what it
+    /// replaced**, and a value is only recognizable in context. Replacing a phone that sits
+    /// inside a longer digit run splits that run apart and *exposes* a card the recognizers
+    /// could not see before:
+    ///
+    /// ```text
+    /// 4111111111111111555 867 5309   → one 19-digit run: not Luhn-valid, so NOT a card
+    ///                                   (the anti-false-positive rule — an ID never fires
+    ///                                   inside a longer token)
+    /// 4111111111111111[PHONE_1]      → after masking the phone, the leftover IS a clean,
+    ///                                   Luhn-valid card — and it would go upstream in clear
+    /// ```
+    ///
+    /// So we re-detect on the masked text until it yields nothing. Masking only ever *adds*
+    /// placeholders, so this converges: a placeholder is **inert** — no recognizer can match
+    /// one or span across it (`[KIND_N]` has no `@`, no `sk-`, and nowhere near enough
+    /// digits; `[` / `]` are outside every pattern's character classes), so each pass
+    /// strictly shrinks the un-masked text. [`MAX_MASK_PASSES`] is a belt-and-braces bound;
+    /// reaching it is logged and is **not** a leak — a further pass could only have masked
+    /// *more*.
+    ///
+    /// The round-trip stays exact: each pass records raw value → placeholder, and
+    /// [`demask`](Self::demask) restores every placeholder in one tolerant pass.
+    pub fn mask_all(
+        &mut self,
+        text: &str,
+        detector: &dyn PiiDetector,
+    ) -> Result<String, DetectError> {
+        let mut current = text.to_string();
+        for _ in 0..MAX_MASK_PASSES {
+            let entities = detector.try_detect(&current)?;
+            if entities.is_empty() {
+                return Ok(current);
+            }
+            current = self.mask(&current, &entities);
+        }
+        // Kind-free, value-free: just the fact that we stopped iterating.
+        tracing::warn!(
+            passes = MAX_MASK_PASSES,
+            "masking did not reach a fixpoint; stopping (over-masked, never under-masked)"
+        );
+        Ok(current)
+    }
+
     /// Replace each entity in `text` with a typed placeholder, recording the
     /// original in the vault. Returns the anonymized text.
+    ///
+    /// This is **one pass**. Prefer [`mask_all`](Self::mask_all), which re-detects until the
+    /// text stops changing — masking can expose PII that was not recognizable before.
     ///
     /// Placeholders are numbered in reading order (left to right), but the
     /// splice happens right to left so earlier byte offsets stay valid. Text

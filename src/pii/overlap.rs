@@ -255,10 +255,10 @@ mod tests {
     }
 
     #[test]
-    fn email_containing_a_structured_span_wins_it() {
-        // Containment gate: a card that is a substring of the email's local part
-        // (`4111111111111111@x.com`) is a false decomposition — the email wins the
-        // label, and its span already covers the card's bytes.
+    fn email_enclosing_a_structured_span_names_the_union() {
+        // Naming rule (`name_of`): the union is *exactly* the email's span, so the enclosed
+        // card is a false decomposition of its local part (`4111111111111111@x.com`) — the
+        // email keeps the label. Nothing is deleted; the union already covers the card.
         let kept = resolve(vec![
             entity(PiiKind::CreditCard, 0..16),
             entity(PiiKind::Email, 0..28),

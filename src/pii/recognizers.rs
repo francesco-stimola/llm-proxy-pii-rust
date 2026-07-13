@@ -37,6 +37,8 @@
 //!
 //! `Email` and `Phone` are unaffected — they are anchored by character classes, not `\b`.
 
+use std::ops::Range;
+
 use regex::Regex;
 
 use super::overlap::resolve_overlaps;
@@ -258,23 +260,84 @@ impl StructuredRecognizers {
     pub(crate) fn raw_candidates(&self, input: &str) -> Vec<PiiEntity> {
         let mut candidates: Vec<PiiEntity> = Vec::new();
         for rec in &self.recognizers {
-            for m in rec.regex.find_iter(input) {
-                let text = m.as_str();
-                if let Some(check) = rec.validate {
-                    if !check(text) {
-                        continue;
-                    }
-                }
-                candidates.push(PiiEntity {
-                    kind: rec.kind,
-                    span: m.start()..m.end(),
-                    text: text.to_string(),
-                    confidence: confidence_of(rec.kind, text),
-                });
-            }
+            rec.push_candidates(input, &mut candidates);
         }
         candidates
     }
+}
+
+impl Recognizer {
+    /// Every match of this recognizer — **including ones that overlap an earlier match**
+    /// (M4-R17).
+    ///
+    /// `Regex::find_iter` is leftmost-**non-overlapping**: after a hit it resumes at the
+    /// match's *end*. A real value that **starts inside** an earlier match of the *same*
+    /// recognizer is therefore never emitted as a candidate at all — and an invariant over
+    /// the candidate set (PROP-03) is then *vacuously* satisfied for it, because the
+    /// resolver never learns the value exists. **An invariant is only ever as strong as the
+    /// candidate set it quantifies over.** Concretely:
+    ///
+    /// ```text
+    /// 4111 1111 1111 1111@123-45-6789-4111 1111 1111 1111
+    ///                         └── the shifted window `6789-4111 1111 1111` is Luhn-valid
+    ///                             and matches first, so the REAL trailing card (which
+    ///                             starts inside it) is never a candidate → its last group
+    ///                             ` 1111` was forwarded in clear.
+    /// ```
+    ///
+    /// So we resume one `char` past the match's **start**, not its end, which surfaces a
+    /// value hidden behind an earlier match.
+    ///
+    /// Overlapping hits of one recognizer are **coalesced into maximal runs** as we go.
+    /// That keeps the candidate set bounded on pathological input (a long row of 4-digit
+    /// groups yields a match at every group boundary — thousands of overlapping windows) at
+    /// no cost to the guarantee: the resolver needs the *coverage*, and it would union
+    /// those spans anyway. Each hit is validated (Luhn / checksum) **before** it joins a
+    /// run, so a run is a union of genuine matches, never a free pass.
+    fn push_candidates(&self, input: &str, out: &mut Vec<PiiEntity>) {
+        let mut runs: Vec<Range<usize>> = Vec::new();
+        let mut at = 0usize;
+        while at <= input.len() {
+            let Some(m) = self.regex.find_at(input, at) else {
+                break;
+            };
+            if self.validate.is_none_or(|check| check(m.as_str())) {
+                match runs.last_mut() {
+                    // Hits arrive in non-decreasing start order, so only the last run can
+                    // still grow.
+                    Some(run) if m.start() < run.end => run.end = run.end.max(m.end()),
+                    _ => runs.push(m.start()..m.end()),
+                }
+            }
+            // Resume just past the match's START (not its end) to see overlapping hits.
+            // `next_char_boundary` also guarantees forward progress on an empty match.
+            let next = next_char_boundary(input, m.start());
+            if next <= at && next <= m.start() {
+                break;
+            }
+            at = next;
+        }
+
+        out.extend(runs.into_iter().map(|span| {
+            let text = &input[span.clone()];
+            PiiEntity {
+                kind: self.kind,
+                text: text.to_string(),
+                confidence: confidence_of(self.kind, text),
+                span,
+            }
+        }));
+    }
+}
+
+/// The first `char` boundary strictly after `i` (clamped to `input.len()`), so a scan can
+/// always make forward progress without ever splitting a multi-byte character.
+fn next_char_boundary(input: &str, i: usize) -> usize {
+    let mut next = i + 1;
+    while next < input.len() && !input.is_char_boundary(next) {
+        next += 1;
+    }
+    next.min(input.len())
 }
 
 impl PiiDetector for StructuredRecognizers {
@@ -860,13 +923,12 @@ mod tests {
     }
 
     #[test]
-    fn a_span_deleted_by_the_containment_gate_is_never_stranded() {
-        // M4-R10: the containment gate deletes the card (it sits inside the email's
-        // local part), and the phone then partially overlaps that email. Under the old
-        // drop-the-loser the email lost on priority and the already-deleted card was
-        // forwarded IN CLEAR. The union-merge never drops the email, so the card's bytes
-        // stay covered. `Secret` is the sharpest case: highest priority, yet the gate
-        // removes it before priority is ever consulted.
+    fn a_span_enclosed_by_an_email_is_never_stranded() {
+        // M4-R10: the card sits inside the email's local part, and the phone partially
+        // overlaps that email. An earlier revision *deleted* the enclosed card up front;
+        // the email then lost on priority and was dropped too, so the already-deleted card
+        // was forwarded IN CLEAR. Nothing is deleted now — the enclosed span merges into
+        // its enclosing email — so its bytes always stay covered.
         let got = kinds("call 555 867 5309.4111111111111111@x.com");
         assert_eq!(got.len(), 1, "expected one merged span, got {got:?}");
         assert!(
@@ -889,6 +951,53 @@ mod tests {
             PiiKind::Secret,
             "the union must be named by the enclosed Secret: {got:?}"
         );
+    }
+
+    #[test]
+    fn a_value_hidden_behind_an_earlier_match_is_still_a_candidate() {
+        // M4-R17: `find_iter` is leftmost-NON-OVERLAPPING, so a real value that starts
+        // inside an earlier match of the SAME recognizer was never emitted as a candidate —
+        // and the resolver's invariant was then *vacuously* satisfied for it. Here the
+        // shifted window `6789-4111 1111 1111` is Luhn-valid and matched first, hiding the
+        // real trailing card that starts inside it; its last group ` 1111` was left in clear
+        // (masked output was `[CARD_1]@[CARD_2] 1111`). Scanning from match.start()+1 finds
+        // the hidden card, which then merges into the union.
+        let input = "4111 1111 1111 1111@123-45-6789-4111 1111 1111 1111";
+        let detector = StructuredRecognizers::new();
+        let raw = detector.raw_candidates(input);
+        assert!(
+            raw.iter()
+                .any(|c| c.kind == PiiKind::CreditCard && c.span.end == input.len()),
+            "the card hidden behind the earlier match must reach the candidate set: {raw:?}"
+        );
+
+        let mut vault = crate::pii::anonymizer::Vault::new();
+        let masked = vault.mask_all(input, &detector).unwrap();
+        assert!(
+            !masked.contains("1111"),
+            "a card digit group was left in clear: {masked}"
+        );
+        assert_eq!(vault.demask(&masked), input, "round-trip must stay exact");
+    }
+
+    #[test]
+    fn masking_a_phone_must_not_expose_a_card() {
+        // M4-R17 (found by PROP-04). A card glued straight onto a phone forms ONE 19-digit
+        // run, which is not Luhn-valid — so the card is correctly NOT a candidate (an ID
+        // never fires inside a longer token). But masking the phone SPLITS the run and
+        // leaves `4111111111111111` standing alone: a clean, Luhn-valid card that would go
+        // upstream in clear. Masking must therefore re-detect to a fixpoint.
+        let input = "4111111111111111555 867 5309";
+        let detector = StructuredRecognizers::new();
+        let mut vault = crate::pii::anonymizer::Vault::new();
+        let masked = vault.mask_all(input, &detector).unwrap();
+
+        assert!(
+            !masked.contains("4111111111111111"),
+            "masking the phone exposed the card in clear: {masked}"
+        );
+        assert!(detector.detect(&masked).is_empty(), "PII survived: {masked}");
+        assert_eq!(vault.demask(&masked), input, "round-trip must stay exact");
     }
 
     #[test]
@@ -1066,11 +1175,24 @@ mod tests {
         "sk-abcdef123456",
         "RSSMRA85T10A562S",
         "123456789",
+        // M4-R16: values already embedded in a non-ASCII context, so the invariant is
+        // exercised on multi-byte input even when the glue happens to be ASCII.
+        "我的身份证号是11010519491231002X",
+        "カード番号は4111111111111111です",
     ];
 
     /// Separators, including the ones that glue two values into one token and so
     /// manufacture partial overlaps.
-    const GLUE: &[&str] = &["", ".", "-", " ", "@", ", ", "x"];
+    ///
+    /// **Non-ASCII glue is mandatory here (M4-R16).** These tables were ASCII-only, which is
+    /// the *exact* blind spot that let M4-R13 (every anchored recognizer inert in CJK) live
+    /// through four reviews — and it was sitting in the one test the whole no-abandoned-bytes
+    /// guarantee rests on. Multi-byte glue is what exercises `widen_to_char_boundaries`, the
+    /// union re-slice, and a union endpoint landing *inside* a multi-byte character.
+    const GLUE: &[&str] = &[
+        "", ".", "-", " ", "@", ", ", "x", // ASCII
+        "我的信用卡号是", "です", "、", "，", "Карта", "café", "—", // multi-byte
+    ];
 
     proptest::proptest! {
         /// **PROP-03 — the resolver's invariant (M4-R10 / M4-R11): no structured span's
@@ -1117,6 +1239,40 @@ mod tests {
             let mut vault = crate::pii::anonymizer::Vault::new();
             let masked = vault.mask(&input, &resolved);
             proptest::prop_assert_eq!(vault.demask(&masked), input);
+        }
+
+        /// **PROP-04 — nothing PII-shaped survives masking (M4-R17).**
+        ///
+        /// Re-run the detector on the **masked output**: it must find no structured entity.
+        ///
+        /// PROP-03 quantifies over the *candidate set*, so it is only ever as strong as that
+        /// set — a value the recognizer never emitted (because `find_iter` is
+        /// leftmost-non-overlapping and an earlier match hid it) satisfies PROP-03
+        /// *vacuously*. This one quantifies over the **output bytes** instead, which no
+        /// candidate-generation gap can hide, and so is the natural companion guard.
+        #[test]
+        fn masking_leaves_nothing_detectable(
+            picks in proptest::collection::vec(0usize..PII_SAMPLES.len(), 1..4),
+            glues in proptest::collection::vec(0usize..GLUE.len(), 3),
+        ) {
+            let mut input = String::new();
+            for (i, &pick) in picks.iter().enumerate() {
+                if i > 0 {
+                    input.push_str(GLUE[glues[i % glues.len()]]);
+                }
+                input.push_str(PII_SAMPLES[pick]);
+            }
+
+            let detector = StructuredRecognizers::new();
+            let mut vault = crate::pii::anonymizer::Vault::new();
+            let masked = vault.mask_all(&input, &detector).unwrap();
+
+            let leftovers = detector.detect(&masked);
+            proptest::prop_assert!(
+                leftovers.is_empty(),
+                "structured PII survived masking of {:?} → {:?}: {:?}",
+                input, masked, leftovers
+            );
         }
     }
 }
