@@ -19,7 +19,9 @@ that way?"*
 | [M2.5.md](M2.5.md) | M2.5 — HuggingFace model management | 2, all closed |
 | [M2.6.md](M2.6.md) | M2.6 — debug & observability modes | 2 nits, all closed |
 | [M3.md](M3.md) | M3 — streaming & multi-provider routing | 2, all closed |
-| [M4.md](M4.md) | M4 — broad locale & language coverage | **22 — 18 closed, 4 open (one BLOCKER)** |
+| [M4.md](M4.md) | M4 — broad locale & language coverage | **23 — 18 closed, 5 open (one BLOCKER)** |
+
+**M5 does not start until M4's ledger is clean.** All five open findings in the project belong to M4.
 
 ---
 

@@ -32,10 +32,14 @@ Anthropic via their OpenAI-compatible endpoints.
 | M4-R20 — `mask_all` fails *open* on pass exhaustion | [reviews/M4](reviews/M4.md#m4-r20) | [ ] low-med |
 | M4-R21 — `mask_all` runs the detector ≥2× (perf note) | [reviews/M4](reviews/M4.md#m4-r21) | [ ] low |
 | M4-R22 — no MSRV in `Cargo.toml` (`is_none_or` needs 1.82) | [reviews/M4](reviews/M4.md#m4-r22) | [ ] low |
+| M4-R23 — four code comments cite ROADMAP sections whose content moved to `docs/reviews/` | [reviews/M4](reviews/M4.md#m4-r23) | [ ] docs |
 | **M5** — integration & performance testing | [below](#m5) | [ ] not started |
 
 **M4-R19 is a blocker and should land first** — a ~1–2 MB request field, well under the body limit, pegs a
 core for minutes on an unauthenticated path.
+
+**M5 does not start until M4's ledger is clean.** Every open row above belongs to M4, and M5's first act
+is a performance harness — running it over a known O(n²) path would measure the bug, not the product.
 
 ---
 
@@ -237,15 +241,16 @@ upstream provider.
 | [M4-R20](reviews/M4.md#m4-r20) | `mask_all` fails **open** on pass exhaustion (latent, not shown reachable) | low-med | **[ ]** |
 | [M4-R21](reviews/M4.md#m4-r21) | `mask_all` runs the detector ≥2× (~2× NER inference) — perf note, fold into M5 | low | **[ ]** |
 | [M4-R22](reviews/M4.md#m4-r22) | No MSRV in `Cargo.toml` — an M5 CI blocker-in-waiting | low | **[ ]** |
+| [M4-R23](reviews/M4.md#m4-r23) | Four code comments cite ROADMAP sections whose content moved to `docs/reviews/` | docs | **[ ]** |
 
 <a id="m5"></a>
 ## M5 — Integration & performance testing
 Prove the whole system holds **end-to-end** and **under load**, then document it. The feature set
 (structured + NER + streaming + multi-provider) is complete enough to test as a product.
 
-> **Land [M4-R19](reviews/M4.md#m4-r19) first** — a perf harness over a known O(n²) path measures the bug,
-> not the product. [M4-R21](reviews/M4.md#m4-r21) (detector runs ≥2×) and
-> [M4-R22](reviews/M4.md#m4-r22) (MSRV, needed by CI) also fold naturally into this milestone.
+> **Prerequisite: M4's ledger must be clean.** All five open findings (M4-R19…R23) land before M5 starts —
+> a perf harness over a known O(n²) path ([M4-R19](reviews/M4.md#m4-r19)) measures the bug, not the
+> product, and CI needs the MSRV ([M4-R22](reviews/M4.md#m4-r22)).
 
 - [ ] **Real integration tests** — full mask → forward → (stream) → de-mask round-trips, tool-call
   round-trips, multi-turn determinism, and the fail-closed paths. **Mock upstreams cover all three preset
@@ -267,12 +272,6 @@ Prove the whole system holds **end-to-end** and **under load**, then document it
 - [ ] **Update the root `README.md`** (+ `README.it.md`) to describe the shipped product — what it does,
   three-tier detection + NER, streaming, multi-provider usage, config/env, status. It is intentionally
   high-level today ("early development"); this is the pass that makes it describe a working system.
-- [ ] **Re-point four stale doc references in code** (left over from the docs refactor — the reviewer
-  can't edit these files). The detail they cite moved out of ROADMAP into `docs/reviews/`:
-  `Cargo.toml:38` and `tests/dependency_footprint.rs:11` cite *"ROADMAP M2.5-R1"* →
-  [`docs/reviews/M2.5.md#m25-r1`](reviews/M2.5.md#m25-r1); `src/pii/recognizers.rs:190` (the Corsica
-  `2A`/`2B` NIR gap) → [`reviews/M4.md#m4-r5`](reviews/M4.md#m4-r5); `src/pii/recognizers.rs:241` (the
-  FP-prone seam) → ROADMAP Backlog, still correct but worth making explicit. Comment-only edits.
 - [ ] **CI + release binaries (GitHub Actions).** CI on push/PR (`cargo test` + `fmt` + `clippy`; one job
   for the default build, one for `--features onnx`). A release workflow on a version tag
   **cross-compiles the full `--features onnx` product** for Linux / macOS / Windows and attaches the
