@@ -867,7 +867,13 @@ adversarial / proptest / PROP-01 / PROP-02 / VAULT-02 and the containment guards
 real and are picked up by the data-driven `pii_corpus.rs` (they fail when the fix is reverted).
 
 Three **non-blocking** follow-ups (none is a leak; the first is a missing *guard*, the second is pre-existing):
-- [ ] **M4-R16 (medium — the ASCII blind spot is *not* fully closed: PROP-03 itself is still ASCII-only).**
+- [x] **M4-R16 (DONE 2026-07-13 — PROP-03/PROP-04 now run on multi-byte input).** Added multi-byte entries to the
+  property tests' `GLUE` (`我的信用卡号是`, `です`, `、`, `，`, `Карта`, `café`, `—`) and two samples already embedded
+  in non-ASCII context (`我的身份证号是11010519491231002X`, `カード番号は4111111111111111です`), so the
+  no-abandoned-bytes invariant is exercised on multi-byte input — including the paths the M4-R14 rewrite added
+  (`widen_to_char_boundaries`, the union re-slice). The tables carry a standing comment saying why non-ASCII glue
+  is mandatory here. *(Original finding below.)*
+  **M4-R16 (medium — the ASCII blind spot is *not* fully closed: PROP-03 itself is still ASCII-only).**
   The corpus grew a `non_ascii_scripts` category, but **PROP-03** — the property test that encodes the resolver's
   core invariant (`every_structured_candidate_byte_is_covered`, `src/pii/recognizers.rs:1055-1120`) — still has
   **zero non-ASCII characters** in its `PII_SAMPLES` and `GLUE` tables (verified by counting: 0). That is the
@@ -880,7 +886,35 @@ Three **non-blocking** follow-ups (none is a leak; the first is a missing *guard
   `GLUE` (e.g. `"我的信用卡号是"`, `"です"`, `"Карта"`, `"café"`, `"，"`) and at least one non-ASCII-context
   sample, so the invariant is exercised on multi-byte input. **Test:** PROP-03 itself, with the widened tables
   (it must stay green; verify non-vacuity by breaking `widen_to_char_boundaries`).
-- [ ] **M4-R17 (low-medium — PRE-EXISTING, not a regression: `find_iter` can *hide* a real value from the
+- [x] **M4-R17 (DONE 2026-07-13 — fixed at the candidate-generation layer, *and* PROP-04 immediately found a
+  second, live leak of the same class).** Two changes:
+  1. **Overlapping candidate scan.** `Recognizer::push_candidates` replaces `find_iter` and resumes one `char`
+     past each match's **start** (not its end), so a value that begins *inside* an earlier match of the same
+     recognizer is emitted. Overlapping hits of one recognizer are **coalesced into maximal runs** as they are
+     found, so a pathological input (a long row of 4-digit groups → a match at every boundary) can't blow up the
+     candidate set; the resolver needs the *coverage*, and would union those spans anyway. Each hit is still
+     validated (Luhn/checksum) **before** joining a run. The reviewer's suggested "re-scan the uncovered gaps"
+     fix would **not** have closed the reported repro — the gap is ` 1111`, and the hidden card *starts inside the
+     covered region* (offset 32, within the 27..46 match), so no amount of gap re-scanning surfaces it. The leak
+     is in candidate generation, exactly as the finding says, so that is where it is fixed.
+  2. **`Vault::mask_all` — mask to a fixpoint.** PROP-04 (added as asked) failed on its **first run** with a
+     genuine, previously-unknown leak: `4111111111111111555 867 5309` → `4111111111111111[PHONE_1]`. The card and
+     phone form **one 19-digit run** that is not Luhn-valid, so the card is correctly *not* a candidate (an ID
+     never fires inside a longer token) — but masking the phone **splits the run and exposes** a clean, Luhn-valid
+     card, which then goes upstream in clear. **Masking rewrites the bytes around what it replaced, and a value is
+     only recognizable in context.** So masking now re-detects until the text yields nothing (`mask_all`, wired
+     into `PrivacyStage`). It converges because a placeholder is inert (no recognizer can match `[KIND_N]` or span
+     across it), with `MAX_MASK_PASSES` as a belt-and-braces bound; the round-trip stays exact (each pass records
+     raw → placeholder; `demask` restores all in one tolerant pass).
+  **Tests:** `a_value_hidden_behind_an_earlier_match_is_still_a_candidate` + `masking_a_phone_must_not_expose_a_card`
+  (recognizers), `a_value_hidden_behind_an_earlier_match_is_not_left_in_clear` (`tests/adversarial.rs`, on the
+  masked body), and **PROP-04 `masking_leaves_nothing_detectable`** — re-running the detector on the masked output
+  must find nothing. PROP-04 is the right companion to PROP-03: PROP-03 quantifies over the *candidate set* (so a
+  value the recognizers never emit satisfies it **vacuously**), PROP-04 quantifies over the **output bytes**, which
+  no candidate-generation gap can hide. **Verified non-vacuous:** restoring `find_iter` semantics drops the real
+  trailing card from the candidate set (only the shifted `6789-4111 1111 1111` window survives) and the repro
+  fails. *(Original finding below.)*
+  **M4-R17 (low-medium — PRE-EXISTING, not a regression: `find_iter` can *hide* a real value from the
   candidate set, so the invariant never sees it).** `raw_candidates` (`src/pii/recognizers.rs:258-277`) drives
   each recognizer with `regex::find_iter`, which is **leftmost and non-overlapping per recognizer**. A real PII
   value that *starts inside* an earlier match of the **same** recognizer is therefore **never emitted as a
@@ -898,7 +932,13 @@ Three **non-blocking** follow-ups (none is a leak; the first is a missing *guard
   caught. **Test:** the input above must leave no `1111` group in clear; plus a strong, cheap invariant that
   would catch this whole class — **re-running the detector on the masked output must yield no structured
   candidates** (add as a proptest sibling of PROP-03).
-- [ ] **M4-R18 (low — stale references to the REMOVED containment gate, in `src/` + `tests/`).** The gate is
+- [x] **M4-R18 (DONE 2026-07-13).** All five live comments updated to the naming-rule mechanism (`src/pii/mod.rs`
+  ×2, `src/pii/overlap.rs`, `src/pii/recognizers.rs`, `tests/adversarial.rs`) and both tests renamed:
+  `a_span_deleted_by_the_containment_gate_is_never_stranded` → `a_span_enclosed_by_an_email_is_never_stranded`,
+  `email_containing_a_structured_span_wins_it` → `email_enclosing_a_structured_span_names_the_union`. Worth doing
+  precisely because describing a deletion that no longer exists is the mis-reasoning that produced M4-R10.
+  *(Original finding below.)*
+  **M4-R18 (low — stale references to the REMOVED containment gate, in `src/` + `tests/`).** The gate is
   gone, but five live comments still describe it as the current mechanism — which is precisely the mis-reasoning
   that produced M4-R10, so it is worth keeping honest: `src/pii/mod.rs:79` ("handled *ahead* of priority by the
   containment gate") and `:102` ("Used by the containment gate in `overlap::resolve_overlaps`");

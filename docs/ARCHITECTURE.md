@@ -66,6 +66,32 @@ anti-false-positive guarantee is preserved **exactly** — an ID still cannot fi
 non-ASCII **letter** as part of a number. (`Email` / `Phone` are anchored by character classes, not
 `\b`, so they were never affected.)
 
+**Candidate generation must see *overlapping* matches (M4-R17).** `Regex::find_iter` is
+leftmost-**non-overlapping**: after a hit it resumes at the match's *end*. A real value that **starts
+inside** an earlier match of the *same* recognizer is therefore never emitted as a candidate — and an
+invariant over the candidate set is then satisfied **vacuously**, because the resolver never learns the
+value exists. *An invariant is only ever as strong as the set it quantifies over.* So each recognizer
+resumes one `char` past a match's **start**, and its overlapping hits are coalesced into maximal runs
+(which keeps the candidate set bounded on pathological input at no cost to coverage — the resolver
+would union those spans anyway).
+
+**Masking must run to a *fixpoint* (M4-R17).** Masking **rewrites the bytes around what it replaced**,
+and a value is only recognizable in context — so masking can *expose* PII that was not detectable
+before:
+
+```text
+4111111111111111555 867 5309   one 19-digit run: not Luhn-valid, so correctly NOT a card
+                               (an ID never fires inside a longer token)
+4111111111111111[PHONE_1]      masking the phone SPLIT the run — the leftover is a clean,
+                               Luhn-valid card, and it would go upstream in clear
+```
+
+`Vault::mask_all` therefore re-detects until the text yields nothing. It converges because a
+placeholder is **inert** (no recognizer can match `[KIND_N]` or span across it), so each pass strictly
+shrinks the un-masked text; `MAX_MASK_PASSES` is a safety bound and hitting it can only mean
+*over*-masking. The round-trip stays exact — every pass records raw value → placeholder, and `demask`
+restores them all in one tolerant pass.
+
 **Overlap resolution (`src/pii/overlap.rs`).** Detectors produce overlapping candidate spans;
 `resolve_overlaps` reduces them to a non-overlapping set. Its governing rule is an **invariant,
 not a ranking** (M4-R10 / M4-R11):

@@ -3,6 +3,57 @@
 Newest first. One entry per meaningful change — note *what* and *why*, not just
 *what*. This is the running history so context is never lost between sessions.
 
+## 2026-07-13 — M4-R16/R17/R18: an invariant is only as strong as the set it quantifies over
+
+Sixth review of this area. The theme this time is **the limits of the guard itself**.
+
+**M4-R17 — `find_iter` hid values from the invariant.** `Regex::find_iter` is
+leftmost-**non-overlapping**: after a hit it resumes at the match's *end*. A real value that **starts
+inside** an earlier match of the *same* recognizer is therefore never emitted as a candidate at all — so
+PROP-03 ("every raw candidate is covered") was satisfied **vacuously** for it. The resolver was fine; it
+simply never learned the value existed.
+
+```
+4111 1111 1111 1111@123-45-6789-4111 1111 1111 1111
+                        └─ the shifted window `6789-4111 1111 1111` is Luhn-valid and matches first,
+                           so the REAL trailing card (which begins inside it) was never a candidate
+                        →  masked: [CARD_1]@[CARD_2] 1111   ← a card digit group in clear
+```
+
+Fixed where the finding says the cause is — **candidate generation**: each recognizer now resumes one
+`char` past a match's **start**, and its overlapping hits are coalesced into maximal runs (bounded
+candidate set on pathological input, same coverage). *Note: the reviewer's suggested "re-scan the
+uncovered gaps" would **not** have closed this repro — the gap is ` 1111`, and the hidden card starts
+inside the already-covered region, so no gap re-scan can surface it.*
+
+**And then PROP-04 found a live leak on its first run.** The reviewer asked for a companion property —
+"re-running the detector on the masked output must yield nothing" — and it immediately failed:
+
+```
+4111111111111111555 867 5309   → one 19-digit run: NOT Luhn-valid, so the card is correctly not a
+                                 candidate (an ID never fires inside a longer token)
+4111111111111111[PHONE_1]      → masking the phone SPLIT the run, exposing a clean, Luhn-valid card
+                                 that would go upstream IN CLEAR
+```
+
+**Masking rewrites the bytes around what it replaced, and a value is only recognizable in context.** So
+masking now runs to a **fixpoint** (`Vault::mask_all`, wired into `PrivacyStage`): re-detect until the
+text yields nothing. It converges because a placeholder is inert (no recognizer can match `[KIND_N]` or
+span across it), and the round-trip stays exact. This is the deeper form of the same lesson as the
+union-merge: *the property you assert must quantify over something the bug can't hide behind.* PROP-03
+quantifies over the **candidate set**; PROP-04 quantifies over the **output bytes**. Only the second one
+could have caught this.
+
+**M4-R16 — the ASCII blind spot was still in the guard.** The corpus grew `non_ascii_scripts` at M4-R13,
+but **PROP-03's own tables were still 100% ASCII** — the exact blind spot that let M4-R13 survive four
+reviews, sitting in the one test the whole no-abandoned-bytes guarantee rests on. Added CJK / Cyrillic /
+accented glue and non-ASCII-context samples, so the invariant is exercised on multi-byte input.
+
+**M4-R18 — the code still described the deleted containment gate.** Five comments and two test names
+still called it a deletion. Renamed and rewritten to the naming-rule mechanism — worth the churn,
+because "the gate deletes the enclosed span" is precisely the mental model that produced the M4-R10 leak.
+**119 tests green (default) / 127 + 1 `#[ignore]`d (`--features onnx`), no warnings.**
+
 ## 2026-07-13 — M4-R13/R14/R15: the recognizers were **inert in Chinese** (Unicode `\b`)
 
 The fifth review of this area, and it found the worst leak yet — not in the overlap code everyone had been

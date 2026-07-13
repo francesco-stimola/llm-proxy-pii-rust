@@ -111,12 +111,18 @@ false positive): `email`, `phone`, `ssn`, `credit_card`, `iban`, `secret`,
   M4-R9 each passed their own hand-written case while silently abandoning the *other* side of a partial overlap —
   **a per-byte invariant cannot be satisfied by picking a winner**. Verified non-vacuous (it rediscovers the
   M4-R11 leak on its own when the union-merge is disabled).
-  > **Known gap — PROP-03's tables are still ASCII-only (M4-R16, open).** Its `PII_SAMPLES` / `GLUE` contain
-  > **zero** non-ASCII characters, so the invariant is never exercised on multi-byte input — the same blind spot
-  > that let M4-R13 survive four reviews, in the one test the no-abandoned-bytes guarantee rests on. The
-  > multi-byte paths the M4-R14 rewrite added (`widen_to_char_boundaries`, the union re-slice, a union endpoint
-  > landing inside a multi-byte char) are therefore unguarded by PROP-03. Widen the glue with CJK / Cyrillic /
-  > accented fragments — see ROADMAP M4-R16.
+  > **Its tables carry non-ASCII glue on purpose (M4-R16).** `GLUE` includes CJK / Cyrillic / accented fragments
+  > and two samples are already embedded in non-ASCII context, so the invariant is exercised on **multi-byte**
+  > input (`widen_to_char_boundaries`, the union re-slice). ASCII-only tables were the exact blind spot that let
+  > M4-R13 live through four reviews — and they were sitting in the one test the whole guarantee rests on.
+- **PROP-04 — nothing PII-shaped survives masking** (M4-R17, `masking_leaves_nothing_detectable`). Re-run the
+  detector on the **masked output**: it must find no structured entity. This is the necessary companion to
+  PROP-03, which quantifies over the *candidate set* and is therefore only as strong as that set — a value the
+  recognizers never emitted (because `find_iter` was leftmost-non-overlapping, or because masking later *exposed*
+  it) satisfies PROP-03 **vacuously**. PROP-04 quantifies over the **output bytes**, which no candidate-generation
+  gap can hide. It earned its keep immediately: on its first run it found a live leak
+  (`4111111111111111555 867 5309` → `4111111111111111[PHONE_1]`, a Luhn-valid card in clear), which is what
+  drove `Vault::mask_all` (mask to a fixpoint).
 
 ### Integration — pipeline over OpenAI-shaped payloads
 - INT-01 — user message with multiple PII → outgoing request carries placeholders; vault populated.
