@@ -3,6 +3,16 @@
 Newest first. One entry per meaningful change — note *what* and *why*, not just
 *what*. This is the running history so context is never lost between sessions.
 
+## 2026-07-13 — Relicensed MIT → AGPL-3.0-or-later; version 0.1.0 → 0.4.0
+
+The project is gaining traction, so it moved from MIT to the **GNU Affero GPL v3-or-later**
+(`AGPL-3.0-or-later`) — a network-copyleft that keeps the ecosystem open: anyone running a *modified*
+version **as a service** must share their changes, which fits a privacy proxy served over the network
+(running it unmodified carries no obligation). `LICENSE` is the **official FSF text** (fetched from
+gnu.org, byte-exact); `Cargo.toml` `license`, both READMEs (EN/IT), and ROADMAP M0 updated. No per-file
+source headers added yet (optional, can follow). Version bumped **0.1.0 → 0.4.0** to reflect M0–M4;
+**`1.0.0` is reserved for the first tagged release** (the M5 CI/release pass). No functional code changed.
+
 ## 2026-07-13 — M4 COMPLETE: all national-ID packs, CF/FR checks, IBAN per-country, provider-agnostic
 
 Closed every remaining M4 item. All tests green (default + `--features onnx`), no warnings.

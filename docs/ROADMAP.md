@@ -5,7 +5,7 @@ independently testable. The checkboxes track progress — keep them current as
 work lands. **This document is the single source of truth for "what's next".**
 
 ## M0 — Project setup ✅
-- [x] Repo, license (MIT), README (EN) + README.it.md (IT)
+- [x] Repo, license (**AGPL-3.0-or-later** — relicensed from MIT 2026-07-13), README (EN) + README.it.md (IT)
 - [x] Port PII test cases from the old proxy → `tests/reference/old-proxy/`
 - [x] Tracking docs (roadmap, ARCHITECTURE, TESTING, SETUP, DEVLOG)
 - [x] Rust module scaffold; `cargo build` green (177 deps)
@@ -527,6 +527,13 @@ the feature set (structured + NER + streaming + multi-provider) is complete enou
   the three-tier detection + NER, streaming, multi-provider (per-instance) usage, config/env, and
   status. The README is intentionally high-level today ("early development"); this is the pass that
   makes it describe a working system.
+- [ ] **CI + release binaries (GitHub Actions).** CI on push/PR (`cargo test` + `fmt` + `clippy`; a job
+  for the default build **and** one for `--features onnx`). A release workflow on a version tag
+  **cross-compiles the full `--features onnx` product** (regex + NER — the complete tool) for
+  Linux / macOS / Windows and attaches the binaries to GitHub Releases. **The first tagged release is
+  `1.0.0`** (bump `Cargo.toml` from the current `0.4.0`) — cut when M5's integration + performance passes
+  are green and the README reflects reality. *(The regex/NER balance shifts again if the GLiNER evolution
+  lands — see Backlog.)*
 
 ## Backlog / later — documented, not scheduled
 

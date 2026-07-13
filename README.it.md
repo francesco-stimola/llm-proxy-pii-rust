@@ -47,6 +47,16 @@ sessione e l'altra (tutti in inglese):
 - [Testing strategy](docs/TESTING.md)
 - [Development log](docs/DEVLOG.md)
 
+## Licenza
+
+Copyright (C) 2026 Francesco Stimola.
+
+Distribuito sotto **GNU Affero General Public License v3.0 o successiva**
+(`AGPL-3.0-or-later`) — vedi [LICENSE](LICENSE). Trattandosi di un proxy privacy
+servito in rete, l'AGPL garantisce che chi esegue una versione **modificata** come
+servizio debba condividerne le modifiche; eseguirlo non modificato non comporta
+alcun obbligo.
+
 ---
 
 🇬🇧 English version: [README.md](README.md).
