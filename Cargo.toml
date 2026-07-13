@@ -2,6 +2,9 @@
 name = "llm-proxy-pii-rust"
 version = "0.4.0"
 edition = "2021"
+# MSRV (M4-R22). `Option::is_none_or` (src/pii/recognizers.rs) needs 1.82; declaring it
+# keeps CI from picking an older toolchain that cannot compile the crate.
+rust-version = "1.82"
 license = "AGPL-3.0-or-later"
 description = "A fast, privacy-preserving LLM proxy that anonymizes PII locally before requests reach any provider."
 repository = "https://github.com/francesco-stimola/llm-proxy-pii-rust"
@@ -35,7 +38,7 @@ tokenizers = { version = "0.23", optional = true, default-features = false, feat
 # hf-hub 1.x drags in a heavier transitive footprint than a bare HTTP client — a
 # second `reqwest 0.13` + `hf-xet` + `rustls`/`aws-lc-rs` (native crypto). Kept on
 # 1.x deliberately (the `onnx` feature is already native via `ort`; the 0.4.x
-# alternative is unmaintained) — see docs/ROADMAP.md M2.5-R1.
+# alternative is unmaintained) — see docs/reviews/M2.5.md#m25-r1.
 hf-hub = { version = "1", optional = true }
 
 [features]

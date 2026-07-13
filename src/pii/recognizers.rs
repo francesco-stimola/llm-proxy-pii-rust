@@ -44,14 +44,58 @@ use regex::Regex;
 use super::overlap::resolve_overlaps;
 use super::{Confidence, PiiDetector, PiiEntity, PiiKind};
 
-/// One compiled recognizer: a category, its pattern, and an optional validator
-/// applied to each raw match. Overlap priority comes from the kind
-/// ([`PiiKind::priority`]).
+/// One compiled recognizer: a category, its pattern, an optional validator applied to
+/// each raw match, and how the scan advances after one. Overlap priority comes from the
+/// kind ([`PiiKind::priority`]).
 struct Recognizer {
     kind: PiiKind,
     regex: Regex,
     /// Extra check on the matched text; `None` means "accept every match".
     validate: Option<fn(&str) -> bool>,
+    /// Whether this pattern's length is bounded — see [`Scan`].
+    scan: Scan,
+}
+
+/// Where a recognizer resumes scanning after a match. **This is the M4-R17 / M4-R19
+/// tradeoff, and it is decided by one property of the pattern: is its match length
+/// bounded?**
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Scan {
+    /// Resume one `char` past the match's **start**, so a value that begins *inside* an
+    /// earlier match of the same recognizer still becomes a candidate (M4-R17 — otherwise
+    /// the resolver never learns it exists and every invariant over the candidate set is
+    /// satisfied *vacuously* for it).
+    ///
+    /// It probes O(n) start positions, each costing at most one maximal match, so the cost
+    /// is **O(n · L)** for a pattern whose longest match is L. That is linear only while
+    /// **L is bounded** — which it is for every pattern below that uses this: card ≤ 19
+    /// digits, IBAN ≤ 44 chars, phone ≤ 20, and every national ID ≤ 18.
+    Overlapping,
+    /// Resume at the match's **end** (plain `find_iter` semantics).
+    ///
+    /// For the two patterns with **no length bound** — `Email` (`[…]+@[…]+\.[…]{2,}`) and
+    /// `Secret` (`sk-[…]{6,}`). There L = O(n), so the rescan above degenerates to
+    /// **O(n²)**: a ~1 MB `content` field (far under the 16 MiB body limit) pegged a core
+    /// for *minutes* on an unauthenticated path — 151 s at 200 KB, ~18,000× slower than a
+    /// plain scan (**M4-R19**, an algorithmic-complexity DoS).
+    ///
+    /// **And the rescan buys these two nothing.** A same-recognizer match that starts
+    /// inside an earlier one is *contained* in it, so it adds no bytes:
+    /// - `Secret` — both `sk-…` and `AKIA…` run greedily to the end of the same maximal
+    ///   `[A-Za-z0-9_-]` run and must end on an ASCII word boundary, so a nested hit ends
+    ///   exactly where the outer one does (`sk-abcsk-defghi`). Containment, always.
+    /// - `Email` — a hit starting inside the local part shares the same `@` and domain
+    ///   (containment). The one shape that *isn't* contained is a chained
+    ///   `a@b.com@c.com`, where the local part of the second hit lies inside the first
+    ///   hit's **domain**. Its remainder is masked anyway, one pass later: masking the
+    ///   first email leaves `[EMAIL_1]@c.com`, and [`Vault::mask_all`] re-detects to a
+    ///   **fixpoint**, so anything still `local@domain`-shaped is caught then. What is
+    ///   left over is a bare `@domain` — not PII (M4-R11).
+    ///
+    /// So the two mechanisms are complementary, and the DoS costs no coverage: the
+    /// **bounded** recognizers get the rescan, the **unbounded** ones get the fixpoint.
+    /// Pinned by `an_email_chain_leaves_nothing_detectable` and `tests/complexity.rs`.
+    Sequential,
 }
 
 /// The default set of structured-PII recognizers, run together over a text.
@@ -101,6 +145,8 @@ fn universal_recognizers() -> Vec<Recognizer> {
             kind: PiiKind::Secret,
             regex: Regex::new(r"(?-u:\b)(?:sk-[A-Za-z0-9_-]{6,}|AKIA[0-9A-Z]{16})(?-u:\b)").unwrap(),
             validate: None,
+            // Unbounded (`{6,}`) → no overlap rescan; a nested hit is always contained.
+            scan: Scan::Sequential,
         },
         // IBAN before phone/credit-card: its digit groups can otherwise be
         // mistaken for a card or phone number. Country (2 letters) + 2 check
@@ -115,6 +161,7 @@ fn universal_recognizers() -> Vec<Recognizer> {
             )
             .unwrap(),
             validate: None,
+            scan: Scan::Overlapping, // bounded: ≤ 44 chars
         },
         // Credit cards: 13–19 digits, either grouped in 4s or continuous, gated by
         // the Luhn checksum to reject look-alikes.
@@ -122,11 +169,15 @@ fn universal_recognizers() -> Vec<Recognizer> {
             kind: PiiKind::CreditCard,
             regex: Regex::new(r"(?-u:\b)(?:\d{4}[ -]\d{4}[ -]\d{4}[ -]\d{4}|\d{13,19})(?-u:\b)").unwrap(),
             validate: Some(credit_card_valid),
+            scan: Scan::Overlapping, // bounded: ≤ 19 digits — and this is the M4-R17 repro
         },
         Recognizer {
             kind: PiiKind::Email,
             regex: Regex::new(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}").unwrap(),
             validate: None,
+            // Unbounded (`+` on both sides of the `@`) → no overlap rescan; the
+            // mask-to-a-fixpoint pass catches a chained `a@b.com@c.com` remainder.
+            scan: Scan::Sequential,
         },
         // Phone, two families (US first so `+1 …` isn't sliced by the intl arm):
         //  - US: 3-3-4 with `-`, `.`, space, or `(area)` grouping, optional `+1`.
@@ -140,6 +191,7 @@ fn universal_recognizers() -> Vec<Recognizer> {
             )
             .unwrap(),
             validate: None,
+            scan: Scan::Overlapping, // bounded: ≤ 20 chars
         },
     ]
 }
@@ -149,6 +201,9 @@ fn universal_recognizers() -> Vec<Recognizer> {
 /// country isn't in `PII_LOCALES` (privacy-first, "a miss is a leak"). Each pattern
 /// is specific (interleaved letters/digits, prefix rules, checksums) to keep the
 /// always-on false-positive rate near zero.
+///
+/// Every pattern here is **fixed-length** (≤ 18 chars), so they all take the
+/// [`Scan::Overlapping`] rescan — bounded, hence linear (M4-R19).
 fn national_id_recognizers() -> Vec<Recognizer> {
     vec![
         // US SSN: 3-2-4 digit groups (keeps its own `Ssn` kind / `[SSN_N]`).
@@ -156,6 +211,7 @@ fn national_id_recognizers() -> Vec<Recognizer> {
             kind: PiiKind::Ssn,
             regex: Regex::new(r"(?-u:\b)\d{3}-\d{2}-\d{4}(?-u:\b)").unwrap(),
             validate: None,
+            scan: Scan::Overlapping,
         },
         // Italian Codice Fiscale: 6 letters, 2 digits, letter, 2 digits, letter,
         // 3 digits, letter (16 chars). The final letter is a checksum (M4-R3), so a
@@ -164,6 +220,7 @@ fn national_id_recognizers() -> Vec<Recognizer> {
             kind: PiiKind::NationalId,
             regex: Regex::new(r"(?-u:\b)[A-Za-z]{6}\d{2}[A-Za-z]\d{2}[A-Za-z]\d{3}[A-Za-z](?-u:\b)").unwrap(),
             validate: Some(cf_check_valid),
+            scan: Scan::Overlapping,
         },
         // UK National Insurance Number: 2 prefix letters, 6 digits, a suffix letter
         // A–D — compact (`AB123456C`) or space-grouped (`AB 12 34 56 C`). The prefix
@@ -175,6 +232,7 @@ fn national_id_recognizers() -> Vec<Recognizer> {
             )
             .unwrap(),
             validate: Some(nino_prefix_valid),
+            scan: Scan::Overlapping,
         },
         // Spanish DNI (8 digits) / NIE (X/Y/Z + 7 digits), each with a mod-23 check
         // letter that must match — so a random 8-digit+letter token won't pass.
@@ -182,16 +240,18 @@ fn national_id_recognizers() -> Vec<Recognizer> {
             kind: PiiKind::NationalId,
             regex: Regex::new(r"(?-u:\b)(?:[XYZxyz]\d{7}|\d{8})[A-Za-z](?-u:\b)").unwrap(),
             validate: Some(es_dni_nie_valid),
+            scan: Scan::Overlapping,
         },
         // French NIR (social security): 15 digits — sex + YY + MM + geo/order + a
         // mod-97 key that must check out. The month admits INSEE special codes
         // (`20` unknown/born-abroad; `30–42`/`50–99` provisional SANDIA) so those
         // real NIRs aren't missed on the always-on tier (M4-R5). Corsica's `2A`/`2B`
-        // department (letters in the body) is a documented gap — see ROADMAP M4.
+        // department (letters in the body) is a documented gap — docs/reviews/M4.md#m4-r5.
         Recognizer {
             kind: PiiKind::NationalId,
             regex: Regex::new(r"(?-u:\b)[12]\d{2}(?:0[1-9]|1[0-2]|20|3\d|4[0-2]|[5-9]\d)\d{10}(?-u:\b)").unwrap(),
             validate: Some(fr_nir_valid),
+            scan: Scan::Overlapping,
         },
         // Nine-digit national IDs: NL BSN (11-proef) or PT NIF (mod-11). One
         // recognizer, either checksum accepts (both are 9 digits). Accepted FP
@@ -205,6 +265,7 @@ fn national_id_recognizers() -> Vec<Recognizer> {
             kind: PiiKind::NationalId,
             regex: Regex::new(r"(?-u:\b)\d{9}(?-u:\b)").unwrap(),
             validate: Some(nine_digit_id_valid),
+            scan: Scan::Overlapping,
         },
         // Eleven-digit national IDs: DE Steuer-ID (ISO 7064 Mod 11,10 + one repeated
         // digit) or LV personal code (mod-11 / post-2017 `32…` random form). Same
@@ -215,12 +276,14 @@ fn national_id_recognizers() -> Vec<Recognizer> {
             kind: PiiKind::NationalId,
             regex: Regex::new(r"(?-u:\b)\d{11}(?-u:\b)").unwrap(),
             validate: Some(eleven_digit_id_valid),
+            scan: Scan::Overlapping,
         },
         // LV personal code, classic dashed form `DDMMYY-NNNNC` (mod-11 checksum).
         Recognizer {
             kind: PiiKind::NationalId,
             regex: Regex::new(r"(?-u:\b)\d{6}-\d{5}(?-u:\b)").unwrap(),
             validate: Some(lv_code_valid),
+            scan: Scan::Overlapping,
         },
         // China Resident Identity Card: 17 digits + a check char (digit or X),
         // ISO 7064 MOD 11-2. 18 chars → near-zero false positives.
@@ -228,6 +291,7 @@ fn national_id_recognizers() -> Vec<Recognizer> {
             kind: PiiKind::NationalId,
             regex: Regex::new(r"(?-u:\b)\d{17}[0-9Xx](?-u:\b)").unwrap(),
             validate: Some(zh_resident_id_valid),
+            scan: Scan::Overlapping,
         },
     ]
 }
@@ -238,7 +302,8 @@ fn national_id_recognizers() -> Vec<Recognizer> {
 /// precision work before they can run globally. Unknown codes yield nothing.
 fn fp_prone_recognizers(code: &str) -> Vec<Recognizer> {
     match code.trim().to_ascii_lowercase().as_str() {
-        // e.g. "gb" => vec![ UK national phone formats ] — deferred (see ROADMAP M4).
+        // e.g. "gb" => vec![ UK national phone formats ] — deferred to the
+        // docs/ROADMAP.md **Backlog** ("Locale phone national formats").
         _ => Vec::new(),
     }
 }
@@ -267,8 +332,8 @@ impl StructuredRecognizers {
 }
 
 impl Recognizer {
-    /// Every match of this recognizer — **including ones that overlap an earlier match**
-    /// (M4-R17).
+    /// Every match of this recognizer — for a [`Scan::Overlapping`] pattern, **including
+    /// ones that overlap an earlier match** (M4-R17).
     ///
     /// `Regex::find_iter` is leftmost-**non-overlapping**: after a hit it resumes at the
     /// match's *end*. A real value that **starts inside** an earlier match of the *same*
@@ -285,8 +350,10 @@ impl Recognizer {
     ///                             ` 1111` was forwarded in clear.
     /// ```
     ///
-    /// So we resume one `char` past the match's **start**, not its end, which surfaces a
-    /// value hidden behind an earlier match.
+    /// So a bounded pattern resumes one `char` past the match's **start**, not its end,
+    /// which surfaces a value hidden behind an earlier match. An **unbounded** one
+    /// ([`Scan::Sequential`] — Email, Secret) must not: there that rescan is O(n²) and buys
+    /// no coverage (M4-R19). Read [`Scan`] before changing either.
     ///
     /// Overlapping hits of one recognizer are **coalesced into maximal runs** as we go.
     /// That keeps the candidate set bounded on pathological input (a long row of 4-digit
@@ -309,13 +376,17 @@ impl Recognizer {
                     _ => runs.push(m.start()..m.end()),
                 }
             }
-            // Resume just past the match's START (not its end) to see overlapping hits.
-            // `next_char_boundary` also guarantees forward progress on an empty match.
-            let next = next_char_boundary(input, m.start());
-            if next <= at && next <= m.start() {
+            // Where the next scan starts — the whole M4-R17 / M4-R19 tradeoff, see [`Scan`].
+            let resume = match self.scan {
+                Scan::Overlapping => next_char_boundary(input, m.start()),
+                Scan::Sequential => m.end(),
+            };
+            // Forward progress, always: a zero-width match (or one at the very end of the
+            // input, where `next_char_boundary` clamps) would otherwise spin forever.
+            if resume <= at {
                 break;
             }
-            at = next;
+            at = resume;
         }
 
         out.extend(runs.into_iter().map(|span| {
@@ -996,6 +1067,55 @@ mod tests {
             !masked.contains("4111111111111111"),
             "masking the phone exposed the card in clear: {masked}"
         );
+        assert!(detector.detect(&masked).is_empty(), "PII survived: {masked}");
+        assert_eq!(vault.demask(&masked), input, "round-trip must stay exact");
+    }
+
+    #[test]
+    fn an_email_chain_leaves_nothing_detectable() {
+        // M4-R19. Email and Secret are the two UNBOUNDED patterns, so they don't get the
+        // M4-R17 overlap rescan (it would be O(n²) — an unauthenticated DoS). This pins the
+        // one shape where that rescan used to add coverage: a *chained* `a@b.com@c.com`,
+        // whose second email starts inside the first one's DOMAIN and reaches past its end.
+        //
+        // The fixpoint covers it instead: pass 1 masks the leftmost email, and whatever
+        // `local@domain` the rewrite leaves behind is detected on pass 2. So the two
+        // mechanisms are complementary — bounded recognizers rescan, unbounded ones iterate.
+        let detector = StructuredRecognizers::new();
+        for input in [
+            "a@b.com@c.com",
+            "a@b.com+x@c.com",
+            "x@y.com@z.com@w.com",
+            "sk-abcdefsk-123456@x.com",
+        ] {
+            let mut vault = crate::pii::anonymizer::Vault::new();
+            let masked = vault.mask_all(input, &detector).unwrap();
+            assert!(
+                detector.detect(&masked).is_empty(),
+                "PII survived masking of {input:?} → {masked:?}"
+            );
+            assert_eq!(vault.demask(&masked), input, "round-trip must stay exact");
+        }
+
+        // A left-over bare `@domain` is explicitly NOT PII (M4-R11) — but the local part,
+        // which is the identifying half, must be gone.
+        let mut vault = crate::pii::anonymizer::Vault::new();
+        let masked = vault.mask_all("a@b.com@c.com", &detector).unwrap();
+        assert!(!masked.contains("a@b.com"), "the email must be masked: {masked}");
+    }
+
+    #[test]
+    fn a_secret_hidden_inside_a_secret_is_still_covered() {
+        // M4-R19's other half. Dropping Secret's overlap rescan is only safe because a
+        // nested `sk-…` is *contained* in the outer one (both run greedily to the end of the
+        // same maximal `[A-Za-z0-9_-]` run), so it adds no bytes. Pin that: the inner secret
+        // is inside the masked span, and nothing survives in clear.
+        let detector = StructuredRecognizers::new();
+        let input = "key sk-abcdef-sk-ghijkl123 end";
+        let mut vault = crate::pii::anonymizer::Vault::new();
+        let masked = vault.mask_all(input, &detector).unwrap();
+
+        assert!(!masked.contains("sk-"), "no secret fragment may survive: {masked}");
         assert!(detector.detect(&masked).is_empty(), "PII survived: {masked}");
         assert_eq!(vault.demask(&masked), input, "round-trip must stay exact");
     }

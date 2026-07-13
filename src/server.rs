@@ -245,14 +245,38 @@ async fn chat_completions(
 ) -> Response {
     let streaming = body.get("stream").and_then(Value::as_bool) == Some(true);
 
-    let mut ctx = RequestContext::new();
-    let mut request = ProxyRequest { body };
-    for stage in state.stages.iter() {
-        stage.on_request(&mut request, &mut ctx);
-        if ctx.block.is_some() {
-            break;
+    // Masking is **CPU-bound** — regex scans over every text field, plus NER inference when
+    // it's on — so it runs on the blocking pool, never inline on a tokio worker (M4-R19).
+    // Inline, a few concurrent large bodies starve the executor and the whole proxy stops
+    // serving, on an unauthenticated path (detection precedes any upstream auth).
+    let stages = state.stages.clone();
+    let masked = tokio::task::spawn_blocking(move || {
+        let mut ctx = RequestContext::new();
+        let mut request = ProxyRequest { body };
+        for stage in stages.iter() {
+            stage.on_request(&mut request, &mut ctx);
+            if ctx.block.is_some() {
+                break;
+            }
         }
-    }
+        (request, ctx)
+    })
+    .await;
+
+    // Fail closed: if the masking task itself died (a panic in a stage), we hold a request
+    // whose PII status is unknown — reject it, never forward it.
+    let (request, ctx) = match masked {
+        Ok(ok) => ok,
+        Err(err) => {
+            tracing::error!(error = %err, "masking task failed; blocking the request (fail-closed)");
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "masking failed",
+                "blocked",
+            );
+        }
+    };
+    let mut ctx = ctx;
 
     // Fail closed: a stage refused to mask this request → reject, don't forward.
     if let Some(reason) = ctx.block {

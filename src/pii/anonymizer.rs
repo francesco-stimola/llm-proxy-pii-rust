@@ -16,7 +16,8 @@ use super::{DetectError, PiiDetector, PiiEntity, PiiKind};
 
 /// How many times [`Vault::mask_all`] re-detects before giving up. Masking exposes PII at
 /// most a handful of times in practice (each pass must break a token apart to reveal a new
-/// one); this is a safety bound, not an expected limit.
+/// one); this is a safety bound, not an expected limit. Exhausting it **blocks the
+/// request** — see [`Vault::mask_all`] (M4-R20).
 const MAX_MASK_PASSES: usize = 4;
 
 /// Tolerant placeholder pattern used on the way back. It accepts the canonical
@@ -68,9 +69,16 @@ impl Vault {
     /// placeholders, so this converges: a placeholder is **inert** — no recognizer can match
     /// one or span across it (`[KIND_N]` has no `@`, no `sk-`, and nowhere near enough
     /// digits; `[` / `]` are outside every pattern's character classes), so each pass
-    /// strictly shrinks the un-masked text. [`MAX_MASK_PASSES`] is a belt-and-braces bound;
-    /// reaching it is logged and is **not** a leak — a further pass could only have masked
-    /// *more*.
+    /// strictly shrinks the un-masked text.
+    ///
+    /// **Exhausting [`MAX_MASK_PASSES`] fails *closed* (M4-R20).** The bound is a safety
+    /// net, not a proof: "each pass strictly shrinks the un-masked text" buys *eventual*
+    /// convergence, never convergence **within** four passes. So the loop **confirms** the
+    /// fixpoint instead of assuming it — if anything is still detectable when the passes run
+    /// out, this returns `Err` and [`PrivacyStage`](crate::pipeline::privacy::PrivacyStage)
+    /// blocks the request. Forwarding a "probably clean" text is exactly the failure mode a
+    /// privacy proxy must not have. (No input has ever been shown to need more than **2**
+    /// passes — this is a latent path, and it stays fail-closed anyway.)
     ///
     /// The round-trip stays exact: each pass records raw value → placeholder, and
     /// [`demask`](Self::demask) restores every placeholder in one tolerant pass.
@@ -87,12 +95,20 @@ impl Vault {
             }
             current = self.mask(&current, &entities);
         }
-        // Kind-free, value-free: just the fact that we stopped iterating.
+        // The passes ran out having masked something on every one of them, so we do NOT
+        // know `current` is clean. Confirm it (M4-R20) — and block if it isn't.
+        if detector.try_detect(&current)?.is_empty() {
+            return Ok(current);
+        }
+        // Kind-free, value-free: just the fact that we gave up.
         tracing::warn!(
             passes = MAX_MASK_PASSES,
-            "masking did not reach a fixpoint; stopping (over-masked, never under-masked)"
+            "masking did not reach a fixpoint; blocking the request (fail closed)"
         );
-        Ok(current)
+        Err(DetectError {
+            detector: "vault",
+            message: format!("masking did not reach a fixpoint in {MAX_MASK_PASSES} passes"),
+        })
     }
 
     /// Replace each entity in `text` with a typed placeholder, recording the
@@ -290,6 +306,51 @@ mod tests {
                 "sent to bob@test.com."
             );
         }
+    }
+
+    /// A detector that always reports the **first character** as PII — so masking it just
+    /// exposes a new first character and the fixpoint is never reached. It models exactly
+    /// the shape `mask_all`'s pass bound exists for: a transform that keeps re-creating what
+    /// it removes (M4-R20). No real detector behaves this way — no input has been shown to
+    /// need more than 2 passes — which is why the fail-open was *latent* rather than live.
+    struct NeverConverges;
+
+    impl PiiDetector for NeverConverges {
+        fn detect(&self, input: &str) -> Vec<PiiEntity> {
+            let Some(first) = input.chars().next() else {
+                return Vec::new();
+            };
+            let end = first.len_utf8();
+            vec![PiiEntity {
+                kind: PiiKind::Person,
+                span: 0..end,
+                text: input[..end].to_string(),
+                confidence: Confidence::Structural,
+            }]
+        }
+    }
+
+    #[test]
+    fn mask_all_blocks_when_it_cannot_reach_a_fixpoint() {
+        // M4-R20: exhausting MAX_MASK_PASSES used to return the text anyway — so anything
+        // still detectable was forwarded IN CLEAR, contradicting the fail-closed bar. The
+        // pass bound gives *eventual* convergence, never convergence within four passes, so
+        // the fixpoint must be **confirmed**, not assumed.
+        let mut vault = Vault::new();
+        let err = vault
+            .mask_all("still here", &NeverConverges)
+            .expect_err("a text that never converges must fail closed, not be forwarded");
+
+        // The block reason must carry no input text (the never-log-raw-PII rule).
+        let rendered = err.to_string();
+        assert!(!rendered.contains("still here"), "error leaked the input: {rendered}");
+
+        // …and a detector that *does* converge still returns Ok, so this didn't just break
+        // masking for everyone.
+        let detector = StructuredRecognizers::new();
+        let mut vault = Vault::new();
+        let masked = vault.mask_all("mail bob@test.com", &detector).expect("converges");
+        assert_eq!(masked, "mail [EMAIL_1]");
     }
 
     #[test]

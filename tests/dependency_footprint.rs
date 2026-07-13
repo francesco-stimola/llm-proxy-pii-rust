@@ -8,7 +8,7 @@
 //!
 //! For reference, the intended `--features onnx` footprint *does* include that stack
 //! (hf-hub 1.x pulls `hf-xet` + `rustls`/`aws-lc-rs` + a second `reqwest 0.13`); that
-//! is a deliberate, documented trade-off (ROADMAP M2.5-R1), not a regression.
+//! is a deliberate, documented trade-off (docs/reviews/M2.5.md#m25-r1), not a regression.
 
 use std::process::Command;
 
