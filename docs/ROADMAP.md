@@ -478,30 +478,29 @@ continuation review.)*
   byte-identical masked upstream body across the `openai`/`anthropic` presets. No raw PII in logs
   (kind-only `debug!`); fail-closed unchanged.
 
-Three **non-blocking** precision follow-ups (all fail-safe — over-mask/utility, never a leak):
-- [ ] **M4-R6 (precision, low-med) — pure-numeric always-on recognizers over-mask ordinary numbers.**
-  `\b\d{9}\b` masks any standalone 9-digit token that passes BSN **or** NIF (~2/11 ≈ 18% of arbitrary
-  9-digit numbers — order refs, US routing/EIN, etc.); `\b\d{11}\b` similarly (DE ∪ LV, incl. the
-  unconditional LV `32…` 1%). Fail-safe (over-mask, never a leak) and the deliberate privacy-first choice,
-  but the utility cost isn't bounded/quantified. Fix: either **document the accepted FP magnitude** as an
-  explicit known tradeoff (like the LV shape-only note), and/or gate the checksum-weak numeric IDs on a
-  nearby context keyword, and/or defer to the Backlog GLiNER contextual path. Test: a negative corpus case
-  pinning that a bare ordinary 9-/11-digit number's masking is intentional (or, if context-gated, that an
-  un-anchored one is left alone).
-- [ ] **M4-R7 (precision, low) — the "Email beats a substring ID" fix isn't generalized to Card/Iban/Secret.**
-  The reorder put Email above Ssn/NationalId but Card/Iban/Secret still outrank Email, so an email whose
-  local part is exactly a Luhn-valid card / valid IBAN / API key still fragments (`4111111111111111@x.com`
-  → `[CARD_1]@x.com`, the `@domain` forwarded in clear). Pre-existing, vanishingly rare, low-sensitivity
-  (only the domain leaks; the identifying substring is masked). Fix: either raise Email above
-  Card/Iban/Secret **for the `@`-contained case** (a card/IBAN/secret is never genuinely an email — same
-  reasoning that justified Email > NationalId) or document the accepted edge. Test:
-  `4111111111111111@x.com` masks as a single `Email` (if generalized).
-- [ ] **M4-R8 (precision, very low) — DE Steuer-ID structural rule omits the consecutive-triple exclusion.**
-  `de_steuerid_valid` accepts one digit repeated 2–3× in the first 10 but doesn't enforce the 2016+ rule
-  that a 3× repeat must not sit in three *consecutive* positions. It only ever *over*-accepts (never rejects
-  a valid ID, never leaks) and the effect on top of the Mod 11,10 checksum is negligible. Fix: document as an
-  accepted simplification or add the consecutive-position check. Test: an 11-digit with a consecutive triple
-  + valid checksum is rejected (if tightened).
+Three **non-blocking** precision follow-ups (all fail-safe — over-mask/utility, never a leak) — **all closed 2026-07-13**:
+- [x] **M4-R6 (DONE 2026-07-13 — accepted-FP tradeoff, documented + pinned).** The pure-numeric always-on
+  recognizers (`\b\d{9}\b`, `\b\d{11}\b`) over-mask a fraction of ordinary numbers (BSN ∪ NIF ≈ 2/11 ≈ 18%
+  of arbitrary 9-digit tokens; DE ∪ LV for 11-digit, incl. the unconditional LV `32…` ~1%). **Resolved by
+  documenting the accepted magnitude** (code comments on both recognizers, like the LV shape-only note) —
+  **not** by context-gating: gating a national ID on a nearby keyword would reintroduce leaks and directly
+  contradict the always-on M4-R1 decision ("a miss is a leak"). The clean precision path is the **contextual
+  GLiNER detector (Backlog)**, not a regex keyword gate. Test `bare_numeric_national_ids_are_masked_by_design`
+  pins the over-mask as intentional (`524287244` — an arbitrary PT-NIF-valid number — is masked) **and** that
+  the checksum still filters the majority (`524287245` fails both → left in clear).
+- [x] **M4-R7 (DONE 2026-07-13 — generalized: Email is now the top structured priority).** The Email>national-ID
+  reorder is generalized to Card/Iban/Secret: `PiiKind::priority` now ranks **Email above every other structured
+  recognizer**. An `@`-token that parses as an email genuinely *is* an email, and no other structured kind carries
+  `@`, so a card/IBAN/secret can only overlap an email by being a *substring* of its local part — there the whole
+  email is the correct span and must win (else the `@domain` forwards in clear). Non-email spans never share this
+  tier, so lifting Email changes nothing outside the containment case (verified: no corpus/adversarial/proptest
+  regression). Test `email_beats_a_card_iban_or_secret_local_part`: `4111111111111111@x.com`,
+  `DE89370400440532013000@x.com`, `sk-abcdef123456@x.com` each mask as a single `Email`.
+- [x] **M4-R8 (DONE 2026-07-13 — DE Steuer-ID consecutive-triple exclusion added).** `de_steuerid_valid` now
+  enforces the 2016+ rule: a digit that appears three times in the first 10 must **not** sit in three
+  *consecutive* positions. Raises precision (rejects a look-alike with a consecutive triple) with no recall
+  cost (a valid ID never has one). Self-verifying test `de_steuerid_rejects_a_consecutive_triple`: same digits +
+  valid checksum, consecutive → rejected, non-consecutive → accepted.
 
 ## M5 — Integration & performance testing
 Goal: prove the whole system holds **end-to-end** and **under load**, then document it. Comes after M4 —

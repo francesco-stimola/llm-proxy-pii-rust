@@ -42,8 +42,14 @@ unstructured-entity load.
   Resident ID. **Always on regardless of `PII_LOCALES`** (privacy-first — a national ID that
   reaches the proxy is masked even if its country isn't configured). Each is checksum- or
   rule-specific (mod-23 / mod-97 / mod-11 / ISO 7064 / NINO prefix rules) to stay near-zero
-  false-positive when always on. `Email` outranks the numeric national IDs in
-  `PiiKind::priority`, so a numeric email local part (`123456789@x.com`) is never fragmented.
+  false-positive when always on. The pure-numeric 9-/11-digit IDs (BSN/NIF, DE/LV) accept a
+  small fraction of arbitrary numbers on checksum alone (~18% of 9-digit tokens); this is an
+  **accepted over-mask tradeoff** (M4-R6) — privacy-first, never a leak — not context-gated
+  (that would leak); the contextual precision path is GLiNER (Backlog). `Email` is the **top
+  structured priority** in `PiiKind::priority` (M4-R7): no other structured kind carries `@`,
+  so a card/IBAN/secret/national-ID can only overlap an email by being a substring of its local
+  part (`4111111111111111@x.com`, `123456789@x.com`) — the whole email wins and is never
+  fragmented (which would forward the `@domain` in clear).
 - **FP-prone** — ambiguous recognizers (e.g. national *phone* formats with no `+CC`) —
   **opt-in per locale** via `PII_LOCALES` (`fp_prone_recognizers`). None yet.
 

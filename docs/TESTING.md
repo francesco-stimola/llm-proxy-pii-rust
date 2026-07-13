@@ -180,6 +180,9 @@ Three tiers: universal (always), national IDs (always, off `PII_LOCALES`), FP-pr
 - LOC-09 — `iban_per_country_length_gates_confidence`: an IBAN is `Verified` only when mod-97 **and** its country's ISO 13616 length both hold; a wrong-length one is `Structural`.
 - LOC-10 — `numeric_email_local_part_is_not_hijacked_by_a_national_id`: `Email` outranks the numeric national IDs, so `123456789@x.com` masks as one email, not a fragment.
 - LOC-11 — `e2e_masking_is_provider_agnostic` (`tests/proxy_e2e.rs`): the same request via the `openai` vs `anthropic` presets yields a byte-identical masked body upstream.
+- LOC-12 — `email_beats_a_card_iban_or_secret_local_part` (M4-R7): `Email` is the top structured priority, so a card/IBAN/secret that is only a substring of an email local part (`4111111111111111@x.com`, `DE89…@x.com`, `sk-…@x.com`) masks as one `Email`, never fragmenting off the `@domain`.
+- LOC-13 — `bare_numeric_national_ids_are_masked_by_design` (M4-R6): an arbitrary checksum-valid 9-digit number (`524287244`) is masked *by design* (accepted over-mask, privacy-first), while a checksum-failing neighbour (`524287245`) is left in clear — the checksum still filters the majority.
+- LOC-14 — `de_steuerid_rejects_a_consecutive_triple` (M4-R8): a DE Steuer-ID with a 3× digit in three *consecutive* positions is rejected even with a valid checksum; the same digits non-consecutive are accepted.
 
 ### M5 — integration & performance (planned)
 - E2E-INT-01 *(planned)* — real-provider smoke against **Anthropic** (OpenAI-compat endpoint; opt-in, needs a key, never in CI): a PII round-trip returns the restored value while the request left masked.

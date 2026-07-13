@@ -3,6 +3,35 @@
 Newest first. One entry per meaningful change — note *what* and *why*, not just
 *what*. This is the running history so context is never lost between sessions.
 
+## 2026-07-13 — M4 review follow-ups closed: M4-R6 / M4-R7 / M4-R8
+
+A review session opened three non-blocking precision follow-ups on the completed M4 (all fail-safe —
+over-mask/utility, never a leak). Closed all three. **99 tests green (default) / 107 + 1 `#[ignore]`d
+(`--features onnx`), no warnings** on both profiles.
+
+- **M4-R6 — accepted-FP tradeoff on the pure-numeric IDs (documented + pinned).** `\b\d{9}\b`
+  (BSN ∪ NIF) and `\b\d{11}\b` (DE ∪ LV) over-mask a fraction of ordinary numbers on checksum alone
+  (~2/11 ≈ 18% of arbitrary 9-digit tokens; the LV `32…` form adds an unconditional ~1% at 11 digits).
+  Resolved by **documenting** the accepted magnitude (code comments on both recognizers, like the LV
+  shape-only note) — deliberately **not** context-gating: gating a national ID on a nearby keyword would
+  reintroduce leaks and contradict the always-on M4-R1 decision. The clean precision path is the
+  contextual **GLiNER** detector (Backlog). Test `bare_numeric_national_ids_are_masked_by_design`:
+  `524287244` (an arbitrary PT-NIF-valid number) is masked by design; `524287245` (fails both checksums)
+  is left in clear — so it's not a blanket "mask every number".
+- **M4-R7 — Email is now the top structured priority (generalized the substring fix).** The earlier
+  Email>national-ID reorder is generalized to Card/Iban/Secret: `PiiKind::priority` now ranks
+  **Email > Secret > Iban > CreditCard > Ssn ≈ NationalId > Phone**. An `@`-token that parses as an email
+  *is* an email, and no other structured kind carries `@`, so a card/IBAN/secret can only overlap an email
+  by being a **substring of its local part** — there the whole email is correct and must win, else the
+  `@domain` forwards in clear (`4111111111111111@x.com` → previously `[CARD_1]@x.com`). Non-email spans
+  never share this tier, so lifting Email regresses nothing outside the containment case (confirmed: no
+  corpus/adversarial/proptest change). Test `email_beats_a_card_iban_or_secret_local_part`.
+- **M4-R8 — DE Steuer-ID consecutive-triple exclusion.** `de_steuerid_valid` now enforces the 2016+ rule:
+  a digit appearing three times in the first 10 must **not** occupy three *consecutive* positions. Pure
+  precision gain (rejects a look-alike), zero recall cost (a valid ID never has one). Self-verifying test
+  `de_steuerid_rejects_a_consecutive_triple` (same digits + valid checksum: consecutive → rejected,
+  non-consecutive → accepted). **M4 review follow-ups done.** Next: M5.
+
 ## 2026-07-13 — Relicensed MIT → AGPL-3.0-or-later; version 0.1.0 → 0.4.0
 
 The project is gaining traction, so it moved from MIT to the **GNU Affero GPL v3-or-later**
