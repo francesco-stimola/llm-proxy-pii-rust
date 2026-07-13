@@ -225,10 +225,15 @@ impl Default for StructuredRecognizers {
     }
 }
 
-impl PiiDetector for StructuredRecognizers {
-    fn detect(&self, input: &str) -> Vec<PiiEntity> {
-        // Collect every raw candidate, applying the per-category validator as we
-        // go; overlaps (and priority) are reconciled by the shared resolver.
+impl StructuredRecognizers {
+    /// Every raw match, **before** overlap resolution — each recognizer's hits with its
+    /// validator applied. Overlapping and duplicate spans are expected here; the shared
+    /// [`resolve_overlaps`] reconciles them.
+    ///
+    /// Exposed (crate-internal) so the resolver's invariant can be tested directly: every
+    /// structured candidate's bytes must end up covered in the resolved output — see
+    /// `every_structured_candidate_byte_is_covered` (M4-R10 / M4-R11).
+    pub(crate) fn raw_candidates(&self, input: &str) -> Vec<PiiEntity> {
         let mut candidates: Vec<PiiEntity> = Vec::new();
         for rec in &self.recognizers {
             for m in rec.regex.find_iter(input) {
@@ -246,8 +251,13 @@ impl PiiDetector for StructuredRecognizers {
                 });
             }
         }
+        candidates
+    }
+}
 
-        let kept = resolve_overlaps(candidates);
+impl PiiDetector for StructuredRecognizers {
+    fn detect(&self, input: &str) -> Vec<PiiEntity> {
+        let kept = resolve_overlaps(input, self.raw_candidates(input));
         for entity in &kept {
             if entity.confidence == Confidence::Structural {
                 // Auditability: a structure-only match (e.g. a mod-97-invalid
@@ -772,23 +782,81 @@ mod tests {
         // M4-R9 — the counterpart to the containment case above. An email local part
         // cannot contain spaces, so against a *grouped* card / IBAN / NINO the email
         // regex grabs only the trailing group + `@domain` (`1111@example.com`) and
-        // merely PARTIALLY overlaps the structured span. Email must NOT win that:
-        // it would mask only the last group and leave the leading ones in clear.
-        // Each case asserts the full structured span is the single detected entity.
+        // merely PARTIALLY overlaps the structured span. Neither side may be dropped
+        // (M4-R10/R11): the two merge into their **union**, labelled with the
+        // higher-priority kind — so the card/IBAN/NINO *and* the trailing email are
+        // masked by one placeholder, and nothing is left in clear.
         assert_eq!(
             kinds("card 4111 1111 1111 1111@example.com"),
-            vec![(PiiKind::CreditCard, "4111 1111 1111 1111".to_string())],
-            "a grouped card must not be fragmented by the trailing @domain"
+            vec![(
+                PiiKind::CreditCard,
+                "4111 1111 1111 1111@example.com".to_string()
+            )],
+            "a grouped card + the overlapping email must merge, not drop either side"
         );
         assert_eq!(
             kinds("iban DE89 3704 0044 0532 0130 00@example.com"),
-            vec![(PiiKind::Iban, "DE89 3704 0044 0532 0130 00".to_string())],
-            "a grouped IBAN must not be fragmented by the trailing @domain"
+            vec![(
+                PiiKind::Iban,
+                "DE89 3704 0044 0532 0130 00@example.com".to_string()
+            )],
+            "a grouped IBAN + the overlapping email must merge"
         );
         assert_eq!(
             kinds("nino AB 12 34 56 C@example.com"),
-            vec![(PiiKind::NationalId, "AB 12 34 56 C".to_string())],
-            "a spaced NINO must not be fragmented by the trailing @domain"
+            vec![(
+                PiiKind::NationalId,
+                "AB 12 34 56 C@example.com".to_string()
+            )],
+            "a spaced NINO + the overlapping email must merge"
+        );
+    }
+
+    #[test]
+    fn a_partially_overlapping_email_is_never_abandoned() {
+        // M4-R11: with `Email` the lowest structured tier, a structured span that only
+        // *partially* overlaps a REAL email used to win and drop the whole email —
+        // leaving its **local part** (a person's name/handle) plus domain in clear.
+        // The union-merge masks both. A left-over bare `@domain` would be acceptable;
+        // a left-over local part is not.
+        let got = kinds("call 555 867 5309john.doe@example.com now");
+        assert_eq!(
+            got,
+            vec![(
+                PiiKind::Phone,
+                "555 867 5309john.doe@example.com".to_string()
+            )],
+            "the email's local part must not be abandoned in clear"
+        );
+
+        let got = kinds("tel +39 333 1234567.mario.rossi@example.com");
+        assert_eq!(got.len(), 1, "phone + email must merge into one span: {got:?}");
+        assert!(
+            got[0].1.contains("mario.rossi@example.com"),
+            "the email must be inside the masked span: {got:?}"
+        );
+    }
+
+    #[test]
+    fn a_span_deleted_by_the_containment_gate_is_never_stranded() {
+        // M4-R10: the containment gate deletes the card (it sits inside the email's
+        // local part), and the phone then partially overlaps that email. Under the old
+        // drop-the-loser the email lost on priority and the already-deleted card was
+        // forwarded IN CLEAR. The union-merge never drops the email, so the card's bytes
+        // stay covered. `Secret` is the sharpest case: highest priority, yet the gate
+        // removes it before priority is ever consulted.
+        let got = kinds("call 555 867 5309.4111111111111111@x.com");
+        assert_eq!(got.len(), 1, "expected one merged span, got {got:?}");
+        assert!(
+            got[0].1.contains("4111111111111111"),
+            "the contained card must be covered by the merged span: {got:?}"
+        );
+
+        let got = kinds("call 555 867 5309.sk-abcdef123456@x.com");
+        assert_eq!(got.len(), 1, "expected one merged span, got {got:?}");
+        assert!(
+            got[0].1.contains("sk-abcdef123456"),
+            "the contained secret must be covered by the merged span: {got:?}"
         );
     }
 
@@ -924,5 +992,76 @@ mod tests {
         // A real, correctly-sized, mod-97-valid IBAN stays Verified.
         let e = StructuredRecognizers::new().detect("IBAN IT60X0542811101000000123456");
         assert_eq!(e[0].confidence, Confidence::Verified);
+    }
+
+    /// Real PII values, deliberately including the **grouped** shapes (spaces inside the
+    /// value) that make a recognizer *partially* overlap an email instead of sitting
+    /// inside it — the pathology behind M4-R7 / M4-R9 / M4-R10 / M4-R11.
+    const PII_SAMPLES: &[&str] = &[
+        "john.doe@example.com",
+        "555 867 5309",
+        "+39 333 1234567",
+        "4111111111111111",
+        "4111 1111 1111 1111",
+        "DE89 3704 0044 0532 0130 00",
+        "IT60X0542811101000000123456",
+        "AB 12 34 56 C",
+        "AB123456C",
+        "123-45-6789",
+        "sk-abcdef123456",
+        "RSSMRA85T10A562S",
+        "123456789",
+    ];
+
+    /// Separators, including the ones that glue two values into one token and so
+    /// manufacture partial overlaps.
+    const GLUE: &[&str] = &["", ".", "-", " ", "@", ", ", "x"];
+
+    proptest::proptest! {
+        /// **PROP-03 — the resolver's invariant (M4-R10 / M4-R11): no structured span's
+        /// bytes are ever abandoned.**
+        ///
+        /// Glue PII values together in arbitrary orders and separators, then assert that
+        /// every *raw* structured candidate (pre-resolution) is **fully covered** by some
+        /// resolved span — i.e. every one of its bytes is replaced in the masked output,
+        /// never forwarded in clear — and that the round-trip is still exact.
+        ///
+        /// This is the guard the earlier fixes lacked: M4-R7 and M4-R9 each passed their
+        /// own hand-written case while silently abandoning the *other* side of a partial
+        /// overlap. A per-byte invariant can't be satisfied by picking a winner.
+        #[test]
+        fn every_structured_candidate_byte_is_covered(
+            picks in proptest::collection::vec(0usize..PII_SAMPLES.len(), 1..4),
+            glues in proptest::collection::vec(0usize..GLUE.len(), 3),
+        ) {
+            let mut input = String::new();
+            for (i, &pick) in picks.iter().enumerate() {
+                if i > 0 {
+                    input.push_str(GLUE[glues[i % glues.len()]]);
+                }
+                input.push_str(PII_SAMPLES[pick]);
+            }
+
+            let detector = StructuredRecognizers::new();
+            let raw = detector.raw_candidates(&input);
+            let resolved = detector.detect(&input);
+
+            for candidate in &raw {
+                let covered = resolved
+                    .iter()
+                    .any(|r| r.span.start <= candidate.span.start && candidate.span.end <= r.span.end);
+                proptest::prop_assert!(
+                    covered,
+                    "{:?} at {:?} is left in clear in {:?} — resolved: {:?}",
+                    candidate.kind, candidate.span, input, resolved
+                );
+            }
+
+            // Masking the resolved set must still round-trip exactly (a merged union is
+            // masked and restored verbatim).
+            let mut vault = crate::pii::anonymizer::Vault::new();
+            let masked = vault.mask(&input, &resolved);
+            proptest::prop_assert_eq!(vault.demask(&masked), input);
+        }
     }
 }

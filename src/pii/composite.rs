@@ -38,7 +38,7 @@ impl PiiDetector for CompositeDetector {
         for detector in &self.detectors {
             all.extend(detector.try_detect(input)?);
         }
-        Ok(resolve_overlaps(all))
+        Ok(resolve_overlaps(input, all))
     }
 }
 

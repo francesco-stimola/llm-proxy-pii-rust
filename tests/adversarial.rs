@@ -58,6 +58,59 @@ fn grouped_pii_glued_to_a_domain_leaks_nothing() {
 }
 
 #[test]
+fn partially_overlapping_pii_abandons_no_bytes() {
+    // M4-R10 / M4-R11 — the resolver used to settle an overlap by dropping the WHOLE
+    // loser span, abandoning its bytes in clear; tuning priorities only chose which
+    // side leaked. These are the exact shapes that leaked, asserted on the masked body.
+
+    // M4-R11: a structured span partially overlapping a REAL email must not abandon the
+    // email's LOCAL PART (a person's handle). A left-over bare `@domain` would be fine;
+    // a left-over local part is not.
+    let out = masked("call 555 867 5309john.doe@example.com now");
+    assert!(!out.contains("john.doe"), "email local part in clear: {out}");
+    assert!(!out.contains("867"), "phone in clear: {out}");
+
+    let out = masked("tel +39 333 1234567.mario.rossi@example.com");
+    assert!(!out.contains("mario.rossi"), "email local part in clear: {out}");
+    assert!(!out.contains("1234567"), "phone in clear: {out}");
+
+    let out = masked("id AB 12 34 56 C.bob@x.com");
+    assert!(!out.contains("bob@x.com"), "email in clear: {out}");
+    assert!(!out.contains("34 56"), "NINO in clear: {out}");
+
+    // M4-R10: the containment gate deletes a span inside an email; if a third span then
+    // partially overlapped that email, the deleted span used to be masked by NOTHING.
+    let out = masked("call 555 867 5309.4111111111111111@x.com");
+    assert!(!out.contains("4111111111111111"), "stranded card in clear: {out}");
+
+    let out = masked("call 555 867 5309.sk-abcdef123456@x.com");
+    assert!(!out.contains("sk-abcdef123456"), "stranded secret in clear: {out}");
+
+    let out = masked("call 555 867 5309.123456789@x.com");
+    assert!(!out.contains("123456789"), "stranded NIF in clear: {out}");
+
+    let out = masked("card 4111 1111 1111 1111.4111111111111111@example.com");
+    assert!(!out.contains("4111111111111111"), "stranded second card in clear: {out}");
+}
+
+#[test]
+fn masking_partially_overlapping_pii_still_round_trips() {
+    // A merged union is masked as one placeholder and restored verbatim — over-masking
+    // must never cost round-trip exactness.
+    for input in [
+        "call 555 867 5309john.doe@example.com now",
+        "call 555 867 5309.4111111111111111@x.com",
+        "card 4111 1111 1111 1111@example.com",
+    ] {
+        let detector = StructuredRecognizers::new();
+        let mut vault = Vault::new();
+        let out = vault.mask(input, &detector.detect(input));
+        assert_ne!(out, input, "nothing was masked: {input}");
+        assert_eq!(vault.demask(&out), input, "round-trip broke for {input}");
+    }
+}
+
+#[test]
 fn caught_email_variants() {
     assert!(detects("ping john+tag@example.com now", PiiKind::Email, "john+tag@example.com"));
     assert!(detects("MAIL JOHN@EXAMPLE.COM", PiiKind::Email, "JOHN@EXAMPLE.COM"));

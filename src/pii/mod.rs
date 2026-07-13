@@ -63,38 +63,34 @@ impl PiiKind {
         }
     }
 
-    /// Overlap-resolution priority: higher wins when two detected spans overlap
-    /// (see [`overlap::resolve_overlaps`]). Deterministic **structured** PII
-    /// outranks the ML **NER** entities, so a checksum-backed IBAN always beats an
-    /// ML guess on the same span. Within structured PII the order is
-    /// Secret > Iban > CreditCard > Ssn ≈ NationalId > Phone > Email.
+    /// Overlap-resolution priority (see [`overlap::resolve_overlaps`]). Order:
+    /// Secret > Iban > CreditCard > Ssn ≈ NationalId > Phone > Email > NER.
     ///
-    /// **Email is deliberately the *lowest* structured tier, because its win is
-    /// gated on containment (M4-R9), not on priority.** A card / IBAN / national-ID
-    /// / secret can overlap an email in two very different ways:
+    /// **This ranks *labels*, not survivors.** Two overlapping **structured** spans are
+    /// merged into their union rather than one being dropped (the resolver's invariant:
+    /// *no structured span's bytes are ever abandoned* — M4-R10/R11), so priority only
+    /// decides **which kind names the union**. A lower priority therefore never costs
+    /// coverage. It does still pick the survivor for **NER** spans, which keep the
+    /// whole-span drop (M2-R7) — losing a `Person` remainder costs recall, never a leak.
     ///
-    /// 1. **Containment** — it is a *substring of the email's local part*
-    ///    (`4111111111111111@x.com`, `123456789@x.com`). The whole email is the
-    ///    complete, correct match and must win, else the recognizer fragments it and
-    ///    forwards the `@domain` in clear. This case is resolved **ahead of
-    ///    priority** by the containment gate in [`overlap::resolve_overlaps`].
-    /// 2. **Partial overlap** — a *grouped* form butting against `@domain`
-    ///    (`4111 1111 1111 1111@x.com`): an email local part cannot contain spaces,
-    ///    so the email regex grabs only the last group (`1111@x.com`) and merely
-    ///    *overlaps* the card. Here the **structured span must win**, or the leading
-    ///    groups (`4111 1111 1111`) stay in clear — a genuine leak. Falling through
-    ///    to this priority, where Email sits below every other structured kind, is
-    ///    what guarantees that.
+    /// `Email` sits last on purpose. It is the only structured kind carrying `@`, so it
+    /// overlaps the others in two shapes: it either **contains** them (a card/ID as a
+    /// substring of its local part, `4111111111111111@x.com` — handled *ahead* of
+    /// priority by the containment gate, which lets the email keep the label), or it
+    /// **partially** overlaps them (`4111 1111 1111 1111@x.com`: a local part can't hold
+    /// a space, so the email is only `1111@x.com`). In that second shape the union is
+    /// better named by the checksum-backed card than by the fragmentary email — hence
+    /// last. Both spans are masked either way.
     pub fn priority(self) -> u8 {
         match self {
             PiiKind::Secret => 6,
             PiiKind::Iban => 5,
             PiiKind::CreditCard => 4,
-            // National identifiers (US SSN + other locales) share a tier; they
-            // never overlap each other, and ties fall through to span length.
+            // National identifiers (US SSN + other locales) share a tier; ties fall
+            // through to span length, then to the incumbent — always deterministic.
             PiiKind::Ssn | PiiKind::NationalId => 3,
             PiiKind::Phone => 2,
-            // Lowest structured tier — see the containment note above.
+            // Names a union only when it doesn't contain the other span — see above.
             PiiKind::Email => 1,
             // NER entities (M2) sit below all structured PII.
             PiiKind::Person | PiiKind::Organization | PiiKind::Location => 0,
