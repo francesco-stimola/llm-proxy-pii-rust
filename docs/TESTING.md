@@ -167,10 +167,14 @@ false positive): `email`, `phone`, `ssn`, `credit_card`, `iban`, `secret`.
 - STR-06 — `e2e_streaming_non_sse_error_falls_back_to_json` (`tests/proxy_e2e.rs`, M3-R1): a `stream:true` request the upstream answers with a `429 application/json` error reaches the client as that JSON error (correct status + content-type), not force-wrapped as SSE.
 - STR-07 — **JSON-aware de-mask (M3-R2):** a value with a `"` de-masked into a tool-call `arguments` field stays valid inner JSON — `demask_json_string_keeps_inner_json_valid` (vault), `tool_call_arguments_demask_stays_valid_json` + `content_demask_is_not_json_escaped` (buffered, `src/pipeline/privacy.rs`), `tool_call_arguments_deanon_stays_valid_json` (streaming, `src/stream.rs`).
 
-### M4 — locale coverage (structured recognizers)
-- LOC-01 — `italian_codice_fiscale_detected_by_default` (`src/pii/recognizers.rs`): IT is a default locale, so a Codice Fiscale is detected as `NationalId` by `new()`.
-- LOC-02 — `uk_nino_needs_the_gb_locale`: a UK NINO (compact + space-grouped) is detected only when the `gb` locale is active, not by default.
-- LOC-03 — `locale_selection_is_scoped`: a US-only recognizer set ignores an Italian CF while still detecting US SSN + the universal recognizers — proves `PII_LOCALES` / `with_locales` actually scopes coverage.
+### M4 — locale coverage (structured recognizers, `src/pii/recognizers.rs`)
+Three tiers: universal (always), national IDs (always, off `PII_LOCALES`), FP-prone (opt-in via `PII_LOCALES`).
+- LOC-01 — `national_ids_are_always_on`: a US-only set still masks an IT Codice Fiscale + a GB NINO, and an unrelated `fr` locale still masks a US SSN — proves national IDs are **not** gated by `PII_LOCALES` (M4-R1).
+- LOC-02 — `italian_codice_fiscale_detected_by_default`: a CF is detected as `NationalId` by `new()`.
+- LOC-03 — `uk_nino_prefix_rules_reject_lookalikes` (M4-R2): the NINO prefix rules reject look-alikes (`PO123456A`, `GB…`, `DA…`) while a valid NINO still masks — required now that NINO is always-on.
+- LOC-04 — `spanish_dni_nie_check_letter` + `spanish_dni_detected_and_lookalike_rejected`: ES DNI/NIE mod-23 check letter (valid masked, wrong-letter rejected).
+- LOC-05 — `french_nir_key_check` + `french_nir_detected`: FR NIR mod-97 key (valid masked, wrong-key rejected).
+- LOC-06 *(live, `#[ignore]`d)* — **10-language NER validation** via `ner_eval` over `multilingual_preview` (ar/de/es/fr/lv/nl/pt/zh): Person 0.83 / Org 1.00 / Loc 0.91 (recorded in DEVLOG 2026-07-13).
 
 ### Dependency footprint (M2.5-R1)
 - DEP-01 — `tests/dependency_footprint.rs` (`default_build_excludes_the_onnx_and_hf_stack`): `cargo tree` on the **default** features must contain no `hf-hub`/`hf-xet`/`aws-lc`/`ort`/`tokenizers` — the ONNX/HF stack (heavy, native) stays behind the `onnx` feature so the shipped default build is native-dep-free.

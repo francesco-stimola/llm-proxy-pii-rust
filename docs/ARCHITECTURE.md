@@ -33,13 +33,21 @@ Keeping deterministic recognizers for structured PII removes most of the
 reliability risk *and* most of the compute cost — the ML model only carries the
 unstructured-entity load.
 
-**Locale coverage (M4).** The structured recognizers split into **universal** ones
-(email, secret, credit card, IBAN — already any-country — and phone) plus per-locale
-**national-identifier** packs: US SSN (keeps its own `PiiKind::Ssn` / `[SSN_N]`) plus
-IT Codice Fiscale and GB NINO (new `PiiKind::NationalId`, placeholder `[NATID_N]`).
-Active locales come from `PII_LOCALES` (default `it, us`,
-`StructuredRecognizers::with_locales`). The NER model is already multilingual (XLM-R,
-10 languages), so M4's remaining work is mostly widening this locale seam, not the ML side.
+**Locale coverage (M4) — three tiers.** The structured recognizers split into:
+- **Universal** — email, secret, credit card, IBAN (already any-country) and phone
+  (US + `+CC`). Always on.
+- **National identifiers** — US SSN (keeps `PiiKind::Ssn` / `[SSN_N]`) plus IT Codice
+  Fiscale, GB NINO, ES DNI/NIE, FR NIR (`PiiKind::NationalId` / `[NATID_N]`). **Always on
+  regardless of `PII_LOCALES`** (privacy-first — a national ID that reaches the proxy is
+  masked even if its country isn't configured). Each is checksum- or rule-specific
+  (mod-23 / mod-97 / NINO prefix rules) to stay near-zero false-positive when always on.
+- **FP-prone** — ambiguous recognizers (e.g. national *phone* formats with no `+CC`) —
+  **opt-in per locale** via `PII_LOCALES` (`fp_prone_recognizers`). None yet.
+
+So `PII_LOCALES` (default `it, us`, `Config.pii_locales`) gates only *ambiguous*
+recognizers, not "which countries". The **language** domain for the NER is the model's
+declared languages (XLM-R HRL: ar/de/en/es/fr/it/lv/nl/pt/zh — validated, see
+`docs/DEVLOG.md`); structured PII is language-independent.
 
 ## Anonymization
 

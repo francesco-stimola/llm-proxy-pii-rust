@@ -3,6 +3,39 @@
 Newest first. One entry per meaningful change — note *what* and *why*, not just
 *what*. This is the running history so context is never lost between sessions.
 
+## 2026-07-13 — M4 continued: national IDs always-on + ES/FR packs + 10-language NER validation
+
+Advanced M4 per the decided three-tier scope. **86 tests green (default), 94 + 1 `#[ignore]`d
+(`--features onnx`), no warnings.**
+
+- **M4-R2 (tighten GB NINO).** Added a `validate` fn with the official prefix rules (1st letter
+  ∉ D/F/I/Q/U/V; 2nd ∉ D/F/I/O/Q/U/V; invalid pairs BG/GB/KN/NK/NT/TN/ZZ), so the shape regex no
+  longer masks look-alikes (`PO123456A`, `GB…`, `DA…`). Prerequisite for always-on.
+- **M4-R1 (three-tier structure).** National-ID recognizers now run **always**, independent of
+  `PII_LOCALES` (privacy-first — a national ID that reaches the proxy is masked even if its country
+  isn't configured). Split into `national_id_recognizers()` (always-on) and `fp_prone_recognizers(code)`
+  (opt-in via `PII_LOCALES` — empty seam for future national *phone* formats). `PII_LOCALES` now gates
+  only *ambiguous* recognizers, not "which countries".
+- **National-ID packs (always-on, checksum-specific).** ES DNI/NIE (mod-23 check letter, NIE X/Y/Z →
+  0/1/2) and FR NIR (15 digits + mod-97 key). DE Steuer-ID **deferred** (needs the ISO 7064 check +
+  structural rules to hit near-zero FP as an always-on recognizer). Tests: check-letter / key validators
+  + detection (a wrong-check look-alike is not masked).
+- **NER validated across its declared 10-language domain.** Added `multilingual_preview` cases for
+  ar/es/fr/lv/nl/pt/zh (de + en/it already present) — one Person + Location each — and scored the picked
+  XLM-R int8 through the hybrid via the `#[ignore]`d harness:
+
+  | kind | recall | prec | F1 |
+  |---|---|---|---|
+  | Person | 0.83 | 0.71 | 0.77 |
+  | Organization | 1.00 | 1.00 | 1.00 |
+  | Location | 0.91 | 0.91 | 0.91 |
+
+  The five added Latin-script European languages (es/fr/pt/nl/lv) match **cleanly**; ar/zh find the
+  names/cities but with a minor boundary artifact (a preposition token — Arabic `ب`, Chinese `在北京`).
+  Confirms the model genuinely covers its declared domain; structured PII remains authoritative and the
+  NER stays fail-open best-effort. **Remaining M4:** more national-ID packs, FP-prone locale phone
+  formats, IBAN per-country checks (all documented in ROADMAP).
+
 ## 2026-07-12 — M4 first landing: locale-parametrized recognizers + national IDs (IT/GB)
 
 Started M4 (broad locale coverage) with the recognizer-architecture change that is its

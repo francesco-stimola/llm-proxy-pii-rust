@@ -333,22 +333,24 @@ traffic — priority can be pulled earlier if real usage demands it.
   the `PII_LOCALES` env (default `it, us`, on `Config.pii_locales`). Added national IDs: **IT Codice
   Fiscale** and **GB NINO** (new `PiiKind::NationalId`, placeholder `[NATID_N]`). Tests:
   `italian_codice_fiscale_detected_by_default`, `uk_nino_needs_the_gb_locale`, `locale_selection_is_scoped`.
-- [ ] **Apply the three-tier structure (M4-R1; M4-R2 is its prerequisite).** Move national IDs to the
-  **always-on** tier (off `PII_LOCALES`); keep the locale-gating seam for **FP-prone** recognizers only;
-  tighten the NINO (M4-R2) first so always-on can't over-mask. Update the scoping tests + `PII_LOCALES`
-  docs (SETUP §6, ARCHITECTURE) to the new semantics.
-- [ ] **More national-ID country packs** (ES DNI/NIE, FR INSEE, DE Steuer-ID, …) on the same seam —
-  always-on, each specific enough for a near-zero FP rate. Countries aligned to the declared language
-  domain (though a pack *can* be added ahead of NER support — a national-ID regex needs no model).
+- [x] **Apply the three-tier structure (M4-R1; M4-R2 done first).** National IDs moved to the
+  **always-on** tier (`national_id_recognizers()`, off `PII_LOCALES`); the locale-gating seam
+  (`fp_prone_recognizers(code)`) kept for **FP-prone** recognizers only; NINO tightened first (M4-R2) so
+  always-on can't over-mask. Scoping tests + `PII_LOCALES` docs (SETUP §6, ARCHITECTURE) updated.
+- [~] **More national-ID country packs** — **ES DNI/NIE (mod-23) + FR NIR (mod-97) landed** (always-on,
+  checksum-specific). **DE Steuer-ID deferred** (needs the ISO 7064 Mod 11,10 check + structural rules to
+  hit near-zero FP as an always-on recognizer). More countries welcome on the same seam.
 - [ ] **Locale phone national formats** (numbers without a `+CC`, e.g. UK `020 …`, DE `030 …`) — the
-  **FP-prone tier**: gated by `PII_LOCALES`. Needs careful precision work (the `+CC` international arm
-  already covers the unambiguous case).
+  **FP-prone tier**: gated by `PII_LOCALES` (the `fp_prone_recognizers` seam). Needs careful precision
+  work (the `+CC` international arm already covers the unambiguous case).
 - [ ] **IBAN per-country length validation** — structural + mod-97 already accept every country; add
   per-country length checks to raise precision if needed.
-- [ ] **Validate the NER across its declared domain** — score XLM-R on its **10 supported languages**
-  (ar/de/en/es/fr/it/lv/nl/pt/zh), pulling languages beyond the IT/EN/DE-preview into the corpus.
-  Validation, *not* model selection (the NER is already multilingual).
-- [ ] Extend the test corpus with multi-language / multi-locale cases (bounded to the declared domain).
+- [x] **Validate the NER across its declared domain** — scored XLM-R int8 on its **10 languages**
+  (ar/de/en/es/fr/it/lv/nl/pt/zh) through the hybrid: **Person 0.83 / Org 1.00 / Loc 0.91** aggregate
+  (numbers + per-language notes in `docs/DEVLOG.md` 2026-07-13). The 5 added Latin-script European
+  languages match cleanly; ar/zh find names/cities with a minor boundary artifact.
+- [x] Extend the test corpus with multi-language cases — `tests/corpus/ner_cases.json` `multilingual_preview`
+  now covers ar/de/es/fr/lv/nl/pt/zh (en/it in the main set), one Person + Location each.
 - [ ] Provider-agnostic verification (not tied to OpenAI-specific behavior).
 
 **M4 is done when** the three-tier structure is in place, the national-ID packs + NER validation cover the
@@ -372,7 +374,7 @@ and is wired **only** to the `arguments` fields (buffered `demask_response` + st
 `ToolArg`); `content` keeps the plain `demask`; the round-trip is exact and
 `demask_json_string_keeps_inner_json_valid` is **non-vacuous** (it asserts the plain path *would*
 produce invalid JSON). Non-blocking follow-ups:
-- [ ] **M4-R1 (DECIDED 2026-07-12 — Option A: national IDs always-on, privacy-first).** National-ID
+- [x] **M4-R1 (DONE 2026-07-13 — Option A: national IDs always-on, privacy-first).** National-ID
   recognizers run **regardless of `PII_LOCALES`** — a national ID that reaches the proxy is masked even
   if its locale isn't configured (recall > precision; "a miss is a leak"). `PII_LOCALES` is narrowed to
   gate only genuinely **FP-prone** recognizers (e.g. national *phone* formats, once added). **Prerequisite:
@@ -381,7 +383,7 @@ produce invalid JSON). Non-blocking follow-ups:
   an always-on set; keep the locale-gating mechanism for FP-prone recognizers; update the scoping tests
   (`uk_nino_needs_the_gb_locale` / `locale_selection_is_scoped` change meaning) and the `PII_LOCALES` docs
   (SETUP §6, ARCHITECTURE) to the new semantics.
-- [ ] **M4-R2 (precision — GB NINO over-match; PREREQUISITE for M4-R1's always-on).** `\b[A-Za-z]{2}\d{6}[A-Da-d]\b`
+- [x] **M4-R2 (DONE 2026-07-13 — precision — GB NINO over-match; PREREQUISITE for M4-R1's always-on).** `\b[A-Za-z]{2}\d{6}[A-Da-d]\b`
   masks any 2-letter + 6-digit + A–D token (e.g. an order/reference code `PO123456A`) as `[NATID_N]` — an
   over-mask on legit text (not a leak). Under M4-R1's always-on policy it fires **globally**, so it must be
   tightened first. Tighten with

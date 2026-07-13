@@ -147,9 +147,12 @@ de-anonymized incrementally on the way back (placeholders split across token chu
 reassembled). Request-side masking always runs first, so the provider only ever sees
 placeholders.
 
-**PII locales (M4).** `PII_LOCALES` (comma-separated, default `it,us`) selects which
-national-identifier recognizers run — e.g. `PII_LOCALES=it,us,gb` also detects UK NINOs.
-The universal recognizers (email, IBAN, credit card, phone) always run regardless.
+**PII locales (M4).** Detection runs in three tiers: **universal** (email, IBAN, credit card,
+phone) and **national IDs** (US SSN, IT Codice Fiscale, GB NINO, ES DNI/NIE, FR NIR) are
+**always on** — a national ID is masked regardless of configuration (privacy-first). `PII_LOCALES`
+(comma-separated, default `it,us`) gates only the **FP-prone** tier — ambiguous recognizers like
+national *phone* formats — of which there are none yet, so `PII_LOCALES` is a no-op today (the seam
+is kept for future opt-in recognizers).
 
 ## Fallback: GNU toolchain (no MSVC, no admin)
 
