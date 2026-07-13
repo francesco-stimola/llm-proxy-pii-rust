@@ -52,7 +52,15 @@ unstructured-entity load.
 So `PII_LOCALES` (default `it, us`, `Config.pii_locales`) gates only *ambiguous*
 recognizers, not "which countries". The **language** domain for the NER is the model's
 declared languages (XLM-R HRL: ar/de/en/es/fr/it/lv/nl/pt/zh — validated, see
-`docs/DEVLOG.md`); structured PII is language-independent.
+`docs/DEVLOG.md`); structured PII is *intended* to be language-independent.
+
+> ⚠️ **Open gap (M4-R13) — it is not language-independent yet.** The structured recognizers
+> anchor on `\b`, and Rust `regex`'s `\b` is **Unicode-aware**: a Han/Kana/Cyrillic letter
+> counts as a word character, so there is no boundary between it and a digit. Chinese and
+> Japanese have no inter-word spaces, so `我的信用卡号是4111111111111111` matches **nothing**
+> and the card is forwarded in clear — as are a glued IBAN, SSN, secret, and the zh Resident
+> ID itself. Fix: ASCII word boundaries (`(?-u:\b)`), which keep the anti-false-positive
+> behaviour inside ASCII tokens. Tracked in `docs/ROADMAP.md` (M4-R13).
 
 **Overlap resolution (`src/pii/overlap.rs`).** Detectors produce overlapping candidate spans;
 `resolve_overlaps` reduces them to a non-overlapping set. Its governing rule is an **invariant,
@@ -224,7 +232,7 @@ env-driven. Auth: the client's own `Authorization` wins, else the configured key
 | `src/pipeline/privacy.rs` | the privacy stage (only one wired) |
 | `src/pii/mod.rs` | `PiiDetector` trait, `PiiEntity` / `PiiKind` / `Confidence` |
 | `src/pii/recognizers.rs` | deterministic structured-PII recognizers (M1) |
-| `src/pii/overlap.rs` | shared span overlap resolution (`PiiKind::priority`) |
+| `src/pii/overlap.rs` | shared span overlap resolution — the *no-abandoned-bytes* invariant: Email containment gate → structured union-merge → NER drop (`PiiKind::priority` only *labels* a union) |
 | `src/pii/composite.rs` | `CompositeDetector` — combine detectors behind one trait |
 | `src/pii/anonymizer.rs` | `Vault`: mask / demask |
 | `src/pii/ner_decode.rs` | pure NER decode (label→kind, BIO→spans) — model-independent |

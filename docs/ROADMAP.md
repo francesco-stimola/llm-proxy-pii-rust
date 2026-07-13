@@ -652,11 +652,108 @@ earlier priority-only fixes (M4-R7, M4-R9) each passed their own case while leak
   Note `grouped_forms_attached_to_a_domain_do_not_leak` / `grouped_pii_glued_to_a_domain_leaks_nothing` will need their
   expected spans widened to the union (`4111 1111 1111 1111@example.com`), which is strictly *better* — the `@domain`
   stops leaking too.
-- [ ] **M4-R12 (doc — stale mechanism stated as current).** Three places still describe the *superseded* priority order
-  as the live one: `docs/TESTING.md` LOC-12 ("`Email` is the top structured priority" — it is now the **lowest**) and
-  LOC-10 + `docs/ROADMAP.md` M5-Arabic note ("`Email` outranks the numeric national IDs" — it no longer does; the
-  behavior now holds via the **containment gate**). The asserted *behavior* is unchanged in all three; only the stated
-  mechanism is wrong. **Fixed in this review's doc commit** — listed here for traceability.
+- [x] **M4-R12 (doc — stale mechanism stated as current) — DONE.** Three places described the *superseded* priority
+  order as the live one: `docs/TESTING.md` LOC-12 ("`Email` is the top structured priority" — it is now the
+  **lowest**) and LOC-10 + `docs/ROADMAP.md` M5-Arabic note ("`Email` outranks the numeric national IDs" — it no
+  longer does; the behavior now holds via the **containment gate**). The asserted *behavior* was unchanged in all
+  three; only the stated mechanism was wrong. Fixed in that review's doc commit — verified corrected.
+
+### M4-R10/R11 union-merge review (2026-07-13) — the overlap leak class is genuinely CLOSED; one **NEW BLOCKER** elsewhere
+Reviewed `0ed0c7c` (fix) + `2985022` (docs) — the **fourth** review of this overlap code. Independently verified:
+**110 tests green (default) / 118 + 1 `#[ignore]`d (`--features onnx`), 0 failed**; a **from-scratch rebuild**
+(`cargo clean -p` + `cargo check --all-targets`, both feature sets) emits **no warnings**. Both counts match the
+builder's claim exactly.
+
+**The invariant holds — I tried hard to break it and could not.**
+- **All seven previously-leaking inputs are clean**, reproduced through `Vault::mask` (the exact bytes the upstream
+  receives): `card 4111 1111 1111 1111@example.com` → `card [CARD_1]`; `iban DE89 3704 0044 0532 0130 00@example.com`
+  → `iban [IBAN_1]`; `AB 12 34 56 C@x.com` → `[NATID_1]`; `555 867 5309.4111111111111111@x.com` → `[PHONE_1]`;
+  `555 867 5309.sk-abcdef123456@x.com` → `[PHONE_1]`; `555 867 5309john.doe@example.com` → `[PHONE_1]`;
+  `+39 333 1234567.mario.rossi@example.com` → `[PHONE_1]`. No card digit, IBAN group, NINO group, secret, or email
+  local part survives in clear, and every one round-trips exactly.
+- **Fixpoint claim is correct.** `merge_structured` is textbook merge-intervals: sorted by start (ties → longest
+  first), a candidate can only extend the running union rightwards, and a new group is opened only when
+  `candidate.start >= union.end` — which, since starts are non-decreasing, means no later candidate can reach back
+  into a closed group. Chains (A∩B, B∩C, A∩C = ∅) merge transitively; a fully-contained span is absorbed. One pass
+  genuinely reaches the fixpoint.
+- **No structured byte can be abandoned.** Enumerated every discard site: (1) the **containment gate** only ever
+  drops a span contained in an `Email`, and an `Email` is *never* dropped (the gate exempts it; the merge only ever
+  absorbs it into a union ⊇ its own span) — so the dropped span's bytes stay covered; (2) the **merge sweep**
+  drops nothing, it unions; (3) the **NER drop** only touches non-structured kinds — and `ner_decode::label_to_kind`
+  can *only* return `Person`/`Organization`/`Location`, so no NER span can ever enter the structured partition;
+  structured spans are all in `kept` **before** NER is considered, so dropping an NER span whole cannot strand one.
+  (4) no other dedup/filter exists.
+- **Fuzzed the resolver itself**, not just the regexes: **500,000** randomized synthetic candidate sets (1–6 spans,
+  arbitrary kinds incl. NER, arbitrary ranges, duplicates, containment, chains) straight into `resolve_overlaps` →
+  **zero violations** of: output spans pairwise non-overlapping · every structured candidate fully covered by **one**
+  output span · `entity.text == input[span]` · `demask(mask(x)) == x`.
+- **Union correctness / memory safety.** Union endpoints are always existing span endpoints, and structured spans
+  come only from `regex` matches over the same `input` — always on char boundaries — so the re-slice is safe and
+  `text == input[span]` exactly (`Vault` keys on `text` and splices by `span`, so this is load-bearing). The code
+  uses `input.get(..)`, not `&input[..]`, so it cannot panic. Verified on multi-byte inputs (CJK / accented / emoji
+  neighbours): no panic, exact round-trip, nothing uncovered. PROP-01 and VAULT-02 still pass.
+- **Over-masking is provably bounded — no cap needed.** A union is the union of *candidate* intervals, so it can
+  only ever cover bytes some recognizer already claimed as PII-shaped: it can **never** swallow ordinary prose
+  (300k randomized trials with ordinary sentences interleaved: **0** non-candidate bytes ever absorbed). Widest
+  union found in 300k trials of glued real PII: **148 bytes / 8 candidates**, and every byte of it was PII-shaped.
+  Accept as-is.
+- **PROP-03 is a genuine, non-vacuous invariant.** It asserts each *raw* candidate is fully contained in **one**
+  resolved span — a per-byte coverage claim, not "the value is absent". Non-vacuity confirmed independently: a
+  reference implementation of the old drop-the-loser resolver leaves 3 uncovered candidates on the three canonical
+  inputs, reproducing the historical outputs (`[PHONE_1]john.doe@example.com`, `card [CARD_1]@example.com`). The
+  checked-in seed `picks = [1, 0], glues = [0, 0, 0]` decodes to `"555 867 5309" + "" + "john.doe@example.com"` =
+  **exactly the M4-R11 leak** — a real case, now green.
+- **(E) all clear.** No raw PII in logs (the widened `Structural` tagging only adds kind-only `debug!` lines);
+  fail-closed unchanged; `universal_recognizers` semantics unchanged; corpus / adversarial / proptest / containment
+  guards all pass. Docs (ROADMAP / ARCHITECTURE / TESTING / DEVLOG) match reality.
+
+**But the review found a leak of a *different* class, outside the overlap code — pre-existing, not a regression:**
+- [ ] **M4-R13 (BLOCKER — LEAK — Unicode word boundary makes the structured recognizers inert in CJK text).**
+  Every `\b`-anchored structured recognizer (`src/pii/recognizers.rs`: Secret `:78`, Iban `:90`, CreditCard `:99`,
+  Ssn `:133`, IT CF `:141`, GB NINO `:150`, ES DNI `:159`, FR NIR `:169`, 9-digit `:182`, 11-digit `:192`, LV `:198`,
+  **zh Resident ID `:205`**) uses Rust `regex`'s **Unicode-aware `\b`**, in which a Han / Kana / Cyrillic / Greek /
+  Arabic letter *is* a word character. There is therefore **no word boundary between a CJK character and a digit** —
+  and Chinese/Japanese have **no inter-word spaces**, so the glued form is the *natural* one, not an evasion.
+  Reproduced through `Vault::mask` (nothing detected, forwarded verbatim):
+  `我的信用卡号是4111111111111111` → **16 Luhn-valid card digits in clear**;
+  `密钥sk-abcdef123456` → **an API secret in clear**;
+  `我的身份证号是11010519491231002X` → the M4 zh Resident ID recognizer **never fires**;
+  `账号DE89370400440532013000` → IBAN in clear; `编号123-45-6789` → SSN in clear;
+  `カード番号は4111111111111111です` → card in clear; `Карта4111111111111111` → card in clear.
+  The same values **are** masked the moment a space is inserted, which pins the cause precisely. This is squarely
+  inside the **declared M4 domain**: `zh` is one of the ten declared languages, ARCHITECTURE states "structured PII
+  is language-independent", and M4 shipped a zh Resident ID pack **that is inert in real Chinese prose**. It
+  survived four reviews because `tests/corpus/pii_cases.json` contains **zero** non-ASCII characters and the M4
+  "validate across the declared domain" pass validated the **NER** on zh — never the structured recognizers.
+  **Fix:** switch the anchors to **ASCII** word boundaries — `(?-u:\b)` — on every structured recognizer.
+  *Verified independently:* `(?-u:\b)…(?-u:\b)` detects `我的信用卡号是4111111111111111` and `Карта4111111111111111`
+  while leaving `card4111111111111111`, `abc4111111111111111abc` and `hash a4111111111111111b` **unmatched** — i.e.
+  it preserves the deliberate M4 anti-FP guarantee ("a CF/NINO can't fire inside a longer alphanumeric token —
+  API key / hash / UUID / base64") exactly, and only stops treating a *non-ASCII letter* as part of a number.
+  **Tests:** adversarial cases per recognizer with a CJK/Cyrillic prefix and suffix, asserting on the **masked body**
+  that no card digits / IBAN / secret / national ID survive in clear (`!masked.contains("4111111111111111")`,
+  `!masked.contains("sk-abcdef123456")`, `!masked.contains("11010519491231002X")`); plus CJK structured cases added
+  to `tests/corpus/pii_cases.json`, which today has none.
+- [ ] **M4-R14 (low — hardening: the one fallback in the merge degrades *toward* the leak).**
+  `merge_structured`'s re-slice (`src/pii/overlap.rs:141-155`) falls back to `None => winner` when
+  `input.get(union)` fails — i.e. it silently returns the **winning candidate's span alone, abandoning every other
+  constituent's bytes**, which is precisely the leak class this commit closed. It is **unreachable today** (all
+  structured spans come from `regex` matches over the same `input`, hence always on char boundaries; `label_to_kind`
+  can never yield a structured kind, so no model-derived span can enter the structured partition) — so this is not
+  a live leak. But it is a booby trap in the exact code path the invariant rests on, and the **Backlog GLiNER**
+  detector would emit spans from a *model*, not a regex. **Fix:** make the fallback fail *safe* — widen the union
+  out to the enclosing char boundaries and re-slice, or return the constituents unmerged; never a single span that
+  drops constituents. Add a `debug_assert!` and a kind-only `tracing::warn!`. **Test:** a resolver unit feeding two
+  overlapping structured spans whose union endpoint falls inside a multi-byte character, asserting both spans'
+  bytes are still covered.
+- [ ] **M4-R15 (nit — utility/observability: a union is named by the *surviving* candidates, so a `Secret` can be
+  masked as `[PHONE_1]`).** In `555 867 5309.sk-abcdef123456@x.com` the containment gate deletes the `Secret`
+  (it sits inside the email's local part) *before* priority is consulted, so the union is labelled by the phone —
+  `[PHONE_1]`. **No leak** (the secret is masked), but the model is told `[PHONE_1]` stands for a phone when it
+  actually stands for a phone + secret + email blob, and the kind-only audit `debug!` under-reports a `Secret` as a
+  `Phone`. **Fix:** name the union by the highest-priority **raw** candidate whose span it covers (including ones
+  the gate dropped), not by the surviving set. **Test:** the above input resolves to a single span labelled
+  `Secret`.
 
 ## M5 — Integration & performance testing
 Goal: prove the whole system holds **end-to-end** and **under load**, then document it. Comes after M4 —
