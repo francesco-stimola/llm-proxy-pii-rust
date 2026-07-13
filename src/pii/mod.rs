@@ -67,19 +67,22 @@ impl PiiKind {
     /// (see [`overlap::resolve_overlaps`]). Deterministic **structured** PII
     /// outranks the ML **NER** entities, so a checksum-backed email/IBAN always
     /// beats an ML guess on the same span. Within structured PII the order is
-    /// Secret > Iban > CreditCard > Email > Ssn ≈ NationalId > Phone.
+    /// Email > Secret > Iban > CreditCard > Ssn ≈ NationalId > Phone.
     ///
-    /// **Email outranks the national IDs on purpose:** a national ID never genuinely
-    /// *is* an email (emails carry `@`), so they only overlap when a numeric ID is a
-    /// *substring* of an email's local part (e.g. `123456789@x.com`). There the
-    /// email is the complete, correct match and must win, so the generic numeric
-    /// national-ID recognizers can't fragment it.
+    /// **Email outranks every other structured recognizer on purpose (M4-R7):** an
+    /// `@`-bearing token that parses as an email genuinely *is* an email, and no
+    /// other structured kind carries `@` — a card / IBAN / secret / national-ID can
+    /// therefore only overlap an email by being a *substring* of its local part
+    /// (`4111111111111111@x.com`, `123456789@x.com`). There the whole email is the
+    /// correct match and must win, so those recognizers can't fragment it and leak
+    /// the `@domain` in clear. (Non-email spans never share this tier, so lifting
+    /// Email above them changes nothing outside the containment case.)
     pub fn priority(self) -> u8 {
         match self {
-            PiiKind::Secret => 6,
-            PiiKind::Iban => 5,
-            PiiKind::CreditCard => 4,
-            PiiKind::Email => 3,
+            PiiKind::Email => 6,
+            PiiKind::Secret => 5,
+            PiiKind::Iban => 4,
+            PiiKind::CreditCard => 3,
             // National identifiers (US SSN + other locales) share a tier; they
             // never overlap each other, and ties fall through to span length.
             PiiKind::Ssn | PiiKind::NationalId => 2,

@@ -170,14 +170,23 @@ fn national_id_recognizers() -> Vec<Recognizer> {
             validate: Some(fr_nir_valid),
         },
         // Nine-digit national IDs: NL BSN (11-proef) or PT NIF (mod-11). One
-        // recognizer, either checksum accepts (both are 9 digits).
+        // recognizer, either checksum accepts (both are 9 digits). Accepted FP
+        // tradeoff (M4-R6): a mod-11 checksum still passes ~1/11 of arbitrary
+        // 9-digit numbers per scheme (BSN ∪ NIF ≈ 2/11 ≈ 18%), so an ordinary
+        // standalone 9-digit token that happens to check out is masked. That is the
+        // privacy-first choice (over-mask, never leak) — context-gating it would
+        // reintroduce leaks (M4-R1). The clean precision path is the contextual
+        // GLiNER detector (Backlog), not a keyword gate.
         Recognizer {
             kind: PiiKind::NationalId,
             regex: Regex::new(r"\b\d{9}\b").unwrap(),
             validate: Some(nine_digit_id_valid),
         },
         // Eleven-digit national IDs: DE Steuer-ID (ISO 7064 Mod 11,10 + one repeated
-        // digit) or LV personal code (mod-11 / post-2017 `32…` random form).
+        // digit) or LV personal code (mod-11 / post-2017 `32…` random form). Same
+        // accepted-FP tradeoff as the 9-digit recognizer above (M4-R6): DE ∪ LV
+        // still masks a fraction of arbitrary 11-digit numbers (incl. the
+        // unconditional LV `32…` ~1%) — privacy-first, over-mask never leak.
         Recognizer {
             kind: PiiKind::NationalId,
             regex: Regex::new(r"\b\d{11}\b").unwrap(),
@@ -434,6 +443,8 @@ fn eleven_digit_id_valid(matched: &str) -> bool {
 
 /// German Steuer-IdNr: first digit nonzero, exactly one digit value repeated (2–3×)
 /// among the first 10 (the structural rule), and the ISO 7064 Mod 11,10 check digit.
+/// Per the 2016+ spec (M4-R8), a digit that appears three times must **not** occupy
+/// three *consecutive* positions.
 fn de_steuerid_valid(matched: &str) -> bool {
     let d: Vec<u32> = matched.bytes().filter(u8::is_ascii_digit).map(|b| (b - b'0') as u32).collect();
     if d.len() != 11 || d[0] == 0 {
@@ -444,8 +455,16 @@ fn de_steuerid_valid(matched: &str) -> bool {
         counts[x as usize] += 1;
     }
     let repeated = counts.iter().filter(|&&c| c >= 2).count();
-    if repeated != 1 || *counts.iter().max().unwrap() > 3 {
+    let max = *counts.iter().max().unwrap();
+    if repeated != 1 || max > 3 {
         return false;
+    }
+    // 2016+ rule: a 3× digit must not sit in three consecutive positions.
+    if max == 3 {
+        let triple = counts.iter().position(|&c| c == 3).unwrap() as u32;
+        if d[..10].windows(3).any(|w| w == [triple, triple, triple]) {
+            return false;
+        }
     }
     let mut product = 10u32;
     for &x in &d[..10] {
@@ -673,6 +692,31 @@ mod tests {
     }
 
     #[test]
+    fn de_steuerid_rejects_a_consecutive_triple() {
+        // M4-R8: the 2016+ structural rule — a digit repeated three times must not
+        // sit in three *consecutive* positions. Both numbers below carry a correct
+        // Mod 11,10 check digit and exactly one repeated digit; only placement
+        // differs, so this isolates the consecutive-triple rule (not the checksum).
+        fn with_check(first10: &str) -> String {
+            let d: Vec<u32> = first10.bytes().map(|b| (b - b'0') as u32).collect();
+            let mut product = 10u32;
+            for &x in &d {
+                let mut sum = (x + product) % 10;
+                if sum == 0 {
+                    sum = 10;
+                }
+                product = (sum * 2) % 11;
+            }
+            format!("{first10}{}", (11 - product) % 10)
+        }
+        // Three consecutive `1`s → rejected despite the valid checksum.
+        assert!(!de_steuerid_valid(&with_check("1112345678")));
+        // The same digit three times but *not* consecutive → still accepted (proves
+        // we reject the placement, not every triple).
+        assert!(de_steuerid_valid(&with_check("1121345678")));
+    }
+
+    #[test]
     fn dutch_bsn_and_portuguese_nif_check() {
         assert!(nl_bsn_valid("111222333"));
         assert!(pt_nif_valid("123456789"));
@@ -701,6 +745,44 @@ mod tests {
             kinds("write to 123456789@example.com now"),
             vec![(PiiKind::Email, "123456789@example.com".to_string())]
         );
+    }
+
+    #[test]
+    fn email_beats_a_card_iban_or_secret_local_part() {
+        // M4-R7: an `@`-token that parses as an email *is* an email, so a card /
+        // IBAN / secret that is only a *substring* of its local part must not
+        // fragment it (which would forward the `@domain` in clear). Email now
+        // outranks Card/Iban/Secret too — generalizing the Email>national-ID fix.
+        assert_eq!(
+            kinds("card 4111111111111111@example.com"),
+            vec![(PiiKind::Email, "4111111111111111@example.com".to_string())]
+        );
+        assert_eq!(
+            kinds("iban DE89370400440532013000@example.com"),
+            vec![(PiiKind::Email, "DE89370400440532013000@example.com".to_string())]
+        );
+        assert_eq!(
+            kinds("key sk-abcdef123456@example.com"),
+            vec![(PiiKind::Email, "sk-abcdef123456@example.com".to_string())]
+        );
+    }
+
+    #[test]
+    fn bare_numeric_national_ids_are_masked_by_design() {
+        // M4-R6: the always-on 9-/11-digit recognizers gate on a real checksum, but
+        // a checksum alone still accepts ~1/11 of arbitrary numbers per scheme, so
+        // an ordinary standalone number that happens to pass is masked *on purpose*
+        // — privacy-first (over-mask, never leak). This pins that as intended, not a
+        // regression; the checksum still filters the majority that don't pass.
+        assert!(pt_nif_valid("524287244")); // an arbitrary number that checks out
+        assert_eq!(
+            kinds("order 524287244 shipped"),
+            vec![(PiiKind::NationalId, "524287244".to_string())]
+        );
+        // A neighbouring 9-digit that fails both checksums is left in clear — the
+        // recognizer is not a blanket "mask every number".
+        assert!(!nine_digit_id_valid("524287245"));
+        assert!(kinds("order 524287245 shipped").is_empty());
     }
 
     #[test]
