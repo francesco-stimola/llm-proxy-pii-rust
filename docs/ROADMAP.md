@@ -708,7 +708,20 @@ builder's claim exactly.
   guards all pass. Docs (ROADMAP / ARCHITECTURE / TESTING / DEVLOG) match reality.
 
 **But the review found a leak of a *different* class, outside the overlap code — pre-existing, not a regression:**
-- [ ] **M4-R13 (BLOCKER — LEAK — Unicode word boundary makes the structured recognizers inert in CJK text).**
+- [x] **M4-R13 (DONE 2026-07-13 — ASCII boundaries `(?-u:\b)` + the corpus blind spot closed).** All 12 anchored
+  recognizers switched to `(?-u:\b)`. `Email`/`Phone` needed no change (anchored by character classes, not `\b`).
+  The anti-FP guarantee is preserved **exactly** — an ID still can't fire inside a longer *ASCII* token
+  (`card4111111111111111`, `abc4111…abc`, `PO123456A`) — only a non-ASCII **letter** stops counting as part of a
+  number. **The root enabler was the corpus:** `tests/corpus/pii_cases.json` had **zero** non-ASCII characters, so
+  a total detection failure in CJK survived four reviews. Added a `non_ascii_scripts` category (CJK-01..05, JA-01,
+  CYR-01 positives + 2 ASCII-token negatives) and non-ASCII round-trips (RT-05/RT-06) — the category is picked up
+  automatically by the data-driven `pii_corpus.rs`. Plus adversarial cases asserting on the **masked body**
+  (`structured_pii_is_detected_in_cjk_and_cyrillic_prose`,
+  `ascii_token_anti_false_positive_guarantee_survives_the_ascii_boundary`) and a unit
+  (`cjk_prose_does_not_hide_structured_pii`). **Verified non-vacuous:** restoring the Unicode `\b` makes the
+  detector return `[]` on `我的信用卡号是4111111111111111`, and corpus CJK-01 + round-trip RT-05 fail with
+  "PII must be masked" — i.e. the card really was going upstream in clear. *(Original finding below.)*
+  **M4-R13 (BLOCKER — LEAK — Unicode word boundary makes the structured recognizers inert in CJK text).**
   Every `\b`-anchored structured recognizer (`src/pii/recognizers.rs`: Secret `:78`, Iban `:90`, CreditCard `:99`,
   Ssn `:133`, IT CF `:141`, GB NINO `:150`, ES DNI `:159`, FR NIR `:169`, 9-digit `:182`, 11-digit `:192`, LV `:198`,
   **zh Resident ID `:205`**) uses Rust `regex`'s **Unicode-aware `\b`**, in which a Han / Kana / Cyrillic / Greek /
@@ -734,7 +747,16 @@ builder's claim exactly.
   that no card digits / IBAN / secret / national ID survive in clear (`!masked.contains("4111111111111111")`,
   `!masked.contains("sk-abcdef123456")`, `!masked.contains("11010519491231002X")`); plus CJK structured cases added
   to `tests/corpus/pii_cases.json`, which today has none.
-- [ ] **M4-R14 (low — hardening: the one fallback in the merge degrades *toward* the leak).**
+- [x] **M4-R14 (DONE 2026-07-13 — the merge fallback now fails *safe*).** `materialize` (was the tail of
+  `merge_structured`) no longer falls back to "the winning candidate alone". It first **widens the union out to the
+  enclosing `char` boundaries** (clamped to the input) — widening can only *add* bytes, so it can never abandon a
+  constituent — which makes the re-slice total. The remaining (now genuinely unreachable) `None` arm returns the
+  **whole group unmerged** rather than one span that drops constituents, guarded by a `debug_assert!` and a
+  kind-only `tracing::warn!`. No panic: this is a proxy and the input is attacker-influenced. **Test:**
+  `a_union_ending_inside_a_multibyte_char_still_covers_every_constituent` — two overlapping structured spans whose
+  union endpoint falls *inside* a 3-byte `€`; the span widens to the char boundary, the text is re-sliced from the
+  input, and both constituents stay covered. *(Original finding below.)*
+  **M4-R14 (low — hardening: the one fallback in the merge degrades *toward* the leak).**
   `merge_structured`'s re-slice (`src/pii/overlap.rs:141-155`) falls back to `None => winner` when
   `input.get(union)` fails — i.e. it silently returns the **winning candidate's span alone, abandoning every other
   constituent's bytes**, which is precisely the leak class this commit closed. It is **unreachable today** (all
@@ -746,7 +768,21 @@ builder's claim exactly.
   drops constituents. Add a `debug_assert!` and a kind-only `tracing::warn!`. **Test:** a resolver unit feeding two
   overlapping structured spans whose union endpoint falls inside a multi-byte character, asserting both spans'
   bytes are still covered.
-- [ ] **M4-R15 (nit — utility/observability: a union is named by the *surviving* candidates, so a `Secret` can be
+- [x] **M4-R15 (DONE 2026-07-13 — the union is named by the highest-priority *raw* candidate; the containment gate
+  became a *naming* rule and the deletion is gone).** Implemented as asked, and it let the **containment gate be
+  deleted outright** — a strict simplification. Key observation: the gate never affected any *span*. A span enclosed
+  by an email, if not deleted, simply **merges into that email**, giving the identical union. The gate only ever
+  affected the **label**. So `drop_spans_contained_in_an_email` is removed and enclosure is now expressed in
+  `name_of`: the union is named by the highest-priority **raw** candidate it covers (so the enclosed `Secret` names
+  it — R15's ask), **except** when the union is *exactly* an `Email` span, in which case the group is a genuine
+  email whose local part merely looks like a card/ID (`4111111111111111@x.com`) and the email keeps the label
+  (preserving the M4-R7/R9 behaviour every earlier review ratified — a literal "always the highest-priority raw
+  candidate" would have relabelled that case `[CARD_1]`). This also **structurally removes the M4-R10 trap**: with
+  nothing deleted, no span can be stranded. **Tests:** `an_enclosed_secret_names_the_union_not_the_phone` +
+  `a_span_enclosed_by_an_email_is_still_covered_and_names_the_union` (resolver) and the end-to-end assertion in
+  `a_span_deleted_by_the_containment_gate_is_never_stranded` — `555 867 5309.sk-abcdef123456@x.com` now resolves to
+  a single span labelled **`Secret`**. *(Original finding below.)*
+  **M4-R15 (nit — utility/observability: a union is named by the *surviving* candidates, so a `Secret` can be
   masked as `[PHONE_1]`).** In `555 867 5309.sk-abcdef123456@x.com` the containment gate deletes the `Secret`
   (it sits inside the email's local part) *before* priority is consulted, so the union is labelled by the phone —
   `[PHONE_1]`. **No leak** (the secret is masked), but the model is told `[PHONE_1]` stands for a phone when it

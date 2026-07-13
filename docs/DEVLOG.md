@@ -3,6 +3,56 @@
 Newest first. One entry per meaningful change — note *what* and *why*, not just
 *what*. This is the running history so context is never lost between sessions.
 
+## 2026-07-13 — M4-R13/R14/R15: the recognizers were **inert in Chinese** (Unicode `\b`)
+
+The fifth review of this area, and it found the worst leak yet — not in the overlap code everyone had been
+staring at, but in a single character of every regex.
+
+**M4-R13 (blocker).** Rust `regex`'s `\b` is **Unicode-aware**: a Han / Kana / Cyrillic letter *is* a word
+character, so there is **no word boundary between a CJK character and a digit**. Chinese and Japanese have no
+inter-word spaces, so the glued form is the **natural** way to write it — not an evasion. Every `\b`-anchored
+structured recognizer was therefore **completely inert** in CJK prose:
+
+```
+我的信用卡号是4111111111111111    → matched NOTHING — 16 Luhn-valid card digits upstream in clear
+我的身份证号是11010519491231002X  → the zh Resident ID pack we shipped in M4 never fired, in Chinese
+密钥sk-abcdef123456              → API secret in clear;  账号DE89370400440532013000 → IBAN in clear
+カード番号は4111111111111111です  → card in clear;      Карта4111111111111111      → card in clear
+```
+
+The same values mask the instant a space is inserted, which pins the cause exactly. This is squarely inside the
+**declared M4 domain**: `zh` is one of the ten declared languages and ARCHITECTURE claims "structured PII is
+language-independent". Fix: `(?-u:\b)` on all 12 anchored recognizers. The anti-FP guarantee is preserved
+**exactly** (an ID still can't fire inside a longer *ASCII* token — `card4111111111111111`, hashes, base64);
+only a non-ASCII *letter* stops counting as part of a number. `Email`/`Phone` were never affected (character
+classes, not `\b`).
+
+**Why it survived four reviews — the real lesson.** `tests/corpus/pii_cases.json` contained **zero non-ASCII
+characters**, and M4's "validate across the declared domain" pass validated the **NER** on zh — never the
+*structured* recognizers. The test suite was ASCII-shaped, so an entire class of total failure was invisible to
+it. Every review, mine included, kept auditing the code we had tests for. Added a `non_ascii_scripts` corpus
+category (CJK/JA/Cyrillic positives + ASCII-token negatives) and non-ASCII round-trips. **Non-vacuity:**
+restoring the Unicode `\b` makes the detector return `[]` on the Chinese card sentence and makes corpus CJK-01 +
+RT-05 fail with *"PII must be masked"*.
+
+**M4-R14 (hardening).** The merge's one fallback degraded *toward* the leak class it exists to prevent: if the
+union re-slice failed it returned the **winning candidate alone**, abandoning the other constituents' bytes. Now
+the union is first **widened out to enclosing `char` boundaries** (widening only ever *adds* bytes, so it can't
+abandon a constituent), which makes the slice total; the remaining unreachable arm returns the **whole group
+unmerged**, with a `debug_assert!` + kind-only `warn!`. Never a panic — this is a proxy on attacker-influenced
+input.
+
+**M4-R15 — and it deleted the containment gate.** The union was named by whichever candidate *survived*, so a
+`Secret` enclosed by an email came out as `[PHONE_1]`: no leak, but the model is told the blob is a phone and the
+audit log under-reports a secret. The fix is to name the union by the highest-priority **raw** candidate it
+covers — and doing so revealed that **the gate was never needed**: it never affected a *span* (an enclosed span,
+if not deleted, simply merges *into* its enclosing email → identical union), only the *label*. So
+`drop_spans_contained_in_an_email` is **gone**, replaced by a naming rule in `name_of` — highest-priority raw
+candidate, **except** when the union is exactly an `Email` span (a genuine email whose local part merely looks
+like a card/ID keeps the `Email` label, preserving M4-R7/R9). Deleting nothing also **structurally removes the
+M4-R10 trap**: with no deletion, no span can be stranded. Less code, same behaviour, one fewer booby trap.
+**115 tests green (default) / 123 + 1 `#[ignore]`d (`--features onnx`), no warnings.**
+
 ## 2026-07-13 — M4-R10/R11: the resolver gets an *invariant* instead of a ranking (union-merge)
 
 Third review on the same overlap code, and the one that found the **root cause** the previous two fixes

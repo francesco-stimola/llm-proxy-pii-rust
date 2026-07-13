@@ -76,7 +76,16 @@ tests); the integration / e2e / regression cases are behavioral and described he
 
 ### Unit — recognizers (`tests/corpus/pii_cases.json` → `recognizers`)
 Per category, positives (detected with the right `PiiKind`) and negatives (no
-false positive): `email`, `phone`, `ssn`, `credit_card`, `iban`, `secret`.
+false positive): `email`, `phone`, `ssn`, `credit_card`, `iban`, `secret`,
+**`non_ascii_scripts`**.
+
+> **`non_ascii_scripts` exists because its absence was a leak (M4-R13).** Until then this corpus held
+> **zero non-ASCII characters** — so a *total* detection failure in CJK text (Rust `regex`'s `\b` is
+> Unicode-aware; a Han character is a word character, so no boundary separates it from a digit, and CJK
+> has no inter-word spaces) was invisible to the suite and survived **four** reviews. The category pins
+> the glued forms (`我的信用卡号是4111111111111111`, `カード番号は…`, `Карта…`, the zh Resident ID, a
+> secret, an IBAN, an SSN) **and** the negatives proving the anti-false-positive guarantee still holds
+> inside a longer *ASCII* token. **Any new recognizer must be exercised in a non-ASCII context here.**
 
 ### Unit — validators (`… → validators`)
 - `luhn` — accepts valid card numbers, rejects non-Luhn 16-digit strings.
@@ -200,7 +209,9 @@ Three tiers: universal (always), national IDs (always, off `PII_LOCALES`), FP-pr
   - `a_partially_overlapping_email_is_never_abandoned` (recognizers): `555 867 5309john.doe@example.com` → one `[PHONE_1]` over the union; the email's **local part** is never left in clear (a bare left-over `@domain` would be acceptable — a local part is not).
   - `a_span_deleted_by_the_containment_gate_is_never_stranded` (recognizers): the gate deletes a card/secret contained in an email, and a phone then partially overlaps that email — the deleted span must still be covered (it used to be masked by *nothing*).
   - `partially_overlapping_pii_abandons_no_bytes` + `masking_partially_overlapping_pii_still_round_trips` (`tests/adversarial.rs`): the reviewer's exact repros asserted on the **masked body**, plus exact round-trip through the merged union.
-  - `partially_overlapping_structured_spans_merge_into_their_union`, `a_chain_of_overlaps_merges_to_a_fixpoint`, `a_span_stranded_by_the_containment_gate_is_still_covered` (`src/pii/overlap.rs`): the resolver itself — union, transitive fixpoint, and gate coherence.
+  - `partially_overlapping_structured_spans_merge_into_their_union`, `a_chain_of_overlaps_merges_to_a_fixpoint`, `a_span_enclosed_by_an_email_is_still_covered_and_names_the_union` (`src/pii/overlap.rs`): the resolver itself — union, transitive fixpoint, and enclosure coherence.
+- LOC-17 — **ASCII word boundaries (M4-R13)** — `cjk_prose_does_not_hide_structured_pii` (recognizers), `structured_pii_is_detected_in_cjk_and_cyrillic_prose` + `ascii_token_anti_false_positive_guarantee_survives_the_ascii_boundary` (`tests/adversarial.rs`, on the **masked body**), and the `non_ascii_scripts` corpus category. A Unicode `\b` made every anchored recognizer inert in CJK prose; `(?-u:\b)` fixes it without weakening the anti-FP rule inside ASCII tokens. **Non-vacuity:** restoring `\b` makes the detector return `[]` on the Chinese card sentence and fails corpus CJK-01 / RT-05.
+- LOC-18 — **Union naming + merge fail-safe (M4-R15 / M4-R14)** — `an_enclosed_secret_names_the_union_not_the_phone`: a `Secret` enclosed by an email names the union (it used to be reported as `[PHONE_1]` — no leak, but the model and the audit log were told the wrong kind). `a_union_ending_inside_a_multibyte_char_still_covers_every_constituent`: a union endpoint falling inside a 3-byte `€` widens out to the char boundary instead of degrading to a single constituent (which would abandon bytes — the very leak class the resolver exists to prevent).
 
 ### M5 — integration & performance (planned)
 - E2E-INT-01 *(planned)* — real-provider smoke against **Anthropic** (OpenAI-compat endpoint; opt-in, needs a key, never in CI): a PII round-trip returns the restored value while the request left masked.

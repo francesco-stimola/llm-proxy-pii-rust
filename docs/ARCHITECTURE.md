@@ -52,15 +52,19 @@ unstructured-entity load.
 So `PII_LOCALES` (default `it, us`, `Config.pii_locales`) gates only *ambiguous*
 recognizers, not "which countries". The **language** domain for the NER is the model's
 declared languages (XLM-R HRL: ar/de/en/es/fr/it/lv/nl/pt/zh — validated, see
-`docs/DEVLOG.md`); structured PII is *intended* to be language-independent.
+`docs/DEVLOG.md`); structured PII is language-independent.
 
-> ⚠️ **Open gap (M4-R13) — it is not language-independent yet.** The structured recognizers
-> anchor on `\b`, and Rust `regex`'s `\b` is **Unicode-aware**: a Han/Kana/Cyrillic letter
-> counts as a word character, so there is no boundary between it and a digit. Chinese and
-> Japanese have no inter-word spaces, so `我的信用卡号是4111111111111111` matches **nothing**
-> and the card is forwarded in clear — as are a glued IBAN, SSN, secret, and the zh Resident
-> ID itself. Fix: ASCII word boundaries (`(?-u:\b)`), which keep the anti-false-positive
-> behaviour inside ASCII tokens. Tracked in `docs/ROADMAP.md` (M4-R13).
+**Word boundaries are ASCII — `(?-u:\b)`, never a bare `\b` (M4-R13).** Rust `regex`'s default
+`\b` is **Unicode-aware**: a Han / Kana / Cyrillic letter *is* a word character, so there is **no
+boundary between a CJK character and a digit**. Chinese and Japanese have no inter-word spaces, so
+the glued form is the *natural* way to write it — and with a Unicode `\b` every anchored recognizer
+was **inert** in CJK prose, forwarding the PII in clear (`我的信用卡号是4111111111111111` matched
+*nothing*; the zh Resident ID pack shipped in M4 never fired in Chinese). All anchored recognizers
+therefore use `(?-u:\b)`, which counts only `[0-9A-Za-z_]` as word characters. The deliberate
+anti-false-positive guarantee is preserved **exactly** — an ID still cannot fire inside a longer
+*ASCII* token (`card4111111111111111`, API keys, hashes, base64) — it merely stops treating a
+non-ASCII **letter** as part of a number. (`Email` / `Phone` are anchored by character classes, not
+`\b`, so they were never affected.)
 
 **Overlap resolution (`src/pii/overlap.rs`).** Detectors produce overlapping candidate spans;
 `resolve_overlaps` reduces them to a non-overlapping set. Its governing rule is an **invariant,
@@ -72,29 +76,35 @@ This replaced an earlier "highest priority wins" resolver that settled every ove
 the whole loser span** — which silently left the loser's bytes *in clear*. A flat priority scalar can
 only express "one of them wins"; it cannot express "**both** must be masked". On a **partial** overlap
 (`555 867 5309john.doe@example.com` — the phone and the email share only `5309`) that meant whichever
-side lost got forwarded unmasked, and re-tuning the priorities merely chose *which* PII leaked. Three
+side lost got forwarded unmasked, and re-tuning the priorities merely chose *which* PII leaked. Two
 phases now:
 
-1. **Email containment gate.** A structured span lying *entirely inside* an `Email` span is a false
-   decomposition of the email's local part (`4111111111111111@x.com`, `123456789@x.com`) — dropped, so
-   the email keeps the label. Safe under the invariant: an email is never *dropped*, only absorbed into
-   a union that covers at least its own span, so the removed span's bytes always stay masked.
-2. **Structured union-merge.** Overlapping structured spans collapse into their **union**, labelled with
-   the highest-priority kind (`PiiKind::priority`: Secret > Iban > Card > Ssn ≈ NationalId > Phone >
-   Email). One sort-by-start sweep reaches the fixpoint. The union is masked as a single placeholder and
-   restored verbatim, so the round-trip stays exact. It over-masks slightly (a bare `@domain` can land
-   inside the placeholder) — the project's fail-safe direction: **over-mask, never leak**.
-3. **NER greedy drop.** NER spans keep the whole-span drop (M2-R7): a `Person` overlapping a kept
+1. **Structured union-merge.** Every group of transitively-overlapping structured spans collapses into
+   its **union**. *Nothing structured is ever dropped*, so the invariant holds by construction. One
+   sort-by-start sweep reaches the fixpoint. The union is masked as a single placeholder and restored
+   verbatim, so the round-trip stays exact. It over-masks slightly (a bare `@domain` can land inside the
+   placeholder) — the project's fail-safe direction: **over-mask, never leak**.
+2. **NER greedy drop.** NER spans keep the whole-span drop (M2-R7): a `Person` overlapping a kept
    structured span is discarded entirely. Abandoning an *unstructured* remainder costs recall, never a leak.
+
+**Naming the union** (`PiiKind::priority`: Secret > Iban > Card > Ssn ≈ NationalId > Phone > Email) —
+the highest-priority **raw** candidate the union covers, *including one an email encloses* (M4-R15), so a
+`Secret` glued to a phone isn't announced to the model as `[PHONE_1]` and the kind-only audit log doesn't
+under-report it. **One exception:** when the union is *exactly* an `Email` span, the group is a genuine
+email whose local part merely *looks* like a card or an ID (`4111111111111111@x.com`) — that enclosed
+match is a false decomposition, not a second entity, so the email keeps the label.
 
 | Shape | Overlap | Result |
 |---|---|---|
-| `4111111111111111@x.com` | Email **contains** the card | one `[EMAIL_1]` — the card is a substring of the local part (gate) |
-| `4111 1111 1111 1111@x.com` | **partial** — a space-grouped card, and an email local part can't hold a space, so the email is only `1111@x.com` | one `[CARD_1]` over the **union** — both the card and the trailing email are masked |
+| `4111111111111111@x.com` | the email **encloses** the card; union == the email span | one `[EMAIL_1]` — the card is a false decomposition of the local part |
+| `4111 1111 1111 1111@x.com` | **partial** — a space-grouped card, and an email local part can't hold a space, so the email is only `1111@x.com` | one `[CARD_1]` over the **union** — card *and* trailing email masked |
 | `555 867 5309john.doe@example.com` | **partial** — phone and email share `5309` | one `[PHONE_1]` over the union — the email's local part is **not** abandoned |
+| `555 867 5309.sk-…@x.com` | **partial** phone + an email enclosing a secret | one `[SECRET_1]` — the union is named by the highest-priority raw candidate it covers |
 
-`Email` sits at the bottom of the priority order only to *name* a union it partially overlaps; it never
-loses bytes, because nothing is dropped. The invariant is pinned by a property test (**PROP-03**,
+Enclosure is a **naming** rule, not a deletion. (An earlier revision *deleted* the enclosed span before
+ranking the rest — which stranded it in clear whenever the enclosing email then lost, M4-R10. The union is
+identical either way, since an enclosed span merges *into* its enclosing email; expressing it as naming
+keeps the behaviour and removes the trap.) The invariant is pinned by a property test (**PROP-03**,
 `every_structured_candidate_byte_is_covered`): every raw structured candidate must be fully covered by
 some resolved span. A winner-picking resolver cannot satisfy a per-byte invariant — which is exactly why
 the two earlier priority-only fixes each passed their own case while leaking the other side.
