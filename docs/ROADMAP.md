@@ -502,6 +502,41 @@ Three **non-blocking** precision follow-ups (all fail-safe — over-mask/utility
   cost (a valid ID never has one). Self-verifying test `de_steuerid_rejects_a_consecutive_triple`: same digits +
   valid checksum, consecutive → rejected, non-consecutive → accepted.
 
+### M4-R6/R7/R8 precision follow-up review (2026-07-13) — one BLOCKER (priority-reorder leak)
+Reviewed `3845bfe` (fix) + `4de5d38` (docs). Independently verified: **99 tests green (default), 0 failed, no
+warnings**; `cargo check --features onnx` compiles clean (no warnings). M4-R6 and M4-R8 are **sound**:
+M4-R6's `bare_numeric_national_ids_are_masked_by_design` genuinely asserts *both* halves (`524287244` masked
+by design, `524287245` left in clear), the ~18% / ~1% FP-magnitude comments are accurate, and documenting (not
+context-gating) is the correct call. M4-R8's consecutive-triple rule is a correct pure-precision gain with zero
+recall cost, and `de_steuerid_rejects_a_consecutive_triple` is a genuine self-verifying test (both numbers carry
+a valid Mod 11,10 check digit; only placement differs). But the **M4-R7 Email-top reorder introduces a real
+Card/IBAN leak** on partial overlap:
+- [ ] **M4-R9 (BLOCKER — leak — the M4-R7 Email-top reorder suppresses a genuine Card/IBAN span).** M4-R7's
+  claim ("a card/IBAN/secret can only overlap an email by being a *substring* of its local part") holds only for
+  the **continuous** forms the test covers — it **breaks for the space-grouped Card and IBAN forms**, because the
+  email local-part class `[A-Za-z0-9._%+-]` (`src/pii/recognizers.rs:104`) excludes the space. When a space-grouped
+  card/IBAN is immediately followed by `@domain.tld`, the email match forms from **only the last 4-digit group** and
+  *partially* overlaps (does not contain) the card/IBAN; `resolve_overlaps` (`src/pii/overlap.rs:25`, whole-lower-span
+  drop) then discards the entire higher-value card/IBAN because `Email` (priority 6, `src/pii/mod.rs:82`) now outranks
+  `Iban`/`CreditCard`, leaving the leading groups **in clear**. Reproduced independently (regex + overlap copy):
+  `card 4111 1111 1111 1111@example.com` → masked `card 4111 1111 1111 [EMAIL_1]` (**12 Luhn-valid card digits leak**);
+  `iban DE89 3704 0044 0532 0130 00@example.com` → masked `iban DE89 3704 0044 0532 0130 [EMAIL_1]` (**IBAN body leaks**).
+  This is a **regression**: under the pre-M4-R7 order the card/IBAN won (masked whole → `[CARD_1]@example.com`,
+  only the harmless `@domain` in clear). Continuous forms (`4111111111111111@…`), dash-grouped cards
+  (`4111-1111-1111-1111@…`, `-` is in the local-part class), and `sk-…`/`AKIA…` secrets (no space) stay safe — the
+  gap is exactly the space-grouped Card/IBAN. **Fix (recommended, keeps the M4-R7 benefit):** make the Email-over-
+  structured win **containment-gated** — Email suppresses a Card/IBAN/Secret/NationalId only when its span *fully
+  contains* the structured span (the `4111…@x.com` case); on a true *partial* overlap the checksum-backed structured
+  span must win so no structured PII is left in clear. (This can't be expressed by the flat `priority()` scalar
+  alone; it belongs in `resolve_overlaps`, e.g. a containment check before dropping a higher-value structured
+  span.) **Minimal fail-safe alternative:** revert M4-R7 (put `Email` back below `Iban`/`CreditCard`/`Secret`) —
+  leak-free, at the cosmetic cost of `@domain` appearing in clear next to a `[CARD_1]`/`[IBAN_1]`. **Tests:** add
+  adversarial cases asserting that for a space-grouped card/IBAN immediately followed by `@domain`, the masked
+  output contains **no** card/IBAN digit group in clear (e.g. `!masked.contains("4111 1111 1111")`,
+  `!masked.contains("DE89 3704")`); keep `email_beats_a_card_iban_or_secret_local_part` green for the containment
+  case. *(Related, lower severity: the earlier Email>NationalId reorder has the same shape for the space-grouped
+  NINO `AB 12 34 56 C@x.com`; a containment-gated fix covers it too.)*
+
 ## M5 — Integration & performance testing
 Goal: prove the whole system holds **end-to-end** and **under load**, then document it. Comes after M4 —
 the feature set (structured + NER + streaming + multi-provider) is complete enough to test as a product.
