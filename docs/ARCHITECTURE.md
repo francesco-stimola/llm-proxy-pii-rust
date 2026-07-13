@@ -54,37 +54,42 @@ recognizers, not "which countries". The **language** domain for the NER is the m
 declared languages (XLM-R HRL: ar/de/en/es/fr/it/lv/nl/pt/zh — validated, see
 `docs/DEVLOG.md`); structured PII is language-independent.
 
-**Overlap resolution (`src/pii/overlap.rs`).** Every detector's candidate spans are merged
-by `resolve_overlaps`: rank by `PiiKind::priority` (desc), then span length (desc), then
-greedily keep what doesn't overlap something already kept. Structured PII outranks the ML
-NER, so a checksum-backed IBAN always beats a `Person` guess on the same characters.
+**Overlap resolution (`src/pii/overlap.rs`).** Detectors produce overlapping candidate spans;
+`resolve_overlaps` reduces them to a non-overlapping set. Its governing rule is an **invariant,
+not a ranking** (M4-R10 / M4-R11):
 
-`Email` is a deliberate special case (**M4-R9**), because it is the only structured kind
-carrying `@` and can overlap another recognizer **two** ways that need *opposite* outcomes:
+> **No structured span's bytes are ever abandoned.**
 
-| Shape | Overlap | Winner | Why |
-|---|---|---|---|
-| `4111111111111111@x.com` | Email **contains** the card | **Email** | the card is a substring of the local part — a false decomposition; masking only it would forward `@x.com` in clear |
-| `4111 1111 1111 1111@x.com` | **partial** (an email local part can't hold a space, so the email is just `1111@x.com`) | **CreditCard** | Email would mask only the last group and leave `4111 1111 1111` **in clear** — a leak |
+This replaced an earlier "highest priority wins" resolver that settled every overlap by **dropping
+the whole loser span** — which silently left the loser's bytes *in clear*. A flat priority scalar can
+only express "one of them wins"; it cannot express "**both** must be masked". On a **partial** overlap
+(`555 867 5309john.doe@example.com` — the phone and the email share only `5309`) that meant whichever
+side lost got forwarded unmasked, and re-tuning the priorities merely chose *which* PII leaked. Three
+phases now:
 
-So containment is resolved **ahead of** priority by a gate (`drop_spans_contained_in_an_email`)
-that removes structured spans lying *entirely inside* an email; everything else falls through to
-priority, where `Email` sits **below every other structured kind** so the checksum-backed span
-wins any partial overlap. The same gate covers the grouped IBAN and the spaced GB NINO
-(`AB 12 34 56 C@x.com`).
+1. **Email containment gate.** A structured span lying *entirely inside* an `Email` span is a false
+   decomposition of the email's local part (`4111111111111111@x.com`, `123456789@x.com`) — dropped, so
+   the email keeps the label. Safe under the invariant: an email is never *dropped*, only absorbed into
+   a union that covers at least its own span, so the removed span's bytes always stay masked.
+2. **Structured union-merge.** Overlapping structured spans collapse into their **union**, labelled with
+   the highest-priority kind (`PiiKind::priority`: Secret > Iban > Card > Ssn ≈ NationalId > Phone >
+   Email). One sort-by-start sweep reaches the fixpoint. The union is masked as a single placeholder and
+   restored verbatim, so the round-trip stays exact. It over-masks slightly (a bare `@domain` can land
+   inside the placeholder) — the project's fail-safe direction: **over-mask, never leak**.
+3. **NER greedy drop.** NER spans keep the whole-span drop (M2-R7): a `Person` overlapping a kept
+   structured span is discarded entirely. Abandoning an *unstructured* remainder costs recall, never a leak.
 
-> ⚠️ **Known leaks — this is not yet fail-safe in both directions (M4-R10 / M4-R11, OPEN — see
-> `docs/ROADMAP.md`).** The resolver settles an overlap by **dropping the whole loser span**, so the
-> loser's bytes are *abandoned in clear*. Two consequences, both reproduced through `Vault::mask`:
-> (1) the containment gate deletes a contained structured span *before* the priority sort, but the
-> containing email is **not guaranteed to survive** it — a third span partially overlapping the email
-> drops the email too, stranding the already-deleted card/secret (`555 867 5309.4111111111111111@x.com`
-> → `[PHONE_1].4111111111111111@x.com`); (2) with `Email` now the lowest structured tier, a structured
-> span partially overlapping a **real email** wins and abandons the email's **local part**
-> (`555 867 5309john.doe@example.com` → `[PHONE_1]john.doe@example.com`). The planned fix is to make the
-> resolver's invariant *"no structured span's bytes are ever abandoned"* — **merge** partially-overlapping
-> structured spans into their union instead of dropping the loser. Until then, treat the table above as the
-> *intent*, not a guarantee. A left-over bare `@domain` is acceptable (not PII); a left-over local part is not.
+| Shape | Overlap | Result |
+|---|---|---|
+| `4111111111111111@x.com` | Email **contains** the card | one `[EMAIL_1]` — the card is a substring of the local part (gate) |
+| `4111 1111 1111 1111@x.com` | **partial** — a space-grouped card, and an email local part can't hold a space, so the email is only `1111@x.com` | one `[CARD_1]` over the **union** — both the card and the trailing email are masked |
+| `555 867 5309john.doe@example.com` | **partial** — phone and email share `5309` | one `[PHONE_1]` over the union — the email's local part is **not** abandoned |
+
+`Email` sits at the bottom of the priority order only to *name* a union it partially overlaps; it never
+loses bytes, because nothing is dropped. The invariant is pinned by a property test (**PROP-03**,
+`every_structured_candidate_byte_is_covered`): every raw structured candidate must be fully covered by
+some resolved span. A winner-picking resolver cannot satisfy a per-byte invariant — which is exactly why
+the two earlier priority-only fixes each passed their own case while leaking the other side.
 
 ## Anonymization
 

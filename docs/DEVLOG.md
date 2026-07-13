@@ -3,6 +3,49 @@
 Newest first. One entry per meaningful change — note *what* and *why*, not just
 *what*. This is the running history so context is never lost between sessions.
 
+## 2026-07-13 — M4-R10/R11: the resolver gets an *invariant* instead of a ranking (union-merge)
+
+Third review on the same overlap code, and the one that found the **root cause** the previous two fixes
+kept dancing around. Worth recording, because the lesson is bigger than the bug.
+
+**The pattern.** M4-R7 made `Email` win an overlap; the card leaked. M4-R9 made the structured span win;
+the **email** leaked. Both fixes were "correct" against their own test — and both were wrong, because they
+were tuning *which side of a partial overlap gets abandoned*. The root cause was never the priorities:
+`resolve_overlaps` settled an overlap by **dropping the whole loser span**, so the loser's bytes were left
+**in clear**. A flat `priority()` scalar can only express *"one of them wins"*; it cannot express *"both must
+be masked"*. Two leaks the reviewer reproduced through `Vault::mask`:
+
+```
+555 867 5309john.doe@example.com      → [PHONE_1]john.doe@example.com     (M4-R11: a deliverable email in clear)
+555 867 5309.4111111111111111@x.com   → [PHONE_1].4111111111111111@x.com  (M4-R10: 16 card digits in clear)
+```
+
+M4-R10 is the nastier one and it was **introduced by my own M4-R9 gate**: the gate deletes a span contained in
+an email *before* the priority sort — but the containing email was **not guaranteed to survive** that sort. A
+third span partially overlapping the email dropped the email too, so the already-deleted card was masked by
+**nothing at all**. (`Secret` is the sharpest case: the highest-priority kind, deleted before priority ever ran.)
+
+**Fix — replace the ranking with an invariant:** *no structured span's bytes are ever abandoned.*
+- **Structured union-merge** — two overlapping structured spans now collapse into their **union** (labelled by
+  the highest-priority kind) instead of one being dropped. One sort-by-start sweep reaches the fixpoint. The
+  union is masked as one placeholder and restored verbatim, so the round-trip stays exact; it over-masks a
+  little (a bare `@domain` can land inside the placeholder) — the project's stated direction: over-mask, never
+  leak.
+- **The containment gate stays and is now provably safe:** an email is never *dropped*, only absorbed into a
+  union covering at least its own span, so a span the gate deleted can no longer be stranded.
+- **NER keeps the whole-span drop** (M2-R7) — a lost `Person` remainder costs recall, never a leak.
+- `resolve_overlaps` now takes `input` (the union's `text` must be re-sliced from the source: `Vault` keys on
+  `entity.text` and splices by `span`). `PiiKind::priority` now ranks **labels, not survivors** — a lower
+  priority can no longer cost coverage.
+
+**The test that should have existed from the start (PROP-03).** `every_structured_candidate_byte_is_covered`:
+glue PII values (incl. the grouped shapes) in arbitrary orders, then assert **every raw structured candidate is
+fully covered by some resolved span**. A per-byte invariant *cannot* be satisfied by picking a winner — which is
+exactly why the two priority-only fixes each passed their hand-written case while leaking the other side. Proof
+it bites: with the union-extension disabled it **independently rediscovered** the M4-R11 leak, shrinking straight
+to `555 867 5309john.doe@example.com` ("Email at 8..32 is left in clear"). All 7 M4-R10/R11 tests fail under that
+probe. **110 tests green (default) / 118 + 1 `#[ignore]`d (`--features onnx`), no warnings.**
+
 ## 2026-07-13 — M4-R9: containment-gate the Email priority (fixes a leak my M4-R7 introduced)
 
 The review caught a **real leak in my own M4-R7 fix**, and it's worth recording *why* the reasoning

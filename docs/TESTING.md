@@ -94,6 +94,14 @@ false positive): `email`, `phone`, `ssn`, `credit_card`, `iban`, `secret`.
 - PROP-01 — generated valid email/phone/ssn/credit-card/iban are always detected,
   masked, and round-tripped.
 - PROP-02 — random alphabetic strings are never detected (no false positives).
+- **PROP-03 — the resolver's invariant: *no structured span's bytes are ever abandoned*** (M4-R10/R11,
+  `every_structured_candidate_byte_is_covered` in `src/pii/recognizers.rs`). Glue PII values — including the
+  **grouped** shapes (spaces inside the value) that make a recognizer *partially* overlap an email — in arbitrary
+  orders and separators; assert every **raw** structured candidate (pre-resolution) is **fully covered** by some
+  resolved span, and that mask→demask is still exact. This is the guard the priority-only fixes lacked: M4-R7 and
+  M4-R9 each passed their own hand-written case while silently abandoning the *other* side of a partial overlap —
+  **a per-byte invariant cannot be satisfied by picking a winner**. Verified non-vacuous (it rediscovers the
+  M4-R11 leak on its own when the union-merge is disabled).
 
 ### Integration — pipeline over OpenAI-shaped payloads
 - INT-01 — user message with multiple PII → outgoing request carries placeholders; vault populated.
@@ -188,6 +196,11 @@ Three tiers: universal (always), national IDs (always, off `PII_LOCALES`), FP-pr
   - `grouped_pii_glued_to_a_domain_leaks_nothing` (`tests/adversarial.rs`): the same shapes asserted on the **masked body** — no card/IBAN/NINO digit group survives in clear (`!masked.contains("4111")`, …). Also pins the containment case (a *continuous* card glued to a domain leaks neither digits nor domain).
   - `email_containing_a_structured_span_wins_it` / `email_partially_overlapping_a_structured_span_loses_it` (`src/pii/overlap.rs`): the gate itself, at resolver level.
   - **Non-vacuity:** re-raising `Email` above the structured kinds makes these fail (the pre-fix M4-R7 leak).
+- LOC-16 — **Union-merge: no abandoned bytes (M4-R10 / M4-R11)** — a *partial* overlap must mask **both** spans, not pick a winner:
+  - `a_partially_overlapping_email_is_never_abandoned` (recognizers): `555 867 5309john.doe@example.com` → one `[PHONE_1]` over the union; the email's **local part** is never left in clear (a bare left-over `@domain` would be acceptable — a local part is not).
+  - `a_span_deleted_by_the_containment_gate_is_never_stranded` (recognizers): the gate deletes a card/secret contained in an email, and a phone then partially overlaps that email — the deleted span must still be covered (it used to be masked by *nothing*).
+  - `partially_overlapping_pii_abandons_no_bytes` + `masking_partially_overlapping_pii_still_round_trips` (`tests/adversarial.rs`): the reviewer's exact repros asserted on the **masked body**, plus exact round-trip through the merged union.
+  - `partially_overlapping_structured_spans_merge_into_their_union`, `a_chain_of_overlaps_merges_to_a_fixpoint`, `a_span_stranded_by_the_containment_gate_is_still_covered` (`src/pii/overlap.rs`): the resolver itself — union, transitive fixpoint, and gate coherence.
 
 ### M5 — integration & performance (planned)
 - E2E-INT-01 *(planned)* — real-provider smoke against **Anthropic** (OpenAI-compat endpoint; opt-in, needs a key, never in CI): a PII round-trip returns the restored value while the request left masked.

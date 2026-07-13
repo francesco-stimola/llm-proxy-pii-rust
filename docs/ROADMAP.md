@@ -573,7 +573,7 @@ is untouched: `resolve_overlaps` resolves an overlap by **dropping the whole los
 simply *abandoned in clear*. The flat `priority()` scalar can only express "one wins"; it cannot express "both must
 be masked". M4-R7 made `Email` win and abandoned the card; M4-R9 makes the structured span win and abandons the
 **email**. Two concrete blockers follow. Both reproduced end-to-end through `Vault::mask`.
-- [ ] **M4-R10 (BLOCKER — NEW, introduced by the gate).** `drop_spans_contained_in_an_email`
+- [x] **M4-R10 (DONE 2026-07-13 — closed by the union-merge; see the shared fix note below).** `drop_spans_contained_in_an_email`
   (`src/pii/overlap.rs:76`) drops a contained structured span **unconditionally, before the priority sort** — but
   the containing `Email` is **not guaranteed to survive** that sort. If a *third* span partially overlaps the email,
   the email loses on priority (it is now the lowest structured tier) and is dropped too — so the contained span,
@@ -588,7 +588,7 @@ be masked". M4-R7 made `Email` win and abandoned the card; M4-R9 makes the struc
   `4111 1111 1111 1111.4111111111111111@example.com` → `[CARD_1].4111111111111111@example.com` (a **second full card** in clear).
   This directly violates the invariant both `src/pii/overlap.rs:41` ("Structured PII is never lost either way") and
   `docs/ARCHITECTURE.md:74` ("Fail-safe in both directions: PII is never left in clear") claim to hold.
-- [ ] **M4-R11 (BLOCKER — NEW for `Phone` / `Ssn` / `NationalId`; pre-existing for `Card`/`Iban`/`Secret`).** Demoting
+- [x] **M4-R11 (DONE 2026-07-13 — closed by the union-merge; see the shared fix note below).** Demoting
   `Email` to the lowest structured tier (`src/pii/mod.rs:98`) means a structured span that only **partially** overlaps a
   **real email** now wins and drops the *whole* email span — leaving the part of the email outside the structured span
   (its **local part**, i.e. a person's name/handle, plus the domain) **in clear**. The email local-part class includes
@@ -610,6 +610,37 @@ be masked". M4-R7 made `Email` win and abandoned the card; M4-R9 makes the struc
   fail-safe in the project's stated direction (over-mask, never leak — cf. M4-R6), and costs nothing in practice since
   these shapes are pathological. Merging must iterate to a fixpoint (a merge can create a new overlap). Keep the
   existing whole-span drop for **NER** spans (M2-R7) — abandoning a `Person` remainder costs recall, never a leak.
+
+#### M4-R10 + M4-R11 — RESOLVED 2026-07-13 (`resolve_overlaps` rewritten around the invariant)
+Implemented exactly the recommended fix. The resolver's governing rule is now an **invariant, not a ranking**:
+**"no structured span's bytes are ever abandoned."** Three phases (`src/pii/overlap.rs`):
+1. **Email containment gate** (kept, and now *provably* safe): a structured span entirely inside an `Email`
+   span is a false decomposition of its local part → dropped, email keeps the label. It can no longer strand
+   anything, because an email is never *dropped* — only absorbed into a union covering at least its own span.
+   This is the coherence M4-R10 demanded between the gate and the new invariant.
+2. **Structured union-merge**: overlapping structured spans collapse into their **union**, labelled by the
+   highest-priority kind (ties → longest span → incumbent). A single sort-by-start sweep reaches the
+   **fixpoint** (a merge can only extend the union rightwards, so it never creates an earlier overlap).
+   `resolve_overlaps` now takes `input` so the union's `text` is re-sliced from the source — the `Vault` keys
+   on `entity.text` and splices by `span`, so the merged union masks and restores **verbatim** (round-trip
+   stays exact). A union wider than its winning candidate is honestly re-tagged `Confidence::Structural`.
+3. **NER keeps the whole-span drop** (M2-R7) — a lost `Person` remainder costs recall, never a leak.
+
+`PiiKind::priority` now ranks **labels, not survivors**: a lower priority can no longer cost coverage, it only
+decides which kind *names* a union. (It still picks the survivor for NER.)
+
+**Tests.** **PROP-03 `every_structured_candidate_byte_is_covered`** — the property test that encodes the
+invariant directly: glue PII values (incl. the grouped shapes) in arbitrary orders/separators, then assert
+**every raw structured candidate is fully covered by some resolved span**, and that the mask→demask round-trip
+is still exact. Plus the reviewer's exact repros as deterministic cases:
+`a_span_deleted_by_the_containment_gate_is_never_stranded` + `a_partially_overlapping_email_is_never_abandoned`
+(recognizers), `partially_overlapping_pii_abandons_no_bytes` + `masking_partially_overlapping_pii_still_round_trips`
+(`tests/adversarial.rs`, asserted on the **masked body**), and 3 new resolver units (union, fixpoint chain, the
+gate-stranding case). **Verified non-vacuous:** with the union-extension disabled, all 7 fail — and PROP-03
+*independently rediscovered* the M4-R11 leak, shrinking to `555 867 5309john.doe@example.com` ("Email at 8..32
+is left in clear"). A per-byte invariant cannot be satisfied by picking a winner, which is precisely why the two
+earlier priority-only fixes (M4-R7, M4-R9) each passed their own case while leaking the other side.
+**110 tests green (default) / 118 + 1 `#[ignore]`d (`--features onnx`), no warnings.**
   *(Alternative, if the union's over-masking is unwanted: keep the loser's non-overlapping remainder as its own masked
   span — `[PHONE_1][EMAIL_1]` — and make the gate conditional on the containing email actually surviving. More code,
   same guarantee.)*
