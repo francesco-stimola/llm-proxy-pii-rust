@@ -36,11 +36,14 @@ unstructured-entity load.
 **Locale coverage (M4) — three tiers.** The structured recognizers split into:
 - **Universal** — email, secret, credit card, IBAN (already any-country) and phone
   (US + `+CC`). Always on.
-- **National identifiers** — US SSN (keeps `PiiKind::Ssn` / `[SSN_N]`) plus IT Codice
-  Fiscale, GB NINO, ES DNI/NIE, FR NIR (`PiiKind::NationalId` / `[NATID_N]`). **Always on
-  regardless of `PII_LOCALES`** (privacy-first — a national ID that reaches the proxy is
-  masked even if its country isn't configured). Each is checksum- or rule-specific
-  (mod-23 / mod-97 / NINO prefix rules) to stay near-zero false-positive when always on.
+- **National identifiers** — US SSN (keeps `PiiKind::Ssn` / `[SSN_N]`) plus, under
+  `PiiKind::NationalId` / `[NATID_N]`, one per XLM-R-aligned country: IT Codice Fiscale,
+  GB NINO, ES DNI/NIE, FR NIR, DE Steuer-ID, NL BSN, PT NIF, LV personal code, zh China
+  Resident ID. **Always on regardless of `PII_LOCALES`** (privacy-first — a national ID that
+  reaches the proxy is masked even if its country isn't configured). Each is checksum- or
+  rule-specific (mod-23 / mod-97 / mod-11 / ISO 7064 / NINO prefix rules) to stay near-zero
+  false-positive when always on. `Email` outranks the numeric national IDs in
+  `PiiKind::priority`, so a numeric email local part (`123456789@x.com`) is never fragmented.
 - **FP-prone** — ambiguous recognizers (e.g. national *phone* formats with no `+CC`) —
   **opt-in per locale** via `PII_LOCALES` (`fp_prone_recognizers`). None yet.
 

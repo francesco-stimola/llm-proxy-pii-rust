@@ -313,7 +313,7 @@ genuine non-leaks. **Non-blocking** follow-ups found:
   `demask_json_string_keeps_inner_json_valid` (vault), `tool_call_arguments_demask_stays_valid_json` +
   `content_demask_is_not_json_escaped` (buffered), `tool_call_arguments_deanon_stays_valid_json` (streaming).
 
-## M4 — Broad locale & language coverage (future)
+## M4 — Broad locale & language coverage ✅
 Goal: extend PII coverage beyond IT + US to a wide set of locales and languages,
 so the proxy protects data regardless of the user's language or the upstream
 provider. Likely valuable once we move off the OpenAI model and serve broader
@@ -337,25 +337,31 @@ traffic — priority can be pulled earlier if real usage demands it.
   **always-on** tier (`national_id_recognizers()`, off `PII_LOCALES`); the locale-gating seam
   (`fp_prone_recognizers(code)`) kept for **FP-prone** recognizers only; NINO tightened first (M4-R2) so
   always-on can't over-mask. Scoping tests + `PII_LOCALES` docs (SETUP §6, ARCHITECTURE) updated.
-- [ ] **National-ID packs for all XLM-R-aligned countries** (decided 2026-07-13 — "all XLM-R languages").
-  Landed: IT CF, GB NINO, US SSN, ES DNI/NIE (mod-23), FR NIR (mod-97). **To add** — one per XLM-R
-  language's primary country, each **checksum-gated** for always-on near-zero FP: **DE** Steuer-ID
-  (ISO 7064 Mod 11,10), **NL** BSN (11-proef mod-11), **PT** NIF (mod-11), **LV** personal code (mod-11 —
-  *note:* the post-2017 random form has no checksum → shape+date only, treat like SSN), **zh** China
-  Resident ID (18-digit, ISO 7064 mod-11). **`ar` gets no pack** — the language spans ~20 countries with
-  different ID schemes, so there is no single "Arabic" national ID; Arabic names/locations stay covered by NER.
+- [x] **National-ID packs for all XLM-R-aligned countries** (decided 2026-07-13 — "all XLM-R languages").
+  All landed, always-on, each checksum-gated: IT CF (check char — M4-R3), GB NINO, US SSN, ES DNI/NIE
+  (mod-23), FR NIR (mod-97), **DE** Steuer-ID (ISO 7064 Mod 11,10 + the one-repeated-digit structural
+  rule), **NL** BSN (11-proef), **PT** NIF (mod-11), **LV** personal code (classic mod-11 + the post-2017
+  `32…` shape-only random form), **zh** China Resident ID (ISO 7064 MOD 11-2, 18 chars). **`ar` gets no
+  pack** — the language spans ~20 countries with different ID schemes, so there is no single "Arabic"
+  national ID; Arabic names/locations stay covered by NER. *(Overlap note: `Email` outranks the numeric
+  national IDs so a numeric email local part is never fragmented — see `PiiKind::priority`.)*
 - **Locale phone national formats** → **moved to Backlog** (user's call 2026-07-13): the FP-prone tier's
   first recognizer. The `+CC` international arm already covers the unambiguous case; the `fp_prone_recognizers`
   seam stays ready. Add a specific national format only on concrete need. See Backlog.
-- [ ] **IBAN per-country length validation** — structural + mod-97 already accept every country; add
-  per-country length checks to raise precision if needed.
+- [x] **IBAN per-country length validation** — `confidence_of` now tags an IBAN `Verified` only when
+  **both** mod-97 **and** its country's fixed length (ISO 13616 table, `iban_country_length`) check out;
+  a wrong-length IBAN of a known country is still masked but flagged `Structural`. Unknown countries rely
+  on mod-97 alone. Test `iban_per_country_length_gates_confidence`.
 - [x] **Validate the NER across its declared domain** — scored XLM-R int8 on its **10 languages**
   (ar/de/en/es/fr/it/lv/nl/pt/zh) through the hybrid: **Person 0.83 / Org 1.00 / Loc 0.91** aggregate
   (numbers + per-language notes in `docs/DEVLOG.md` 2026-07-13). The 5 added Latin-script European
   languages match cleanly; ar/zh find names/cities with a minor boundary artifact.
 - [x] Extend the test corpus with multi-language cases — `tests/corpus/ner_cases.json` `multilingual_preview`
   now covers ar/de/es/fr/lv/nl/pt/zh (en/it in the main set), one Person + Location each.
-- [ ] Provider-agnostic verification (not tied to OpenAI-specific behavior).
+- [x] Provider-agnostic verification (not tied to OpenAI-specific behavior) — masking walks the
+  OpenAI-shaped JSON and is provider-independent (presets only affect routing). Test
+  `e2e_masking_is_provider_agnostic`: the same request via `openai` vs `anthropic` presets yields a
+  byte-identical masked body upstream.
 
 **M4 is done when** the three-tier structure is in place, the national-ID packs + NER validation cover the
 declared domain, and the corpus proves it — i.e. the multilingual question is **closed within the decided
@@ -394,7 +400,10 @@ produce invalid JSON). Non-blocking follow-ups:
   the real NINO prefix rules (invalid 1st letter D/F/I/Q/U/V; 2nd letter D/F/I/O/Q/U/V; disallowed
   pairs BG/GB/KN/NK/NT/TN/ZZ) via a `validate` fn. Test: `PO123456A` (and a disallowed-prefix NINO)
   not masked; a valid NINO still is.
-- [ ] **M4-R3 (precision — IT Codice Fiscale; optional).** The CF regex uses `[A-Za-z]` (accepts
+- [x] **M4-R3 (DONE 2026-07-13 — precision — IT Codice Fiscale).** Added `cf_check_valid` (the odd/even
+  table + mod-26 check character); a wrong-checksum CF look-alike is now rejected (consistent with the
+  other national IDs). Test `italian_codice_fiscale_checksum_rejects_broken`. *(Original note kept below.)*
+  The CF regex uses `[A-Za-z]` (accepts
   lowercase) and skips the **check character** (the final letter is a checksum), so a wrong-checksum
   or lowercase look-alike is still masked as `Verified`. FP risk is very low (anchored + highly
   specific interleave), but a CF check-char `validate` fn (like the deferred IBAN per-country checks)
@@ -428,7 +437,11 @@ warnings**; `cargo test --features onnx` links `ort` clean. *(DEVLOG/commit `80d
   code, so `PII_LOCALES` is a documented no-op (SETUP §6, ARCHITECTURE); the seam is still threaded
   end-to-end (`config.pii_locales` → `build_detector` → `with_locales` → `fp_prone_recognizers`), so a
   future FP-prone recognizer would be gated. No raw PII in logs (kind-only); fail-closed unchanged.
-- [ ] **M4-R5 (low, precision/recall — FR NIR completeness; not a validator error).** The NIR regex fixes
+- [x] **M4-R5 (DONE 2026-07-13 — FR NIR completeness).** The month alternation now admits the INSEE
+  special codes (`20`, `30–42`, `50–99`) so those real NIRs aren't missed on the always-on tier (the
+  mod-97 key still gates precision). Test `french_nir_special_month_is_not_missed`. Corsica's `2A`/`2B`
+  department (letters in the body) stays a **documented known limitation** (code comment + this item). *(Original note below.)*
+  The NIR regex fixes
   the month field to `01–12` (`(?:0[1-9]|1[0-2])`), so a real NIR carrying an INSEE **special month code**
   — `20` (birth month unknown / born abroad) or the provisional `30–42` / `50–99` (SANDIA) ranges — never
   matches and, on the always-on tier, **leaks** (a miss = a leak). Corsica's `2A`/`2B` department form is

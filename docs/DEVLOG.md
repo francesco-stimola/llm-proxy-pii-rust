@@ -3,6 +3,33 @@
 Newest first. One entry per meaningful change — note *what* and *why*, not just
 *what*. This is the running history so context is never lost between sessions.
 
+## 2026-07-13 — M4 COMPLETE: all national-ID packs, CF/FR checks, IBAN per-country, provider-agnostic
+
+Closed every remaining M4 item. All tests green (default + `--features onnx`), no warnings.
+
+- **National-ID packs for all XLM-R-aligned countries** (always-on, checksum-gated): added **DE**
+  Steuer-ID (ISO 7064 Mod 11,10 + the one-repeated-digit structural rule), **NL** BSN (11-proef) / **PT**
+  NIF (mod-11) behind one 9-digit recognizer, **LV** personal code (classic mod-11 + post-2017 `32…`
+  shape-only form), **zh** China Resident ID (ISO 7064 MOD 11-2, 18 chars). `ar` gets no pack (no single
+  Arabic national ID). Each validator hand-checked against an official test number.
+- **M4-R3 — IT Codice Fiscale check character** (`cf_check_valid`, odd/even table + mod-26): a
+  wrong-checksum look-alike is now rejected, consistent with the other national IDs.
+- **M4-R5 — FR NIR completeness**: the month alternation admits the INSEE special codes (`20`, `30–42`,
+  `50–99`) so those real NIRs aren't missed on the always-on tier (mod-97 key still gates precision).
+  Corsica `2A`/`2B` documented as a known limitation.
+- **IBAN per-country length**: `confidence_of` tags an IBAN `Verified` only when mod-97 **and** its
+  country's ISO 13616 fixed length both check out (`iban_country_length` table); otherwise `Structural`
+  (still masked). Unknown countries rely on mod-97 alone.
+- **Overlap priority fix (found by proptest).** The new pure-numeric recognizers (`\d{9}`, `\d{11}`,
+  18-digit) can match a numeric **email local part** (`123456789@x.com`), and `NationalId` (then priority
+  3) out-ranked `Email` (2) → the email got fragmented and PROP-01 failed. Fix: reordered
+  `PiiKind::priority` to **Secret > Iban > Card > Email > Ssn ≈ NationalId > Phone** — a national ID never
+  *is* an email, so the email (the complete match) must win the substring overlap. This also fixes a
+  latent SSN-in-email case. Guard: `numeric_email_local_part_is_not_hijacked_by_a_national_id`.
+- **Provider-agnostic verification**: `e2e_masking_is_provider_agnostic` — the same request via the
+  `openai` vs `anthropic` presets yields a byte-identical masked body upstream (masking is schema-based;
+  presets only affect routing). **M4 is done.** Next: M5 (integration & performance testing).
+
 ## 2026-07-13 — M4 continued: national IDs always-on + ES/FR packs + 10-language NER validation
 
 Advanced M4 per the decided three-tier scope. **86 tests green (default), 94 + 1 `#[ignore]`d

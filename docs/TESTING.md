@@ -64,7 +64,7 @@ expected placeholders follow our format, not the old `[PRIVATE_*]` one.
 | PRIVATE_PHONE | `Phone` | structured |
 | ACCOUNT_NUMBER | `Iban` | structured |
 | (from unit tests) | `Ssn`, `CreditCard` | structured |
-| (M4, per-locale) | `NationalId` (IT Codice Fiscale, GB NINO) | structured |
+| (M4, always-on) | `NationalId` (IT CF · GB NINO · ES DNI/NIE · FR NIR · DE Steuer-ID · NL BSN · PT NIF · LV code · zh Resident ID) | structured |
 | SECRET | `Secret` *(to add to `PiiKind`)* | structured |
 | PRIVATE_PERSON | `Person` | ML NER (M2) |
 
@@ -175,6 +175,11 @@ Three tiers: universal (always), national IDs (always, off `PII_LOCALES`), FP-pr
 - LOC-04 — `spanish_dni_nie_check_letter` + `spanish_dni_detected_and_lookalike_rejected`: ES DNI/NIE mod-23 check letter (valid masked, wrong-letter rejected).
 - LOC-05 — `french_nir_key_check` + `french_nir_detected`: FR NIR mod-97 key (valid masked, wrong-key rejected).
 - LOC-06 *(live, `#[ignore]`d)* — **10-language NER validation** via `ner_eval` over `multilingual_preview` (ar/de/es/fr/lv/nl/pt/zh): Person 0.83 / Org 1.00 / Loc 0.91 (recorded in DEVLOG 2026-07-13).
+- LOC-07 — national-ID checksums (all reject a wrong-checksum look-alike, accept a valid one): `italian_codice_fiscale_checksum_rejects_broken` (M4-R3), `german_steuer_id_check`, `dutch_bsn_and_portuguese_nif_check`, `latvian_code_random_form_and_reject`, `china_resident_id_check`.
+- LOC-08 — `french_nir_special_month_is_not_missed` (M4-R5): an INSEE special-month NIR (month `20`) is still detected.
+- LOC-09 — `iban_per_country_length_gates_confidence`: an IBAN is `Verified` only when mod-97 **and** its country's ISO 13616 length both hold; a wrong-length one is `Structural`.
+- LOC-10 — `numeric_email_local_part_is_not_hijacked_by_a_national_id`: `Email` outranks the numeric national IDs, so `123456789@x.com` masks as one email, not a fragment.
+- LOC-11 — `e2e_masking_is_provider_agnostic` (`tests/proxy_e2e.rs`): the same request via the `openai` vs `anthropic` presets yields a byte-identical masked body upstream.
 
 ### M5 — integration & performance (planned)
 - E2E-INT-01 *(planned)* — real-provider smoke against **Anthropic** (OpenAI-compat endpoint; opt-in, needs a key, never in CI): a PII round-trip returns the restored value while the request left masked.
