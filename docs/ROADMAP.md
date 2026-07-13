@@ -400,6 +400,39 @@ produce invalid JSON). Non-blocking follow-ups:
   reviewer: clarified that US SSN keeps `PiiKind::Ssn`/`[SSN_N]`; only IT CF + GB NINO are
   `NationalId`/`[NATID_N]` (`docs/ARCHITECTURE.md`; `mod.rs` and `TESTING.md` were already correct).
 
+### M4 continuation review (2026-07-13) — sound, no blockers
+Reviewed the always-on national-ID landing (`80da727` recognizers, `63aea5e` corpus, `705bac2` docs).
+Independently verified: **87 tests green (default) / 95 + 1 `#[ignore]`d (`--features onnx`), no
+warnings**; `cargo test --features onnx` links `ort` clean. *(DEVLOG/commit `80da727` say "86 / 94"
+— off by one; the true counts are 87 / 95, no test regressed — a harmless miscount, not a failure.)*
+- **Validators audited against the official algorithms — all correct.** GB NINO `nino_prefix_valid`
+  matches HMRC (1st ∉ D/F/I/Q/U/V, 2nd ∉ D/F/I/O/Q/U/V, pairs BG/GB/KN/NK/NT/TN/ZZ, suffix A–D):
+  `PO123456A`/`GB…`/`DA…` rejected, a valid NINO masks. ES DNI/NIE `es_dni_nie_valid` uses the exact
+  mod-23 table `TRWAGMYFPDXBNJZSQVHLCKE` with NIE X/Y/Z→0/1/2 (hand-checked `12345678Z`→Z, `X1234567L`→L;
+  wrong-letter look-alike rejected). FR NIR `fr_nir_valid` computes `97 − (body13 mod 97)` (key range
+  1..=97, no underflow). No leak / no global over-mask from any validator.
+- **Overlap is deterministic.** A 15-digit FR NIR that also passes Luhn is claimed by the higher-priority
+  `CreditCard` (tier 4 > `NationalId` tier 3) → masked as `[CARD_N]`, single span, no double-mask, no
+  silent drop (the `french_nir_detected` test pins "must never be left in clear"). ES DNI (9 chars, has a
+  letter) can't collide with card/phone/SSN. No regression: `universal_recognizers()` is byte-identical;
+  US SSN moved from the `us` locale to the **always-on** tier (broader coverage, still on by default).
+- **NER numbers reproduced, not fabricated.** Ran the `#[ignore]`d `ner_eval` harness against the cached
+  XLM-R int8 (`478a2a3`) over `multilingual_preview`: Person **0.833 / 0.714 / 0.769**, Org
+  **1.000 / 1.000 / 1.000**, Location **0.909 / 0.909 / 0.909** — matches DEVLOG to 3 dp. The corpus
+  labels are well-formed and the ar/zh boundary artifacts (`ب`, `在北京`) reproduce exactly as documented.
+- **`PII_LOCALES` no-op confirmed intentional + wired.** `fp_prone_recognizers` returns empty for every
+  code, so `PII_LOCALES` is a documented no-op (SETUP §6, ARCHITECTURE); the seam is still threaded
+  end-to-end (`config.pii_locales` → `build_detector` → `with_locales` → `fp_prone_recognizers`), so a
+  future FP-prone recognizer would be gated. No raw PII in logs (kind-only); fail-closed unchanged.
+- [ ] **M4-R5 (low, precision/recall — FR NIR completeness; not a validator error).** The NIR regex fixes
+  the month field to `01–12` (`(?:0[1-9]|1[0-2])`), so a real NIR carrying an INSEE **special month code**
+  — `20` (birth month unknown / born abroad) or the provisional `30–42` / `50–99` (SANDIA) ranges — never
+  matches and, on the always-on tier, **leaks** (a miss = a leak). Corsica's `2A`/`2B` department form is
+  the same class of gap (noted in the code comment but not tracked here). Fix: either broaden the month
+  alternation to admit the valid special codes (the mod-97 key still gates precision at ~1/97) **or**
+  document both as explicit known limitations like the deferred IBAN per-country work. Test: a NIR with
+  month `20` + correct mod-97 key is masked (if broadened), or a doc note if scoped out.
+
 ## M5 — Integration & performance testing
 Goal: prove the whole system holds **end-to-end** and **under load**, then document it. Comes after M4 —
 the feature set (structured + NER + streaming + multi-provider) is complete enough to test as a product.
