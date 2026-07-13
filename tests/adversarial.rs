@@ -8,6 +8,7 @@
 
 use llm_proxy_pii_rust::pii::PiiDetector;
 use llm_proxy_pii_rust::pii::PiiKind;
+use llm_proxy_pii_rust::pii::anonymizer::Vault;
 use llm_proxy_pii_rust::pii::recognizers::StructuredRecognizers;
 
 fn detect(input: &str) -> Vec<(PiiKind, String)> {
@@ -20,6 +21,40 @@ fn detect(input: &str) -> Vec<(PiiKind, String)> {
 
 fn detects(input: &str, kind: PiiKind, text: &str) -> bool {
     detect(input).contains(&(kind, text.to_string()))
+}
+
+/// Mask `input` with the structured recognizers — what the upstream would see.
+fn masked(input: &str) -> String {
+    let detector = StructuredRecognizers::new();
+    let mut vault = Vault::new();
+    vault.mask(input, &detector.detect(input))
+}
+
+#[test]
+fn grouped_pii_glued_to_a_domain_leaks_nothing() {
+    // M4-R9 — evasion shape: gluing `@domain.tld` onto a *space-grouped* card / IBAN
+    // / NINO. The email local-part class excludes the space, so the email match forms
+    // from only the trailing group and *partially* overlaps the structured span. If
+    // Email won that overlap (it briefly did, under M4-R7), the leading groups would
+    // be left IN CLEAR. Assert directly on the masked body: no digit group survives.
+    let out = masked("card 4111 1111 1111 1111@example.com");
+    assert!(!out.contains("4111"), "card digits left in clear: {out}");
+    assert!(!out.contains("1111"), "card digits left in clear: {out}");
+
+    let out = masked("iban DE89 3704 0044 0532 0130 00@example.com");
+    assert!(!out.contains("DE89"), "IBAN body left in clear: {out}");
+    assert!(!out.contains("3704"), "IBAN body left in clear: {out}");
+    assert!(!out.contains("0532"), "IBAN body left in clear: {out}");
+
+    let out = masked("nino AB 12 34 56 C@example.com");
+    assert!(!out.contains("AB 12"), "NINO left in clear: {out}");
+    assert!(!out.contains("34 56"), "NINO left in clear: {out}");
+
+    // The containment case still resolves the other way (whole email masked), so a
+    // continuous card glued to a domain leaks neither the digits nor the domain.
+    let out = masked("card 4111111111111111@example.com");
+    assert!(!out.contains("4111111111111111"), "card left in clear: {out}");
+    assert!(!out.contains("example.com"), "domain left in clear: {out}");
 }
 
 #[test]

@@ -768,6 +768,31 @@ mod tests {
     }
 
     #[test]
+    fn grouped_forms_attached_to_a_domain_do_not_leak() {
+        // M4-R9 — the counterpart to the containment case above. An email local part
+        // cannot contain spaces, so against a *grouped* card / IBAN / NINO the email
+        // regex grabs only the trailing group + `@domain` (`1111@example.com`) and
+        // merely PARTIALLY overlaps the structured span. Email must NOT win that:
+        // it would mask only the last group and leave the leading ones in clear.
+        // Each case asserts the full structured span is the single detected entity.
+        assert_eq!(
+            kinds("card 4111 1111 1111 1111@example.com"),
+            vec![(PiiKind::CreditCard, "4111 1111 1111 1111".to_string())],
+            "a grouped card must not be fragmented by the trailing @domain"
+        );
+        assert_eq!(
+            kinds("iban DE89 3704 0044 0532 0130 00@example.com"),
+            vec![(PiiKind::Iban, "DE89 3704 0044 0532 0130 00".to_string())],
+            "a grouped IBAN must not be fragmented by the trailing @domain"
+        );
+        assert_eq!(
+            kinds("nino AB 12 34 56 C@example.com"),
+            vec![(PiiKind::NationalId, "AB 12 34 56 C".to_string())],
+            "a spaced NINO must not be fragmented by the trailing @domain"
+        );
+    }
+
+    #[test]
     fn bare_numeric_national_ids_are_masked_by_design() {
         // M4-R6: the always-on 9-/11-digit recognizers gate on a real checksum, but
         // a checksum alone still accepts ~1/11 of arbitrary numbers per scheme, so
