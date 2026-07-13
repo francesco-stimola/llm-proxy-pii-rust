@@ -225,12 +225,17 @@ Three tiers: universal (always), national IDs (always, off `PII_LOCALES`), FP-pr
 - LOC-17 — **ASCII word boundaries (M4-R13)** — `cjk_prose_does_not_hide_structured_pii` (recognizers), `structured_pii_is_detected_in_cjk_and_cyrillic_prose` + `ascii_token_anti_false_positive_guarantee_survives_the_ascii_boundary` (`tests/adversarial.rs`, on the **masked body**), and the `non_ascii_scripts` corpus category. A Unicode `\b` made every anchored recognizer inert in CJK prose; `(?-u:\b)` fixes it without weakening the anti-FP rule inside ASCII tokens. **Non-vacuity:** restoring `\b` makes the detector return `[]` on the Chinese card sentence and fails corpus CJK-01 / RT-05.
 - LOC-18 — **Union naming + merge fail-safe (M4-R15 / M4-R14)** — `an_enclosed_secret_names_the_union_not_the_phone`: a `Secret` enclosed by an email names the union (it used to be reported as `[PHONE_1]` — no leak, but the model and the audit log were told the wrong kind). `a_union_ending_inside_a_multibyte_char_still_covers_every_constituent`: a union endpoint falling inside a 3-byte `€` widens out to the char boundary instead of degrading to a single constituent (which would abandon bytes — the very leak class the resolver exists to prevent).
 
-### Algorithmic complexity — detection must stay **linear** (`tests/complexity.rs`, M4-R19)
+### Algorithmic complexity — masking must stay **linear on both axes** (`tests/complexity.rs`, M4-R19 + M4-R24)
 
-**Availability is a privacy property here.** M4-R17's fix made candidate generation see *every*
-overlapping match — correct, and **O(n²)** on the two patterns with no length bound (`Email`, `Secret`):
-a ~1 MB `content` field, far under the 16 MiB body limit, pegged a core for **minutes** on an
-**unauthenticated** path (151 s at 200 KB). A proxy that is down forwards nothing — and protects nothing.
+**Availability is a privacy property here.** A proxy that is down forwards nothing — and protects nothing.
+The masking path has **two** independent size axes, and closing one says nothing about the other:
+
+| Axis | The quadratic | Guard |
+|---|---|---|
+| **field size *n*** | M4-R17's fix made candidate generation see *every* overlapping match — O(n²) on the two patterns with no length bound (`Email`, `Secret`). 151 s on a 200 KB field. | DOS-01…03 |
+| **entity count *k*** | `Vault::mask` spliced right-to-left with `replace_range`; each splice memmoves the tail, so k entities in n bytes shift Θ(n·k). A field of many *small* values has k growing with n → Θ(n²). **~7 min** on 13 MiB of repeated emails. | **DOS-04** |
+
+Both sat on the **unauthenticated** masking path, under the 16 MiB body limit.
 
 These are **timing** guards: they run the work on a worker thread against a wall-clock budget, so a
 super-linear regression fails the suite in **seconds** instead of hanging for hours. Each one *also*
@@ -245,6 +250,15 @@ asserts the value is still masked and round-trips, so a "fix" that buys speed wi
   group boundary (~200 K overlapping windows), yet each match is ≤ 19 chars, so the scan stays O(n · 19).
   **Non-vacuity:** on the pre-fix code DOS-01/02 time out while DOS-03 passes — exactly the split the
   finding predicted.
+- **DOS-04** — `masking_many_small_entities_stays_linear` (M4-R24): **600 K entities** (`"a@b.co "`×600 K,
+  ~4.2 MB — one entity every 7 bytes), asserting the *splice* completes in budget and still masks +
+  round-trips exactly. It times `Vault::mask` **alone**, because that is the code under test and it makes
+  the guard decisive rather than marginal: ~0.2 s linear against ~52 s quadratic (~250×, debug profile).
+  Detection and de-masking are linear in *n* and pinned by DOS-01…03, so they stay outside the clock. It
+  also asserts `entities.len() == reps` — **if the corpus ever coalesced back to k≈1, the guard would be
+  blind again and would say so.**
+  **Non-vacuity:** on the pre-fix splice DOS-04 times out **while DOS-01/02/03 all pass** — the same
+  before/after split M4-R19 used, and a precise reproduction of the blind spot below.
 - **Coverage is preserved, and that is tested separately** (dropping candidates is how M4-R17 made PROP-03
   pass *vacuously* — this could not be asserted, it had to be argued and pinned):
   `an_email_chain_leaves_nothing_detectable` (a chained `a@b.com@c.com`, whose second email reaches past
@@ -255,14 +269,18 @@ asserts the value is still masked and round-trips, so a "fix" that buys speed wi
 > **The rule for a new recognizer:** if its match length has **no upper bound**, it must not take
 > `Scan::Overlapping`. Bounded recognizers rescan; unbounded ones rely on the fixpoint.
 
-> **The blind spot these guards had (M4-R24, open).** DOS-01…03 all pin *one* entity (DOS-03's card row
-> coalesces to k≈1), so they measure **detection** scaling in the field *length* — and were **blind** to
-> `Vault::mask` being **O(n²) in the entity *count***: its right-to-left `replace_range` splice shifts the
-> tail once per entity, so a 13 MiB field of many small values ≈ 7 min of CPU while the *same* 13 MiB as one
-> entity masks in ~0.2 s. **A complexity guard must vary entity count, not just field size** — this is the
-> M4-R13 "the corpus has a shape, and that shape is a blind spot" lesson, recurring on the DoS guards
-> themselves. The missing guard is **DOS-04** (e.g. `"a@b.co "`×1 M, or an SSN/phone repeat): `mask_all`
-> within budget, still masked and round-tripping. Add it with the M4-R24 fix (single-pass splice).
+> **The rule for the guards themselves (M4-R24):** **vary the entity *count*, not just the field *size*.**
+> DOS-01…03 each pin **one** entity (DOS-03's card row coalesces to k≈1), so they held *k* fixed while
+> scaling *n* — and a per-entity quadratic lived right underneath them, invisible, for four milestones. The
+> smoking gun: 13.4 MiB as **one** email masks in 219 ms; the **same** 13.4 MiB as many small emails took
+> **421 s**. Identical byte size; the only variable is *k*. This is the M4-R13 lesson — *"a corpus has a
+> shape, and that shape is a blind spot"* — recurring **on the DoS guards themselves**. Ask what the guard
+> holds *constant*, not only what it varies.
+
+> **What is NOT covered here (stated so nobody reads more into it).** These guards bound the **structured**
+> (default-build) path. The optional `onnx` NER feeds the whole field as **one sequence** with no chunking,
+> so its self-attention is quadratic in field size — a separate, opt-in cost, to be **measured** by M5's
+> perf harness (PERF-01) before NER is recommended for large bodies.
 
 ### Fail-closed — masking (`src/pii/anonymizer.rs`, M4-R20)
 - FC-06 — `mask_all_blocks_when_it_cannot_reach_a_fixpoint`: exhausting `MAX_MASK_PASSES` must return

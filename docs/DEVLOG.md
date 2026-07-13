@@ -3,6 +3,58 @@
 Newest first. One entry per meaningful change — note *what* and *why*, not just
 *what*. This is the running history so context is never lost between sessions.
 
+## 2026-07-14 — M4-R24: the *other* quadratic — ask what a guard holds constant, not what it varies
+
+**M4 is done — all 24 findings closed, and M5 is unblocked.** (This supersedes the "M4 is NOT done" line in
+the entry below.)
+
+**The bug.** `Vault::mask` spliced placeholders in **right-to-left** with `String::replace_range`. Correct,
+and quadratic: every splice memmoves the whole tail of the string, so *k* entities in *n* bytes shift Θ(n·k)
+bytes — and a field of many **small** values (`a@b.co `, an SSN, a phone) has *k* growing with *n*, so it is
+**Θ(n²)**. A 13.4 MiB body of repeated emails — under the 16 MiB limit, on the **unauthenticated** masking
+path — burned **~7 minutes** of CPU. The fix is one **left-to-right copy** into a fresh, capacity-reserved
+buffer: O(n + k), each byte touched once. Placeholder numbering is untouched, because it always followed the
+entities in *start order*; splice **direction** never determined it. Measured (debug, splice isolated):
+800 K entities go from **91,049 ms → 272 ms**, and ×3.9-per-doubling becomes ×2.0 — **335×**, and linear.
+Over HTTP, the reviewer's own payload: **13.4 MiB → 1.8 s, 200 OK**; eight concurrently in 4.3 s with
+`/healthz` answering in 48 ms.
+
+**Why it survived M4-R19, which was the *same* bug.** Because the masking path has **two** size axes, and
+we had only closed one. M4-R19 made detection linear in the **field size**; this one is quadratic in the
+**entity count**. They are independent, and *closing one says nothing about the other* — linear detection
+does not bound the splice, which is why the M4-R19 pass sailed straight past it.
+
+**And the guards could not see it — that is the lesson.** DOS-01…03 scale the field to megabytes, and every
+single one of them pins the entity count at **one** (DOS-03's card row coalesces to k≈1). So they varied *n*
+and silently held *k* constant, and a per-entity quadratic lived directly underneath them. The smoking gun is
+exact: 13.4 MiB as **one** email masks in 219 ms; the **same** 13.4 MiB as many small emails took **421 s**.
+Identical bytes — the only variable is *k*.
+
+> **A quantity a test never varies is a quantity the test cannot see.** This is the M4-R13 lesson — *"a
+> corpus has a shape, and that shape is a blind spot"* — arriving a second time, now on the **guards
+> themselves**. A guard is a corpus too, and it has a shape. Ask what it holds *constant*, not only what it
+> varies.
+
+**DOS-04** is the guard that varies *k*: 600 K entities, timing `Vault::mask` **alone** (the code under test
+— that makes it decisive, ~0.2 s linear vs ~52 s quadratic, where an end-to-end debug timing would have left
+a flaky 2× margin). It asserts `entities.len() == reps`, so if the corpus ever coalesces back to k≈1 the
+guard *says so* rather than quietly going blind again. **Non-vacuity, and it reproduces the blind spot
+exactly: on the pre-fix splice DOS-04 times out while DOS-01/02/03 all pass.**
+
+**One hardening the finding didn't ask for.** The new loop slices `text[cursor..start]`, so a malformed span
+(overlapping / out of bounds / off a `char` boundary) would **panic** — and this is a proxy on
+attacker-influenced input. The precondition (guaranteed by `resolve_overlaps`, the only production caller) is
+now stated, `debug_assert!`ed, and in release handled by advancing the cursor **past** the bad span, widened
+to a `char` boundary: **drop, never leak**, never a panic.
+
+**One thing found while closing it, left open on purpose.** `OnnxNerDetector` feeds the **whole field as one
+sequence** — no chunking — so the NER path is quadratic in field size from self-attention. Opt-in and off by
+default, so it is *not* the unauthenticated DoS these two were, and not a leak. But it is the third
+appearance of the same lesson, so the docs now say "the **structured** path is linear" rather than "the path
+is linear", and PERF-01 must measure it before NER is recommended for large bodies.
+
+**126 tests green (default) / 134 + 1 `#[ignore]`d (`--features onnx`); `fmt` + `clippy` clean on both.**
+
 ## 2026-07-13 — Review 10: the DoS pass verified, and a *second* O(n²) found (M4-R24, reopens M4)
 
 **M4 is NOT done — [M4-R24](reviews/M4.md#m4-r24) (BLOCKER) is open; M5 is blocked again.** (Supersedes the

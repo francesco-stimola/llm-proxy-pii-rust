@@ -90,6 +90,27 @@ mechanisms are complementary: **bounded recognizers rescan; unbounded ones itera
 > `Scan::Overlapping`. `tests/complexity.rs` (DOS-01…03) is the guard — it fails on a super-linear scan
 > in seconds rather than hanging.
 
+**Masking must be linear in the entity *count*, not just the field *size* (M4-R24).** These are **two
+independent dimensions**, and closing one says nothing about the other. `Vault::mask` used to splice
+placeholders in right-to-left with `String::replace_range`; each splice memmoves the whole tail, so *k*
+entities in *n* bytes shift Θ(n·k) bytes — and a field of many **small** values (`a@b.co `, an SSN, a
+phone) has *k* growing with *n*, so it is **Θ(n²) all over again**, on the same unauthenticated path.
+13 MiB of repeated emails burned **~7 minutes**; the *same* 13 MiB as **one** giant email masked in
+219 ms. Detection being linear does not bound the splice — it is a separate cost, which is exactly why
+M4-R19 closed without touching it. `mask` now makes **one left-to-right copy into a fresh, capacity-
+reserved buffer** — O(n + k), each byte touched once. Placeholder numbering is unaffected: it follows the
+entities in start order, which splice direction never determined.
+
+> **The rule:** the complexity guards must vary the entity **count**, not just the field **size**.
+> DOS-01…03 each pin a *single* entity, so a per-entity quadratic lived right underneath them for four
+> milestones — the *"a corpus has a shape, and that shape is a blind spot"* lesson (M4-R13) recurring on
+> the DoS guards themselves. **DOS-04** is the many-entity guard.
+>
+> **Scope, stated honestly:** what is linear on both axes is the **structured** (default-build) masking
+> path — detect → resolve → splice → de-mask. The optional `onnx` NER feeds the **whole field as one
+> sequence** with no chunking, so transformer self-attention makes *it* quadratic in field size; that is a
+> separate, opt-in cost and is tracked as an M5 perf item, not covered here.
+
 **Masking must run to a *fixpoint* (M4-R17).** Masking **rewrites the bytes around what it replaced**,
 and a value is only recognizable in context — so masking can *expose* PII that was not detectable
 before:
@@ -221,13 +242,13 @@ For a privacy proxy the failure mode *is* the product: anything unexpected must
   stop serving, so the request-stage loop goes through `tokio::task::spawn_blocking`. If
   that task itself dies (a panic in a stage), the request is **blocked**, never forwarded:
   we'd be holding a body whose PII status is unknown. This bounds the *blast radius* (the
-  async executor survives; `/healthz` still answers). It does **not** by itself bound the
-  *cost*: detection is linear (above), but **`Vault::mask` itself is still O(n²) in the
-  entity count** — the right-to-left `replace_range` splice shifts the tail once per entity,
-  so a 13 MiB field of many small values burns minutes of CPU (**M4-R24, open** — see
-  [`reviews/M4.md`](reviews/M4.md#m4-r24)). Until that splice is made single-pass, a
-  many-entity body is a second unauthenticated DoS on this path, mediated by the blocking
-  pool rather than the async executor.
+  async executor survives; `/healthz` still answers) — it does **not** bound the *cost*. The
+  cost is bounded separately, by keeping the structured masking path linear on **both** of
+  its axes: field size (M4-R19) **and** entity count (M4-R24). Both were quadratic, and the
+  blocking pool is finite and shared, so either one alone was enough to stop the proxy
+  masking — hence serving — for everyone. Measured end-to-end: a **13.4 MiB** body of ~2 M
+  small emails now masks in **1.8 s** (it took ~7 minutes), and eight of them concurrently
+  finish in 4.3 s while `/healthz` answers in 48 ms.
 - **Tolerant de-masking.** Restore accepts model-mangled placeholders
   (`[EMAIL 1]`, `[email-1]`, `[ EMAIL_1 ]`) in one pass; a placeholder that looks
   like ours but isn't in the vault is logged rather than silently shipped.
@@ -371,9 +392,16 @@ Runtime native library at M2.
   recognizers (Email, Secret) and masking ran **inline** on the tokio worker. Fixed: the
   overlap rescan is now bounded-patterns-only (unbounded ones rely on the fixpoint), and
   masking runs on `spawn_blocking`. Detection is linear, verified by `tests/complexity.rs`.
-- **Open (M4-R24, BLOCKER)**: masking is *still* **O(n²)**, but now in the **entity count**,
-  not the field length — `Vault::mask`'s right-to-left `replace_range` splice
-  (`src/pii/anonymizer.rs`) shifts the tail once per entity. A 13 MiB `content` field of many
-  small values ≈ 7 min of CPU on the unauthenticated path; the DOS-01…03 guards miss it
-  because each pins a single entity. Fix: splice in one left-to-right pass (O(n)). See
-  [`reviews/M4.md`](reviews/M4.md#m4-r24).
+- **Resolved (M4-R24)**: masking was *still* **O(n²)**, but in the **entity count**, not the
+  field length — `Vault::mask`'s right-to-left `replace_range` splice shifted the tail once
+  per entity (13 MiB of many small values ≈ 7 min of CPU). The splice is now a single
+  left-to-right copy, O(n + k), and **DOS-04** guards it by varying the entity *count* — the
+  axis DOS-01…03 held fixed at one. The structured masking path is now linear on **both**
+  axes, measured.
+- **Open (perf, `onnx` only — not a leak, not a blocker)**: `OnnxNerDetector` feeds the
+  **whole field as one sequence** with no chunking or sliding window (`src/pii/onnx.rs`), so
+  transformer self-attention is quadratic in field size and a large body under
+  `--features onnx` is expensive well before the structured path is. Opt-in and off by
+  default, so it is not the unauthenticated DoS M4-R19/R24 were — but it is the *third* place
+  the "vary the input's shape, not just its size" lesson applies, and it must be **measured**
+  (and probably chunked) by M5's perf harness before NER is recommended for large bodies.
