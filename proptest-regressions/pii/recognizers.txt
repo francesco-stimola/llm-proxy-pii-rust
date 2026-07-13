@@ -5,3 +5,4 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc 2b1c83a4f3d9252b08ed7402491732a091f8e6dfb81770e4807f2190969d58b1 # shrinks to picks = [1, 0], glues = [0, 0, 0]
+cc d18715791be3b25a3b2b8d442cb7e3cabcaa47d10283b553dea44069dc959bfc # shrinks to picks = [3, 1], glues = [0, 0, 0]
