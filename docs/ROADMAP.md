@@ -19,27 +19,21 @@ invariants) and [`TESTING.md`](TESTING.md) (the guards) — read *those* to unde
 
 ## Status
 
-**M0 – M4 complete.** 119 tests green (default) / 127 + 1 `#[ignore]`d (`--features onnx`), no warnings.
-`v0.4.0`, AGPL-3.0-or-later. The product masks structured PII (universal + national-ID packs for 10
-countries) and unstructured entities (ONNX NER, XLM-R int8), streams, and fronts OpenAI / Copilot /
-Anthropic via their OpenAI-compatible endpoints.
+**M0 – M4 complete, and M4's ledger is clean — all 23 findings closed.** 125 tests green (default) /
+133 + 1 `#[ignore]`d (`--features onnx`), no warnings. `v0.4.0`, AGPL-3.0-or-later. The product masks
+structured PII (universal + national-ID packs for 10 countries) and unstructured entities (ONNX NER,
+XLM-R int8), streams, and fronts OpenAI / Copilot / Anthropic via their OpenAI-compatible endpoints.
 
 ### Open work — everything not yet done
 
 | What | Where | Status |
 |---|---|---|
-| **M4-R19** — algorithmic-complexity DoS in the overlap rescan (O(n²)) | [reviews/M4](reviews/M4.md#m4-r19) | **[ ] BLOCKER** |
-| M4-R20 — `mask_all` fails *open* on pass exhaustion | [reviews/M4](reviews/M4.md#m4-r20) | [ ] low-med |
-| M4-R21 — `mask_all` runs the detector ≥2× (perf note) | [reviews/M4](reviews/M4.md#m4-r21) | [ ] low |
-| M4-R22 — no MSRV in `Cargo.toml` (`is_none_or` needs 1.82) | [reviews/M4](reviews/M4.md#m4-r22) | [ ] low |
-| M4-R23 — four code comments cite ROADMAP sections whose content moved to `docs/reviews/` | [reviews/M4](reviews/M4.md#m4-r23) | [ ] docs |
 | **M5** — integration & performance testing | [below](#m5) | [ ] not started |
 
-**M4-R19 is a blocker and should land first** — a ~1–2 MB request field, well under the body limit, pegs a
-core for minutes on an unauthenticated path.
-
-**M5 does not start until M4's ledger is clean.** Every open row above belongs to M4, and M5's first act
-is a performance harness — running it over a known O(n²) path would measure the bug, not the product.
+**M5 is unblocked.** Its prerequisite was a clean M4 ledger — in particular
+[M4-R19](reviews/M4.md#m4-r19), the O(n²) candidate rescan: a perf harness over a known quadratic path
+would have measured the bug, not the product. Detection is now **linear** (measured), masking runs on the
+blocking pool, and the MSRV is declared, so the harness can start from a sound baseline.
 
 ---
 
@@ -214,8 +208,8 @@ upstream provider.
 - **Locale phone national formats** → moved to Backlog (the FP-prone tier's first recognizer; the `+CC` arm already covers the unambiguous case)
 
 ### Review ledger — M4 → [`reviews/M4.md`](reviews/M4.md)
-**Six review rounds, 22 findings — 18 closed, 4 open.** More than every other milestone combined, because
-**M4-R7 → R9 → R10/R11 → R13 → R17 is one bug rediscovered five times.** The
+**Six review rounds, 23 findings — all closed.** More than every other milestone combined, because
+**M4-R7 → R9 → R10/R11 → R13 → R17 → R19 is one bug rediscovered six times.** The
 [retrospective](reviews/M4.md#retrospective) is the most useful page in this repo.
 
 | ID | Title | Sev | Status |
@@ -237,20 +231,20 @@ upstream provider.
 | [M4-R16](reviews/M4.md#m4-r16) | PROP-03 itself was still ASCII-only — the blind spot inside the guard | guard | [x] |
 | [M4-R17](reviews/M4.md#m4-r17) | `find_iter` **hides** a value from the candidate set → the invariant passed *vacuously* | **LEAK** | [x] |
 | [M4-R18](reviews/M4.md#m4-r18) | Five comments still described the deleted containment gate | docs | [x] |
-| [**M4-R19**](reviews/M4.md#m4-r19) | **Overlap rescan is O(n²) → unauthenticated DoS** (151 s on a 200 KB field) | **BLOCKER** | **[ ]** |
-| [M4-R20](reviews/M4.md#m4-r20) | `mask_all` fails **open** on pass exhaustion (latent, not shown reachable) | low-med | **[ ]** |
-| [M4-R21](reviews/M4.md#m4-r21) | `mask_all` runs the detector ≥2× (~2× NER inference) — perf note, fold into M5 | low | **[ ]** |
-| [M4-R22](reviews/M4.md#m4-r22) | No MSRV in `Cargo.toml` — an M5 CI blocker-in-waiting | low | **[ ]** |
-| [M4-R23](reviews/M4.md#m4-r23) | Four code comments cite ROADMAP sections whose content moved to `docs/reviews/` | docs | **[ ]** |
+| [M4-R19](reviews/M4.md#m4-r19) | **Overlap rescan is O(n²) → unauthenticated DoS** (151 s on a 200 KB field) → the rescan is now for **bounded** patterns only; the unbounded two rely on the fixpoint | **BLOCKER** | [x] |
+| [M4-R20](reviews/M4.md#m4-r20) | `mask_all` fails **open** on pass exhaustion → the fixpoint is now **confirmed**, not assumed | low-med | [x] |
+| [M4-R21](reviews/M4.md#m4-r21) | `mask_all` runs the detector ≥2× (~2× NER inference) → **accepted as designed** (it *is* the fixpoint confirmation); measured by M5's PERF-01 | low | [x] |
+| [M4-R22](reviews/M4.md#m4-r22) | No MSRV in `Cargo.toml` — an M5 CI blocker-in-waiting | low | [x] |
+| [M4-R23](reviews/M4.md#m4-r23) | Four code comments cite ROADMAP sections whose content moved to `docs/reviews/` | docs | [x] |
 
 <a id="m5"></a>
 ## M5 — Integration & performance testing
 Prove the whole system holds **end-to-end** and **under load**, then document it. The feature set
 (structured + NER + streaming + multi-provider) is complete enough to test as a product.
 
-> **Prerequisite: M4's ledger must be clean.** All five open findings (M4-R19…R23) land before M5 starts —
-> a perf harness over a known O(n²) path ([M4-R19](reviews/M4.md#m4-r19)) measures the bug, not the
-> product, and CI needs the MSRV ([M4-R22](reviews/M4.md#m4-r22)).
+> **Prerequisite met (2026-07-13): M4's ledger is clean.** A perf harness over a known O(n²) path
+> ([M4-R19](reviews/M4.md#m4-r19)) would have measured the bug, not the product — detection is now
+> **linear**, verified by `tests/complexity.rs`. CI has its MSRV ([M4-R22](reviews/M4.md#m4-r22)).
 
 - [ ] **Real integration tests** — full mask → forward → (stream) → de-mask round-trips, tool-call
   round-trips, multi-turn determinism, and the fail-closed paths. **Mock upstreams cover all three preset
@@ -269,6 +263,12 @@ Prove the whole system holds **end-to-end** and **under load**, then document it
 - [ ] **Performance / load harness** — concurrent connections, large bodies, streaming throughput; latency
   and RAM of the mask → forward → de-mask path (NER on/off). *Stability under load was the founding
   motivation — measure it, don't assume it.*
+  - [ ] Score the **fixpoint's second detector pass** ([M4-R21](reviews/M4.md#m4-r21)): `mask_all` runs the
+    detector ≥2×, which roughly **doubles NER inference** (64 ms → 127 ms measured). It is a deliberate
+    correctness cost — that pass is what makes masking fail-closed — so this is a *measurement*, not a fix.
+    Optimize only if load says so.
+  - [ ] Keep `tests/complexity.rs` (DOS-01…03) as the harness's floor: those pin detection at **linear**,
+    so a load result can never again be a measurement of an algorithmic bug.
 - [ ] **Update the root `README.md`** (+ `README.it.md`) to describe the shipped product — what it does,
   three-tier detection + NER, streaming, multi-provider usage, config/env, status. It is intentionally
   high-level today ("early development"); this is the pass that makes it describe a working system.

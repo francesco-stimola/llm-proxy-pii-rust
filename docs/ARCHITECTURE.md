@@ -70,10 +70,25 @@ non-ASCII **letter** as part of a number. (`Email` / `Phone` are anchored by cha
 leftmost-**non-overlapping**: after a hit it resumes at the match's *end*. A real value that **starts
 inside** an earlier match of the *same* recognizer is therefore never emitted as a candidate — and an
 invariant over the candidate set is then satisfied **vacuously**, because the resolver never learns the
-value exists. *An invariant is only ever as strong as the set it quantifies over.* So each recognizer
+value exists. *An invariant is only ever as strong as the set it quantifies over.* So a recognizer
 resumes one `char` past a match's **start**, and its overlapping hits are coalesced into maximal runs
 (which keeps the candidate set bounded on pathological input at no cost to coverage — the resolver
 would union those spans anyway).
+
+**…but only where the pattern's length is *bounded* (M4-R19).** That rescan probes O(n) start
+positions, each costing at most one maximal match, so it is **O(n · L)** for a pattern whose longest
+match is L. Linear while L is bounded — a card is ≤ 19 digits, an IBAN ≤ 44 chars, every national ID ≤
+18 — but the two **unbounded** patterns, `Email` (`[…]+@[…]+`) and `Secret` (`sk-[…]{6,}`), have L =
+O(n), so it degenerates to **O(n²)**: a ~1 MB `content` field, far under the 16 MiB body limit, pegged a
+core for *minutes* on an unauthenticated path. Those two therefore keep plain `find_iter` semantics
+(`Scan::Sequential` in `recognizers.rs`), and it **costs no coverage** — a same-recognizer match that
+starts inside an earlier one is *contained* in it (both run greedily to the same word boundary), and the
+one shape that isn't, a chained `a@b.com@c.com`, is caught by the **fixpoint** below instead. So the two
+mechanisms are complementary: **bounded recognizers rescan; unbounded ones iterate.**
+
+> **The rule for a new recognizer:** if its match length has no upper bound, it must **not** take
+> `Scan::Overlapping`. `tests/complexity.rs` (DOS-01…03) is the guard — it fails on a super-linear scan
+> in seconds rather than hanging.
 
 **Masking must run to a *fixpoint* (M4-R17).** Masking **rewrites the bytes around what it replaced**,
 and a value is only recognizable in context — so masking can *expose* PII that was not detectable
@@ -91,13 +106,15 @@ placeholder is **inert** (no recognizer can match `[KIND_N]` or span across it),
 shrinks the un-masked text. The round-trip stays exact — every pass records raw value → placeholder, and
 `demask` restores them all in one tolerant pass.
 
-> ⚠️ **`MAX_MASK_PASSES` currently fails *open* — [M4-R20](reviews/M4.md#m4-r20), open.** On exhaustion the
-> loop returns the text **without a final re-detect**, so anything still un-masked is forwarded. "Each pass
-> strictly shrinks the un-masked text" guarantees *eventual* convergence — **not** convergence within the
-> bound, so the reassuring reading ("hitting it can only mean over-masking") is **unproven**. Not shown
-> reachable (an exhaustive search over 314k glued inputs never exceeded **2** passes — masking *fragments* a
-> digit run rather than peeling it, so exposure depth stays tiny), but it contradicts the fail-closed bar and
-> the fix is to `Err` out and block.
+**Exhausting `MAX_MASK_PASSES` fails *closed* (M4-R20).** The bound is a safety net, not a proof: *"each
+pass strictly shrinks the un-masked text"* buys **eventual** convergence, never convergence **within**
+four passes. So `mask_all` **confirms** the fixpoint rather than assuming it — one final `try_detect`,
+and if anything is still detectable it returns `Err` and `PrivacyStage` **blocks** the request (400).
+Forwarding a *probably*-clean text is exactly the failure mode a privacy proxy must not have. (No input
+has ever been shown to need more than **2** passes — an exhaustive search over 314k glued inputs never
+exceeded it, because masking *fragments* a digit run rather than peeling it — so this stays a latent
+path. It is fail-closed regardless, which is the point: the bar does not depend on the search being
+exhaustive.)
 
 **Overlap resolution (`src/pii/overlap.rs`).** Detectors produce overlapping candidate spans;
 `resolve_overlaps` reduces them to a non-overlapping set. Its governing rule is an **invariant,
@@ -197,6 +214,14 @@ For a privacy proxy the failure mode *is* the product: anything unexpected must
 - **Body-size limit.** `MAX_BODY_BYTES` (default 16 MiB) is applied via
   `DefaultBodyLimit`, above axum's 2 MiB default, so long-context requests aren't
   silently rejected.
+- **Masking runs on the blocking pool, not on a tokio worker (M4-R19).** Detection is
+  **CPU-bound** — regex scans over every text field, plus NER inference when it's on — and
+  it sits on an **unauthenticated** path (it precedes any upstream auth). Run inline, a
+  handful of concurrent large bodies would starve the executor and the whole proxy would
+  stop serving, so the request-stage loop goes through `tokio::task::spawn_blocking`. If
+  that task itself dies (a panic in a stage), the request is **blocked**, never forwarded:
+  we'd be holding a body whose PII status is unknown. This bounds the *blast radius*; the
+  actual cost is bounded by keeping detection **linear** (above).
 - **Tolerant de-masking.** Restore accepts model-mangled placeholders
   (`[EMAIL 1]`, `[email-1]`, `[ EMAIL_1 ]`) in one pass; a placeholder that looks
   like ours but isn't in the vault is logged rather than silently shipped.

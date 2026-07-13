@@ -3,6 +3,63 @@
 Newest first. One entry per meaningful change — note *what* and *why*, not just
 *what*. This is the running history so context is never lost between sessions.
 
+## 2026-07-13 — M4-R19/R20/R22/R23: a safety fix has a cost, and the cost is part of the fix
+
+**M4 is done — all 23 findings closed, and M5 is unblocked.**
+
+**M4-R19 (BLOCKER) — the fix for M4-R17 was a denial of service.** Making candidate generation see *every*
+overlapping match meant resuming the regex one `char` past each match's **start** — O(n) start positions.
+Fine while a match is **bounded** (a card is ≤ 19 digits), but the two patterns with **no length bound** —
+`Email` (`[…]+@[…]+`) and `Secret` (`sk-[…]{6,}`) — re-matched an O(n)-long value at every one of them:
+**O(n²)**. A ~1 MB `content` field, far under the 16 MiB body limit, pegged a core for **minutes** on an
+**unauthenticated** path (151 s at 200 KB; masking runs *before* any upstream auth). A proxy that is down
+forwards nothing — and protects nothing. **Availability is a privacy property here.**
+
+The fix is a `Scan` enum on `Recognizer`, decided by one property of the pattern — *is its match length
+bounded?* The ten bounded patterns keep the rescan (`Scan::Overlapping`, O(n·L), linear — **and the M4-R17
+repro is a `CreditCard`, so it stays closed**); the two unbounded ones go back to plain `find_iter`
+(`Scan::Sequential`).
+
+**The hard part was proving that costs no coverage** — because shrinking a candidate set is *exactly* how
+M4-R17 made PROP-03 pass vacuously, so this needed an argument, not an assertion. A same-recognizer match
+that starts inside an earlier one is **contained** in it (both run greedily to the same word boundary), so
+it adds no bytes — for `Secret` that is the whole story. For `Email` there is one shape that isn't
+contained, a chained `a@b.com@c.com`, whose second email starts inside the first's *domain* and reaches
+past its end. **The fixpoint catches it**: masking the first leaves `[EMAIL_1]@c.com`, and `mask_all`
+re-detects until nothing is left, so any surviving `local@domain` is masked on the next pass
+(`a@b.com+x@c.com` → `[EMAIL_1][EMAIL_2]`). What remains is a bare `@domain` — not PII (M4-R11). So the two
+mechanisms turn out to be **complementary**: *bounded recognizers rescan; unbounded ones iterate.*
+
+Measured (release, 1 MB inputs): email **15 ms**, secret **23 ms**, and the *bounded* card row **160 ms** —
+and doubling N doubles the time (2.1 → 3.7 → 7.7 → 15.3 → 29.7 ms across N = 125 K → 2 M), so it is
+**linear by measurement**, not just "fast". Masking also moved to `tokio::task::spawn_blocking`: it is
+CPU-bound (regex scans, plus NER inference when on), and inline it could starve the executor. A panicking
+stage now **blocks** the request — we'd be holding a body of unknown PII status.
+
+New `tests/complexity.rs` (**DOS-01…03**) pins it. They are *timing* guards on a worker thread with a
+wall-clock budget, so a quadratic regression fails in **seconds** rather than hanging for hours — and each
+also asserts the value is still masked and round-trips, so a "fix" that buys speed with blindness fails
+too. **Verified non-vacuous: on the pre-fix code DOS-01/02 time out while DOS-03 passes** — precisely the
+bounded/unbounded split the finding predicted.
+
+**M4-R20 — the fixpoint is now *confirmed*, not assumed.** Exhausting `MAX_MASK_PASSES` used to return the
+text anyway, forwarding anything still un-masked — a fail-*open* in a fail-closed product. The reassuring
+comment ("hitting it can only mean over-masking") was **unproven**: *"each pass strictly shrinks the
+un-masked text"* buys **eventual** convergence, never convergence **within four passes**. `mask_all` now
+runs one final `try_detect`; anything still detectable → `Err` → `PrivacyStage` blocks (400). No cost on
+the normal path (a converging text — every real one, ≤ 2 passes — runs exactly as many detections as
+before). Guarded by a synthetic `NeverConverges` detector.
+
+**M4-R21 — closed as *not a bug*.** `mask_all` runs the detector ≥2× (~2× NER inference). That second pass
+**is** the fail-closed confirmation above, so it is a deliberate correctness cost, not an oversight.
+Carried into M5's PERF-01 as a *measurement*.
+
+**M4-R22/R23 — the small ones.** `rust-version = "1.82"` declared (`Option::is_none_or` sets the floor;
+M5's CI would have discovered it by failing), and the four code comments left dangling by the docs refactor
+now point at `docs/reviews/` anchors instead of ROADMAP sections that no longer hold the explanation.
+
+**125 tests green (default) / 133 + 1 `#[ignore]`d (`--features onnx`), no warnings.**
+
 ## 2026-07-13 — M4-R16/R17/R18: an invariant is only as strong as the set it quantifies over
 
 Sixth review of this area. The theme this time is **the limits of the guard itself**.

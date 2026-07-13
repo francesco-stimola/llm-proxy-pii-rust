@@ -225,6 +225,45 @@ Three tiers: universal (always), national IDs (always, off `PII_LOCALES`), FP-pr
 - LOC-17 — **ASCII word boundaries (M4-R13)** — `cjk_prose_does_not_hide_structured_pii` (recognizers), `structured_pii_is_detected_in_cjk_and_cyrillic_prose` + `ascii_token_anti_false_positive_guarantee_survives_the_ascii_boundary` (`tests/adversarial.rs`, on the **masked body**), and the `non_ascii_scripts` corpus category. A Unicode `\b` made every anchored recognizer inert in CJK prose; `(?-u:\b)` fixes it without weakening the anti-FP rule inside ASCII tokens. **Non-vacuity:** restoring `\b` makes the detector return `[]` on the Chinese card sentence and fails corpus CJK-01 / RT-05.
 - LOC-18 — **Union naming + merge fail-safe (M4-R15 / M4-R14)** — `an_enclosed_secret_names_the_union_not_the_phone`: a `Secret` enclosed by an email names the union (it used to be reported as `[PHONE_1]` — no leak, but the model and the audit log were told the wrong kind). `a_union_ending_inside_a_multibyte_char_still_covers_every_constituent`: a union endpoint falling inside a 3-byte `€` widens out to the char boundary instead of degrading to a single constituent (which would abandon bytes — the very leak class the resolver exists to prevent).
 
+### Algorithmic complexity — detection must stay **linear** (`tests/complexity.rs`, M4-R19)
+
+**Availability is a privacy property here.** M4-R17's fix made candidate generation see *every*
+overlapping match — correct, and **O(n²)** on the two patterns with no length bound (`Email`, `Secret`):
+a ~1 MB `content` field, far under the 16 MiB body limit, pegged a core for **minutes** on an
+**unauthenticated** path (151 s at 200 KB). A proxy that is down forwards nothing — and protects nothing.
+
+These are **timing** guards: they run the work on a worker thread against a wall-clock budget, so a
+super-linear regression fails the suite in **seconds** instead of hanging for hours. Each one *also*
+asserts the value is still masked and round-trips, so a "fix" that buys speed with blindness fails too.
+
+- DOS-01 — `a_huge_email_local_part_does_not_blow_up`: `"a"*1_000_000 + "@b.co"` → detected, masked whole
+  (`[EMAIL_1]`), exact round-trip, well inside budget.
+- DOS-02 — `a_huge_run_of_secret_prefixes_does_not_blow_up`: `"sk-"*350_000` (~1 MB) → one placeholder, no
+  `sk-` fragment in clear.
+- DOS-03 — `a_long_row_of_card_groups_stays_linear`: 1 MB of 4-digit card groups. The **bounded**
+  recognizers *keep* the M4-R17 rescan, so this pins the other half of the claim — a card matches at every
+  group boundary (~200 K overlapping windows), yet each match is ≤ 19 chars, so the scan stays O(n · 19).
+  **Non-vacuity:** on the pre-fix code DOS-01/02 time out while DOS-03 passes — exactly the split the
+  finding predicted.
+- **Coverage is preserved, and that is tested separately** (dropping candidates is how M4-R17 made PROP-03
+  pass *vacuously* — this could not be asserted, it had to be argued and pinned):
+  `an_email_chain_leaves_nothing_detectable` (a chained `a@b.com@c.com`, whose second email reaches past
+  the first — the **fixpoint** catches the remainder one pass later) and
+  `a_secret_hidden_inside_a_secret_is_still_covered` (a nested `sk-…` is always *contained* in the outer
+  match, so the rescan added nothing there to begin with).
+
+> **The rule for a new recognizer:** if its match length has **no upper bound**, it must not take
+> `Scan::Overlapping`. Bounded recognizers rescan; unbounded ones rely on the fixpoint.
+
+### Fail-closed — masking (`src/pii/anonymizer.rs`, M4-R20)
+- FC-06 — `mask_all_blocks_when_it_cannot_reach_a_fixpoint`: exhausting `MAX_MASK_PASSES` must return
+  `Err` (→ `PrivacyStage` blocks, 400), **not** forward the text. A synthetic `NeverConverges` detector
+  always reports the *first character* as PII, so masking it exposes a new first character and the fixpoint
+  is never reached. The bound gives *eventual* convergence, never convergence **within four passes**, so
+  the fixpoint is **confirmed**, not assumed. Also asserts the error carries **no input text** (DBG-02's
+  never-log-raw-PII rule) and that a normally-converging detector still returns `Ok` — so the guard can't
+  pass by breaking masking for everyone.
+
 ### M5 — integration & performance (planned)
 - E2E-INT-01 *(planned)* — real-provider smoke against **Anthropic** (OpenAI-compat endpoint; opt-in, needs a key, never in CI): a PII round-trip returns the restored value while the request left masked.
 - E2E-INT-02 *(planned, manual)* — the **dual-run** check with `RUST_LOG=…=trace`: Run A (`PII_DEBUG_SKIP_DEMASK=1`) → client gets the placeholders; Run B (normal) → client gets the restored values. Proves the whole chain end-to-end; trace logging re-checks DBG-02 (never-log-raw-PII) on **real** data.
