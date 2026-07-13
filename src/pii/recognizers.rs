@@ -42,16 +42,25 @@ impl StructuredRecognizers {
         Self::with_locales(&["it", "us"])
     }
 
-    /// Build with an explicit list of locale codes (M4). The **universal**
-    /// recognizers — email, secret, credit card, IBAN (any country + mod-97),
-    /// phone (US + `+CC` international) — are always included; each locale adds its
-    /// **national-identifier** recognizers (US SSN, IT Codice Fiscale, GB NINO).
-    /// Unknown codes contribute nothing. The regexes stay conservative: precision
-    /// matters more than recall for structured PII (the ML NER covers fuzzy cases).
+    /// Build with an explicit list of locale codes (M4). Three tiers:
+    ///
+    /// - **Universal** — email, secret, credit card, IBAN (any country + mod-97),
+    ///   phone (US + `+CC`) — always on.
+    /// - **National identifiers** — US SSN, IT Codice Fiscale, GB NINO, ES DNI/NIE,
+    ///   FR NIR — **always on regardless of `locales`** (M4-R1, privacy-first: a
+    ///   national ID that reaches the proxy is masked even if its country isn't
+    ///   configured). Each is specific enough (checksums / prefix rules) to stay
+    ///   near-zero false-positive when always on.
+    /// - **FP-prone** — ambiguous recognizers (e.g. national *phone* formats with
+    ///   no `+CC`) — opt-in per locale via `locales`.
+    ///
+    /// So `locales` (from `PII_LOCALES`) gates *ambiguous* recognizers, not "which
+    /// countries" — national IDs are never gated off.
     pub fn with_locales<S: AsRef<str>>(locales: &[S]) -> Self {
         let mut recognizers = universal_recognizers();
+        recognizers.extend(national_id_recognizers());
         for locale in locales {
-            recognizers.extend(locale_recognizers(locale.as_ref()));
+            recognizers.extend(fp_prone_recognizers(locale.as_ref()));
         }
         Self { recognizers }
     }
@@ -111,34 +120,61 @@ fn universal_recognizers() -> Vec<Recognizer> {
     ]
 }
 
-/// National-identifier recognizers for one locale code (ISO-3166-ish, e.g. `us`,
-/// `it`, `gb`). Each pattern is deliberately specific (fixed letter/digit layout)
-/// to keep the false-positive rate low. Unknown codes yield nothing (M4).
-fn locale_recognizers(code: &str) -> Vec<Recognizer> {
-    match code.trim().to_ascii_lowercase().as_str() {
-        // US SSN: 3-2-4 digit groups.
-        "us" => vec![Recognizer {
+/// National-identifier recognizers — **always on** (M4-R1), independent of the
+/// configured locales: a national ID that reaches the proxy is masked even if its
+/// country isn't in `PII_LOCALES` (privacy-first, "a miss is a leak"). Each pattern
+/// is specific (interleaved letters/digits, prefix rules, checksums) to keep the
+/// always-on false-positive rate near zero.
+fn national_id_recognizers() -> Vec<Recognizer> {
+    vec![
+        // US SSN: 3-2-4 digit groups (keeps its own `Ssn` kind / `[SSN_N]`).
+        Recognizer {
             kind: PiiKind::Ssn,
             regex: Regex::new(r"\b\d{3}-\d{2}-\d{4}\b").unwrap(),
             validate: None,
-        }],
+        },
         // Italian Codice Fiscale: 6 letters, 2 digits, letter, 2 digits, letter,
         // 3 digits, letter (16 chars). The interleaved digits make it specific.
-        "it" => vec![Recognizer {
+        Recognizer {
             kind: PiiKind::NationalId,
             regex: Regex::new(r"\b[A-Za-z]{6}\d{2}[A-Za-z]\d{2}[A-Za-z]\d{3}[A-Za-z]\b").unwrap(),
             validate: None,
-        }],
+        },
         // UK National Insurance Number: 2 prefix letters, 6 digits, a suffix letter
-        // A–D — compact (`AB123456C`) or space-grouped (`AB 12 34 56 C`).
-        "gb" | "uk" => vec![Recognizer {
+        // A–D — compact (`AB123456C`) or space-grouped (`AB 12 34 56 C`). The prefix
+        // rules (M4-R2) reject look-alikes like an order code `PO123456A`.
+        Recognizer {
             kind: PiiKind::NationalId,
             regex: Regex::new(
                 r"\b[A-Za-z]{2}\d{6}[A-Da-d]\b|\b[A-Za-z]{2} \d{2} \d{2} \d{2} [A-Da-d]\b",
             )
             .unwrap(),
-            validate: None,
-        }],
+            validate: Some(nino_prefix_valid),
+        },
+        // Spanish DNI (8 digits) / NIE (X/Y/Z + 7 digits), each with a mod-23 check
+        // letter that must match — so a random 8-digit+letter token won't pass.
+        Recognizer {
+            kind: PiiKind::NationalId,
+            regex: Regex::new(r"\b(?:[XYZxyz]\d{7}|\d{8})[A-Za-z]\b").unwrap(),
+            validate: Some(es_dni_nie_valid),
+        },
+        // French NIR (social security): 15 digits — sex + YY + MM + geo/order + a
+        // mod-97 key that must check out (Corsica's 2A/2B letter form is a follow-up).
+        Recognizer {
+            kind: PiiKind::NationalId,
+            regex: Regex::new(r"\b[12]\d{2}(?:0[1-9]|1[0-2])\d{10}\b").unwrap(),
+            validate: Some(fr_nir_valid),
+        },
+    ]
+}
+
+/// **FP-prone** recognizers for one locale (M4-R1) — ambiguous patterns opted in
+/// via `PII_LOCALES` (unlike national IDs, which are always on). None yet: the seam
+/// is kept for national *phone* formats (numbers with no `+CC`), which need careful
+/// precision work before they can run globally. Unknown codes yield nothing.
+fn fp_prone_recognizers(code: &str) -> Vec<Recognizer> {
+    match code.trim().to_ascii_lowercase().as_str() {
+        // e.g. "gb" => vec![ UK national phone formats ] — deferred (see ROADMAP M4).
         _ => Vec::new(),
     }
 }
@@ -195,6 +231,80 @@ fn confidence_of(kind: PiiKind, text: &str) -> Confidence {
         PiiKind::Iban if !iban_mod97(text) => Confidence::Structural,
         _ => Confidence::Verified,
     }
+}
+
+/// Validate a UK NINO's two-letter prefix (M4-R2): the shape regex alone masks any
+/// `AB123456C`-looking token (e.g. an order code `PO123456A`), so the official
+/// prefix rules narrow it. First letter ∉ {D,F,I,Q,U,V}; second ∉ {D,F,I,O,Q,U,V};
+/// the pair is not one of the administratively invalid ones. Keeps precision high
+/// enough for the always-on national-ID tier (M4-R1).
+fn nino_prefix_valid(matched: &str) -> bool {
+    let mut letters = matched.chars().filter(|c| c.is_ascii_alphabetic());
+    let (Some(first), Some(second)) = (letters.next(), letters.next()) else {
+        return false;
+    };
+    let first = first.to_ascii_uppercase();
+    let second = second.to_ascii_uppercase();
+
+    const INVALID_FIRST: &[char] = &['D', 'F', 'I', 'Q', 'U', 'V'];
+    const INVALID_SECOND: &[char] = &['D', 'F', 'I', 'O', 'Q', 'U', 'V'];
+    const INVALID_PAIRS: &[[char; 2]] = &[
+        ['B', 'G'],
+        ['G', 'B'],
+        ['K', 'N'],
+        ['N', 'K'],
+        ['N', 'T'],
+        ['T', 'N'],
+        ['Z', 'Z'],
+    ];
+
+    !INVALID_FIRST.contains(&first)
+        && !INVALID_SECOND.contains(&second)
+        && !INVALID_PAIRS.contains(&[first, second])
+}
+
+/// Spanish DNI / NIE check letter (ISO mod-23). The 8-digit body (a NIE's X/Y/Z
+/// prefix maps to 0/1/2) indexes a fixed 23-letter table; the final letter must
+/// match. Rejects a random 8-digit+letter token — key to the always-on tier (M4).
+fn es_dni_nie_valid(matched: &str) -> bool {
+    const CONTROL: &[u8; 23] = b"TRWAGMYFPDXBNJZSQVHLCKE";
+    let bytes = matched.to_ascii_uppercase().into_bytes();
+    if bytes.len() != 9 {
+        return false;
+    }
+    let check = bytes[8];
+    // NIE prefix letter → leading digit; DNI starts straight at the digits.
+    let (start, mut number) = match bytes[0] {
+        b'X' => (1, String::from("0")),
+        b'Y' => (1, String::from("1")),
+        b'Z' => (1, String::from("2")),
+        _ => (0, String::new()),
+    };
+    for &b in &bytes[start..8] {
+        if !b.is_ascii_digit() {
+            return false;
+        }
+        number.push(b as char);
+    }
+    match number.parse::<u64>() {
+        Ok(n) => CONTROL[(n % 23) as usize] == check,
+        Err(_) => false,
+    }
+}
+
+/// French NIR (social-security number) mod-97 key check: the last 2 of the 15
+/// digits are `97 - (first-13-digits mod 97)`. The key makes a plain 15-digit run
+/// pass only ~1/97 of the time — specific enough for the always-on tier (M4).
+fn fr_nir_valid(matched: &str) -> bool {
+    let digits: Vec<u8> = matched.bytes().filter(u8::is_ascii_digit).collect();
+    if digits.len() != 15 {
+        return false;
+    }
+    let parse = |slice: &[u8]| std::str::from_utf8(slice).ok()?.parse::<u64>().ok();
+    let (Some(body), Some(key)) = (parse(&digits[..13]), parse(&digits[13..])) else {
+        return false;
+    };
+    97 - (body % 97) == key
 }
 
 /// Accept a credit-card candidate only if it has 13–19 digits and passes Luhn.
@@ -287,32 +397,84 @@ mod tests {
     }
 
     #[test]
-    fn uk_nino_needs_the_gb_locale() {
-        let nino = "NINO AB123456C on file";
-        // Not active by default (IT + US only)…
-        assert!(kinds(nino).is_empty(), "NINO should not match without the GB locale");
-        // …but detected once GB is enabled, compact or space-grouped.
+    fn national_ids_are_always_on() {
+        // M4-R1: national IDs run regardless of PII_LOCALES — a US-only set still
+        // masks an Italian CF and a UK NINO (each specific enough to be safe
+        // globally); an unrelated `fr` locale still gets US SSN. Privacy-first.
         assert_eq!(
-            kinds_with(&["gb"], nino),
+            kinds_with(&["us"], "codice RSSMRA85T10A562S"),
+            vec![(PiiKind::NationalId, "RSSMRA85T10A562S".to_string())]
+        );
+        assert_eq!(
+            kinds_with(&["us"], "NINO AB123456C on file"),
             vec![(PiiKind::NationalId, "AB123456C".to_string())]
         );
         assert_eq!(
-            kinds_with(&["gb"], "NINO AB 12 34 56 C on file"),
-            vec![(PiiKind::NationalId, "AB 12 34 56 C".to_string())]
+            kinds_with(&["fr"], "ssn 123-45-6789"),
+            vec![(PiiKind::Ssn, "123-45-6789".to_string())]
         );
     }
 
     #[test]
-    fn locale_selection_is_scoped() {
-        // A US-only set must not detect an Italian Codice Fiscale…
-        assert!(kinds_with(&["us"], "codice RSSMRA85T10A562S").is_empty());
-        // …while US SSN still works, and the universal recognizers are unaffected.
+    fn spanish_dni_nie_check_letter() {
+        // Valid DNI + NIE (mod-23 letter matches)…
+        assert!(es_dni_nie_valid("12345678Z"));
+        assert!(es_dni_nie_valid("X1234567L"));
+        // …wrong check letter rejected.
+        assert!(!es_dni_nie_valid("12345678A"));
+        assert!(!es_dni_nie_valid("X1234567M"));
+    }
+
+    #[test]
+    fn spanish_dni_detected_and_lookalike_rejected() {
         assert_eq!(
-            kinds_with(&["us"], "ssn 123-45-6789 mail a@b.com"),
-            vec![
-                (PiiKind::Ssn, "123-45-6789".to_string()),
-                (PiiKind::Email, "a@b.com".to_string()),
-            ]
+            kinds("dni 12345678Z ok"),
+            vec![(PiiKind::NationalId, "12345678Z".to_string())]
+        );
+        // A same-shaped token with the wrong check letter must not be masked.
+        assert!(kinds("ref 12345678A").is_empty());
+    }
+
+    /// Append the correct mod-97 key to a 13-digit NIR body.
+    fn fr_nir(body13: &str) -> String {
+        let body: u64 = body13.parse().unwrap();
+        let key = 97 - (body % 97);
+        format!("{body13}{key:02}")
+    }
+
+    #[test]
+    fn french_nir_key_check() {
+        let nir = fr_nir("1851275116001");
+        assert!(fr_nir_valid(&nir));
+        // Wrong key (00 is never the real key, which is 1..=97) is rejected.
+        assert!(!fr_nir_valid("185127511600100"));
+    }
+
+    #[test]
+    fn french_nir_detected() {
+        let nir = fr_nir("1851275116001");
+        // Masked (kind may resolve to CreditCard if the number is also Luhn-valid,
+        // but it must never be left in clear).
+        let got = kinds(&format!("NIR {nir} today"));
+        assert_eq!(got.len(), 1, "the NIR must be detected: {got:?}");
+        assert_eq!(got[0].1, nir);
+    }
+
+    #[test]
+    fn uk_nino_prefix_rules_reject_lookalikes() {
+        // M4-R2: the shape alone would mask any 2-letter+6-digit+A–D token, so the
+        // prefix rules must reject look-alikes (an order code, an invalid pair).
+        // National IDs are always on, so this holds with the default locales.
+        assert!(
+            kinds("order PO123456A shipped").is_empty(),
+            "second letter O is invalid — must not mask"
+        );
+        assert!(kinds("ref GB123456A").is_empty(), "GB is an invalid prefix pair");
+        assert!(kinds("DA123456A").is_empty(), "first letter D is invalid");
+        // A valid NINO still masks.
+        assert_eq!(
+            kinds("JT123456C"),
+            vec![(PiiKind::NationalId, "JT123456C".to_string())]
         );
     }
 
