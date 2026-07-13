@@ -35,7 +35,15 @@
     }
   },
 
+  "_multilingual_comment": "M4 validation set — one Person + Location per XLM-R HRL language (ar, de, en, es, fr, it, lv, nl, pt, zh). EN/IT are covered in `entities` above; DE + the seven below round out the model's declared domain. Ground truth is the human label; the eval harness (tests/ner_eval.rs) measures how closely the model matches — see docs/DEVLOG.md for the recorded numbers.",
   "multilingual_preview": [
-    { "id": "NER-ML-01", "input": "Ruf bitte Herr Müller in Berlin an.", "locale": "de", "note": "M5 preview — not required to pass at M2", "entities": [ { "kind": "Person", "text": "Herr Müller" }, { "kind": "Location", "text": "Berlin" } ] }
+    { "id": "NER-ML-01", "input": "Ruf bitte Herr Müller in Berlin an.", "locale": "de", "entities": [ { "kind": "Person", "text": "Herr Müller" }, { "kind": "Location", "text": "Berlin" } ] },
+    { "id": "NER-ML-ES", "input": "Llame a María García en Madrid.", "locale": "es", "entities": [ { "kind": "Person", "text": "María García" }, { "kind": "Location", "text": "Madrid" } ] },
+    { "id": "NER-ML-FR", "input": "Contactez Jean Dupont à Paris.", "locale": "fr", "entities": [ { "kind": "Person", "text": "Jean Dupont" }, { "kind": "Location", "text": "Paris" } ] },
+    { "id": "NER-ML-PT", "input": "Contacte João Silva em Lisboa.", "locale": "pt", "entities": [ { "kind": "Person", "text": "João Silva" }, { "kind": "Location", "text": "Lisboa" } ] },
+    { "id": "NER-ML-NL", "input": "Bel Jan Jansen in Amsterdam.", "locale": "nl", "entities": [ { "kind": "Person", "text": "Jan Jansen" }, { "kind": "Location", "text": "Amsterdam" } ] },
+    { "id": "NER-ML-LV", "input": "Jānis Bērziņš dzīvo Rīgā.", "locale": "lv", "entities": [ { "kind": "Person", "text": "Jānis Bērziņš" }, { "kind": "Location", "text": "Rīgā" } ] },
+    { "id": "NER-ML-AR", "input": "اتصل بمحمد أحمد في القاهرة.", "locale": "ar", "entities": [ { "kind": "Person", "text": "محمد أحمد" }, { "kind": "Location", "text": "القاهرة" } ] },
+    { "id": "NER-ML-ZH", "input": "张伟住在北京。", "locale": "zh", "entities": [ { "kind": "Person", "text": "张伟" }, { "kind": "Location", "text": "北京" } ] }
   ]
 }
