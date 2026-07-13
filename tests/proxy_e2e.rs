@@ -72,6 +72,28 @@ async fn spawn_proxy_cfg(upstream: SocketAddr, debug_skip_demask: bool) -> Socke
     addr
 }
 
+/// Spawn the proxy with a specific provider preset (path kept OpenAI-compatible so
+/// the shared mock serves it). Used to prove masking is provider-independent (M4).
+async fn spawn_proxy_provider(upstream: SocketAddr, provider: &str) -> SocketAddr {
+    let config = Config {
+        listen: "127.0.0.1:0".parse().unwrap(),
+        upstream_base_url: format!("http://{upstream}"),
+        upstream_api_key: None,
+        max_body_bytes: llm_proxy_pii_rust::config::DEFAULT_MAX_BODY_BYTES,
+        provider: provider.to_string(),
+        upstream_chat_path: "/v1/chat/completions".to_string(),
+        upstream_extra_headers: Vec::new(),
+        forward_request_headers: Vec::new(),
+        pii_locales: vec!["it".to_string(), "us".to_string()],
+        debug_skip_demask: false,
+    };
+    let app = build_router(AppState::new(&config).await.expect("build app state"));
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    addr
+}
+
 /// POST a chat-completions request through the proxy and return the JSON reply.
 async fn chat(proxy: SocketAddr, request: Value) -> Value {
     reqwest::Client::new()
@@ -384,6 +406,33 @@ async fn e2e_streaming_non_sse_error_falls_back_to_json() {
     assert!(ct.contains("application/json"), "got content-type: {ct}");
     let body: Value = resp.json().await.unwrap();
     assert_eq!(body["error"]["type"], "rate_limit");
+}
+
+#[tokio::test]
+async fn e2e_masking_is_provider_agnostic() {
+    // M4: the masker walks the OpenAI-shaped JSON; provider presets only affect
+    // routing (path / headers), never masking — so the masked body reaching the
+    // upstream is identical regardless of the configured provider.
+    let upstream = spawn_mock_upstream().await;
+    let request = json!({
+        "model": "x",
+        "messages": [{
+            "role": "user",
+            "content": "mail bob@test.com and IBAN IT60X0542811101000000123456"
+        }]
+    });
+
+    let via_openai = chat(spawn_proxy_provider(upstream, "openai").await, request.clone()).await;
+    let via_anthropic = chat(spawn_proxy_provider(upstream, "anthropic").await, request).await;
+
+    assert_eq!(
+        via_openai["upstream_received"], via_anthropic["upstream_received"],
+        "masking must be provider-independent"
+    );
+    let seen = via_openai["upstream_received"].to_string();
+    assert!(seen.contains("[EMAIL_1]"));
+    assert!(seen.contains("[IBAN_1]"));
+    assert!(!seen.contains("bob@test.com"));
 }
 
 #[tokio::test]

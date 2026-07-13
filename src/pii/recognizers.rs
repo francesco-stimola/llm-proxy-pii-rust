@@ -134,11 +134,12 @@ fn national_id_recognizers() -> Vec<Recognizer> {
             validate: None,
         },
         // Italian Codice Fiscale: 6 letters, 2 digits, letter, 2 digits, letter,
-        // 3 digits, letter (16 chars). The interleaved digits make it specific.
+        // 3 digits, letter (16 chars). The final letter is a checksum (M4-R3), so a
+        // wrong-checksum look-alike is rejected — consistent with the other IDs.
         Recognizer {
             kind: PiiKind::NationalId,
             regex: Regex::new(r"\b[A-Za-z]{6}\d{2}[A-Za-z]\d{2}[A-Za-z]\d{3}[A-Za-z]\b").unwrap(),
-            validate: None,
+            validate: Some(cf_check_valid),
         },
         // UK National Insurance Number: 2 prefix letters, 6 digits, a suffix letter
         // A–D — compact (`AB123456C`) or space-grouped (`AB 12 34 56 C`). The prefix
@@ -159,11 +160,41 @@ fn national_id_recognizers() -> Vec<Recognizer> {
             validate: Some(es_dni_nie_valid),
         },
         // French NIR (social security): 15 digits — sex + YY + MM + geo/order + a
-        // mod-97 key that must check out (Corsica's 2A/2B letter form is a follow-up).
+        // mod-97 key that must check out. The month admits INSEE special codes
+        // (`20` unknown/born-abroad; `30–42`/`50–99` provisional SANDIA) so those
+        // real NIRs aren't missed on the always-on tier (M4-R5). Corsica's `2A`/`2B`
+        // department (letters in the body) is a documented gap — see ROADMAP M4.
         Recognizer {
             kind: PiiKind::NationalId,
-            regex: Regex::new(r"\b[12]\d{2}(?:0[1-9]|1[0-2])\d{10}\b").unwrap(),
+            regex: Regex::new(r"\b[12]\d{2}(?:0[1-9]|1[0-2]|20|3\d|4[0-2]|[5-9]\d)\d{10}\b").unwrap(),
             validate: Some(fr_nir_valid),
+        },
+        // Nine-digit national IDs: NL BSN (11-proef) or PT NIF (mod-11). One
+        // recognizer, either checksum accepts (both are 9 digits).
+        Recognizer {
+            kind: PiiKind::NationalId,
+            regex: Regex::new(r"\b\d{9}\b").unwrap(),
+            validate: Some(nine_digit_id_valid),
+        },
+        // Eleven-digit national IDs: DE Steuer-ID (ISO 7064 Mod 11,10 + one repeated
+        // digit) or LV personal code (mod-11 / post-2017 `32…` random form).
+        Recognizer {
+            kind: PiiKind::NationalId,
+            regex: Regex::new(r"\b\d{11}\b").unwrap(),
+            validate: Some(eleven_digit_id_valid),
+        },
+        // LV personal code, classic dashed form `DDMMYY-NNNNC` (mod-11 checksum).
+        Recognizer {
+            kind: PiiKind::NationalId,
+            regex: Regex::new(r"\b\d{6}-\d{5}\b").unwrap(),
+            validate: Some(lv_code_valid),
+        },
+        // China Resident Identity Card: 17 digits + a check char (digit or X),
+        // ISO 7064 MOD 11-2. 18 chars → near-zero false positives.
+        Recognizer {
+            kind: PiiKind::NationalId,
+            regex: Regex::new(r"\b\d{17}[0-9Xx]\b").unwrap(),
+            validate: Some(zh_resident_id_valid),
         },
     ]
 }
@@ -224,13 +255,44 @@ impl PiiDetector for StructuredRecognizers {
 }
 
 /// Confidence for a raw match. Everything structured is `Verified` (format- or
-/// checksum-backed) except an IBAN whose mod-97 fails: that is still masked, but
-/// tagged `Structural` so downstream code knows it wasn't checksum-verified.
+/// checksum-backed) except an IBAN that fails **either** its mod-97 checksum **or**
+/// its country's expected length (M4): still masked (privacy-first), but tagged
+/// `Structural` so downstream code knows it wasn't fully verified.
 fn confidence_of(kind: PiiKind, text: &str) -> Confidence {
     match kind {
-        PiiKind::Iban if !iban_mod97(text) => Confidence::Structural,
+        PiiKind::Iban => {
+            if iban_mod97(text) && iban_length_ok(text) {
+                Confidence::Verified
+            } else {
+                Confidence::Structural
+            }
+        }
         _ => Confidence::Verified,
     }
+}
+
+/// Whether an IBAN's length matches its country's fixed length (ISO 13616). An
+/// unknown country code isn't penalized (we can't check it — rely on mod-97).
+fn iban_length_ok(text: &str) -> bool {
+    let compact: String = text.chars().filter(|c| !c.is_whitespace()).collect();
+    let cc = compact.get(..2).unwrap_or("").to_ascii_uppercase();
+    match iban_country_length(&cc) {
+        Some(len) => compact.len() == len,
+        None => true,
+    }
+}
+
+/// Fixed IBAN length per country (the SEPA / common set; extend as needed).
+fn iban_country_length(cc: &str) -> Option<usize> {
+    Some(match cc {
+        "AD" => 24, "AE" => 23, "AT" => 20, "BE" => 16, "BG" => 22, "CH" => 21,
+        "CY" => 28, "CZ" => 24, "DE" => 22, "DK" => 18, "EE" => 20, "ES" => 24,
+        "FI" => 18, "FR" => 27, "GB" => 22, "GR" => 27, "HR" => 21, "HU" => 28,
+        "IE" => 22, "IS" => 26, "IT" => 27, "LI" => 21, "LT" => 20, "LU" => 20,
+        "LV" => 21, "MC" => 27, "MT" => 31, "NL" => 18, "NO" => 15, "PL" => 28,
+        "PT" => 25, "RO" => 24, "SE" => 24, "SI" => 19, "SK" => 24, "SM" => 27,
+        _ => return None,
+    })
 }
 
 /// Validate a UK NINO's two-letter prefix (M4-R2): the shape regex alone masks any
@@ -305,6 +367,130 @@ fn fr_nir_valid(matched: &str) -> bool {
         return false;
     };
     97 - (body % 97) == key
+}
+
+/// Italian Codice Fiscale check character (M4-R3). Each of the first 15 chars maps
+/// through an odd/even table (odd for 1-indexed odd positions); the sum mod 26
+/// yields the final letter. A wrong-checksum look-alike is rejected.
+fn cf_check_valid(matched: &str) -> bool {
+    // Value of a char as its "even" code: digits 0-9, letters A-Z → 0-25.
+    fn even_val(c: u8) -> Option<u32> {
+        match c {
+            b'0'..=b'9' => Some((c - b'0') as u32),
+            b'A'..=b'Z' => Some((c - b'A') as u32),
+            _ => None,
+        }
+    }
+    // Odd-position value, indexed by the even code (0 ≡ '0'/'A', … 9 ≡ '9'/'J').
+    const ODD: [u32; 26] = [
+        1, 0, 5, 7, 9, 13, 15, 17, 19, 21, 2, 4, 18, 20, 11, 3, 6, 8, 12, 14, 16, 10, 22, 25, 24, 23,
+    ];
+
+    let bytes = matched.to_ascii_uppercase().into_bytes();
+    if bytes.len() != 16 {
+        return false;
+    }
+    let mut sum = 0u32;
+    for (i, &c) in bytes[..15].iter().enumerate() {
+        let Some(even) = even_val(c) else { return false };
+        // Char index 0 is 1-indexed position 1 → odd.
+        sum += if i % 2 == 0 { ODD[even as usize] } else { even };
+    }
+    bytes[15] == b'A' + (sum % 26) as u8
+}
+
+/// A nine-digit national ID: NL BSN (11-proef) or PT NIF (mod-11).
+fn nine_digit_id_valid(matched: &str) -> bool {
+    nl_bsn_valid(matched) || pt_nif_valid(matched)
+}
+
+/// Dutch BSN 11-proef: Σ dᵢ·wᵢ ≡ 0 (mod 11), weights 9,8,…,2,−1; nonzero.
+fn nl_bsn_valid(matched: &str) -> bool {
+    let d: Vec<i32> = matched.bytes().filter(u8::is_ascii_digit).map(|b| (b - b'0') as i32).collect();
+    if d.len() != 9 {
+        return false;
+    }
+    let weights = [9, 8, 7, 6, 5, 4, 3, 2, -1];
+    let sum: i32 = d.iter().zip(weights).map(|(x, w)| x * w).sum();
+    sum != 0 && sum % 11 == 0
+}
+
+/// Portuguese NIF mod-11 control digit (weights 9..2; control ≥10 → 0).
+fn pt_nif_valid(matched: &str) -> bool {
+    let d: Vec<u32> = matched.bytes().filter(u8::is_ascii_digit).map(|b| (b - b'0') as u32).collect();
+    if d.len() != 9 {
+        return false;
+    }
+    let sum: u32 = (0..8).map(|i| d[i] * (9 - i as u32)).sum();
+    let r = sum % 11;
+    let control = if r < 2 { 0 } else { 11 - r };
+    control == d[8]
+}
+
+/// An eleven-digit national ID: DE Steuer-ID (ISO 7064 Mod 11,10) or LV code.
+fn eleven_digit_id_valid(matched: &str) -> bool {
+    de_steuerid_valid(matched) || lv_code_valid(matched)
+}
+
+/// German Steuer-IdNr: first digit nonzero, exactly one digit value repeated (2–3×)
+/// among the first 10 (the structural rule), and the ISO 7064 Mod 11,10 check digit.
+fn de_steuerid_valid(matched: &str) -> bool {
+    let d: Vec<u32> = matched.bytes().filter(u8::is_ascii_digit).map(|b| (b - b'0') as u32).collect();
+    if d.len() != 11 || d[0] == 0 {
+        return false;
+    }
+    let mut counts = [0u8; 10];
+    for &x in &d[..10] {
+        counts[x as usize] += 1;
+    }
+    let repeated = counts.iter().filter(|&&c| c >= 2).count();
+    if repeated != 1 || *counts.iter().max().unwrap() > 3 {
+        return false;
+    }
+    let mut product = 10u32;
+    for &x in &d[..10] {
+        let mut sum = (x + product) % 10;
+        if sum == 0 {
+            sum = 10;
+        }
+        product = (sum * 2) % 11;
+    }
+    (11 - product) % 10 == d[10]
+}
+
+/// Latvian personal code: the post-2017 randomized form starts with `32` and has no
+/// checksum (shape-only); the classic form carries a mod-11 check digit.
+fn lv_code_valid(matched: &str) -> bool {
+    let d: Vec<i64> = matched.bytes().filter(u8::is_ascii_digit).map(|b| (b - b'0') as i64).collect();
+    if d.len() != 11 {
+        return false;
+    }
+    if d[0] == 3 && d[1] == 2 {
+        return true; // randomized form — no checksum to verify
+    }
+    let w = [1, 6, 3, 7, 9, 10, 5, 8, 4, 2];
+    let sum: i64 = (0..10).map(|i| d[i] * w[i]).sum();
+    let check = (1 - sum).rem_euclid(11).rem_euclid(10);
+    check == d[10]
+}
+
+/// China Resident Identity Card, ISO 7064 MOD 11-2: 17 weighted digits → a check
+/// char (a digit or `X`). 18 chars make this near-zero false-positive.
+fn zh_resident_id_valid(matched: &str) -> bool {
+    let chars: Vec<char> = matched.chars().collect();
+    if chars.len() != 18 {
+        return false;
+    }
+    const WEIGHTS: [u32; 17] = [7, 9, 10, 5, 8, 4, 2, 1, 6, 3, 7, 9, 10, 5, 8, 4, 2];
+    let mut sum = 0u32;
+    for (i, c) in chars[..17].iter().enumerate() {
+        match c.to_digit(10) {
+            Some(v) => sum += v * WEIGHTS[i],
+            None => return false,
+        }
+    }
+    const TABLE: [char; 11] = ['1', '0', 'X', '9', '8', '7', '6', '5', '4', '3', '2'];
+    TABLE[(sum % 11) as usize] == chars[17].to_ascii_uppercase()
 }
 
 /// Accept a credit-card candidate only if it has 13–19 digits and passes Luhn.
@@ -461,6 +647,73 @@ mod tests {
     }
 
     #[test]
+    fn french_nir_special_month_is_not_missed() {
+        // M4-R5: INSEE special month `20` (born abroad / unknown) must still match.
+        let nir = fr_nir("1852075116001");
+        assert!(!kinds(&format!("NIR {nir}")).is_empty(), "special-month NIR must not be missed");
+    }
+
+    #[test]
+    fn italian_codice_fiscale_checksum_rejects_broken() {
+        // M4-R3: the valid CF masks; flipping its check character rejects it.
+        assert!(cf_check_valid("RSSMRA85T10A562S"));
+        assert!(!cf_check_valid("RSSMRA85T10A562A"));
+        assert!(kinds("cf RSSMRA85T10A562A").is_empty());
+    }
+
+    #[test]
+    fn german_steuer_id_check() {
+        assert!(de_steuerid_valid("86095742719"));
+        assert!(!de_steuerid_valid("86095742718")); // wrong check digit
+        assert!(!de_steuerid_valid("12345678901")); // no repeated digit (structural)
+        assert_eq!(
+            kinds("StId 86095742719"),
+            vec![(PiiKind::NationalId, "86095742719".to_string())]
+        );
+    }
+
+    #[test]
+    fn dutch_bsn_and_portuguese_nif_check() {
+        assert!(nl_bsn_valid("111222333"));
+        assert!(pt_nif_valid("123456789"));
+        assert!(!nine_digit_id_valid("111222334")); // neither checksum
+        assert_eq!(
+            kinds("bsn 111222333"),
+            vec![(PiiKind::NationalId, "111222333".to_string())]
+        );
+    }
+
+    #[test]
+    fn latvian_code_random_form_and_reject() {
+        assert!(lv_code_valid("32012345678")); // post-2017 randomized (shape-only)
+        assert!(!eleven_digit_id_valid("00000000000")); // neither DE nor LV
+        assert_eq!(
+            kinds("kods 32012345678"),
+            vec![(PiiKind::NationalId, "32012345678".to_string())]
+        );
+    }
+
+    #[test]
+    fn numeric_email_local_part_is_not_hijacked_by_a_national_id() {
+        // `123456789` is a valid PT NIF, but as an email local part the whole email
+        // must win — Email outranks the numeric national IDs (no fragmentation).
+        assert_eq!(
+            kinds("write to 123456789@example.com now"),
+            vec![(PiiKind::Email, "123456789@example.com".to_string())]
+        );
+    }
+
+    #[test]
+    fn china_resident_id_check() {
+        assert!(zh_resident_id_valid("11010519491231002X"));
+        assert!(!zh_resident_id_valid("11010519491231002Y")); // wrong check char
+        assert_eq!(
+            kinds("id 11010519491231002X"),
+            vec![(PiiKind::NationalId, "11010519491231002X".to_string())]
+        );
+    }
+
+    #[test]
     fn uk_nino_prefix_rules_reject_lookalikes() {
         // M4-R2: the shape alone would mask any 2-letter+6-digit+A–D token, so the
         // prefix rules must reject look-alikes (an order code, an invalid pair).
@@ -550,5 +803,19 @@ mod tests {
         assert!(iban_mod97("DE89370400440532013000"));
         assert!(iban_mod97("IT60X0542811101000000123456"));
         assert!(!iban_mod97("DE00370400440532013000"));
+    }
+
+    #[test]
+    fn iban_per_country_length_gates_confidence() {
+        // Correct country length…
+        assert!(iban_length_ok("IT60X0542811101000000123456")); // 27, IT
+        assert!(iban_length_ok("DE89370400440532013000")); // 22, DE
+        // …wrong length for a known country → not length-ok (masked, but Structural).
+        assert!(!iban_length_ok("DE8937040044053201300")); // 21
+        // Unknown country → not penalized (rely on mod-97 alone).
+        assert!(iban_length_ok("ZZ0012345678"));
+        // A real, correctly-sized, mod-97-valid IBAN stays Verified.
+        let e = StructuredRecognizers::new().detect("IBAN IT60X0542811101000000123456");
+        assert_eq!(e[0].confidence, Confidence::Verified);
     }
 }
