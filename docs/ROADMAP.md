@@ -319,25 +319,41 @@ so the proxy protects data regardless of the user's language or the upstream
 provider. Likely valuable once we move off the OpenAI model and serve broader
 traffic — priority can be pulled earlier if real usage demands it.
 
-**Refocused after the M2 model choice (2026-07-12):** the *multilingual NER* half is
-already **acquired** — the chosen XLM-R covers 10 languages (incl. IT/EN/FR/ES/DE), so
-this milestone's barycenter shifts to the **structured recognizers**, which are still
-hard-coded **IT + US** (the NER model does nothing for phone/national-ID/IBAN formats).
+**Scope decided (2026-07-13) — M4 closes the multilingual question within a bounded domain, on two axes:**
+- **Language (unstructured / NER):** declared support = the **NER model's languages** (XLM-R HRL:
+  ar, de, en, es, fr, it, lv, nl, pt, zh). Beyond these we don't claim to catch names/orgs/locations —
+  only structured PII (which is language-independent). If the model changes, the domain moves with it.
+- **Structured PII — three tiers** (see M4-R1): **universal** (email, IBAN, card, secret) always on;
+  **national IDs** (CF, NINO, SSN, + country packs) always on **regardless of `PII_LOCALES`** (privacy-first;
+  each must be specific enough — see M4-R2); **FP-prone** recognizers (national phone formats, …) opt-in
+  via `PII_LOCALES`. So `PII_LOCALES` gates *ambiguous* recognizers, **not** "which countries".
 - [x] **Locale-parametrized recognizer architecture (first landing).** Split the recognizers into
   **universal** (email, secret, credit card, IBAN — already any-country — and phone US/`+CC`) plus
   per-locale **national-identifier** packs, selectable via `StructuredRecognizers::with_locales` /
   the `PII_LOCALES` env (default `it, us`, on `Config.pii_locales`). Added national IDs: **IT Codice
   Fiscale** and **GB NINO** (new `PiiKind::NationalId`, placeholder `[NATID_N]`). Tests:
   `italian_codice_fiscale_detected_by_default`, `uk_nino_needs_the_gb_locale`, `locale_selection_is_scoped`.
-- [ ] **More locale national-ID packs** (ES DNI/NIE, FR INSEE, DE Steuer-ID, …) on the same seam.
-- [ ] **Locale phone national formats** (numbers without a `+CC`, e.g. UK `020 …`, DE `030 …`) —
-  deferred: national formats without a country-code anchor are false-positive-prone; needs careful
-  precision work (the `+CC` international arm already covers the unambiguous case).
+- [ ] **Apply the three-tier structure (M4-R1; M4-R2 is its prerequisite).** Move national IDs to the
+  **always-on** tier (off `PII_LOCALES`); keep the locale-gating seam for **FP-prone** recognizers only;
+  tighten the NINO (M4-R2) first so always-on can't over-mask. Update the scoping tests + `PII_LOCALES`
+  docs (SETUP §6, ARCHITECTURE) to the new semantics.
+- [ ] **More national-ID country packs** (ES DNI/NIE, FR INSEE, DE Steuer-ID, …) on the same seam —
+  always-on, each specific enough for a near-zero FP rate. Countries aligned to the declared language
+  domain (though a pack *can* be added ahead of NER support — a national-ID regex needs no model).
+- [ ] **Locale phone national formats** (numbers without a `+CC`, e.g. UK `020 …`, DE `030 …`) — the
+  **FP-prone tier**: gated by `PII_LOCALES`. Needs careful precision work (the `+CC` international arm
+  already covers the unambiguous case).
 - [ ] **IBAN per-country length validation** — structural + mod-97 already accept every country; add
   per-country length checks to raise precision if needed.
-- [ ] **Validate** the already-multilingual XLM-R against a multilingual corpus — validation, *not* model selection (the NER is already multilingual); pull languages beyond IT/EN/DE-preview into the corpus.
-- [ ] Extend the test corpus with multi-language / multi-locale cases
-- [ ] Provider-agnostic verification (not tied to OpenAI-specific behavior)
+- [ ] **Validate the NER across its declared domain** — score XLM-R on its **10 supported languages**
+  (ar/de/en/es/fr/it/lv/nl/pt/zh), pulling languages beyond the IT/EN/DE-preview into the corpus.
+  Validation, *not* model selection (the NER is already multilingual).
+- [ ] Extend the test corpus with multi-language / multi-locale cases (bounded to the declared domain).
+- [ ] Provider-agnostic verification (not tied to OpenAI-specific behavior).
+
+**M4 is done when** the three-tier structure is in place, the national-ID packs + NER validation cover the
+declared domain, and the corpus proves it — i.e. the multilingual question is **closed within the decided
+scope**.
 
 ### M4 first-landing review (2026-07-12) — sound, no blockers
 Independently verified: **83 tests green (default) / 91 + 1 `#[ignore]`d (`--features onnx`),
@@ -382,10 +398,25 @@ produce invalid JSON). Non-blocking follow-ups:
   reviewer: clarified that US SSN keeps `PiiKind::Ssn`/`[SSN_N]`; only IT CF + GB NINO are
   `NationalId`/`[NATID_N]` (`docs/ARCHITECTURE.md`; `mod.rs` and `TESTING.md` were already correct).
 
+## M5 — Integration & performance testing
+Goal: prove the whole system holds **end-to-end** and **under load**, then document it. Comes after M4 —
+the feature set (structured + NER + streaming + multi-provider) is complete enough to test as a product.
+- [ ] **Real integration tests** — end-to-end scenarios beyond today's mock-upstream e2e: full
+  mask → forward → (stream) → de-mask round-trips across the provider presets (OpenAI / Copilot /
+  Anthropic shapes), tool-call round-trips, multi-turn determinism, and the fail-closed paths. Mock
+  upstreams by default; optionally a smoke against a real provider (opt-in, never in CI without a key).
+- [ ] **Performance / load harness** (pulled up from Backlog) — concurrent connections, large bodies,
+  streaming throughput; measure latency / RAM of the mask → forward → de-mask path (NER on/off).
+  Stability under load was the founding motivation — measure it, don't assume it.
+- [ ] **Update the root `README.md`** (+ `README.it.md`) to reflect the shipped product — what it does,
+  the three-tier detection + NER, streaming, multi-provider (per-instance) usage, config/env, and
+  status. The README is intentionally high-level today ("early development"); this is the pass that
+  makes it describe a working system.
+
 ## Backlog / later — documented, not scheduled
 
-### GPU optimization & load  *(was M4 — deferred 2026-07-12; documented, not scheduled)*
-Faster inference once the model is locked, and prove it holds under load. **Deferred:**
+### GPU optimization  *(was M4 — deferred 2026-07-12; documented, not scheduled)*
+Faster inference once the model is locked. **Deferred:**
 the M2 model choice is **execution-provider-agnostic** — every candidate is standard
 ONNX and runs on any `ort` EP, so GPU constrains nothing upstream; no reason to spend on
 it until real latency/load demands it. On this Windows/no-admin box the natural EP is
@@ -393,7 +424,7 @@ it until real latency/load demands it. On this Windows/no-admin box the natural 
 the EP; switch int8 → the pre-shipped `model_fp16.onnx`).
 - [ ] GPU execution provider (CUDA / **DirectML** for no-admin Windows) behind config
 - [ ] Quantization tuning; benchmark against the CPU baseline (CPU int8 → GPU fp16)
-- [ ] **Load / throughput harness** (concurrent connections, large bodies) — stability under load was the founding motivation; measure it when prioritized
+- **Load / throughput harness** → moved up to **M5** (integration & performance testing); it's a CPU-throughput concern, independent of the GPU work here.
 
 ### Option B — native provider adapters  *(documented, not scheduled)*
 The heavy alternative to M3's Option A: support each provider's **native** API (e.g.
