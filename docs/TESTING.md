@@ -183,6 +183,11 @@ Three tiers: universal (always), national IDs (always, off `PII_LOCALES`), FP-pr
 - LOC-12 — `email_beats_a_card_iban_or_secret_local_part` (M4-R7): `Email` is the top structured priority, so a card/IBAN/secret that is only a substring of an email local part (`4111111111111111@x.com`, `DE89…@x.com`, `sk-…@x.com`) masks as one `Email`, never fragmenting off the `@domain`.
 - LOC-13 — `bare_numeric_national_ids_are_masked_by_design` (M4-R6): an arbitrary checksum-valid 9-digit number (`524287244`) is masked *by design* (accepted over-mask, privacy-first), while a checksum-failing neighbour (`524287245`) is left in clear — the checksum still filters the majority.
 - LOC-14 — `de_steuerid_rejects_a_consecutive_triple` (M4-R8): a DE Steuer-ID with a 3× digit in three *consecutive* positions is rejected even with a valid checksum; the same digits non-consecutive are accepted.
+- LOC-15 — **Email containment gate (M4-R9)** — the two sides must resolve *oppositely*, so both are pinned:
+  - `grouped_forms_attached_to_a_domain_do_not_leak` (recognizers): a **space-grouped** card / IBAN / NINO glued to `@domain` (`4111 1111 1111 1111@example.com`) only *partially* overlaps the email, so the **structured span wins** — the full grouped span is the single detected entity, never fragmented.
+  - `grouped_pii_glued_to_a_domain_leaks_nothing` (`tests/adversarial.rs`): the same shapes asserted on the **masked body** — no card/IBAN/NINO digit group survives in clear (`!masked.contains("4111")`, …). Also pins the containment case (a *continuous* card glued to a domain leaks neither digits nor domain).
+  - `email_containing_a_structured_span_wins_it` / `email_partially_overlapping_a_structured_span_loses_it` (`src/pii/overlap.rs`): the gate itself, at resolver level.
+  - **Non-vacuity:** re-raising `Email` above the structured kinds makes these fail (the pre-fix M4-R7 leak).
 
 ### M5 — integration & performance (planned)
 - E2E-INT-01 *(planned)* — real-provider smoke against **Anthropic** (OpenAI-compat endpoint; opt-in, needs a key, never in CI): a PII round-trip returns the restored value while the request left masked.

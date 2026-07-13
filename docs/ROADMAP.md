@@ -488,13 +488,12 @@ Three **non-blocking** precision follow-ups (all fail-safe — over-mask/utility
   GLiNER detector (Backlog)**, not a regex keyword gate. Test `bare_numeric_national_ids_are_masked_by_design`
   pins the over-mask as intentional (`524287244` — an arbitrary PT-NIF-valid number — is masked) **and** that
   the checksum still filters the majority (`524287245` fails both → left in clear).
-- [x] **M4-R7 (DONE 2026-07-13 — generalized: Email is now the top structured priority).** The Email>national-ID
-  reorder is generalized to Card/Iban/Secret: `PiiKind::priority` now ranks **Email above every other structured
-  recognizer**. An `@`-token that parses as an email genuinely *is* an email, and no other structured kind carries
-  `@`, so a card/IBAN/secret can only overlap an email by being a *substring* of its local part — there the whole
-  email is the correct span and must win (else the `@domain` forwards in clear). Non-email spans never share this
-  tier, so lifting Email changes nothing outside the containment case (verified: no corpus/adversarial/proptest
-  regression). Test `email_beats_a_card_iban_or_secret_local_part`: `4111111111111111@x.com`,
+- [x] **M4-R7 (DONE 2026-07-13 — generalized to Card/Iban/Secret; *mechanism later corrected by M4-R9*).** An
+  email whose local part is exactly a card / IBAN / secret must not be fragmented (`4111111111111111@x.com` →
+  `[CARD_1]@x.com` forwards the `@domain` in clear). Originally fixed by making **Email the top structured
+  priority** — **that was too broad and M4-R9 replaced it with a containment gate** (a global Email priority also
+  wins *partial* overlaps, which leaks grouped forms — see M4-R9). The *behavior* asserted here is unchanged and
+  still holds via the gate. Test `email_beats_a_card_iban_or_secret_local_part`: `4111111111111111@x.com`,
   `DE89370400440532013000@x.com`, `sk-abcdef123456@x.com` each mask as a single `Email`.
 - [x] **M4-R8 (DONE 2026-07-13 — DE Steuer-ID consecutive-triple exclusion added).** `de_steuerid_valid` now
   enforces the 2016+ rule: a digit that appears three times in the first 10 must **not** sit in three
@@ -502,7 +501,7 @@ Three **non-blocking** precision follow-ups (all fail-safe — over-mask/utility
   cost (a valid ID never has one). Self-verifying test `de_steuerid_rejects_a_consecutive_triple`: same digits +
   valid checksum, consecutive → rejected, non-consecutive → accepted.
 
-### M4-R6/R7/R8 precision follow-up review (2026-07-13) — one BLOCKER (priority-reorder leak)
+### M4-R6/R7/R8 precision follow-up review (2026-07-13) — one BLOCKER (priority-reorder leak) — **CLOSED**
 Reviewed `3845bfe` (fix) + `4de5d38` (docs). Independently verified: **99 tests green (default), 0 failed, no
 warnings**; `cargo check --features onnx` compiles clean (no warnings). M4-R6 and M4-R8 are **sound**:
 M4-R6's `bare_numeric_national_ids_are_masked_by_design` genuinely asserts *both* halves (`524287244` masked
@@ -511,7 +510,24 @@ context-gating) is the correct call. M4-R8's consecutive-triple rule is a correc
 recall cost, and `de_steuerid_rejects_a_consecutive_triple` is a genuine self-verifying test (both numbers carry
 a valid Mod 11,10 check digit; only placement differs). But the **M4-R7 Email-top reorder introduces a real
 Card/IBAN leak** on partial overlap:
-- [ ] **M4-R9 (BLOCKER — leak — the M4-R7 Email-top reorder suppresses a genuine Card/IBAN span).** M4-R7's
+- [x] **M4-R9 (DONE 2026-07-13 — FIXED with the recommended containment gate; leak closed).** Implemented the
+  recommended fix, not the minimal revert, so the M4-R7 benefit is kept **and** the leak is closed. Two changes:
+  (1) **`resolve_overlaps` gained an Email containment gate** (`drop_spans_contained_in_an_email`, run *before*
+  the priority sort): a structured span that lies **entirely inside** an `Email` span is a false decomposition of
+  its local part and is dropped, so the email wins — this is the `4111111111111111@x.com` / `123456789@x.com`
+  case. A merely **partially** overlapping span (the space-grouped forms) is **not** dropped. (2) **`Email` moved
+  to the *lowest* structured priority** (below `Phone`, above NER), so every *partial* overlap now falls through
+  to priority and the checksum-backed structured span wins — masking the digits instead of leaving them in clear.
+  The two mechanisms are complementary: containment → Email wins; partial overlap → structured wins. Also fixes
+  the space-grouped **NINO** variant the reviewer flagged (which was a latent leak even *before* M4-R7, since
+  `Email` already outranked `NationalId`). **Tests:** `grouped_forms_attached_to_a_domain_do_not_leak`
+  (recognizers — the full grouped card/IBAN/NINO span is the single detected entity);
+  `grouped_pii_glued_to_a_domain_leaks_nothing` (`tests/adversarial.rs` — asserts directly on the **masked body**
+  that no card/IBAN/NINO group survives in clear, incl. the continuous containment case); plus the two resolver
+  units `email_containing_a_structured_span_wins_it` / `email_partially_overlapping_a_structured_span_loses_it`.
+  **Verified non-vacuous:** re-raising `Email` above the structured kinds makes them fail. The M4-R7 containment
+  test stays green. *(Original finding below.)*
+  M4-R7's
   claim ("a card/IBAN/secret can only overlap an email by being a *substring* of its local part") holds only for
   the **continuous** forms the test covers — it **breaks for the space-grouped Card and IBAN forms**, because the
   email local-part class `[A-Za-z0-9._%+-]` (`src/pii/recognizers.rs:104`) excludes the space. When a space-grouped

@@ -3,6 +3,42 @@
 Newest first. One entry per meaningful change — note *what* and *why*, not just
 *what*. This is the running history so context is never lost between sessions.
 
+## 2026-07-13 — M4-R9: containment-gate the Email priority (fixes a leak my M4-R7 introduced)
+
+The review caught a **real leak in my own M4-R7 fix**, and it's worth recording *why* the reasoning
+failed. M4-R7 made `Email` the top structured priority, justified by: "no other structured kind carries
+`@`, so a card/IBAN/secret can only overlap an email by being a **substring of its local part**." That
+claim is true only for the **continuous** forms my test covered. The email local-part class
+`[A-Za-z0-9._%+-]` **excludes the space** — so against a *space-grouped* card or IBAN glued to a domain,
+the email match forms from **only the trailing group** and merely **partially overlaps** the structured
+span. `resolve_overlaps` drops the *whole* lower-priority span, so a top-priority `Email` discarded the
+entire card:
+
+```
+card 4111 1111 1111 1111@example.com   →   card 4111 1111 1111 [EMAIL_1]   ← 12 card digits IN CLEAR
+iban DE89 3704 0044 0532 0130 00@…     →   iban DE89 3704 0044 0532 0130 [EMAIL_1]
+```
+
+A **regression**: pre-M4-R7 the card won and masked whole. Lesson: "kind X can never contain `@`" bounds
+*containment*, not *overlap* — I generalized from the shape my test happened to use.
+
+**Fix — the recommended containment gate (not the minimal revert), so M4-R7's benefit survives.** Two
+complementary mechanisms:
+- **`drop_spans_contained_in_an_email`** in `resolve_overlaps`, run **before** the priority sort: a
+  structured span lying **entirely inside** an `Email` span is a false decomposition of its local part →
+  dropped, so the email wins (`4111111111111111@x.com`, `123456789@x.com`). Partial overlaps are untouched.
+- **`Email` moved to the lowest structured priority** (below `Phone`, still above NER): every *partial*
+  overlap now falls through to priority, where the checksum-backed structured span wins — digits masked,
+  never fragmented.
+
+Containment → Email wins; partial overlap → structured wins. This also closes the space-grouped **NINO**
+(`AB 12 34 56 C@x.com`), which was a latent leak even *before* M4-R7 (`Email` already outranked
+`NationalId`). New `PiiKind::is_structured()` backs the gate. **Tests:**
+`grouped_forms_attached_to_a_domain_do_not_leak` (recognizers), `grouped_pii_glued_to_a_domain_leaks_nothing`
+(`tests/adversarial.rs` — asserts on the **masked body** that no card/IBAN/NINO group survives in clear),
+and the two resolver units. **Verified non-vacuous** by re-raising `Email` above the structured kinds: they
+fail. **103 tests green (default) / 111 + 1 `#[ignore]`d (`--features onnx`), no warnings.**
+
 ## 2026-07-13 — M4 review follow-ups closed: M4-R6 / M4-R7 / M4-R8
 
 A review session opened three non-blocking precision follow-ups on the completed M4 (all fail-safe —

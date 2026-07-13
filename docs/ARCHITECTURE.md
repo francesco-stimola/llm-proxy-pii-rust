@@ -45,11 +45,7 @@ unstructured-entity load.
   false-positive when always on. The pure-numeric 9-/11-digit IDs (BSN/NIF, DE/LV) accept a
   small fraction of arbitrary numbers on checksum alone (~18% of 9-digit tokens); this is an
   **accepted over-mask tradeoff** (M4-R6) — privacy-first, never a leak — not context-gated
-  (that would leak); the contextual precision path is GLiNER (Backlog). `Email` is the **top
-  structured priority** in `PiiKind::priority` (M4-R7): no other structured kind carries `@`,
-  so a card/IBAN/secret/national-ID can only overlap an email by being a substring of its local
-  part (`4111111111111111@x.com`, `123456789@x.com`) — the whole email wins and is never
-  fragmented (which would forward the `@domain` in clear).
+  (that would leak); the contextual precision path is GLiNER (Backlog).
 - **FP-prone** — ambiguous recognizers (e.g. national *phone* formats with no `+CC`) —
   **opt-in per locale** via `PII_LOCALES` (`fp_prone_recognizers`). None yet.
 
@@ -57,6 +53,26 @@ So `PII_LOCALES` (default `it, us`, `Config.pii_locales`) gates only *ambiguous*
 recognizers, not "which countries". The **language** domain for the NER is the model's
 declared languages (XLM-R HRL: ar/de/en/es/fr/it/lv/nl/pt/zh — validated, see
 `docs/DEVLOG.md`); structured PII is language-independent.
+
+**Overlap resolution (`src/pii/overlap.rs`).** Every detector's candidate spans are merged
+by `resolve_overlaps`: rank by `PiiKind::priority` (desc), then span length (desc), then
+greedily keep what doesn't overlap something already kept. Structured PII outranks the ML
+NER, so a checksum-backed IBAN always beats a `Person` guess on the same characters.
+
+`Email` is a deliberate special case (**M4-R9**), because it is the only structured kind
+carrying `@` and can overlap another recognizer **two** ways that need *opposite* outcomes:
+
+| Shape | Overlap | Winner | Why |
+|---|---|---|---|
+| `4111111111111111@x.com` | Email **contains** the card | **Email** | the card is a substring of the local part — a false decomposition; masking only it would forward `@x.com` in clear |
+| `4111 1111 1111 1111@x.com` | **partial** (an email local part can't hold a space, so the email is just `1111@x.com`) | **CreditCard** | Email would mask only the last group and leave `4111 1111 1111` **in clear** — a leak |
+
+So containment is resolved **ahead of** priority by a gate (`drop_spans_contained_in_an_email`)
+that removes structured spans lying *entirely inside* an email; everything else falls through to
+priority, where `Email` sits **below every other structured kind** so the checksum-backed span
+wins any partial overlap. The same gate covers the grouped IBAN and the spaced GB NINO
+(`AB 12 34 56 C@x.com`). Fail-safe in both directions: PII is never left in clear, and at worst
+a bare `@domain` is.
 
 ## Anonymization
 
