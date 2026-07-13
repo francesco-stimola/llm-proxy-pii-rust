@@ -67,6 +67,23 @@
       "negative": [
         { "id": "SECRET-NEG-01", "input": "the sky is clear and the task is done", "entities": [] }
       ]
+    },
+
+    "non_ascii_scripts": {
+      "_comment": "M4-R13. Until now this corpus contained ZERO non-ASCII characters — the blind spot that let a total detection failure in CJK text survive four reviews. Rust regex's default \\b is Unicode-aware, so a Han/Kana/Cyrillic letter IS a word character: there is no boundary between it and a digit, and CJK has no inter-word spaces, so the glued form below is the NATURAL way to write it. Every anchored recognizer was inert here. Fixed with ASCII boundaries, (?-u:\\b).",
+      "positive": [
+        { "id": "CJK-01", "input": "我的信用卡号是4111111111111111", "locale": "zh", "note": "card glued to Han characters — no space anywhere", "entities": [ { "kind": "CreditCard", "text": "4111111111111111" } ] },
+        { "id": "CJK-02", "input": "我的身份证号是11010519491231002X", "locale": "zh", "note": "the zh Resident ID pack shipped in M4 — inert in real Chinese prose until M4-R13", "entities": [ { "kind": "NationalId", "text": "11010519491231002X" } ] },
+        { "id": "CJK-03", "input": "密钥sk-abcdef123456", "locale": "zh", "entities": [ { "kind": "Secret", "text": "sk-abcdef123456" } ] },
+        { "id": "CJK-04", "input": "账号DE89370400440532013000", "locale": "zh", "entities": [ { "kind": "Iban", "text": "DE89370400440532013000" } ] },
+        { "id": "CJK-05", "input": "编号123-45-6789", "locale": "zh", "entities": [ { "kind": "Ssn", "text": "123-45-6789" } ] },
+        { "id": "JA-01", "input": "カード番号は4111111111111111です", "locale": "ja", "note": "Katakana on both sides of the value", "entities": [ { "kind": "CreditCard", "text": "4111111111111111" } ] },
+        { "id": "CYR-01", "input": "Карта4111111111111111", "locale": "ru", "note": "Cyrillic is a word character to a Unicode \\b too", "entities": [ { "kind": "CreditCard", "text": "4111111111111111" } ] }
+      ],
+      "negative": [
+        { "id": "CJK-NEG-01", "input": "订单号是card4111111111111111", "reason": "glued to an ASCII word: the anti-false-positive guarantee (no ID inside a longer ASCII token) must survive the switch to (?-u:\\b)", "entities": [] },
+        { "id": "CJK-NEG-02", "input": "哈希值abc4111111111111111abc", "reason": "inside a longer ASCII token (hash / key / base64) — still not PII", "entities": [] }
+      ]
     }
   },
 
@@ -85,6 +102,8 @@
     { "id": "RT-01", "input": "My email is bob@test.com and my phone is 555-111-2222" },
     { "id": "RT-02", "input": "Email: foo@bar.com, SSN: 123-45-6789, Phone: 555-123-4567" },
     { "id": "RT-03", "input": "Hello world, no PII here", "no_pii": true },
-    { "id": "RT-04", "input": "Ti scrivo da pinco.pallino@prova.invalid, IBAN IT60X0542811101000000123456", "locale": "it" }
+    { "id": "RT-04", "input": "Ti scrivo da pinco.pallino@prova.invalid, IBAN IT60X0542811101000000123456", "locale": "it" },
+    { "id": "RT-05", "input": "我的信用卡号是4111111111111111，谢谢", "locale": "zh", "note": "M4-R13: multi-byte context — the span must land on char boundaries and restore exactly" },
+    { "id": "RT-06", "input": "カード番号は4111111111111111、メールはjohn@example.comです", "locale": "ja", "note": "M4-R13: multiple PII inside CJK prose" }
   ]
 }

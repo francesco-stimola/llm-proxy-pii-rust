@@ -14,6 +14,28 @@
 //! single stretch of text is never labelled twice. This directly fixes the old
 //! proxy's bug where an IBAN was mis-masked as a phone number: IBAN outranks
 //! phone, so it wins any overlap.
+//!
+//! ## Word boundaries are **ASCII** — `(?-u:\b)`, never a bare `\b` (M4-R13)
+//!
+//! Every anchored recognizer uses `(?-u:\b)`. Rust `regex`'s default `\b` is
+//! **Unicode-aware**, in which a Han / Kana / Cyrillic / Greek / Arabic letter *is* a
+//! word character — so there is **no boundary between a CJK character and a digit**.
+//! Chinese and Japanese have no inter-word spaces, so the glued form is the *natural*
+//! way to write it, not an evasion; with a Unicode `\b` these recognizers were simply
+//! **inert** in CJK prose and the PII went upstream in clear:
+//!
+//! ```text
+//! 我的信用卡号是4111111111111111   → a Luhn-valid card, matched by NOTHING
+//! 我的身份证号是11010519491231002X → the zh Resident ID pack never fired
+//! 密钥sk-abcdef123456              → an API secret, in clear
+//! ```
+//!
+//! `(?-u:\b)` treats only `[0-9A-Za-z_]` as word characters, so a boundary appears
+//! between a non-ASCII letter and a digit while the deliberate anti-false-positive
+//! guarantee is preserved **exactly**: an ID still cannot fire inside a longer *ASCII*
+//! token (`card4111111111111111`, an API key / hash / UUID / base64 blob stay unmatched).
+//!
+//! `Email` and `Phone` are unaffected — they are anchored by character classes, not `\b`.
 
 use regex::Regex;
 
@@ -75,7 +97,7 @@ fn universal_recognizers() -> Vec<Recognizer> {
         // something else, and the old ML model missed them entirely.
         Recognizer {
             kind: PiiKind::Secret,
-            regex: Regex::new(r"\b(?:sk-[A-Za-z0-9_-]{6,}|AKIA[0-9A-Z]{16})\b").unwrap(),
+            regex: Regex::new(r"(?-u:\b)(?:sk-[A-Za-z0-9_-]{6,}|AKIA[0-9A-Z]{16})(?-u:\b)").unwrap(),
             validate: None,
         },
         // IBAN before phone/credit-card: its digit groups can otherwise be
@@ -87,7 +109,7 @@ fn universal_recognizers() -> Vec<Recognizer> {
         Recognizer {
             kind: PiiKind::Iban,
             regex: Regex::new(
-                r"\b[A-Z]{2}\d{2}(?:[A-Z0-9]{11,30}|(?: [A-Z0-9]{4}){2,7}(?: [A-Z0-9]{1,4})?)\b",
+                r"(?-u:\b)[A-Z]{2}\d{2}(?:[A-Z0-9]{11,30}|(?: [A-Z0-9]{4}){2,7}(?: [A-Z0-9]{1,4})?)(?-u:\b)",
             )
             .unwrap(),
             validate: None,
@@ -96,7 +118,7 @@ fn universal_recognizers() -> Vec<Recognizer> {
         // the Luhn checksum to reject look-alikes.
         Recognizer {
             kind: PiiKind::CreditCard,
-            regex: Regex::new(r"\b(?:\d{4}[ -]\d{4}[ -]\d{4}[ -]\d{4}|\d{13,19})\b").unwrap(),
+            regex: Regex::new(r"(?-u:\b)(?:\d{4}[ -]\d{4}[ -]\d{4}[ -]\d{4}|\d{13,19})(?-u:\b)").unwrap(),
             validate: Some(credit_card_valid),
         },
         Recognizer {
@@ -130,7 +152,7 @@ fn national_id_recognizers() -> Vec<Recognizer> {
         // US SSN: 3-2-4 digit groups (keeps its own `Ssn` kind / `[SSN_N]`).
         Recognizer {
             kind: PiiKind::Ssn,
-            regex: Regex::new(r"\b\d{3}-\d{2}-\d{4}\b").unwrap(),
+            regex: Regex::new(r"(?-u:\b)\d{3}-\d{2}-\d{4}(?-u:\b)").unwrap(),
             validate: None,
         },
         // Italian Codice Fiscale: 6 letters, 2 digits, letter, 2 digits, letter,
@@ -138,7 +160,7 @@ fn national_id_recognizers() -> Vec<Recognizer> {
         // wrong-checksum look-alike is rejected — consistent with the other IDs.
         Recognizer {
             kind: PiiKind::NationalId,
-            regex: Regex::new(r"\b[A-Za-z]{6}\d{2}[A-Za-z]\d{2}[A-Za-z]\d{3}[A-Za-z]\b").unwrap(),
+            regex: Regex::new(r"(?-u:\b)[A-Za-z]{6}\d{2}[A-Za-z]\d{2}[A-Za-z]\d{3}[A-Za-z](?-u:\b)").unwrap(),
             validate: Some(cf_check_valid),
         },
         // UK National Insurance Number: 2 prefix letters, 6 digits, a suffix letter
@@ -147,7 +169,7 @@ fn national_id_recognizers() -> Vec<Recognizer> {
         Recognizer {
             kind: PiiKind::NationalId,
             regex: Regex::new(
-                r"\b[A-Za-z]{2}\d{6}[A-Da-d]\b|\b[A-Za-z]{2} \d{2} \d{2} \d{2} [A-Da-d]\b",
+                r"(?-u:\b)[A-Za-z]{2}\d{6}[A-Da-d](?-u:\b)|(?-u:\b)[A-Za-z]{2} \d{2} \d{2} \d{2} [A-Da-d](?-u:\b)",
             )
             .unwrap(),
             validate: Some(nino_prefix_valid),
@@ -156,7 +178,7 @@ fn national_id_recognizers() -> Vec<Recognizer> {
         // letter that must match — so a random 8-digit+letter token won't pass.
         Recognizer {
             kind: PiiKind::NationalId,
-            regex: Regex::new(r"\b(?:[XYZxyz]\d{7}|\d{8})[A-Za-z]\b").unwrap(),
+            regex: Regex::new(r"(?-u:\b)(?:[XYZxyz]\d{7}|\d{8})[A-Za-z](?-u:\b)").unwrap(),
             validate: Some(es_dni_nie_valid),
         },
         // French NIR (social security): 15 digits — sex + YY + MM + geo/order + a
@@ -166,7 +188,7 @@ fn national_id_recognizers() -> Vec<Recognizer> {
         // department (letters in the body) is a documented gap — see ROADMAP M4.
         Recognizer {
             kind: PiiKind::NationalId,
-            regex: Regex::new(r"\b[12]\d{2}(?:0[1-9]|1[0-2]|20|3\d|4[0-2]|[5-9]\d)\d{10}\b").unwrap(),
+            regex: Regex::new(r"(?-u:\b)[12]\d{2}(?:0[1-9]|1[0-2]|20|3\d|4[0-2]|[5-9]\d)\d{10}(?-u:\b)").unwrap(),
             validate: Some(fr_nir_valid),
         },
         // Nine-digit national IDs: NL BSN (11-proef) or PT NIF (mod-11). One
@@ -179,7 +201,7 @@ fn national_id_recognizers() -> Vec<Recognizer> {
         // GLiNER detector (Backlog), not a keyword gate.
         Recognizer {
             kind: PiiKind::NationalId,
-            regex: Regex::new(r"\b\d{9}\b").unwrap(),
+            regex: Regex::new(r"(?-u:\b)\d{9}(?-u:\b)").unwrap(),
             validate: Some(nine_digit_id_valid),
         },
         // Eleven-digit national IDs: DE Steuer-ID (ISO 7064 Mod 11,10 + one repeated
@@ -189,20 +211,20 @@ fn national_id_recognizers() -> Vec<Recognizer> {
         // unconditional LV `32…` ~1%) — privacy-first, over-mask never leak.
         Recognizer {
             kind: PiiKind::NationalId,
-            regex: Regex::new(r"\b\d{11}\b").unwrap(),
+            regex: Regex::new(r"(?-u:\b)\d{11}(?-u:\b)").unwrap(),
             validate: Some(eleven_digit_id_valid),
         },
         // LV personal code, classic dashed form `DDMMYY-NNNNC` (mod-11 checksum).
         Recognizer {
             kind: PiiKind::NationalId,
-            regex: Regex::new(r"\b\d{6}-\d{5}\b").unwrap(),
+            regex: Regex::new(r"(?-u:\b)\d{6}-\d{5}(?-u:\b)").unwrap(),
             validate: Some(lv_code_valid),
         },
         // China Resident Identity Card: 17 digits + a check char (digit or X),
         // ISO 7064 MOD 11-2. 18 chars → near-zero false positives.
         Recognizer {
             kind: PiiKind::NationalId,
-            regex: Regex::new(r"\b\d{17}[0-9Xx]\b").unwrap(),
+            regex: Regex::new(r"(?-u:\b)\d{17}[0-9Xx](?-u:\b)").unwrap(),
             validate: Some(zh_resident_id_valid),
         },
     ]
@@ -858,6 +880,39 @@ mod tests {
             got[0].1.contains("sk-abcdef123456"),
             "the contained secret must be covered by the merged span: {got:?}"
         );
+        // M4-R15: and it must be NAMED by the secret — the highest-priority raw candidate
+        // the union covers — not by the phone that happened to survive. Otherwise the
+        // model is told `[PHONE_1]` stands for a phone when it stands for a secret blob,
+        // and the kind-only audit log under-reports a Secret as a Phone.
+        assert_eq!(
+            got[0].0,
+            PiiKind::Secret,
+            "the union must be named by the enclosed Secret: {got:?}"
+        );
+    }
+
+    #[test]
+    fn cjk_prose_does_not_hide_structured_pii() {
+        // M4-R13: Rust regex's default `\b` is Unicode-aware, so a Han character is a word
+        // character and there is NO boundary between it and a digit. CJK has no inter-word
+        // spaces, so this is the natural way to write it — and every anchored recognizer
+        // was inert. `(?-u:\b)` (ASCII boundaries) fixes it.
+        assert_eq!(
+            kinds("我的信用卡号是4111111111111111"),
+            vec![(PiiKind::CreditCard, "4111111111111111".to_string())]
+        );
+        assert_eq!(
+            kinds("我的身份证号是11010519491231002X"),
+            vec![(PiiKind::NationalId, "11010519491231002X".to_string())],
+            "the zh Resident ID pack shipped in M4 must actually fire in Chinese"
+        );
+        assert_eq!(
+            kinds("密钥sk-abcdef123456"),
+            vec![(PiiKind::Secret, "sk-abcdef123456".to_string())]
+        );
+        // The anti-false-positive guarantee still holds inside a longer ASCII token.
+        assert!(kinds("订单号是card4111111111111111").is_empty());
+        assert!(kinds("哈希值abc4111111111111111abc").is_empty());
     }
 
     #[test]

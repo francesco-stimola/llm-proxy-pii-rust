@@ -58,6 +58,58 @@ fn grouped_pii_glued_to_a_domain_leaks_nothing() {
 }
 
 #[test]
+fn structured_pii_is_detected_in_cjk_and_cyrillic_prose() {
+    // M4-R13 — the recognizers anchor on `\b`, and Rust regex's default `\b` is
+    // UNICODE-aware: a Han/Kana/Cyrillic letter counts as a word character, so there is
+    // no boundary between it and a digit. Chinese and Japanese have no inter-word
+    // spaces, so the glued form is the NATURAL way to write this, not an evasion — and
+    // every anchored recognizer was simply inert, forwarding the PII in clear. The fix
+    // is ASCII boundaries, `(?-u:\b)`. Asserted on the masked body.
+    let out = masked("我的信用卡号是4111111111111111");
+    assert!(!out.contains("4111111111111111"), "card in clear in Chinese: {out}");
+
+    let out = masked("我的身份证号是11010519491231002X");
+    assert!(
+        !out.contains("11010519491231002X"),
+        "the zh Resident ID pack never fired in Chinese: {out}"
+    );
+
+    let out = masked("密钥sk-abcdef123456");
+    assert!(!out.contains("sk-abcdef123456"), "secret in clear in Chinese: {out}");
+
+    let out = masked("账号DE89370400440532013000");
+    assert!(!out.contains("DE89370400440532013000"), "IBAN in clear in Chinese: {out}");
+
+    let out = masked("编号123-45-6789");
+    assert!(!out.contains("123-45-6789"), "SSN in clear in Chinese: {out}");
+
+    let out = masked("カード番号は4111111111111111です");
+    assert!(!out.contains("4111111111111111"), "card in clear in Japanese: {out}");
+
+    let out = masked("Карта4111111111111111");
+    assert!(!out.contains("4111111111111111"), "card in clear in Cyrillic: {out}");
+
+    // Round-trip must survive the multi-byte context exactly.
+    let input = "我的信用卡号是4111111111111111，谢谢";
+    let detector = StructuredRecognizers::new();
+    let mut vault = Vault::new();
+    let out = vault.mask(input, &detector.detect(input));
+    assert!(!out.contains("4111111111111111"));
+    assert_eq!(vault.demask(&out), input, "round-trip broke on CJK text");
+}
+
+#[test]
+fn ascii_token_anti_false_positive_guarantee_survives_the_ascii_boundary() {
+    // The flip side of M4-R13: switching to `(?-u:\b)` must NOT weaken the deliberate
+    // anti-FP rule that an ID can't fire inside a longer *ASCII* token (API key / hash /
+    // UUID / base64). Only a non-ASCII letter stops counting as part of a number.
+    assert!(detect("card4111111111111111").is_empty(), "glued to an ASCII word");
+    assert!(detect("abc4111111111111111abc").is_empty(), "inside an ASCII token");
+    assert!(detect("hash a4111111111111111b").is_empty(), "inside an ASCII token");
+    assert!(detect("ref PO123456A shipped").is_empty(), "NINO look-alike, ASCII");
+}
+
+#[test]
 fn partially_overlapping_pii_abandons_no_bytes() {
     // M4-R10 / M4-R11 — the resolver used to settle an overlap by dropping the WHOLE
     // loser span, abandoning its bytes in clear; tuning priorities only chose which
