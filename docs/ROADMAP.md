@@ -337,12 +337,16 @@ traffic — priority can be pulled earlier if real usage demands it.
   **always-on** tier (`national_id_recognizers()`, off `PII_LOCALES`); the locale-gating seam
   (`fp_prone_recognizers(code)`) kept for **FP-prone** recognizers only; NINO tightened first (M4-R2) so
   always-on can't over-mask. Scoping tests + `PII_LOCALES` docs (SETUP §6, ARCHITECTURE) updated.
-- [~] **More national-ID country packs** — **ES DNI/NIE (mod-23) + FR NIR (mod-97) landed** (always-on,
-  checksum-specific). **DE Steuer-ID deferred** (needs the ISO 7064 Mod 11,10 check + structural rules to
-  hit near-zero FP as an always-on recognizer). More countries welcome on the same seam.
-- [ ] **Locale phone national formats** (numbers without a `+CC`, e.g. UK `020 …`, DE `030 …`) — the
-  **FP-prone tier**: gated by `PII_LOCALES` (the `fp_prone_recognizers` seam). Needs careful precision
-  work (the `+CC` international arm already covers the unambiguous case).
+- [ ] **National-ID packs for all XLM-R-aligned countries** (decided 2026-07-13 — "all XLM-R languages").
+  Landed: IT CF, GB NINO, US SSN, ES DNI/NIE (mod-23), FR NIR (mod-97). **To add** — one per XLM-R
+  language's primary country, each **checksum-gated** for always-on near-zero FP: **DE** Steuer-ID
+  (ISO 7064 Mod 11,10), **NL** BSN (11-proef mod-11), **PT** NIF (mod-11), **LV** personal code (mod-11 —
+  *note:* the post-2017 random form has no checksum → shape+date only, treat like SSN), **zh** China
+  Resident ID (18-digit, ISO 7064 mod-11). **`ar` gets no pack** — the language spans ~20 countries with
+  different ID schemes, so there is no single "Arabic" national ID; Arabic names/locations stay covered by NER.
+- **Locale phone national formats** → **moved to Backlog** (user's call 2026-07-13): the FP-prone tier's
+  first recognizer. The `+CC` international arm already covers the unambiguous case; the `fp_prone_recognizers`
+  seam stays ready. Add a specific national format only on concrete need. See Backlog.
 - [ ] **IBAN per-country length validation** — structural + mod-97 already accept every country; add
   per-country length checks to raise precision if needed.
 - [x] **Validate the NER across its declared domain** — scored XLM-R int8 on its **10 languages**
@@ -490,6 +494,12 @@ territory once native schemas are involved. **If pursued, prefer routing by the 
 the Option A OpenAI-compat normalization): no client changes, no custom headers, composes with the existing
 presets; keep it opt-in (one configured provider ⇒ today's behaviour). Not a privacy change — masking runs
 before routing, so a mis-route is a wrong-provider error, never a leak.
+
+### Locale phone national formats  *(moved out of M4 — 2026-07-13; the FP-prone tier)*
+National phone numbers without a `+CC` anchor (e.g. UK `020 …`, DE `030 …`) collide with ordinary number
+sequences, so they're false-positive-prone. The `fp_prone_recognizers(code)` seam is wired and empty,
+gated by `PII_LOCALES`. The universal `+CC` international arm already catches the unambiguous case; add a
+specific country's national format here only when a concrete need justifies the precision work.
 
 ### Other later items
 Auth & rate-limiting stages, **TLS / running behind a TLS terminator**, structured
