@@ -525,9 +525,16 @@ recall on natural sentences); GLiNER is a *zero-shot, **open-label*** span extra
 more-capable **successor to XLM-R** (named entities *and* contextual PII in one model). Needs a **measured
 eval** (score `gliner_multi_pii-v1` int8 through the hybrid on the corpus; CPU latency / RAM vs the lean bar)
 and a **separate detector + span decode** (it is *not* token-classification, so not a drop-in). Full detail
-in [`docs/M2-NER-EVALUATION.md`](M2-NER-EVALUATION.md) (Escalation path).
+in [`docs/M2-NER-EVALUATION.md`](M2-NER-EVALUATION.md) (Escalation path). **Why it's a Backlog item and
+not done:** GLiNER was set aside for *first-version scaffolding simplicity* — a separate detector was more
+integration than a first pass warranted — **not** for any capability doubt. That is the **opposite** of
+Piiranha, which is a *measured* dead-end on prose. **When this is picked up, the evolution to evaluate is
+GLiNER, not Piiranha.**
 
 ### Other later items
-Auth & rate-limiting stages, **TLS / running behind a TLS terminator**, structured
-audit logging (**never log raw PII**), config-file support & container deployment,
-additional providers, metrics/observability.
+Auth & rate-limiting stages, **TLS / running behind a TLS terminator**, config-file
+support & container deployment, additional providers, metrics/observability.
+
+*(The **never-log-raw-PII** rule is **not** a backlog item — it's an enforced quality bar today:
+kind/placeholder-only logging, guarded by the `log_safety.rs` regression test (DBG-02). A dedicated
+structured **audit-trail** feature could be re-added here only if a compliance need arises.)*
