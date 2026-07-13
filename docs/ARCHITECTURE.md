@@ -71,8 +71,20 @@ So containment is resolved **ahead of** priority by a gate (`drop_spans_containe
 that removes structured spans lying *entirely inside* an email; everything else falls through to
 priority, where `Email` sits **below every other structured kind** so the checksum-backed span
 wins any partial overlap. The same gate covers the grouped IBAN and the spaced GB NINO
-(`AB 12 34 56 C@x.com`). Fail-safe in both directions: PII is never left in clear, and at worst
-a bare `@domain` is.
+(`AB 12 34 56 C@x.com`).
+
+> ⚠️ **Known leaks — this is not yet fail-safe in both directions (M4-R10 / M4-R11, OPEN — see
+> `docs/ROADMAP.md`).** The resolver settles an overlap by **dropping the whole loser span**, so the
+> loser's bytes are *abandoned in clear*. Two consequences, both reproduced through `Vault::mask`:
+> (1) the containment gate deletes a contained structured span *before* the priority sort, but the
+> containing email is **not guaranteed to survive** it — a third span partially overlapping the email
+> drops the email too, stranding the already-deleted card/secret (`555 867 5309.4111111111111111@x.com`
+> → `[PHONE_1].4111111111111111@x.com`); (2) with `Email` now the lowest structured tier, a structured
+> span partially overlapping a **real email** wins and abandons the email's **local part**
+> (`555 867 5309john.doe@example.com` → `[PHONE_1]john.doe@example.com`). The planned fix is to make the
+> resolver's invariant *"no structured span's bytes are ever abandoned"* — **merge** partially-overlapping
+> structured spans into their union instead of dropping the loser. Until then, treat the table above as the
+> *intent*, not a guarantee. A left-over bare `@domain` is acceptable (not PII); a left-over local part is not.
 
 ## Anonymization
 

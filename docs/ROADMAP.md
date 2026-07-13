@@ -343,8 +343,10 @@ traffic — priority can be pulled earlier if real usage demands it.
   rule), **NL** BSN (11-proef), **PT** NIF (mod-11), **LV** personal code (classic mod-11 + the post-2017
   `32…` shape-only random form), **zh** China Resident ID (ISO 7064 MOD 11-2, 18 chars). **`ar` gets no
   pack** — the language spans ~20 countries with different ID schemes, so there is no single "Arabic"
-  national ID; Arabic names/locations stay covered by NER. *(Overlap note: `Email` outranks the numeric
-  national IDs so a numeric email local part is never fragmented — see `PiiKind::priority`.)*
+  national ID; Arabic names/locations stay covered by NER. *(Overlap note: a numeric national ID that is a
+  substring of an email local part is dropped by the **containment gate**, so a numeric email local part is
+  never fragmented — see `overlap::drop_spans_contained_in_an_email`. This used to be a `Email`>national-ID
+  **priority** rule; since M4-R9 `Email` is the lowest structured priority and the gate carries the case.)*
 - **Locale phone national formats** → **moved to Backlog** (user's call 2026-07-13): the FP-prone tier's
   first recognizer. The `+CC` international arm already covers the unambiguous case; the `fp_prone_recognizers`
   seam stays ready. Add a specific national format only on concrete need. See Backlog.
@@ -552,6 +554,78 @@ Card/IBAN leak** on partial overlap:
   `!masked.contains("DE89 3704")`); keep `email_beats_a_card_iban_or_secret_local_part` green for the containment
   case. *(Related, lower severity: the earlier Email>NationalId reorder has the same shape for the space-grouped
   NINO `AB 12 34 56 C@x.com`; a containment-gated fix covers it too.)*
+
+### M4-R9 fix review (2026-07-13) — original leak CLOSED, but **two NEW BLOCKERS** (the leak moved, it didn't go away)
+Reviewed `5f31482` (fix) + `7d5668e` (docs). Independently verified: **103 tests green (default), 0 failed, no
+warnings**; `cargo test --features onnx` → **111 passed + 1 `#[ignore]`d, no warnings** (both counts match the
+builder's claim exactly). The **original M4-R9 leak is genuinely closed** — empirically reproduced through
+`Vault::mask` (what the upstream actually receives): `card 4111 1111 1111 1111@example.com` → `card [CARD_1]@example.com`,
+`iban DE89 3704 0044 0532 0130 00@example.com` → `iban [IBAN_1]@example.com`, `AB 12 34 56 C@x.com` → `[NATID_1]@x.com`.
+No card/IBAN/NINO group survives in clear. The **non-vacuity claim is true** (verified in an isolated clone by
+re-raising `Email` to the top structured priority: `email_partially_overlapping_a_structured_span_loses_it`,
+`grouped_forms_attached_to_a_domain_do_not_leak` and `grouped_pii_glued_to_a_domain_leaks_nothing` all fail,
+the last one reproducing the exact pre-fix output `card 4111 1111 1111 [EMAIL_1]`). Containment cases still hold
+(`4111111111111111@x.com`, `123456789@x.com`, `sk-…@x.com` → one `[EMAIL_1]`); `universal_recognizers` is untouched
+(the `recognizers.rs` diff is test-only); no raw PII in logs; fail-closed unchanged.
+
+**But the fix did not eliminate the leak class — it swapped which side of a partial overlap leaks.** The root cause
+is untouched: `resolve_overlaps` resolves an overlap by **dropping the whole loser span**, so the loser's bytes are
+simply *abandoned in clear*. The flat `priority()` scalar can only express "one wins"; it cannot express "both must
+be masked". M4-R7 made `Email` win and abandoned the card; M4-R9 makes the structured span win and abandons the
+**email**. Two concrete blockers follow. Both reproduced end-to-end through `Vault::mask`.
+- [ ] **M4-R10 (BLOCKER — NEW, introduced by the gate).** `drop_spans_contained_in_an_email`
+  (`src/pii/overlap.rs:76`) drops a contained structured span **unconditionally, before the priority sort** — but
+  the containing `Email` is **not guaranteed to survive** that sort. If a *third* span partially overlaps the email,
+  the email loses on priority (it is now the lowest structured tier) and is dropped too — so the contained span,
+  already deleted by the gate, **is masked by nothing at all and is forwarded in clear**. The gate's own doc comment
+  ("an email is never itself contained in a structured span — so dropping the contained span can't strand a surviving
+  email", `src/pii/overlap.rs:74`) checks the wrong direction: the danger is not a *stranded email*, it is a
+  **stranded card**. Reproduced:
+  `555 867 5309.4111111111111111@x.com` → masked `[PHONE_1].4111111111111111@x.com` (**16 Luhn-valid card digits in clear**);
+  `555 867 5309.sk-abcdef123456@x.com` → masked `[PHONE_1].sk-abcdef123456@x.com` (**an API secret in clear** — and `Secret`
+  is the *highest* priority kind, deleted by the gate before priority ever ran);
+  `555 867 5309.123456789@x.com` → `[PHONE_1].123456789@x.com` (NIF in clear);
+  `4111 1111 1111 1111.4111111111111111@example.com` → `[CARD_1].4111111111111111@example.com` (a **second full card** in clear).
+  This directly violates the invariant both `src/pii/overlap.rs:41` ("Structured PII is never lost either way") and
+  `docs/ARCHITECTURE.md:74` ("Fail-safe in both directions: PII is never left in clear") claim to hold.
+- [ ] **M4-R11 (BLOCKER — NEW for `Phone` / `Ssn` / `NationalId`; pre-existing for `Card`/`Iban`/`Secret`).** Demoting
+  `Email` to the lowest structured tier (`src/pii/mod.rs:98`) means a structured span that only **partially** overlaps a
+  **real email** now wins and drops the *whole* email span — leaving the part of the email outside the structured span
+  (its **local part**, i.e. a person's name/handle, plus the domain) **in clear**. The email local-part class includes
+  `.` and `-`, which are also phone separators, so this is reachable whenever a space/`+`/`(` sits inside the structured
+  span (that is what stops the email from simply *containing* it and being saved by the gate). Reproduced:
+  `555 867 5309john.doe@example.com` → masked `[PHONE_1]john.doe@example.com` (**a complete, deliverable email address in clear**);
+  `+39 333 1234567.mario.rossi@example.com` → `[PHONE_1].mario.rossi@example.com` (**name + domain in clear**);
+  `AB 12 34 56 C.bob@x.com` → `[NATID_1].bob@x.com`; `card 4111 1111 1111 1111.bob@x.com` → `[CARD_1].bob@x.com`.
+  Pre-M4-R7 `Email` (priority 3) outranked `Phone` (1) and `Ssn`/`NationalId` (2), so the phone/NatID shapes are a
+  **regression** — and note the NINO case is a pure *trade*, not a fix: it used to leak the NINO, it now leaks the email.
+  (A bare left-over `@domain.tld` is **not** PII and is acceptable — `[PHONE_1]@x.com`, `[NATID_1]@x.com` are fine. A
+  left-over **local part** is.)
+- **Fix (one change closes both).** Make the resolver's invariant **"no structured span's bytes are ever abandoned"**
+  instead of "the higher priority wins". Concretely: when two **structured** spans *partially* overlap, **merge them
+  into a single span covering the union** (labelled with the higher-priority kind) rather than dropping the loser.
+  `Vault` masks and restores the union text verbatim, so the round-trip stays exact and nothing is left in clear —
+  `555 867 5309john.doe@example.com` → one `[PHONE_1]`; `555 867 5309.4111111111111111@x.com` → one `[PHONE_1]` covering
+  the card too. This subsumes the containment gate for the *partial* case and keeps it for true containment, is
+  fail-safe in the project's stated direction (over-mask, never leak — cf. M4-R6), and costs nothing in practice since
+  these shapes are pathological. Merging must iterate to a fixpoint (a merge can create a new overlap). Keep the
+  existing whole-span drop for **NER** spans (M2-R7) — abandoning a `Person` remainder costs recall, never a leak.
+  *(Alternative, if the union's over-masking is unwanted: keep the loser's non-overlapping remainder as its own masked
+  span — `[PHONE_1][EMAIL_1]` — and make the gate conditional on the containing email actually surviving. More code,
+  same guarantee.)*
+- **Test (the one that would have caught all of this).** A **property/invariant test** over the resolver, not more
+  point cases: for any input, **every byte of every structured candidate span produced by the recognizers must be
+  covered by some span in the masked output**. Point cases alone keep missing this — each of the last three reviews
+  found a new instance of the same class. Plus adversarial cases pinning the eight shapes above (assert on the masked
+  body: `!masked.contains("john.doe")`, `!masked.contains("4111111111111111")`, `!masked.contains("sk-abcdef123456")`).
+  Note `grouped_forms_attached_to_a_domain_do_not_leak` / `grouped_pii_glued_to_a_domain_leaks_nothing` will need their
+  expected spans widened to the union (`4111 1111 1111 1111@example.com`), which is strictly *better* — the `@domain`
+  stops leaking too.
+- [ ] **M4-R12 (doc — stale mechanism stated as current).** Three places still describe the *superseded* priority order
+  as the live one: `docs/TESTING.md` LOC-12 ("`Email` is the top structured priority" — it is now the **lowest**) and
+  LOC-10 + `docs/ROADMAP.md` M5-Arabic note ("`Email` outranks the numeric national IDs" — it no longer does; the
+  behavior now holds via the **containment gate**). The asserted *behavior* is unchanged in all three; only the stated
+  mechanism is wrong. **Fixed in this review's doc commit** — listed here for traceability.
 
 ## M5 — Integration & performance testing
 Goal: prove the whole system holds **end-to-end** and **under load**, then document it. Comes after M4 —
