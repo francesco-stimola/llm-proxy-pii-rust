@@ -22,7 +22,10 @@ invariants) and [`TESTING.md`](TESTING.md) (the guards) — read *those* to unde
 **M0 – M4 complete, and M4's ledger is clean — all 24 findings closed.** **M5 (integration &
 performance testing) is code-complete** — real integration tests, a performance/load harness,
 NER chunking (a real bug found and fixed along the way), the README rewrite, and CI/release
-workflows are all in place. **Its review round 1 is closed too — all 6 findings.** **One box is deliberately still open**: the
+workflows are all in place. **Review round 1's 6 findings are all closed; round 2 verified those
+closures and opened 3 more** ([M5-R7…R9](#m5-ledger)) — the M5-R2 fix checked the token bound correctly
+but made the overflow *clamp and continue*, which returns `Ok` where `NER_REQUIRED` promises a block.
+**One box is also deliberately still open**: the
 manual dual-run procedure needs a human with a real `ANTHROPIC_API_KEY` to actually execute it, which
 no session can do on its own — see the M5 section below. 132 tests green (default) / 145 + 6
 `#[ignore]`d (`--features onnx`), no warnings; `cargo fmt` + `clippy` clean on both feature sets.
@@ -35,6 +38,7 @@ streams, and fronts OpenAI / Copilot / Anthropic via their OpenAI-compatible end
 
 | What | Where | Status |
 |---|---|---|
+| **M5 review round 2** — 3 findings open | [ledger](#m5-ledger) | [ ] [M5-R7](reviews/M5.md#m5-r7) fail-closed · [M5-R8](reviews/M5.md#m5-r8) docs · [M5-R9](reviews/M5.md#m5-r9) guard |
 | **M5** — integration & performance testing | [below](#m5) | [~] one box open — the manual live-provider check needs a human + a real key |
 | **First tagged release (`1.0.0`)** | [below](#m5) | [ ] gated on a real green CI run (the workflows have never actually run) |
 
@@ -348,6 +352,17 @@ own declared floor. **Only a job that builds on the MSRV can.**
 | [M5-R4](reviews/M5.md#m5-r4) | The fixpoint's convergence proof covers the recognizers, not the NER — placeholder inertness is **empirical** for the model, and a **model swap must re-check it** (GLiNER especially) | invariant | [x] |
 | [M5-R5](reviews/M5.md#m5-r5) | CI never exercised the declared MSRV → **and the declared MSRV was wrong**: measured 1.86 (default) / 1.89 (onnx), both now built in CI | low → med | [x] |
 | [M5-R6](reviews/M5.md#m5-r6) | The READMEs' Status was self-referentially stale and understated the `1.0.0` gate | docs | [x] |
+
+**Round 2 (2026-07-14) — closure verification: 5 of 6 hold; M5-R2's *valve* does not.** Re-measured both
+MSRV floors + both negative controls, re-ran the four live NER guards (they reproduce the 481–483 drift),
+confirmed `run_and_decode` really is the single session choke point and that clamping cannot corrupt a
+span — then found that the clamp returns `Ok`, which is precisely what `NER_REQUIRED` exists not to get.
+
+| ID | Title | Sev | Status |
+|---|---|---|---|
+| [M5-R7](reviews/M5.md#m5-r7) | The clamp trades `NER_REQUIRED`'s fail-closed block for a silent partial scan — the M5-R2 fix *relocated* the failure | fail-closed | [ ] |
+| [M5-R8](reviews/M5.md#m5-r8) | ARCHITECTURE's *NER chunking* still names the constant M5-R2 deleted — in the file M5-R1 just made the single home | docs | [ ] |
+| [M5-R9](reviews/M5.md#m5-r9) | The M5-R2 guard hand-copies the one constant `chunk_char_ranges` was made `pub` to avoid hand-copying | guard | [ ] |
 
 <a id="backlog"></a>
 ## Backlog — documented, not scheduled
