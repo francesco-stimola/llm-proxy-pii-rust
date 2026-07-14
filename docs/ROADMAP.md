@@ -22,14 +22,16 @@ invariants) and [`TESTING.md`](TESTING.md) (the guards) — read *those* to unde
 **M0 – M4 complete, and M4's ledger is clean — all 24 findings closed.** **M5 (integration &
 performance testing) is code-complete** — real integration tests, a performance/load harness,
 NER chunking (a real bug found and fixed along the way), the README rewrite, and CI/release
-workflows are all in place. **Review round 1's 6 findings are all closed; round 2 verified those
-closures and opened 3 more** ([M5-R7…R9](#m5-ledger)) — the M5-R2 fix checked the token bound correctly
-but made the overflow *clamp and continue*, which returns `Ok` where `NER_REQUIRED` promises a block.
-**One box is also deliberately still open**: the
-manual dual-run procedure needs a human with a real `ANTHROPIC_API_KEY` to actually execute it, which
-no session can do on its own — see the M5 section below. 132 tests green (default) / 145 + 6
+workflows are all in place. **Both review rounds are closed — 9 findings, 9 closed.** Round 2 verified round 1's closures and
+opened 3 more ([M5-R7…R9](#m5-ledger)); the sharp one, **M5-R7**, was a fail-closed regression in my
+*own* M5-R2 fix (the overflow clamp returned `Ok` where `NER_REQUIRED` promises a block) — now an
+`Err`, with the rule promoted into ARCHITECTURE.
+**One box is deliberately still open**: the manual dual-run procedure needs a human with a real
+provider token to actually execute it, which no session can do on its own — see the M5 section below. 132 tests green (default) / 145 + 6
 `#[ignore]`d (`--features onnx`), no warnings; `cargo fmt` + `clippy` clean on both feature sets.
-**MSRV 1.86** (default) / **1.89** (`--features onnx`) — *measured*, and now built by CI.
+**MSRV 1.89** — *measured*, and now built by CI (the floor of the **real** product, which runs
+with `onnx` on; a separate 1.86 "default-build" floor would be a promise about a configuration
+nobody deploys).
 `v0.4.0`, AGPL-3.0-or-later. The product masks structured PII (universal + national-ID packs for
 10 countries) and unstructured entities (ONNX NER, XLM-R int8, now chunked for large fields),
 streams, and fronts OpenAI / Copilot / Anthropic via their OpenAI-compatible endpoints.
@@ -38,8 +40,7 @@ streams, and fronts OpenAI / Copilot / Anthropic via their OpenAI-compatible end
 
 | What | Where | Status |
 |---|---|---|
-| **M5 review round 2** — 3 findings open | [ledger](#m5-ledger) | [ ] [M5-R7](reviews/M5.md#m5-r7) fail-closed · [M5-R8](reviews/M5.md#m5-r8) docs · [M5-R9](reviews/M5.md#m5-r9) guard |
-| **M5** — integration & performance testing | [below](#m5) | [~] one box open — the manual live-provider check needs a human + a real key |
+| **M5** — integration & performance testing | [below](#m5) | [~] one box open — the manual live-provider check needs a human + a real token |
 | **First tagged release (`1.0.0`)** | [below](#m5) | [ ] gated on a real green CI run (the workflows have never actually run) |
 
 **M5 is unblocked.** Its prerequisite was a clean M4 ledger, and the last blocker was the DoS class — which
@@ -274,7 +275,7 @@ Prove the whole system holds **end-to-end** and **under load**, then document it
 >
 > *(This box used to add "CI has its MSRV ([M4-R22](reviews/M4.md#m4-r22))". It did not:
 > [M5-R5](reviews/M5.md#m5-r5) found the declared `1.82` could not even parse the dependency tree. The
-> real floors — **1.86** default, **1.89** onnx — are measured and now **built** by CI.)*
+> floor is now **1.89** — measured, and **built** by CI.)*
 
 - [x] **Real integration tests** — full mask → forward → (stream) → de-mask round-trips, tool-call
   round-trips, multi-turn determinism, and the fail-closed paths. **Mock upstreams cover all three preset
@@ -315,21 +316,33 @@ Prove the whole system holds **end-to-end** and **under load**, then document it
     *size*, **DOS-04** varies the entity *count* ([M4-R24](reviews/M4.md#m4-r24) — the axis the first three
     silently held at one). A load result can no longer be a measurement of an algorithmic bug in the
     structured path.
-- [x] **Update the root `README.md`** (+ `README.it.md`) to describe the shipped product — what it does,
-  three-tier detection + NER, streaming, multi-provider usage, config/env, status. Rewritten from the
-  "early development" placeholder to describe the working system (feature list, quick start, full env-var
-  reference, current status).
-- [x] **CI + release binaries (GitHub Actions).** `.github/workflows/ci.yml`: `fmt` (once) + `clippy` +
-  `cargo test`, one job for the default build and one for `--features onnx` (matrix) — on push to `main`
-  and on every PR. **All three are already green on both feature sets** (2026-07-13) — `fmt` and `clippy`
-  had never been run, and `clippy` was in fact *erroring*, so the CI would have failed on its first run;
-  that is cleared, and the MSRV is declared ([M4-R22](reviews/M4.md#m4-r22)). `.github/workflows/release.yml`:
-  on a `v*.*.*` tag, cross-compiles the full `--features onnx` product for Linux (x86_64), macOS (x86_64 +
-  arm64), and Windows (x86_64-msvc), and attaches the binaries to a GitHub Release. **Not yet exercised
-  live** — no tag has been pushed and no PR has run the new CI yet; both are standard, unremarkable
-  GitHub Actions shapes but are only proven once a real push/PR/tag runs them. **The first tagged release
-  is `1.0.0`** (bump from `0.4.0`) — cut when a real CI run is green and, ideally, the manual verification
-  procedure below has actually been run once against a live provider.
+- [x] **Update the root `README.md`** (+ `README.it.md`) to describe the shipped product. Rewritten from
+  the "early development" placeholder into a product README: what it protects and why, a `curl` showing
+  the *actual* masked body the provider receives, the detection matrix (universal + 10 national IDs +
+  NER languages), the fail-closed / never-log / linear-under-load bars, provider presets, and the full
+  env reference (NER + debug folded into `<details>`). The **internal development status is deliberately
+  *not* in the README** — that is what this file is for; the README defers here.
+- [x] **CI + release binaries (GitHub Actions).**
+  - **`ci.yml`** — on push to `main` and every PR: `fmt` (once) + `clippy` + `cargo test`, matrixed over
+    the default build and `--features onnx`, plus an **`msrv` job that actually *builds* on the declared
+    floor** ([M5-R5](reviews/M5.md#m5-r5) — before it, `rust-version` was a claim nothing checked, and it
+    was false).
+  - **`release.yml`** — **does *not* run on every push to `main`**: four cross-compiled LTO targets per
+    commit is noise, not a release. Two triggers instead: a **`v*.*.*` tag** builds *and* publishes a
+    GitHub Release, and **`workflow_dispatch`** (the "Run workflow" button) builds the same binaries from
+    any branch and attaches them as **workflow artifacts only** — the publish step is tag-gated, so a
+    manual run can never accidentally cut a release. Targets: Linux x86_64, macOS x86_64 + arm64, Windows
+    x86_64-msvc. ONNX Runtime links **statically**, so each artifact is a single self-contained binary.
+  - **The release profile is the max-optimization one** (`[profile.release]`): `opt-level = 3`,
+    **fat LTO**, `codegen-units = 1`, symbols stripped — worth the ~5 min build, because the masking path
+    *is* the product's latency. **`panic` stays `unwind` on purpose**: `abort` would turn a caught masking
+    panic — which today blocks **one** request, fail-closed ([M4-R19](reviews/M4.md#m4-r19)) — into a
+    process abort, i.e. an **outage**. That is not a smaller failure; availability is a privacy property
+    here (a proxy that is down protects nothing, and clients fail over to the raw provider).
+  - **Not yet exercised live** — no tag has been pushed and no PR has run the new CI. Both are standard
+    shapes, but "the YAML parses" is not "it is green". **The first tagged release is `1.0.0`** (bump from
+    `0.4.0`) — cut when a real CI run is green and, ideally, the manual verification procedure below has
+    actually been run once against a live provider.
 
 <a id="m5-ledger"></a>
 ### Review ledger — M5 → [`reviews/M5.md`](reviews/M5.md)
@@ -338,11 +351,11 @@ chunking fix was verified against the **pre-fix** commit (the `Expand` error rep
 through the real binary end-to-end with NER on an oversized field.
 
 **M5-R5 turned out to be the sharp one.** Chasing it revealed the declared MSRV was **fiction**: `1.82`
-cannot even *parse* the dependency tree. Measured, the real floors are **1.86** (default) and **1.89**
-(`--features onnx`) — and they *differ per feature set*, which a single `rust-version` cannot express. Both
-are now pinned in CI. This is exactly the failure M4-R22 tried to prevent and structurally could not:
-`rust-version` makes cargo refuse a too-**old** toolchain; it cannot notice the crate drifting **past** its
-own declared floor. **Only a job that builds on the MSRV can.**
+cannot even *parse* the dependency tree. Measured floors: **1.86** (default) / **1.89** (`--features
+onnx`). Since the shipped product always runs with `onnx` on, the manifest declares the **single** real
+floor — **1.89** — and CI *builds* on it. This is exactly the failure M4-R22 tried to prevent and
+structurally could not: `rust-version` makes cargo refuse a too-**old** toolchain; it cannot notice the
+crate drifting **past** its own declared floor. **Only a job that builds on the MSRV can.**
 
 | ID | Title | Sev | Status |
 |---|---|---|---|
@@ -350,19 +363,28 @@ own declared floor. **Only a job that builds on the MSRV can.**
 | [M5-R2](reviews/M5.md#m5-r2) | `MAX_SEQUENCE_TOKENS` didn't bound what reaches the model — chunks re-tokenize to 481–483 vs a usable limit of 512 → the ceiling is now **enforced** at the one choke point, and the drift is **asserted** | hardening | [x] |
 | [M5-R3](reviews/M5.md#m5-r3) | The chunk slice hard-indexed tokenizer offsets — the one place on the masking path that could panic on attacker input | hardening | [x] |
 | [M5-R4](reviews/M5.md#m5-r4) | The fixpoint's convergence proof covers the recognizers, not the NER — placeholder inertness is **empirical** for the model, and a **model swap must re-check it** (GLiNER especially) | invariant | [x] |
-| [M5-R5](reviews/M5.md#m5-r5) | CI never exercised the declared MSRV → **and the declared MSRV was wrong**: measured 1.86 (default) / 1.89 (onnx), both now built in CI | low → med | [x] |
+| [M5-R5](reviews/M5.md#m5-r5) | CI never exercised the declared MSRV → **and the declared MSRV was wrong**: measured, declared as the single real floor (**1.89**), and now **built** by CI | low → med | [x] |
 | [M5-R6](reviews/M5.md#m5-r6) | The READMEs' Status was self-referentially stale and understated the `1.0.0` gate | docs | [x] |
 
-**Round 2 (2026-07-14) — closure verification: 5 of 6 hold; M5-R2's *valve* does not.** Re-measured both
-MSRV floors + both negative controls, re-ran the four live NER guards (they reproduce the 481–483 drift),
-confirmed `run_and_decode` really is the single session choke point and that clamping cannot corrupt a
-span — then found that the clamp returns `Ok`, which is precisely what `NER_REQUIRED` exists not to get.
+**Round 2 (2026-07-14) — closure verification: 5 of 6 hold; M5-R2's *valve* did not. All 3 now closed.**
+Re-measured both MSRV floors + both negative controls, re-ran the four live NER guards (they reproduce the
+481–483 drift), confirmed `run_and_decode` really is the single session choke point and that clamping
+cannot corrupt a span — then found that the clamp returns `Ok`, which is precisely what `NER_REQUIRED`
+exists not to get.
+
+**M5-R7 is the one to remember: my own fix committed the M4 retrospective's signature move.** Clamping an
+over-long NER sequence *relocated* the failure instead of closing it — it is the right call for the
+default (fail-open) posture and fatal to `NER_REQUIRED`, and **a component that cannot see the posture
+must not choose between them.** The overflow is now an `Err` that flows into the channel that already owns
+that decision (`FailOpen` / `try_detect`). Promoted to [`ARCHITECTURE.md`](ARCHITECTURE.md) → *Robustness
+& fail-closed*: **a detector may degrade its own recall, but it may never decide *for the caller* that
+degraded output is acceptable.**
 
 | ID | Title | Sev | Status |
 |---|---|---|---|
-| [M5-R7](reviews/M5.md#m5-r7) | The clamp trades `NER_REQUIRED`'s fail-closed block for a silent partial scan — the M5-R2 fix *relocated* the failure | fail-closed | [ ] |
-| [M5-R8](reviews/M5.md#m5-r8) | ARCHITECTURE's *NER chunking* still names the constant M5-R2 deleted — in the file M5-R1 just made the single home | docs | [ ] |
-| [M5-R9](reviews/M5.md#m5-r9) | The M5-R2 guard hand-copies the one constant `chunk_char_ranges` was made `pub` to avoid hand-copying | guard | [ ] |
+| [M5-R7](reviews/M5.md#m5-r7) | The clamp traded `NER_REQUIRED`'s fail-closed block for a silent partial scan — the M5-R2 fix *relocated* the failure → overflow is now an **`Err`**; the posture is the caller's | **fail-closed** | [x] |
+| [M5-R8](reviews/M5.md#m5-r8) | ARCHITECTURE's *NER chunking* still named the constant M5-R2 deleted — in the file M5-R1 had just made the single home | docs | [x] |
+| [M5-R9](reviews/M5.md#m5-r9) | The M5-R2 guard hand-copied the one constant `chunk_char_ranges` was made `pub` to avoid hand-copying | guard | [x] |
 
 <a id="backlog"></a>
 ## Backlog — documented, not scheduled

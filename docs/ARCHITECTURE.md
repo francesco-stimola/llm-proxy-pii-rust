@@ -289,6 +289,17 @@ For a privacy proxy the failure mode *is* the product: anything unexpected must
   `PiiDetector::try_detect` error channel — whose `DetectError` carries only a
   static label, never input text.
 
+  > **The rule that governs it (M5-R7): a detector may degrade its own recall, but it may never
+  > decide *for the caller* that degraded output is acceptable.** Fail-open vs fail-closed is
+  > `FailOpen`'s decision, and the **only** road to it is the `try_detect` error channel. A detector
+  > that quietly returns `Ok(partial)` where it could have returned `Err` has routed *around* the
+  > switch the operator set — it silently converts `NER_REQUIRED` (block) into "forward a
+  > partially-scanned body", which is the one thing that operator paid to prevent. This is not
+  > hypothetical: the first M5-R2 fix did exactly that, clamping an over-long NER sequence and
+  > returning `Ok`. The clamp was *better* for the default posture and *fatal* to the other one —
+  > and a component that cannot see the posture must not choose between them. **When in doubt, a
+  > detector returns `Err` and lets the wrapper decide.**
+
 ## Debug & observability (M2.6)
 
 Opt-in developer tools to *see* that masking holds end-to-end. Both are **off by
@@ -369,18 +380,65 @@ labels in class-id order), optional `NER_POOL_SIZE` (session pool for concurrenc
 A missing/failed model logs and falls back to structured-only. The model was chosen
 by *measurement* (XLM-R int8 — `docs/M2-NER-EVALUATION.md`, `docs/DEVLOG.md`).
 
-**NER chunking (M5, PERF-01).** `OnnxNerDetector` tokenizes a field once; if it fits the
-model's sequence budget (`MAX_SEQUENCE_TOKENS`, conservatively under XLM-R's
-`max_position_embeddings`), it runs exactly as before (M2). A field that doesn't fit is split
-into overlapping token windows (`chunk_char_ranges`, a pure function unit-tested without a
-model), each **re-tokenized independently** — a middle window needs its own `<s>…</s>`
-framing, so it can't be a raw slice of the whole field's token ids — and run through the same
-single-window path; results are merged, sorted, and exact duplicates from the overlap region
-deduped. Without this, an oversized field didn't just run slowly: it made the ONNX call
-**error outright** (measured — see *Decisions & open points* above), silently downgrading NER
-coverage by default or **blocking every such request** under `NER_REQUIRED`. Chunking is a
-**recall** mechanism only, never leak-relevant: structured PII is detected independently, over
-the whole field, and is never chunked.
+**NER chunking (M5, PERF-01).** `OnnxNerDetector` tokenizes a field once; if it fits, it runs
+exactly as before (M2). A field that doesn't is split into overlapping token windows
+(`chunk_char_ranges`, a pure function unit-tested without a model), each **re-tokenized
+independently** — a middle window needs its own `<s>…</s>` framing, so it can't be a raw slice
+of the whole field's token ids — and run through the same single-window path; results are
+merged, sorted, and exact duplicates from the overlap region deduped. Without this, an
+oversized field didn't just run slowly: it made the ONNX call **error outright** (measured —
+see *Decisions & open points* above), silently downgrading NER coverage by default or
+**blocking every such request** under `NER_REQUIRED`. Chunking is a **recall** mechanism only,
+never leak-relevant: structured PII is detected independently, over the whole field, and is
+never chunked.
+
+**Two constants, and the difference between them is the whole point (M5-R2).**
+
+| constant | bounds | value |
+|---|---|---|
+| `MAX_WINDOW_TOKENS` | the **planning window** — how much of the *field's* tokenization one chunk covers | 480 |
+| `MODEL_MAX_TOKENS` | the **model's usable sequence length** — what may actually be handed to the session | 512 |
+
+They are not two names for one budget. A window is planned in the coordinates of the *whole
+field's* tokenization, but then **re-tokenized from its own text**, which adds the two special
+tokens and drifts at the cut edges — so the sequence that reaches the model is `window +
+specials + drift`, **measured at 481–483, i.e. always over the planning bound**. `MODEL_MAX_TOKENS`
+is 512 because XLM-R declares `max_position_embeddings: 514` but RoBERTa-family position ids
+start at `pad_token_id + 1 = 2`. The 32-token gap is the drift headroom, and it is a
+**compile-time invariant** (`const _: () = assert!(MAX_WINDOW_TOKENS < MODEL_MAX_TOKENS)`) — get
+it wrong and the crate does not build.
+
+> **This is what the earlier wording got wrong, and it is worth keeping as a warning.** This
+> section used to say the window was *"conservatively under `max_position_embeddings`"* — a
+> single budget, assumed safe. That is precisely the hope M5-R2 refuted: the window *was* under
+> the limit and the **sequence was not**, on every single chunk. **A bound you do not check is not
+> a bound.**
+
+**The ceiling is checked at one choke point, and overflow is an `Err`, not a clamp (M5-R7).**
+`run_and_decode` is the only path into the ONNX session (the direct call *and* every chunk), and
+it **rejects** an over-long sequence rather than truncating it. An earlier revision clamped and
+returned `Ok(partial)` — losing a window's tail instead of the whole field, which sounds strictly
+better and is the wrong call: *whether a degraded NER is acceptable is a **posture** decision*,
+and this codebase already has exactly one owner for it — the `FailOpen` wrapper and the
+`try_detect` error channel (M2-R1/R2). Fail-open (default) swallows the error and proceeds
+structured-only; **`NER_REQUIRED` unwraps the detector, so the error blocks the request (400)**,
+which is what that operator asked for. Clamping returned `Ok` in *both* postures, quietly
+forwarding a partially-scanned field to someone who had explicitly demanded a block — the failure
+**relocated**, not closed. (The general rule this taught is in *Robustness & fail-closed* above.)
+The error path is latent by design; `tests/ner_perf.rs`
+(`m5_r2_…within_the_models_usable_length`) is the guard that keeps it that way.
+
+**The one assumption the chunker rests on, stated (M5-R8).** `chunk_char_ranges` reads the
+tokenizer's per-token offsets, and it takes the `(0, 0)` offset — the sentinel the tokenizer emits
+for a **special token** — to mean *"this is `</s>`, i.e. the sequence end"*, which is why a window
+reaching the last token uses `input.len()` rather than that offset (getting this wrong silently
+dropped the whole final window; see M5-R2's history). That is sound **only because `(0, 0)`
+appears exclusively at the sequence *ends***. A mid-sequence `(0, 0)` would either collapse a
+window to zero length (silently unscanned) or restart it at byte 0. Verified against the real
+XLM-R tokenizer over 17 adversarial inputs — CJK, combining marks, zalgo, emoji/ZWJ, zero-width
+and control characters, 20 K-char single tokens, base64 runs, literal `<s>`/`<unk>` text: zero
+mid-sequence sentinels. **A tokenizer that emitted one would break chunking, so a tokenizer swap
+must re-check it** — the same class of model-swap checkpoint as placeholder inertness above.
 
 > **Boundary fragments are cleaned up by the *resolver*, not by the `dedup()` — and that is
 > load-bearing.** `infer_chunked`'s `dedup()` removes only **exact** duplicates. A window that

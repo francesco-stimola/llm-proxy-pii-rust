@@ -19,15 +19,36 @@ still gets the real values back.
 
 ## Prerequisites
 
-- A real `ANTHROPIC_API_KEY`.
+- A working credential for the provider — see *Two ways to authenticate* below.
 - Build with logging enabled (default; no special feature needed for this check).
+
+### Two ways to authenticate — the proxy never needs to hold your key
+
+`UPSTREAM_API_KEY` is **optional**. The proxy's auth rule (`src/proxy.rs`) is:
+
+> **the client's own `Authorization` header always wins**; the configured
+> `UPSTREAM_API_KEY` is only injected as `Bearer …` when the client sent none.
+
+So there are two modes, and **the second is usually what you want** — it keeps your
+credential out of the proxy's environment entirely:
+
+| | how | when |
+|---|---|---|
+| **A — proxy holds the key** | set `UPSTREAM_API_KEY`; clients send no `Authorization` | a shared/deployed proxy fronting many clients |
+| **B — client passes its own token** *(recommended here)* | leave `UPSTREAM_API_KEY` **unset**; send `Authorization: Bearer <your-token>` on the request | a local run, or any token already issued to *your* user/account |
+
+Mode B works with whatever token your account already uses — an API key, or a token
+issued to your user — because the proxy forwards it **verbatim** and never inspects it.
 
 ## Procedure
 
-1. **Start the proxy for Run A** — response de-mask skipped, trace logging on:
+*(Shown in mode B. For mode A, drop the `Authorization` header from the `curl` and
+`set UPSTREAM_API_KEY=…` before `cargo run` instead.)*
+
+1. **Start the proxy for Run A** — response de-mask skipped, trace logging on. Note
+   there is no key here at all:
 
    ```text
-   set ANTHROPIC_API_KEY=sk-ant-...
    set UPSTREAM_PROVIDER=anthropic
    set UPSTREAM_BASE_URL=https://api.anthropic.com
    set PII_DEBUG_SKIP_DEMASK=1
@@ -35,15 +56,19 @@ still gets the real values back.
    cargo run
    ```
 
-2. Send a request carrying real PII, forwarding the header Anthropic's compat
-   layer needs and picking a cheap model:
+2. Send a request carrying real PII, passing **your own** token, forwarding the header
+   Anthropic's compat layer needs, and picking a cheap model:
 
    ```text
    curl http://127.0.0.1:8080/v1/chat/completions ^
      -H "content-type: application/json" ^
+     -H "authorization: Bearer %YOUR_TOKEN%" ^
      -H "anthropic-version: 2023-06-01" ^
      -d "{\"model\":\"claude-3-5-haiku-latest\",\"max_tokens\":64,\"messages\":[{\"role\":\"user\",\"content\":\"Reply with exactly this sentence and nothing else: contact jane.doe@example.com for details.\"}]}"
    ```
+
+   > `anthropic-version` reaches the upstream because the `anthropic` preset
+   > allowlists it (`forward_request_headers`). `Authorization` is always handled.
 
 3. **Check Run A:**
    - The JSON reply's `choices[0].message.content` contains a placeholder like

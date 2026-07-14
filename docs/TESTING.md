@@ -392,11 +392,15 @@ asserts the value is still masked and round-trips, so a "fix" that buys speed wi
   opened — and that the full hybrid `mask_all` converges on it. Placeholder inertness is therefore an
   **empirical property of the chosen model**; **GLiNER** (Backlog) is *zero-shot, open-label,
   context-driven* — exactly the kind that could read `Contact [PERSON_1] at [ORG_1]` and tag both.
-- **MSRV-01** *(CI)* — the `msrv` matrix job (`.github/workflows/ci.yml`, M5-R5) **builds** the crate on
-  both declared floors: **1.86** (default) and **1.89** (`--features onnx`). They differ per feature set,
-  which one `rust-version` field cannot express. Before this, `rust-version` was a claim nothing checked —
-  and it was **false** (`1.82` could not even parse the dependency tree). **A declared MSRV with no job
-  building on it is not a floor; it is a comment shaped like a guarantee.**
+- **MSRV-01** *(CI)* — the `msrv` job (`.github/workflows/ci.yml`, M5-R5) **builds** the crate on the
+  declared floor, **1.89**, with `--features onnx`. Before this, `rust-version` was a claim nothing
+  checked — and it was **false**: the declared `1.82` could not even parse the dependency tree.
+  **A declared MSRV with no job building on it is not a floor; it is a comment shaped like a guarantee.**
+  > **One floor, not two.** The measured floors *do* differ by feature set — 1.86 default, 1.89 onnx —
+  > but the **shipped product runs with `onnx` on** (that is the hybrid: structured recognizers *and*
+  > NER). A "default-build MSRV" would be a promise about a configuration nobody deploys: a second number
+  > to keep honest, buying nothing. So the manifest declares the floor of the *real* product. The default
+  > build still happens to compile on 1.86; we simply don't promise it.
 
 ### Dependency footprint (M2.5-R1)
 - DEP-01 — `tests/dependency_footprint.rs` (`default_build_excludes_the_onnx_and_hf_stack`): `cargo tree` on the **default** features must contain no `hf-hub`/`hf-xet`/`aws-lc`/`ort`/`tokenizers` — the ONNX/HF stack (heavy, native) stays behind the `onnx` feature so the shipped default build is native-dep-free.

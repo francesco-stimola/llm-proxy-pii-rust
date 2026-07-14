@@ -3,6 +3,78 @@
 Newest first. One entry per meaningful change — note *what* and *why*, not just
 *what*. This is the running history so context is never lost between sessions.
 
+## 2026-07-14 — M5 review round 2: my own fix committed the M4 retrospective's signature move
+
+Round 2 verified round 1's six closures (five hold outright) and found three more. **All closed. M5's
+ledger is 9/9.** 132 tests green (default) / 145 + 6 `#[ignore]`d (`--features onnx`); `fmt` + `clippy`
+clean on both. Record: [`reviews/M5.md`](reviews/M5.md).
+
+**M5-R7 — the fail-closed regression, and it was mine.** My M5-R2 fix enforced the token ceiling by
+**clamping** an over-long NER sequence and returning `Ok(partial)` — reasoning that losing a window's tail
+beats losing the whole field. The reasoning is fine. **Making the call there is not.** Under `NER_REQUIRED`
+the detector goes into the composite *unwrapped*, so a `try_detect` `Err` is what produces the 400. Before
+the fix an over-budget sequence errored → **400, nothing forwarded**. After it, the same condition returned
+`Ok` → the request is **forwarded with a window's tail unscanned**, to an operator who had explicitly asked
+to be blocked. Two claims in my own doc comment propped it up and neither survives: the overlap does **not**
+re-cover the *last* window (it has no successor), and — the tell — I had written the 400 as the *bad*
+outcome, when under `NER_REQUIRED` **the 400 is the product**.
+
+> **The rule, now in ARCHITECTURE:** *a detector may degrade its own recall, but it may never decide **for
+> the caller** that degraded output is acceptable.* Fail-open vs fail-closed is `FailOpen`'s decision and
+> the only road to it is the `try_detect` error channel. The clamp was **right for the default posture and
+> fatal to the other**, and a component that cannot see the posture must not choose between them. **When in
+> doubt, a detector returns `Err` and lets the wrapper decide.**
+
+The fix is the *minimum*, deliberately: `run_and_decode` returns `Err`, naming the cause. I skipped the
+reviewer's "better" (re-split the window until it fits) because it buys a retry loop, a termination
+argument and a coverage-gap argument to guard a path that **cannot currently be reached** — 32 tokens of
+headroom against a measured +1…+3 drift. And the suggested test (make the consts injectable so the valve is
+forceable) is *no longer needed*, which is the point: there is no valve. The overflow is now an ordinary
+detector error, and "a required detector's error blocks / a `FailOpen`-wrapped one is swallowed" is already
+pinned by FC-04 and CMP-02. **The fix didn't just remove the wrong behaviour — it removed the category of
+behaviour that needed a bespoke guard.**
+
+**M5-R8 / M5-R9 — the same drift, twice more.** ARCHITECTURE still named `MAX_SEQUENCE_TOKENS` (a constant
+that no longer exists) and still called the window *"conservatively under `max_position_embeddings`"* — the
+exact hope M5-R2 refuted — **in the file M5-R1 had just promoted to sole home**. Rewritten around what
+ships, and the refuted framing is *kept as a warning* rather than deleted: **a bound you do not check is not
+a bound.** Also written down at last: the chunker's unstated assumption that the `(0, 0)` offset sentinel
+appears **only at sequence ends** (verified over 17 adversarial inputs; a tokenizer swap must re-check it).
+M5-R9: the M5-R2 guard hand-copied `32` for `CHUNK_OVERLAP_TOKENS` — the one constant `chunk_char_ranges`
+was made `pub` to *avoid* hand-copying. Now `pub` too. **A guard that shares only *some* of its subject's
+constants is measuring a program that doesn't exist.**
+
+## 2026-07-14 — Product pass: single MSRV, manual release trigger, max-opt profile, README rewrite
+
+Four changes driven by how the product will actually be run and shipped.
+
+- **One MSRV: `1.89`.** M5-R5 measured two floors (1.86 default, 1.89 `onnx`) and declared 1.86, keeping
+  1.89 as documentation. But the product **always runs with `onnx` on** — that is what the hybrid *is* — so
+  a "default-build MSRV" is a promise about a configuration nobody deploys: **a second number to keep
+  honest, buying nothing**, which is precisely the drift shape this whole review round is about. Manifest
+  and CI now carry the single real floor. **It paid for itself immediately:** raising `rust-version`
+  un-gated an MSRV-aware clippy lint that `1.82` had been suppressing
+  (`clippy::manual_is_multiple_of`, stable since 1.87) — on `luhn_valid`, the card checksum. Semantically
+  identical, corpus tests unchanged, but a neat proof of the finding's own thesis: **an under-declared MSRV
+  doesn't just fail to protect you, it hides the tooling that would.**
+- **The release pipeline does not fire on every push to `main`** (it never did — it was tag-only). Added
+  **`workflow_dispatch`**: a "Run workflow" button that builds all four targets from any branch and
+  attaches them as **artifacts only**. The publish step is now **tag-gated** (`if: startsWith(github.ref,
+  'refs/tags/v')`), so a manual run cannot accidentally cut a release.
+- **`[profile.release]` is now the max-optimization one** — `opt-level = 3`, fat LTO, `codegen-units = 1`,
+  symbols stripped (~5 min build; the masking path *is* the product's latency). **`panic` stays `unwind`,
+  and that is a correctness bar, not a preference:** `abort` would turn a caught masking panic — which
+  today blocks **one** request, fail-closed (M4-R19) — into a **process abort**. Converting a contained
+  fail-closed into an outage is not an optimization; availability is a privacy property here. Verified the
+  stripped LTO binary boots, answers `/healthz`, and still 404s an unproxied path.
+- **README rewritten** (EN + IT) as a product README — problem, an ASCII flow diagram, a `curl` showing the
+  *actual* masked body the provider receives, the detection matrix, the bars it holds itself to. **The
+  internal development status is gone from it**: that belongs in ROADMAP, and the README now defers there.
+  Also **`MANUAL_VERIFICATION.md` + `anthropic_smoke.rs`: the API key is optional.** The proxy already
+  forwards a client `Authorization` verbatim in preference to `UPSTREAM_API_KEY`, so the runbook now leads
+  with the mode where **the proxy never holds the credential at all** — and the smoke test drives that
+  path, which is both the recommended posture and the stricter thing to prove.
+
 ## 2026-07-14 — M5 review round 1 closed: five of six findings were a *claim that had stopped being true*
 
 All six M5 findings closed. **132 tests green (default) / 145 + 6 `#[ignore]`d (`--features onnx`);

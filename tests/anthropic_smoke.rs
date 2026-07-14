@@ -7,9 +7,17 @@
 //! Run explicitly:
 //!
 //! ```text
-//! set ANTHROPIC_API_KEY=sk-ant-...
+//! set ANTHROPIC_API_KEY=<your token>
 //! cargo test --test anthropic_smoke -- --ignored --nocapture
 //! ```
+//!
+//! **Either credential mode works** (see `docs/MANUAL_VERIFICATION.md`). `ANTHROPIC_API_KEY`
+//! is the token this test forwards; whether it is an API key or a token issued to your own
+//! user does not matter, because the proxy forwards the client's `Authorization` **verbatim**
+//! and never inspects it. This test drives the "client passes its own token" path — it sends
+//! the credential as a client `Authorization` header and leaves the proxy's own
+//! `upstream_api_key` **unset**, which is both the recommended posture and the stricter thing
+//! to prove: the proxy never has to hold the key.
 //!
 //! Optional overrides: `ANTHROPIC_BASE_URL` (default `https://api.anthropic.com`),
 //! `ANTHROPIC_MODEL` (default `claude-3-5-haiku-latest`). Proves the full chain
@@ -27,7 +35,7 @@ use llm_proxy_pii_rust::server::{build_router, AppState};
 #[tokio::test]
 #[ignore]
 async fn e2e_int01_anthropic_real_provider_roundtrip() {
-    let api_key = std::env::var("ANTHROPIC_API_KEY")
+    let token = std::env::var("ANTHROPIC_API_KEY")
         .expect("set ANTHROPIC_API_KEY to run this opt-in real-provider smoke test");
     let base_url = std::env::var("ANTHROPIC_BASE_URL")
         .unwrap_or_else(|_| "https://api.anthropic.com".to_string());
@@ -37,7 +45,12 @@ async fn e2e_int01_anthropic_real_provider_roundtrip() {
     let config = Config {
         listen: "127.0.0.1:0".parse().unwrap(),
         upstream_base_url: base_url,
-        upstream_api_key: Some(api_key),
+        // Deliberately `None`: the token is sent by the *client* below, and the proxy forwards
+        // a client `Authorization` verbatim in preference to its own configured key. This is
+        // both the recommended posture and the stricter thing to prove — the proxy never holds
+        // the credential at all. (Setting `upstream_api_key` here would exercise the other,
+        // weaker path and would mask a regression in the client-token one.)
+        upstream_api_key: None,
         max_body_bytes: DEFAULT_MAX_BODY_BYTES,
         provider: "anthropic".to_string(),
         upstream_chat_path: "/v1/chat/completions".to_string(),
@@ -56,6 +69,7 @@ async fn e2e_int01_anthropic_real_provider_roundtrip() {
     let email = "roundtrip-check-m5@example.com";
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/v1/chat/completions"))
+        .header("authorization", format!("Bearer {token}"))
         .header("anthropic-version", "2023-06-01")
         .json(&json!({
             "model": model,
