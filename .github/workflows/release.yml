@@ -1,13 +1,24 @@
 name: Release
 
-# Cross-compiles the full --features onnx product for Linux / macOS (x86_64 +
-# arm64) / Windows on a version tag and attaches the binaries to a GitHub
-# Release. CI (ci.yml) is the correctness gate on every push/PR; this workflow
-# only packages what CI already verified.
+# Cross-compiles the full `--features onnx` product for Linux / macOS (x86_64 + arm64) /
+# Windows and attaches the binaries to a GitHub Release. CI (ci.yml) is the correctness gate
+# on every push/PR; this workflow only *packages* what CI already verified.
+#
+# It does NOT run on every push to `main` — building four targets with LTO + codegen-units=1
+# takes real time, and a binary per commit is noise, not a release. Two triggers instead:
+#
+#   * push of a `v*.*.*` tag  -> builds AND publishes a GitHub Release (the real thing).
+#   * manual "Run workflow"   -> builds the same binaries and attaches them as workflow
+#     (workflow_dispatch)        ARTIFACTS only; it publishes NO release. Use it to get a
+#                                binary from an arbitrary branch, or to prove the workflow is
+#                                green before committing to a tag.
+#
+# The publish step is tag-gated, so a manual run can never accidentally cut a release.
 on:
   push:
     tags:
       - "v*.*.*"
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
@@ -43,6 +54,10 @@ jobs:
         with:
           key: release-${{ matrix.target }}
 
+      # The release profile (Cargo.toml) is the max-optimization one: opt-level 3, fat LTO,
+      # codegen-units = 1, symbols stripped. `panic` stays `unwind` ON PURPOSE — `abort` would
+      # turn a caught masking panic (which currently blocks ONE request, fail-closed) into a
+      # process abort, i.e. an outage. See the profile's comment.
       - name: Build (release, --features onnx)
         run: cargo build --release --features onnx --target ${{ matrix.target }}
 
@@ -63,9 +78,13 @@ jobs:
           name: llm-proxy-pii-rust-${{ matrix.target }}
           path: dist/*
 
+  # Tag-gated: a manual (workflow_dispatch) run builds the binaries and stops there — they are
+  # downloadable as workflow artifacts from the run's summary page. Only a `v*.*.*` tag actually
+  # cuts a GitHub Release.
   publish:
     name: publish release
     needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
       contents: write

@@ -10,15 +10,19 @@ edition = "2021"
 # toolchain, it does not notice when the crate has drifted PAST the declared floor. Measured,
 # it had: 1.82 cannot even parse the dependency tree (`idna_adapter` needs `edition2024`).
 #
-# The real floors, measured per feature set (`cargo +<ver> check --all-targets [--features onnx]`):
+# Measured floors (`cargo +<ver> check --all-targets [--features onnx]`):
 #   * default build ......... 1.86  (1.85 fails: icu_* / idna_adapter require 1.86)
-#   * --features onnx ....... 1.89  (1.86 fails: redb <- hf-xet requires 1.89)
+#   * --features onnx ....... 1.89  (1.86-1.88 fail: konst / redb <- hf-xet require 1.89)
 #
-# `rust-version` is a single value, so it declares the floor of the **default** (shipped,
-# native-dep-free) build. Building `--features onnx` on 1.86-1.88 fails with cargo's own
-# explicit "redb@3.1.3 requires rustc 1.89" message, which is self-explanatory. Both floors are
-# now *verified by CI* (`.github/workflows/ci.yml`, the `msrv` job) rather than asserted here.
-rust-version = "1.86"
+# **ONE floor: 1.89 — the higher of the two.** The shipped product runs with `onnx` ON (that is
+# the whole hybrid: structured recognizers + NER), so a "default-build MSRV" of 1.86 would be a
+# floor for a configuration nobody deploys — a second number to keep honest, buying nothing.
+# Declaring the real floor of the real product is simpler and cannot drift apart. `default` still
+# *builds* on 1.86; we just don't promise it.
+#
+# Verified by CI (`.github/workflows/ci.yml`, the `msrv` job) rather than asserted here — because
+# a declared MSRV with no job building on it is not a floor, it is a comment shaped like one.
+rust-version = "1.89"
 license = "AGPL-3.0-or-later"
 description = "A fast, privacy-preserving LLM proxy that anonymizes PII locally before requests reach any provider."
 repository = "https://github.com/francesco-stimola/llm-proxy-pii-rust"
@@ -58,6 +62,27 @@ hf-hub = { version = "1", optional = true }
 [features]
 default = []
 onnx = ["dep:ort", "dep:tokenizers", "dep:hf-hub"]
+
+# Release profile — tuned for the shipped binary (the release workflow builds with this).
+#
+# The proxy is CPU-bound on the masking path (regex scans over every text field, plus NER
+# inference), and that path is what the whole product's latency *is* — so it is worth paying
+# build time for.
+[profile.release]
+opt-level = 3        # cargo's default, stated explicitly so it can't drift
+lto = "fat"          # whole-program inlining across crate boundaries (regex/aho-corasick/serde)
+codegen-units = 1    # no parallel-codegen barriers to inlining; slower build, faster binary
+strip = "symbols"    # smaller artifact; we don't ship debuginfo
+
+# **`panic` stays `unwind` — deliberately, and this is a correctness bar, not a preference.**
+# `panic = "abort"` is the usual last squeeze here, and it would BREAK the fail-closed model:
+# masking runs on `tokio::task::spawn_blocking`, and `server.rs` treats a panic in a stage as a
+# JoinError -> **block the request (400)**, because at that point we hold a body whose PII status
+# is unknown (M4-R19). With `abort`, that panic kills the whole process instead of being caught —
+# turning "one request is refused" into "the proxy is down", i.e. converting a contained
+# fail-closed into an outage. Availability is a privacy property here: a proxy that is down
+# forwards nothing, but it also protects nothing, and clients may simply fail over to the raw
+# provider. Do not set it.
 
 [dev-dependencies]
 # Property-based testing — the faithful port of the old proxy's Hypothesis suite

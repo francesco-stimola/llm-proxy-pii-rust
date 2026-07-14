@@ -729,7 +729,7 @@ pub fn luhn_valid(input: &str) -> bool {
             sum += d;
         }
     }
-    sum % 10 == 0
+    sum.is_multiple_of(10)
 }
 
 /// ISO 13616 IBAN mod-97 checksum. Whitespace is ignored and letters are folded

@@ -52,30 +52,21 @@ jobs:
   # but it cannot notice when the crate drifts PAST the declared floor. It had — the
   # previously-declared 1.82 could not even parse the dependency tree.
   #
-  # The floor differs per feature set, so both are pinned and both are verified:
-  #   default ....... 1.86 (icu_* / idna_adapter)
-  #   onnx .......... 1.89 (redb <- hf-xet)
-  # `cargo check` is enough — `test` is already covered on stable above; this job
-  # exists to answer "does it still compile on the oldest toolchain we promise?".
+  # ONE floor, 1.89: the shipped product runs with `onnx` ON, so that is the MSRV that
+  # means anything. (`default` happens to build on 1.86, but nobody deploys it, so we
+  # don't promise it — a second number to keep honest, buying nothing.)
+  #
+  # `cargo check` is enough — `test` already runs on stable above; this job answers only
+  # "does it still compile on the oldest toolchain we promise?".
   msrv:
-    name: msrv (${{ matrix.name }} / ${{ matrix.rust }})
+    name: msrv (1.89, --features onnx)
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: default
-            rust: "1.86"
-            features: ""
-          - name: onnx
-            rust: "1.89"
-            features: "--features onnx"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: ${{ matrix.rust }}
+          toolchain: "1.89"
       - uses: Swatinem/rust-cache@v2
         with:
-          key: msrv-${{ matrix.name }}
-      - run: cargo check --all-targets ${{ matrix.features }}
+          key: msrv
+      - run: cargo check --all-targets --features onnx
