@@ -133,11 +133,25 @@ false positive): `email`, `phone`, `ssn`, `credit_card`, `iban`, `secret`,
 - INT-06 — response text referencing placeholders is de-anonymized.
 
 ### End-to-end — proxy in front of a mock provider (from the old TC-01…04)
-- E2E-01 (TC-01) — multi-PII chat message, IT + EN.
-- E2E-02 (TC-02) — PII in a CSV `tool_result`.
-- E2E-03 (TC-03) — secret + email in a shell command output.
-- E2E-04 (TC-04) — all categories in a `SELECT … FROM DUAL` result.
+- E2E-01 (TC-01) — multi-PII chat message, IT + EN (`e2e01_multi_pii_roundtrip`).
+- E2E-02 (TC-02) — PII in a CSV `tool_result`, masked upstream and restored to the client
+  (`e2e02_csv_tool_result_pii_is_masked_and_restored`).
+- E2E-03 (TC-03) — secret + email in a shell command output (`e2e03_secret_and_email_masked_before_upstream`).
+- E2E-04 (TC-04) — all categories (email/phone/SSN/card/IBAN/secret) in a `SELECT … FROM DUAL`-style
+  result, masked upstream and restored to the client (`e2e04_db_query_result_all_categories_masked_and_restored`).
 - E2E-BIN — `tests/binary_smoke.rs`: boots the **compiled binary** (`main` → `from_env` → `run`) against a mock upstream for one PII round-trip; the only test that exercises the real process (kept to a single case).
+- **M5 additions (`tests/proxy_e2e.rs`)** — the full-HTTP companions to the pipeline-level INT
+  tests, driving the real router + a mock upstream rather than `PrivacyStage` directly:
+  - `e2e_tool_call_arguments_round_trip_over_http` — the INT-03 round-trip over real HTTP: a
+    mock upstream's `tool_calls[].function.arguments` referencing the placeholder the request
+    masked is de-anonymized before the client sees it.
+  - `e2e_multi_turn_determinism_across_stateless_requests` — two real HTTP round-trips
+    resending conversation history (as a stateless OpenAI-style client does every turn): a
+    repeated value keeps its placeholder token across the two independent per-request vaults,
+    and a new value gets the next one.
+  - `e2e_masking_is_provider_agnostic` (LOC-11, extended) — now compares all **three** mock
+    upstream shapes M5 asks for: OpenAI, Copilot, **and** Anthropic all yield a byte-identical
+    masked body.
 
 ### Regression guards (the old proxy's real failures)
 - REG-01 — Italian IBAN masked as IBAN, not phone; country/check prefix does not leak.
@@ -291,11 +305,46 @@ asserts the value is still masked and round-trips, so a "fix" that buys speed wi
   never-log-raw-PII rule) and that a normally-converging detector still returns `Ok` — so the guard can't
   pass by breaking masking for everyone.
 
-### M5 — integration & performance (planned)
-- E2E-INT-01 *(planned)* — real-provider smoke against **Anthropic** (OpenAI-compat endpoint; opt-in, needs a key, never in CI): a PII round-trip returns the restored value while the request left masked.
-- E2E-INT-02 *(planned, manual)* — the **dual-run** check with `RUST_LOG=…=trace`: Run A (`PII_DEBUG_SKIP_DEMASK=1`) → client gets the placeholders; Run B (normal) → client gets the restored values. Proves the whole chain end-to-end; trace logging re-checks DBG-02 (never-log-raw-PII) on **real** data.
-- E2E-02 / E2E-04 *(to implement in M5)* — the two cataloged old-proxy scenarios (CSV `tool_result`; `SELECT … FROM DUAL`) against a mock — still pending.
-- PERF-01 *(planned)* — load / throughput harness: concurrent connections, large bodies, streaming throughput; latency / RAM of the mask → forward → de-mask path (NER on/off).
+### M5 — integration & performance
+- **E2E-INT-01** — real-provider smoke against **Anthropic** (OpenAI-compat endpoint):
+  `tests/anthropic_smoke.rs::e2e_int01_anthropic_real_provider_roundtrip`. Strictly opt-in
+  (`#[ignore]`d, needs a real `ANTHROPIC_API_KEY`, one real network call, never runs in CI) — a
+  PII round-trip returns the restored value in the client-visible reply while the request left
+  masked. **Not yet run against a live key** as part of this milestone (no credentials in this
+  environment); the test is ready and documented for whoever runs it next.
+- **E2E-INT-02** — the manual **dual-run** procedure (real Anthropic + `RUST_LOG=…=trace`):
+  `docs/MANUAL_VERIFICATION.md`. Deliberately not a `#[test]` — it compares what two separate
+  runs *logged* and returned, which needs a human to read the trace output. Run A
+  (`PII_DEBUG_SKIP_DEMASK=1`) → client gets the placeholders; Run B (normal) → client gets the
+  restored values. Proves the whole chain end-to-end against a real provider; trace logging
+  re-checks DBG-02 (never-log-raw-PII) on **real** data.
+- **E2E-02 / E2E-04** — done; see *End-to-end* above.
+- **PERF-01** — system-level load harness, the companion to `tests/complexity.rs` (which pins
+  the masking *algorithm's* complexity, no HTTP):
+  - `tests/perf.rs::healthz_stays_responsive_under_concurrent_masking_load` — 8 concurrent
+    50 K-entity requests (~350 KB each) in flight; `/healthz` (an async-only route) must keep
+    answering fast regardless, proving the M4-R19 `spawn_blocking` architecture claim
+    end-to-end rather than by hand-measurement. Measured (debug profile): `/healthz` answers in
+    ~40 ms while the load is in flight (budget: 2 s).
+  - `tests/perf.rs::streaming_throughput_of_repeated_placeholder_restoration_stays_within_budget`
+    — ~150 KB of a placeholder repeated ~6000 times, streamed as small SSE fragments; the
+    incremental de-anonymizer must restore every occurrence. Measured: ~0.75 s (budget: 20 s).
+  - `tests/ner_perf.rs::m4_r21_the_fixpoints_second_pass_roughly_doubles_ner_inference`
+    (`--features onnx`, `#[ignore]`d, needs a configured model) — measures `Vault::mask_all`'s
+    ≥2 detector calls against a single `detect()`, confirming the M4-R21 finding's ~2× factor
+    with a live number rather than the one-off measurement recorded when it was closed
+    (measured here: ~1.8–3×, consistent with the ~2× recorded in `docs/reviews/M4.md#m4-r21`).
+  - `tests/ner_perf.rs::onnx_ner_latency_and_recall_across_field_sizes` (same gating) — the NER
+    chunking measurement; see *Decisions & open points* below and `docs/ARCHITECTURE.md` →
+    *NER chunking (M5, PERF-01)*. Confirmed **linear** latency (448 ms / 2.07 s / 7.53 s at
+    64/256/1024× a repeated sentence, debug profile) with recall intact, replacing what used to
+    be an outright ONNX error past ~500 tokens.
+  - `src/pii/onnx.rs::chunk_tests` — unit tests (no model needed) for `chunk_char_ranges`, the
+    pure token-window → char-range function chunking is built on. Pins the exact bug the live
+    measurement first caught: the sequence's final token is always the closing `</s>`, whose
+    offset is the sentinel `(0, 0)` — mistaking it for the real text end silently dropped the
+    last window (a third of the entities lost on one measured input), so
+    `the_last_window_reaches_the_true_text_end_not_the_closing_token_sentinel` pins it directly.
 
 ### Dependency footprint (M2.5-R1)
 - DEP-01 — `tests/dependency_footprint.rs` (`default_build_excludes_the_onnx_and_hf_stack`): `cargo tree` on the **default** features must contain no `hf-hub`/`hf-xet`/`aws-lc`/`ort`/`tokenizers` — the ONNX/HF stack (heavy, native) stays behind the `onnx` feature so the shipped default build is native-dep-free.
@@ -315,6 +364,13 @@ asserts the value is still masked and round-trips, so a "fix" that buys speed wi
   lean: structure-based detection, mod-97 as a confidence signal only.
 - **SECRET patterns** (open) — which key formats to cover (OpenAI `sk-…`,
   Anthropic `sk-ant-…`, AWS `AKIA…`, generic high-entropy tokens?).
+- **NER field-size limit — DECIDED (M5, PERF-01): chunk, don't just measure.** `OnnxNerDetector`
+  fed a field to the model as one sequence; past the model's `max_position_embeddings` (514 for
+  the picked XLM-R int8) the ONNX graph's position-embedding lookup went **out of range** —
+  measured as an outright `Expand` op error, not the suspected quadratic slowdown. Any field
+  over ~500 tokens (roughly 2 KB of prose) failed NER entirely, a hard **block** under
+  `NER_REQUIRED`. Fixed with overlapping-window chunking (`src/pii/onnx.rs`); see
+  `docs/ARCHITECTURE.md` → *NER chunking (M5, PERF-01)*.
 
 ## Running
 

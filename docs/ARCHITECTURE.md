@@ -107,9 +107,9 @@ entities in start order, which splice direction never determined.
 > the DoS guards themselves. **DOS-04** is the many-entity guard.
 >
 > **Scope, stated honestly:** what is linear on both axes is the **structured** (default-build) masking
-> path — detect → resolve → splice → de-mask. The optional `onnx` NER feeds the **whole field as one
-> sequence** with no chunking, so transformer self-attention makes *it* quadratic in field size; that is a
-> separate, opt-in cost and is tracked as an M5 perf item, not covered here.
+> path — detect → resolve → splice → de-mask. The optional `onnx` NER is a separate, opt-in cost with its
+> own scaling behavior — chunked and measured linear (M5, PERF-01; see *Hybrid detection* below), not
+> covered by this section's guards.
 
 **Masking must run to a *fixpoint* (M4-R17).** Masking **rewrites the bytes around what it replaced**,
 and a value is only recognizable in context — so masking can *expose* PII that was not detectable
@@ -349,6 +349,19 @@ labels in class-id order), optional `NER_POOL_SIZE` (session pool for concurrenc
 A missing/failed model logs and falls back to structured-only. The model was chosen
 by *measurement* (XLM-R int8 — `docs/M2-NER-EVALUATION.md`, `docs/DEVLOG.md`).
 
+**NER chunking (M5, PERF-01).** `OnnxNerDetector` tokenizes a field once; if it fits the
+model's sequence budget (`MAX_SEQUENCE_TOKENS`, conservatively under XLM-R's
+`max_position_embeddings`), it runs exactly as before (M2). A field that doesn't fit is split
+into overlapping token windows (`chunk_char_ranges`, a pure function unit-tested without a
+model), each **re-tokenized independently** — a middle window needs its own `<s>…</s>`
+framing, so it can't be a raw slice of the whole field's token ids — and run through the same
+single-window path; results are merged, sorted, and exact duplicates from the overlap region
+deduped. Without this, an oversized field didn't just run slowly: it made the ONNX call
+**error outright** (measured — see *Decisions & open points* above), silently downgrading NER
+coverage by default or **blocking every such request** under `NER_REQUIRED`. Chunking is a
+**recall** mechanism only, never leak-relevant: structured PII is detected independently, over
+the whole field, and is never chunked.
+
 **Model management (M2.5, feature `onnx`).** The model file is resolved in priority
 order (`src/pii/hf.rs` + `server.rs::load_onnx_ner`):
 
@@ -398,10 +411,22 @@ Runtime native library at M2.
   left-to-right copy, O(n + k), and **DOS-04** guards it by varying the entity *count* — the
   axis DOS-01…03 held fixed at one. The structured masking path is now linear on **both**
   axes, measured.
-- **Open (perf, `onnx` only — not a leak, not a blocker)**: `OnnxNerDetector` feeds the
-  **whole field as one sequence** with no chunking or sliding window (`src/pii/onnx.rs`), so
-  transformer self-attention is quadratic in field size and a large body under
-  `--features onnx` is expensive well before the structured path is. Opt-in and off by
-  default, so it is not the unauthenticated DoS M4-R19/R24 were — but it is the *third* place
-  the "vary the input's shape, not just its size" lesson applies, and it must be **measured**
-  (and probably chunked) by M5's perf harness before NER is recommended for large bodies.
+- **Resolved (M5, PERF-01)**: `OnnxNerDetector` used to feed the **whole field as one
+  sequence**, and the failure mode was not the suspected "quadratic self-attention" — it was
+  **worse and simpler**: RoBERTa-family absolute position embeddings top out at
+  `max_position_embeddings` (514 for the picked XLM-R int8), so a sequence past that limit made
+  the ONNX graph's position-embedding lookup go **out of range** — measured (`tests/ner_perf.rs`)
+  as an outright `Expand` op failure, not a graceful slowdown. Any field over roughly 2 KB of
+  prose (~500 tokens) failed NER entirely: silently downgraded to structured-only under the
+  default fail-*open* wrapper, but a hard **block** under `NER_REQUIRED` (every such request
+  would 400) — an availability gap in the same family as M4-R19/R24, though opt-in and off by
+  default so never the unauthenticated DoS those were. Fixed: `OnnxNerDetector::infer` now
+  splits an oversized field into overlapping token windows
+  (`chunk_char_ranges` + `infer_chunked`, `src/pii/onnx.rs`), each independently tokenized (its
+  own `<s>…</s>` framing) and run under the sequence budget, with results merged and
+  deduplicated. Measured linear scaling: 64/256/1024 repeated-sentence multiples run in
+  448 ms / 2.07 s / 7.53 s (debug profile), recall intact (≥99.6% of expected entities — the
+  small excess above 100% is an occasional un-deduped near-boundary double-detection, a
+  precision nit, not a recall loss). This is a **recall** mechanism only: structured PII (the
+  fail-closed layer) is detected independently over the whole field and is never chunked, so
+  this changes NER coverage/availability, never masking correctness.

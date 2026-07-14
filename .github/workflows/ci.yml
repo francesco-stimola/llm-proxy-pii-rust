@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fmt:
+    name: fmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --check
+
+  # One job for the default (structured-only, native-dependency-free) build, one
+  # for --features onnx (ONNX NER). Model-dependent tests are #[ignore]d, so the
+  # onnx job compiles and runs everything except the live-model checks — no
+  # model file is needed in CI (see docs/TESTING.md).
+  test:
+    name: test (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: default
+            features: ""
+          - name: onnx
+            features: "--features onnx"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.name }}
+      - name: clippy
+        run: cargo clippy --all-targets ${{ matrix.features }} -- -D warnings
+      - name: test
+        run: cargo test ${{ matrix.features }}

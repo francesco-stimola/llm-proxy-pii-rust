@@ -3,6 +3,112 @@
 Newest first. One entry per meaningful change — note *what* and *why*, not just
 *what*. This is the running history so context is never lost between sessions.
 
+## 2026-07-14 — M5: README + CI/release workflows — code-complete, one box left
+
+Closed the two remaining M5 items that don't need a live provider.
+
+- **README.md + README.it.md rewritten** from the "early development" placeholder to describe
+  the shipped product: what it does (three-tier structured detection, optional NER, streaming,
+  multi-provider), a quick-start, and a full env-var reference table for both the core proxy and
+  the `onnx` feature.
+- **`.github/workflows/ci.yml`** — `fmt` (once, feature-independent) + `clippy` + `cargo test`,
+  matrixed one job for the default build and one for `--features onnx`, on push to `main` and on
+  every PR. Model-dependent NER tests are `#[ignore]`d, so the `onnx` job needs no model file.
+- **`.github/workflows/release.yml`** — on a `v*.*.*` tag, cross-compiles the full
+  `--features onnx` product for Linux (x86_64-unknown-linux-gnu), macOS (x86_64 + aarch64
+  -apple-darwin), and Windows (x86_64-pc-windows-msvc) and attaches the binaries to a GitHub
+  Release.
+- **Neither has been exercised live yet** — no PR has run the new CI, and no tag has been
+  pushed. Both are standard, unremarkable GitHub Actions shapes, but "the YAML parses" is not
+  "it's green"; that only gets proven the first time a real push/PR/tag runs them.
+
+**M5 is now code-complete except one box that cannot be closed from inside a session:** the
+manual dual-run verification (`docs/MANUAL_VERIFICATION.md`, E2E-INT-02) needs a human with a
+real `ANTHROPIC_API_KEY` to actually run it and read the trace output — see the entry below for
+what's already in place around it. The first tagged release (`1.0.0`) should wait for a real
+green CI run at minimum, and ideally that manual check having been run once.
+
+## 2026-07-14 — M5: integration tests, a performance harness, and a real NER bug found via testing
+
+Picked up M5 (integration & performance testing) end to end. Four threads, in the order they
+landed:
+
+**1. Real integration tests (`tests/proxy_e2e.rs`).** Implemented the two cataloged-but-missing
+old-proxy scenarios — **E2E-02** (PII in a CSV `tool_result`) and **E2E-04** (all six structured
+categories in a `SELECT … FROM DUAL`-style result) — against a mock upstream, both asserting
+the masked-upstream / restored-to-client pair like the existing E2E-01/03. Added three more: a
+**full-HTTP tool-call round-trip** (the real-server companion to the pipeline-level INT-03: a
+mock's `tool_calls[].function.arguments` referencing a placeholder is de-anonymized before the
+client sees it), a **multi-turn determinism** e2e (two real HTTP round-trips resending
+conversation history, proving a repeated value keeps its placeholder token across two
+independent per-request vaults — the stateless-client shape this proxy actually serves), and
+extended the provider-agnostic test (LOC-11) to compare **all three** mock upstream shapes M5
+asks for (OpenAI / Copilot / Anthropic), not just two. Also added `tests/anthropic_smoke.rs`
+(E2E-INT-01): a real-provider smoke test against Anthropic's OpenAI-compat endpoint —
+`#[ignore]`d, gated on a real `ANTHROPIC_API_KEY`, never run in CI. **Written and compiling, not
+yet run against a live key** (no credentials in this environment) — the same posture the project
+already uses for `ner_eval.rs`.
+
+**2. The manual dual-run runbook (`docs/MANUAL_VERIFICATION.md`, E2E-INT-02).** A step-by-step
+procedure for the check that can't be a `#[test]`: run the same PII prompt twice against a real
+provider, once with `PII_DEBUG_SKIP_DEMASK=1` (proves the request left masked) and once normal
+(proves the client gets the restored value), with `RUST_LOG=…=trace` so DBG-02 (never-log-raw-PII)
+gets re-checked on real data. Written, not yet executed — same reason as above.
+
+**3. A performance/load harness (`tests/perf.rs`).** The system-level companion to
+`tests/complexity.rs` (which pins the masking *algorithm's* complexity, no HTTP):
+`healthz_stays_responsive_under_concurrent_masking_load` fires 8 concurrent ~350 KB / 50 K-entity
+requests and polls `/healthz` while they're in flight, turning the M4-R19 "masking runs on
+`spawn_blocking` so the executor never starves" architecture claim (previously only
+hand-measured) into a repeatable guard — measured **~40 ms** for `/healthz` under load (budget
+2 s). `streaming_throughput_of_repeated_placeholder_restoration_stays_within_budget` streams
+~150 KB containing ~6000 placeholder occurrences through the real SSE de-anonymizer in small
+fragments — measured **~0.75 s** (budget 20 s). Both are generous wall-clock budgets in the
+`tests/complexity.rs` style: they catch a regression back to seconds-to-minutes, not a
+micro-benchmark.
+
+**4. NER field-size measurement — and a real, live bug (`tests/ner_perf.rs`, `src/pii/onnx.rs`).**
+The ROADMAP's own suspicion was that `OnnxNerDetector` feeding a field to the model as one
+sequence would be *slow* on large fields (quadratic self-attention). Measuring it found
+something worse: past the model's `max_position_embeddings` (514 for the picked XLM-R int8), the
+ONNX graph's position-embedding lookup goes **out of range**, and the run call fails outright
+(`Non-zero status code returned while running Expand node … invalid expand shape`) — not a
+slowdown, a hard error, on any field over roughly 500 tokens (~2 KB of prose). Fails open by
+default (silently drops to structured-only for that request) but is a **hard 400 block** under
+`NER_REQUIRED` — an availability gap in the same family as M4-R19/R24, though opt-in and off by
+default so never the unauthenticated DoS those were.
+
+**Fix: overlapping-window chunking.** `OnnxNerDetector::infer` now tokenizes once; if the
+sequence fits the budget it runs exactly as before (M2, unchanged), otherwise `infer_chunked`
+splits it into overlapping token windows (`MAX_SEQUENCE_TOKENS = 480`, `CHUNK_OVERLAP_TOKENS =
+32`), each **re-tokenized independently** — a middle window needs its own `<s>…</s>` framing, so
+it can't be a raw slice of the whole field's token ids — run through the same single-window
+path, and merged with exact duplicates from the overlap deduped.
+
+**And chunking had its own bug, caught only by testing at a size that exercised the last
+window.** The first version computed a window's char end from `offsets[token_end - 1].1`. That's
+correct *unless* `token_end == seq`, in which case `token_end - 1` is the closing `</s>` token —
+whose offset is the sentinel `(0, 0)`, not the real text end. The bug collapsed the **entire
+final window** to a zero-length slice: measured on a 64-sentence input, this silently dropped 61
+of 192 entities (32%) with **no error at all** — worse than the original bug in one way, because
+it degrades silently instead of failing loudly. Caught by `tests/ner_perf.rs` at reps=64 (the
+first size in the sweep that needed two windows) — reps=16 had (correctly) only ever needed one.
+Fixed: a window reaching the sequence end uses `input.len()` for its char end. Extracted the
+window math into a pure `chunk_char_ranges` function (offsets + lengths in, char ranges out — no
+tokenizer or model needed) specifically so this exact bug gets a **real unit test**
+(`the_last_window_reaches_the_true_text_end_not_the_closing_token_sentinel`,
+`src/pii/onnx.rs::chunk_tests`) rather than living only in an `#[ignore]`d, model-dependent check.
+
+**Measured after the fix:** linear scaling and full recall — 64/256/1024× a repeated sentence run
+in 448 ms / 2.07 s / 7.53 s (debug profile), 192/192, 771/768, and 3084/3072 entities found (the
+small excess above 100% at larger sizes is an occasional un-deduped near-boundary double-detection
+— a precision nit, not a recall loss). Re-measured M4-R21's ~2× fixpoint-confirmation cost live
+too: ~1.8–3× on a short field, consistent with the 64 ms → 127 ms (1.99×) recorded when M4-R21 was
+closed — confirmed as the deliberate correctness cost it always was, not a regression.
+
+**132 tests green (default) / 144 + 4 `#[ignore]`d (`--features onnx`), no warnings; `fmt` +
+`clippy` clean on both feature sets.**
+
 ## 2026-07-14 — Review 11: M4-R24 closure verified — DoS class closed on both axes
 
 Independent reviewer pass over the builder's M4-R24 fix (`eed9949`). **Holds.** Read the rewritten

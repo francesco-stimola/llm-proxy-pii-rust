@@ -1,0 +1,85 @@
+name: Release
+
+# Cross-compiles the full --features onnx product for Linux / macOS (x86_64 +
+# arm64) / Windows on a version tag and attaches the binaries to a GitHub
+# Release. CI (ci.yml) is the correctness gate on every push/PR; this workflow
+# only packages what CI already verified.
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: build (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            bin: llm-proxy-pii-rust
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            bin: llm-proxy-pii-rust
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            bin: llm-proxy-pii-rust
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            bin: llm-proxy-pii-rust.exe
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
+
+      - name: Build (release, --features onnx)
+        run: cargo build --release --features onnx --target ${{ matrix.target }}
+
+      - name: Package
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          src="target/${{ matrix.target }}/release/${{ matrix.bin }}"
+          dest="dist/llm-proxy-pii-rust-${{ matrix.target }}"
+          if [[ "${{ matrix.bin }}" == *.exe ]]; then
+            dest="${dest}.exe"
+          fi
+          cp "$src" "$dest"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: llm-proxy-pii-rust-${{ matrix.target }}
+          path: dist/*
+
+  publish:
+    name: publish release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Flatten artifacts
+        run: |
+          mkdir -p out
+          find artifacts -type f -exec cp {} out/ \;
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: out/*
+          generate_release_notes: true

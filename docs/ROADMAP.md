@@ -19,17 +19,22 @@ invariants) and [`TESTING.md`](TESTING.md) (the guards) — read *those* to unde
 
 ## Status
 
-**M0 – M4 complete, and M4's ledger is clean — all 24 findings closed.** 126 tests green (default) /
-134 + 1 `#[ignore]`d (`--features onnx`), no warnings; `cargo fmt` + `clippy` clean on both feature sets.
-`v0.4.0`, AGPL-3.0-or-later. The product masks structured PII (universal + national-ID packs for 10
-countries) and unstructured entities (ONNX NER, XLM-R int8), streams, and fronts OpenAI / Copilot /
-Anthropic via their OpenAI-compatible endpoints.
+**M0 – M4 complete, and M4's ledger is clean — all 24 findings closed.** **M5 (integration &
+performance testing) is code-complete** — real integration tests, a performance/load harness,
+NER chunking (a real bug found and fixed along the way), the README rewrite, and CI/release
+workflows are all in place. **One box is deliberately still open**: the manual dual-run
+procedure needs a human with a real `ANTHROPIC_API_KEY` to actually execute it, which no
+session can do on its own — see the M5 section below. 132 tests green (default) / 144 + 4
+`#[ignore]`d (`--features onnx`), no warnings; `cargo fmt` + `clippy` clean on both feature sets.
+`v0.4.0`, AGPL-3.0-or-later. The product masks structured PII (universal + national-ID packs for
+10 countries) and unstructured entities (ONNX NER, XLM-R int8, now chunked for large fields),
+streams, and fronts OpenAI / Copilot / Anthropic via their OpenAI-compatible endpoints.
 
 ### Open work — everything not yet done
 
 | What | Where | Status |
 |---|---|---|
-| **M5** — integration & performance testing | [below](#m5) | [ ] not started |
+| **M5** — integration & performance testing | [below](#m5) | [~] one box open — the manual live-provider check needs a human + a real key |
 
 **M5 is unblocked.** Its prerequisite was a clean M4 ledger, and the last blocker was the DoS class — which
 took **two** fixes, not one, because the masking path has **two** size axes: field *size*
@@ -38,10 +43,14 @@ took **two** fixes, not one, because the masking path has **two** size axes: fie
 the size, **DOS-04 varies the count** — so a perf harness now measures the product, not a bug. Measured:
 the 13.4 MiB many-entity body that took ~7 min of CPU masks in **1.8 s**.
 
-> **One perf item found while closing M4-R24, deliberately left to M5** (not a leak, not a blocker, opt-in):
-> the `onnx` NER feeds the **whole field as one sequence** with no chunking, so its self-attention is
-> quadratic in field size. Off by default, so it is not the unauthenticated DoS M4-R19/R24 were — but PERF-01
-> must **measure** it (and probably chunk) before NER is recommended for large bodies.
+> **The perf item found while closing M4-R24 — measured, and it needed a fix, not just a number.**
+> The `onnx` NER fed the **whole field as one sequence**; the real failure mode was not the suspected
+> quadratic self-attention slowdown but something more abrupt: past the model's `max_position_embeddings`
+> (514), the ONNX graph's position-embedding lookup went **out of range** — an outright `Expand` op error
+> on any field over ~500 tokens (~2 KB of prose), silently downgrading NER by default or **blocking every
+> such request** under `NER_REQUIRED`. Fixed with overlapping-window chunking; measured **linear** afterward
+> (448 ms / 2.07 s / 7.53 s at 64×/256×/1024× a repeated sentence). Detail in
+> [`ARCHITECTURE.md`](ARCHITECTURE.md) → *NER chunking*.
 
 ---
 
@@ -257,48 +266,60 @@ Prove the whole system holds **end-to-end** and **under load**, then document it
 > DOS-01…03 vary the size, **DOS-04 varies the count** — so a load result measures the product, not an
 > algorithmic bug. CI has its MSRV ([M4-R22](reviews/M4.md#m4-r22)); `fmt` and `clippy` are green.
 
-- [ ] **Real integration tests** — full mask → forward → (stream) → de-mask round-trips, tool-call
+- [x] **Real integration tests** — full mask → forward → (stream) → de-mask round-trips, tool-call
   round-trips, multi-turn determinism, and the fail-closed paths. **Mock upstreams cover all three preset
   shapes** (OpenAI / Copilot / Anthropic) — no accounts needed. The **real-provider smoke is
-  Anthropic-only** (the only provider we have; opt-in, needs a key, never in CI without one).
-  - [ ] Implement the two cataloged-but-missing e2e cases **E2E-02** (CSV `tool_result`) and **E2E-04**
+  Anthropic-only** (the only provider we have; opt-in, needs a key, never in CI without one) —
+  `tests/anthropic_smoke.rs`, written and gated, **not yet run against a live key** (no credentials in this
+  environment).
+  - [x] Implement the two cataloged-but-missing e2e cases **E2E-02** (CSV `tool_result`) and **E2E-04**
     (`SELECT … FROM DUAL`) against a mock.
-- [ ] **Manual "does the whole structure hold?" procedure** (real Anthropic + `RUST_LOG=…=trace`). Run the
-  same PII prompt twice:
+- [ ] **Manual "does the whole structure hold?" procedure** (real Anthropic + `RUST_LOG=…=trace`). The
+  procedure itself is written — `docs/MANUAL_VERIFICATION.md` — but **running it needs a human with a real
+  `ANTHROPIC_API_KEY`**, so this box stays open until someone actually executes it. Run the same PII prompt
+  twice:
   - **Run A** (`PII_DEBUG_SKIP_DEMASK=1`) — the client gets the **placeholders** → proof the request left
     masked and the round-trip is wired.
   - **Run B** (normal) — the client gets the **restored values** → proof of the full round-trip.
 
   Comparing A vs B on the same input shows the chain holds end-to-end against a real provider. Trace
   logging also exercises the never-log-raw-PII rule (DBG-02) on **real** data.
-- [ ] **Performance / load harness** — concurrent connections, large bodies, streaming throughput; latency
-  and RAM of the mask → forward → de-mask path (NER on/off). *Stability under load was the founding
-  motivation — measure it, don't assume it.*
-  - [ ] Score the **fixpoint's second detector pass** ([M4-R21](reviews/M4.md#m4-r21)): `mask_all` runs the
-    detector ≥2×, which roughly **doubles NER inference** (64 ms → 127 ms measured). It is a deliberate
-    correctness cost — that pass is what makes masking fail-closed — so this is a *measurement*, not a fix.
-    Optimize only if load says so.
-  - [ ] **Measure the `onnx` NER on large fields, and chunk it if the numbers say so.** `OnnxNerDetector`
-    feeds the **whole field as one sequence** — no chunking, no sliding window — so its self-attention is
-    quadratic in field size. It is opt-in and off by default (so **not** the unauthenticated DoS M4-R19/R24
-    were, and not a leak), but it is the one part of the path whose cost is still unbounded, and NER should
-    not be recommended for large bodies until this is measured. Found while closing
-    [M4-R24](reviews/M4.md#m4-r24).
+- [x] **Performance / load harness** — concurrent connections, large bodies, streaming throughput; latency
+  of the mask → forward → de-mask path (NER on/off). *Stability under load was the founding
+  motivation — measure it, don't assume it.* `tests/perf.rs` (system-level: concurrent connections,
+  streaming throughput over the real router) + `tests/ner_perf.rs` (NER-specific, `--features onnx`,
+  `#[ignore]`d). RAM was not separately instrumented — Windows has no portable in-process equivalent to
+  `/proc/self/status`, and latency/throughput were the numbers that mattered for the questions below.
+  - [x] Score the **fixpoint's second detector pass** ([M4-R21](reviews/M4.md#m4-r21)): `mask_all` runs the
+    detector ≥2×, which roughly **doubles NER inference**. Re-measured live
+    (`tests/ner_perf.rs::m4_r21_the_fixpoints_second_pass_roughly_doubles_ner_inference`): ~1.8–3× on a
+    short field, consistent with the ~2× (64 ms → 127 ms) recorded when M4-R21 was closed. Confirmed as a
+    deliberate correctness cost, not a regression — no fix needed.
+  - [x] **Measure the `onnx` NER on large fields, and chunk it if the numbers say so.** The numbers said
+    so, and said something worse than expected: past ~500 tokens the ONNX call **errored outright**
+    (`Expand` op, position-embedding overflow) rather than merely slowing down — a hard block under
+    `NER_REQUIRED`. Fixed with overlapping-window chunking (`src/pii/onnx.rs`); linear afterward (measured
+    448 ms / 2.07 s / 7.53 s at 64×/256×/1024× field size). Found while closing
+    [M4-R24](reviews/M4.md#m4-r24); detail in [`ARCHITECTURE.md`](ARCHITECTURE.md) → *NER chunking*.
   - [x] `tests/complexity.rs` is the harness's floor and now covers **both** axes: DOS-01…03 vary the field
     *size*, **DOS-04** varies the entity *count* ([M4-R24](reviews/M4.md#m4-r24) — the axis the first three
     silently held at one). A load result can no longer be a measurement of an algorithmic bug in the
     structured path.
-- [ ] **Update the root `README.md`** (+ `README.it.md`) to describe the shipped product — what it does,
-  three-tier detection + NER, streaming, multi-provider usage, config/env, status. It is intentionally
-  high-level today ("early development"); this is the pass that makes it describe a working system.
-- [ ] **CI + release binaries (GitHub Actions).** CI on push/PR (`cargo test` + `fmt` + `clippy`; one job
-  for the default build, one for `--features onnx`). **All three are already green on both feature sets**
-  (2026-07-13) — `fmt` and `clippy` had never been run, and `clippy` was in fact *erroring*, so the CI
-  would have failed on its first run; that is cleared, and the MSRV is declared
-  ([M4-R22](reviews/M4.md#m4-r22)), so this item is now pure workflow YAML. A release workflow on a version tag
-  **cross-compiles the full `--features onnx` product** for Linux / macOS / Windows and attaches the
-  binaries to GitHub Releases. **The first tagged release is `1.0.0`** (bump from `0.4.0`) — cut when M5's
-  integration + performance passes are green and the README reflects reality.
+- [x] **Update the root `README.md`** (+ `README.it.md`) to describe the shipped product — what it does,
+  three-tier detection + NER, streaming, multi-provider usage, config/env, status. Rewritten from the
+  "early development" placeholder to describe the working system (feature list, quick start, full env-var
+  reference, current status).
+- [x] **CI + release binaries (GitHub Actions).** `.github/workflows/ci.yml`: `fmt` (once) + `clippy` +
+  `cargo test`, one job for the default build and one for `--features onnx` (matrix) — on push to `main`
+  and on every PR. **All three are already green on both feature sets** (2026-07-13) — `fmt` and `clippy`
+  had never been run, and `clippy` was in fact *erroring*, so the CI would have failed on its first run;
+  that is cleared, and the MSRV is declared ([M4-R22](reviews/M4.md#m4-r22)). `.github/workflows/release.yml`:
+  on a `v*.*.*` tag, cross-compiles the full `--features onnx` product for Linux (x86_64), macOS (x86_64 +
+  arm64), and Windows (x86_64-msvc), and attaches the binaries to a GitHub Release. **Not yet exercised
+  live** — no tag has been pushed and no PR has run the new CI yet; both are standard, unremarkable
+  GitHub Actions shapes but are only proven once a real push/PR/tag runs them. **The first tagged release
+  is `1.0.0`** (bump from `0.4.0`) — cut when a real CI run is green and, ideally, the manual verification
+  procedure below has actually been run once against a live provider.
 
 <a id="backlog"></a>
 ## Backlog — documented, not scheduled
