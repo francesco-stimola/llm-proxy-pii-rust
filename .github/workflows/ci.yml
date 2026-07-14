@@ -46,3 +46,36 @@ jobs:
         run: cargo clippy --all-targets ${{ matrix.features }} -- -D warnings
       - name: test
         run: cargo test ${{ matrix.features }}
+
+  # Actually BUILD on the declared MSRV (M5-R5). Without this, `rust-version` in
+  # Cargo.toml is a claim nothing checks: it makes cargo refuse a too-OLD toolchain,
+  # but it cannot notice when the crate drifts PAST the declared floor. It had — the
+  # previously-declared 1.82 could not even parse the dependency tree.
+  #
+  # The floor differs per feature set, so both are pinned and both are verified:
+  #   default ....... 1.86 (icu_* / idna_adapter)
+  #   onnx .......... 1.89 (redb <- hf-xet)
+  # `cargo check` is enough — `test` is already covered on stable above; this job
+  # exists to answer "does it still compile on the oldest toolchain we promise?".
+  msrv:
+    name: msrv (${{ matrix.name }} / ${{ matrix.rust }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: default
+            rust: "1.86"
+            features: ""
+          - name: onnx
+            rust: "1.89"
+            features: "--features onnx"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.rust }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: msrv-${{ matrix.name }}
+      - run: cargo check --all-targets ${{ matrix.features }}
