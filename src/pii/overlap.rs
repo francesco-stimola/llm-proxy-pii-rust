@@ -202,7 +202,12 @@ fn outranks(candidate: &PiiEntity, incumbent: &PiiEntity) -> bool {
 /// Expand a byte range outward to the nearest `char` boundaries of `input`, clamped to its
 /// length (M4-R14). Widening only ever *adds* bytes, so a merged span can never end up
 /// covering less than its constituents did. The result is always sliceable.
-fn widen_to_char_boundaries(input: &str, span: Range<usize>) -> Range<usize> {
+///
+/// Shared with the NER chunker (`onnx::chunk_char_ranges`, M5-R3), which needs the same
+/// guarantee for the same reason: it slices `input` by a range derived from **tokenizer**
+/// offsets, and a range that misses a `char` boundary would panic on attacker-influenced
+/// input. One home for the rule.
+pub(crate) fn widen_to_char_boundaries(input: &str, span: Range<usize>) -> Range<usize> {
     let mut start = span.start.min(input.len());
     let mut end = span.end.min(input.len());
     while start > 0 && !input.is_char_boundary(start) {

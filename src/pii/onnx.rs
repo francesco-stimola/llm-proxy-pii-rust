@@ -16,7 +16,7 @@
 //! shape `[1, seq, num_labels]`. `NER_LABELS` must list exactly `num_labels`
 //! labels in class-id order — a mismatch is rejected (never silently degraded).
 //!
-//! **Chunking (M5, PERF-01).** A field longer than [`MAX_SEQUENCE_TOKENS`] is
+//! **Chunking (M5, PERF-01).** A field longer than [`MAX_WINDOW_TOKENS`] is
 //! split into overlapping windows rather than fed to the model whole. This
 //! isn't a latency optimization: RoBERTa-family absolute position embeddings
 //! top out at `max_position_embeddings` (514 for the picked XLM-R int8's
@@ -38,19 +38,53 @@ use ort::value::Tensor;
 use tokenizers::{Encoding, Tokenizer};
 
 use super::ner_decode::{decode_entities, validate_label_count, TokenTag};
+use super::overlap::widen_to_char_boundaries;
 use super::{DetectError, PiiDetector, PiiEntity};
 
-/// Upper bound on tokens (special tokens included) fed to the model in one call.
-/// Conservatively under the picked model's `max_position_embeddings` (514), so it
-/// holds for other RoBERTa-family token-classification models too without needing
-/// the model to report its own limit.
-const MAX_SEQUENCE_TOKENS: usize = 480;
+/// **The hard ceiling: the longest sequence the model can actually be handed.**
+///
+/// XLM-R declares `max_position_embeddings: 514`, but RoBERTa-family position ids start at
+/// `pad_token_id + 1 = 2`, so the *usable* length is **512**. Past it the position-embedding
+/// lookup goes out of range and the ONNX graph fails outright (the PERF-01 `Expand` error).
+///
+/// This is enforced where it matters — in [`run_and_decode`](OnnxNerDetector::run_and_decode),
+/// the single choke point every path into the session goes through (M5-R2). It is *not* enough
+/// to plan windows under a budget and hope: [`infer_chunked`](OnnxNerDetector::infer_chunked)
+/// **re-tokenizes** each window from its own text, which adds the two special tokens and drifts
+/// at the cut edges — measured at consistently **481–483** tokens for a 480-token window, i.e.
+/// always *over* the planning bound. The drift is small for this tokenizer, but nothing
+/// structurally bounds it, and the cost of being wrong is exactly the failure chunking exists to
+/// prevent. So the bound is *checked*, not assumed.
+pub const MODEL_MAX_TOKENS: usize = 512;
+
+/// **The planning window** used to lay out chunks — deliberately *under* [`MODEL_MAX_TOKENS`] to
+/// absorb the re-tokenization drift described there (measured +1…+3; 32 tokens of headroom here).
+///
+/// Note the distinction the name now carries and the old one didn't (M5-R2): this bounds the
+/// **window**, not the **sequence**. The sequence is `window + specials + edge drift`, and only
+/// [`MODEL_MAX_TOKENS`] bounds *that*.
+pub const MAX_WINDOW_TOKENS: usize = 480;
 
 /// Overlap (in tokens) between consecutive chunks, so an entity that would
 /// otherwise land right at a chunk boundary is still whole in at least one
 /// chunk. Generous relative to a Person/Org/Location span (rarely more than a
 /// handful of tokens).
 const CHUNK_OVERLAP_TOKENS: usize = 32;
+
+// The relationships between the three constants above are **compile-time** invariants (M5-R2), not
+// runtime tests — get one wrong and the crate must not build at all.
+//
+// 1. The planning window must sit strictly under the model ceiling, or re-tokenization drift
+//    (measured +1…+3) has nowhere to go and the PERF-01 `Expand` error comes straight back.
+// 2. A window must advance by at least one token, or chunking would not terminate.
+const _: () = assert!(
+    MAX_WINDOW_TOKENS < MODEL_MAX_TOKENS,
+    "the planning window must leave headroom for re-tokenization drift"
+);
+const _: () = assert!(
+    CHUNK_OVERLAP_TOKENS < MAX_WINDOW_TOKENS,
+    "a chunk window must advance, or chunking would not terminate"
+);
 
 /// NER-based detector backed by an ONNX Runtime session.
 ///
@@ -123,15 +157,14 @@ impl OnnxNerDetector {
             .encode(input, true)
             .map_err(|_| anyhow!("tokenizer error"))?;
 
-        if encoding.get_ids().len() <= MAX_SEQUENCE_TOKENS {
+        if encoding.get_ids().len() <= MAX_WINDOW_TOKENS {
             return self.run_and_decode(input, &encoding);
         }
         self.infer_chunked(input, &encoding)
     }
 
-    /// Split `input` into overlapping windows (by **character** offset, derived
-    /// from `full_encoding`'s per-token offsets — themselves always on `char`
-    /// boundaries) each within [`MAX_SEQUENCE_TOKENS`] tokens, run each
+    /// Split `input` into overlapping windows (by byte offset, derived from
+    /// `full_encoding`'s per-token offsets) each within [`MAX_WINDOW_TOKENS`] tokens, run each
     /// independently, and merge the results.
     ///
     /// Each window is **re-tokenized from its own text**, not sliced out of
@@ -141,6 +174,12 @@ impl OnnxNerDetector {
     /// a chunk boundary is still whole in a neighboring window; an exact
     /// duplicate entity from the overlap is deduped by (kind, span, text).
     ///
+    /// A window that cuts an entity in half still emits the *truncated* fragment (`Mil` where the
+    /// neighbouring window sees `Milan`) — a different span, so `dedup` does **not** remove it.
+    /// [`resolve_overlaps`](super::overlap::resolve_overlaps) does: its NER phase tiebreaks on
+    /// span length descending, takes the whole entity, and drops the fragment as overlapping. See
+    /// `ARCHITECTURE.md` → *NER chunking* — that tiebreak is load-bearing here.
+    ///
     /// This is a **recall** mechanism, never a leak-relevant one: structured PII
     /// (the fail-closed layer) is detected independently, over the whole field,
     /// and is never chunked. An entity that falls in the small sliver right at a
@@ -149,15 +188,25 @@ impl OnnxNerDetector {
     /// document as accepted for the best-effort NER layer.
     fn infer_chunked(&self, input: &str, full_encoding: &Encoding) -> Result<Vec<PiiEntity>> {
         let ranges = chunk_char_ranges(
+            input,
             full_encoding.get_offsets(),
-            input.len(),
-            MAX_SEQUENCE_TOKENS,
+            MAX_WINDOW_TOKENS,
             CHUNK_OVERLAP_TOKENS,
         );
 
         let mut entities = Vec::new();
         for (char_start, char_end) in ranges {
-            let chunk = &input[char_start..char_end];
+            // `chunk_char_ranges` widens every range to `char` boundaries, so this is total by
+            // construction. We still don't *index* — this is a proxy on attacker-influenced input,
+            // and the rest of the masking path (`decode_entities`, `Vault::mask`,
+            // `overlap::materialize`) all refuse to panic on a tokenizer-derived range for exactly
+            // this reason (M2-R6, M4-R14). Skipping a window costs recall on it; panicking costs
+            // the request (M5-R3).
+            let Some(chunk) = input.get(char_start..char_end) else {
+                debug_assert!(false, "chunk_char_ranges must return sliceable ranges");
+                tracing::warn!("NER chunk window fell off a char boundary; skipping the window");
+                continue;
+            };
             let chunk_encoding = self
                 .tokenizer
                 .encode(chunk, true)
@@ -182,14 +231,35 @@ impl OnnxNerDetector {
     /// its logits into entity spans. `input` and `encoding` must correspond to
     /// the *same* text — this is the one-shot path shared by the direct call and
     /// each chunk of [`infer_chunked`](Self::infer_chunked).
+    ///
+    /// **This is where [`MODEL_MAX_TOKENS`] is enforced (M5-R2)**, because it is the single
+    /// choke point every path into the session goes through — the direct call *and* every
+    /// re-tokenized chunk. A sequence longer than the model's usable length is **clamped**, not
+    /// forwarded: past it the ONNX graph fails outright (the PERF-01 `Expand` error), which by
+    /// default silently drops the whole field's NER and under `NER_REQUIRED` **400s the request**.
+    /// Clamping instead costs the tail of *one* window — and the next window's
+    /// [`CHUNK_OVERLAP_TOKENS`] of overlap re-covers it — so the failure degrades from "no NER at
+    /// all" to "a few tokens of one window", loudly (a kind-free `warn!`, never the text).
     fn run_and_decode(&self, input: &str, encoding: &Encoding) -> Result<Vec<PiiEntity>> {
-        let seq = encoding.get_ids().len();
-        if seq == 0 {
+        let full_len = encoding.get_ids().len();
+        if full_len == 0 {
             return Ok(Vec::new());
         }
-        let ids: Vec<i64> = encoding.get_ids().iter().map(|&i| i as i64).collect();
-        let mask: Vec<i64> = encoding
-            .get_attention_mask()
+        let seq = full_len.min(MODEL_MAX_TOKENS);
+        if seq < full_len {
+            // Never the text — a count only (the never-log-raw-PII rule).
+            tracing::warn!(
+                tokens = full_len,
+                limit = MODEL_MAX_TOKENS,
+                "NER sequence exceeds the model's usable length; clamping (the tail of this \
+                 window is not scanned by the NER — structured PII is unaffected)"
+            );
+        }
+        let ids: Vec<i64> = encoding.get_ids()[..seq]
+            .iter()
+            .map(|&i| i as i64)
+            .collect();
+        let mask: Vec<i64> = encoding.get_attention_mask()[..seq]
             .iter()
             .map(|&i| i as i64)
             .collect();
@@ -208,7 +278,10 @@ impl OnnxNerDetector {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
 
         let outputs = if self.needs_token_type_ids {
-            let type_ids: Vec<i64> = encoding.get_type_ids().iter().map(|&i| i as i64).collect();
+            let type_ids: Vec<i64> = encoding.get_type_ids()[..seq]
+                .iter()
+                .map(|&i| i as i64)
+                .collect();
             let token_type_ids = Tensor::from_array(([1, seq], type_ids))
                 .map_err(|e| anyhow!("token_type_ids tensor: {e}"))?;
             session
@@ -279,24 +352,34 @@ impl PiiDetector for OnnxNerDetector {
     }
 }
 
-/// Compute the `(char_start, char_end)` ranges of the overlapping windows that
-/// cover a tokenized input, from its **full** per-token char `offsets` (as
-/// produced by tokenizing the whole text once) plus the input's byte length.
+/// Compute the byte ranges of the overlapping windows that cover a tokenized `input`, from its
+/// **full** per-token `offsets` (as produced by tokenizing the whole text once).
 ///
 /// Pure and model-independent — no tokenizer or session needed — so, unlike the
 /// rest of this module, it is unit-tested without a real ONNX model.
 ///
+/// **Every returned range is guaranteed sliceable** — in-bounds and on `char` boundaries — because
+/// each is widened through [`widen_to_char_boundaries`] before being emitted (M5-R3). The offsets
+/// come from the *tokenizer*, so treating them as `char`-aligned is an assumption about a
+/// third-party library's output on attacker-influenced input, and this module already refuses to
+/// make that assumption anywhere else (`decode_entities` guards the identical class of offset —
+/// that *was* M2-R6). Widening only ever *adds* bytes, so it cannot shrink a window's coverage.
+///
 /// **The one thing this exists to get right:** the token at `offsets.len() - 1`
 /// is always the closing `</s>` added by `encode(_, true)`, whose offset is the
 /// sentinel `(0, 0)` — not the real text end. A window reaching the sequence
-/// end must use `input_len` for its char end, not that sentinel (measured,
+/// end must use `input.len()` for its char end, not that sentinel (measured,
 /// `tests/ner_perf.rs`: using the sentinel silently dropped the final window,
 /// losing a third of the entities on a large field — an outright bug, not a
 /// recall nuance, caught only by testing at a size that exercised the last
 /// window's boundary).
-fn chunk_char_ranges(
+///
+/// `pub` so the live guard in `tests/ner_perf.rs` (M5-R2) can drive the **real** chunker with a
+/// real tokenizer and assert each re-tokenized window lands under [`MODEL_MAX_TOKENS`]. A copy of
+/// this logic in the test would drift from the code it is supposed to guard.
+pub fn chunk_char_ranges(
+    input: &str,
     offsets: &[(usize, usize)],
-    input_len: usize,
     window: usize,
     overlap: usize,
 ) -> Vec<(usize, usize)> {
@@ -309,11 +392,12 @@ fn chunk_char_ranges(
         let token_end = (token_start + window).min(seq);
         let char_start = offsets[token_start].0;
         let char_end = if token_end == seq {
-            input_len
+            input.len()
         } else {
             offsets[token_end - 1].1.max(char_start)
         };
-        ranges.push((char_start, char_end));
+        let widened = widen_to_char_boundaries(input, char_start..char_end);
+        ranges.push((widened.start, widened.end));
 
         if token_end == seq {
             break;
@@ -339,10 +423,17 @@ mod chunk_tests {
         offsets
     }
 
+    /// An all-ASCII input of `n` bytes, so the `(i, i+1)` offsets of
+    /// [`fake_offsets`] line up one-to-one with its bytes.
+    fn ascii(n: usize) -> String {
+        "a".repeat(n)
+    }
+
     #[test]
     fn a_single_window_covers_the_whole_input_when_it_fits() {
+        let input = ascii(10);
         let offsets = fake_offsets(10); // seq = 12 (incl. <s>/</s>)
-        let ranges = chunk_char_ranges(&offsets, 10, 480, 32);
+        let ranges = chunk_char_ranges(&input, &offsets, 480, 32);
         assert_eq!(ranges, vec![(0, 10)]);
     }
 
@@ -352,8 +443,9 @@ mod chunk_tests {
         // Windows (token space): [0,10) [8,18) [16,22). The last one's final
         // token index is 21 = seq-1, the `</s>` sentinel — this is exactly the
         // case that must NOT collapse to a zero-length range.
+        let input = ascii(20);
         let offsets = fake_offsets(20);
-        let ranges = chunk_char_ranges(&offsets, 20, 10, 2);
+        let ranges = chunk_char_ranges(&input, &offsets, 10, 2);
 
         let last = *ranges.last().unwrap();
         assert_eq!(
@@ -365,8 +457,9 @@ mod chunk_tests {
 
     #[test]
     fn windows_overlap_and_jointly_cover_every_char() {
+        let input = ascii(50);
         let offsets = fake_offsets(50);
-        let ranges = chunk_char_ranges(&offsets, 50, 10, 2);
+        let ranges = chunk_char_ranges(&input, &offsets, 10, 2);
 
         assert!(
             ranges.len() > 1,
@@ -392,9 +485,45 @@ mod chunk_tests {
     }
 
     #[test]
+    fn every_window_is_sliceable_even_when_an_offset_lands_inside_a_multibyte_char() {
+        // M5-R3. The window edges come from the **tokenizer**; treating them as `char`-aligned is
+        // an assumption about a third-party library's output on attacker-influenced input, and
+        // `&input[start..end]` *panics* if it's wrong — the one place on the masking path that
+        // could, while `decode_entities` (M2-R6), `Vault::mask` and `overlap::materialize` all
+        // refuse to. So feed offsets that deliberately cut a 3-byte `€` and a 4-byte `𝄞` in half
+        // and assert the ranges come back sliceable anyway (widened, never narrowed).
+        let input = "a€b𝄞c€d"; // 1 + 3 + 1 + 4 + 1 + 3 + 1 = 14 bytes
+        assert_eq!(input.len(), 14);
+
+        // Offsets that land *inside* the multi-byte chars (2 is mid-`€`, 6/7 mid-`𝄞`, 11 mid-`€`).
+        let offsets = vec![(0, 0), (0, 2), (2, 6), (6, 7), (7, 11), (11, 13), (0, 0)];
+
+        // Non-vacuity: the table really does carry the hazard. Without this the test could pass
+        // on offsets that happen to be `char`-aligned and prove nothing — the exact way a guard
+        // goes quietly blind (the M4-R13/M4-R24 lesson: ask what the corpus holds *constant*).
+        assert!(
+            offsets
+                .iter()
+                .any(|&(s, e)| !input.is_char_boundary(s)
+                    || !input.is_char_boundary(e.min(input.len()))),
+            "the offsets table must actually cut a multi-byte char, or this guard is vacuous"
+        );
+
+        let ranges = chunk_char_ranges(input, &offsets, 3, 1);
+
+        for (start, end) in ranges {
+            assert!(
+                input.get(start..end).is_some(),
+                "window {start}..{end} is not sliceable — it would panic in infer_chunked"
+            );
+        }
+    }
+
+    #[test]
     fn a_window_at_least_as_wide_as_the_sequence_produces_one_range() {
+        let input = ascii(5);
         let offsets = fake_offsets(5);
-        let ranges = chunk_char_ranges(&offsets, 5, 480, 32);
+        let ranges = chunk_char_ranges(&input, &offsets, 480, 32);
         assert_eq!(ranges, vec![(0, 5)]);
     }
 }

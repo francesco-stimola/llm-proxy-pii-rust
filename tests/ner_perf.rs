@@ -26,7 +26,9 @@
 use std::time::Instant;
 
 use llm_proxy_pii_rust::pii::anonymizer::Vault;
-use llm_proxy_pii_rust::pii::onnx::OnnxNerDetector;
+use llm_proxy_pii_rust::pii::onnx::{
+    chunk_char_ranges, OnnxNerDetector, MAX_WINDOW_TOKENS, MODEL_MAX_TOKENS,
+};
 use llm_proxy_pii_rust::pii::PiiDetector;
 
 fn load_detector() -> OnnxNerDetector {
@@ -36,6 +38,11 @@ fn load_detector() -> OnnxNerDetector {
     let labels = std::env::var("NER_LABELS").expect("set NER_LABELS");
     let id2label = labels.split(',').map(str::to_string).collect();
     OnnxNerDetector::load(&model, &tokenizer, id2label, 1, false).expect("load NER model")
+}
+
+fn load_tokenizer() -> tokenizers::Tokenizer {
+    let path = std::env::var("NER_TOKENIZER_PATH").expect("set NER_TOKENIZER_PATH");
+    tokenizers::Tokenizer::from_file(path).expect("load tokenizer")
 }
 
 /// One natural-language sentence carrying a name, repeated to build up field
@@ -108,4 +115,141 @@ fn onnx_ner_latency_and_recall_across_field_sizes() {
             entities.len()
         );
     }
+}
+
+/// Multi-script, no-inter-word-space, combining-mark-heavy fields — the shapes most likely to make
+/// a re-tokenized window drift past the planning bound (CJK and scripts with no spaces give the
+/// tokenizer no natural cut points, so a window edge lands mid-"word" and re-tokenizes differently).
+fn adversarial_fields() -> Vec<(&'static str, String)> {
+    vec![
+        (
+            "chinese",
+            "我的信用卡号是4111111111111111，请联系张伟。".repeat(60),
+        ),
+        (
+            "japanese",
+            "カード番号は4111111111111111です。田中さんに連絡してください。".repeat(60),
+        ),
+        (
+            "cyrillic",
+            "Карта 4111111111111111, свяжитесь с Иваном Петровым в Москве. ".repeat(60),
+        ),
+        (
+            "combining",
+            "Z\u{0301}a\u{0308}l\u{0327}g\u{0308}o\u{0301} Mario Rossi Milano. ".repeat(80),
+        ),
+        (
+            "mixed",
+            "Mario Rossi 张伟 Иван 田中 Müller Łódź café ".repeat(100),
+        ),
+        ("no-spaces", "あ".repeat(4000)),
+    ]
+}
+
+#[test]
+#[ignore]
+fn m5_r2_every_retokenized_window_stays_within_the_models_usable_length() {
+    // M5-R2. `MAX_WINDOW_TOKENS` (480) plans windows in the coordinates of the WHOLE field's
+    // tokenization — but `infer_chunked` then RE-TOKENIZES each window from its own text (it must:
+    // a middle window needs its own <s>…</s> framing). That re-tokenization adds the two special
+    // tokens and drifts at the cut edges, so the sequence actually handed to the model is
+    // `window + specials + drift` — measured at 481-483, i.e. always OVER the planning bound.
+    //
+    // The real ceiling is `MODEL_MAX_TOKENS` (512 = XLM-R's 514 max_position_embeddings minus
+    // RoBERTa's position-id offset of 2). Exceed it and the ONNX graph fails outright — the PERF-01
+    // `Expand` error, which by default silently drops the field's NER and under NER_REQUIRED 400s
+    // the request. `run_and_decode` now clamps as a last-resort safety valve, but a clamp is a
+    // *recall loss*: the planning window is supposed to make it never fire. This asserts that.
+    let tokenizer = load_tokenizer();
+
+    for (name, input) in adversarial_fields() {
+        let full = tokenizer.encode(input.as_str(), true).expect("tokenize");
+        let ranges = chunk_char_ranges(
+            &input,
+            full.get_offsets(),
+            MAX_WINDOW_TOKENS,
+            32, // CHUNK_OVERLAP_TOKENS — private; kept in step with src/pii/onnx.rs
+        );
+
+        let mut worst = 0usize;
+        for &(start, end) in &ranges {
+            let chunk = input
+                .get(start..end)
+                .unwrap_or_else(|| panic!("{name}: window {start}..{end} is not sliceable"));
+            let len = tokenizer.encode(chunk, true).expect("tokenize chunk").len();
+            worst = worst.max(len);
+            assert!(
+                len <= MODEL_MAX_TOKENS,
+                "{name}: a re-tokenized window is {len} tokens, over the model's usable \
+                 {MODEL_MAX_TOKENS} — it would be clamped (recall loss), and on a model with a \
+                 tighter budget it would be the PERF-01 `Expand` error all over again"
+            );
+        }
+        eprintln!(
+            "{name:>10}: {} chars, {} windows, worst re-tokenized window {worst} tokens \
+             (planning bound {MAX_WINDOW_TOKENS}, model ceiling {MODEL_MAX_TOKENS})",
+            input.len(),
+            ranges.len()
+        );
+        // Non-vacuity: a field that never chunks proves nothing about chunking.
+        assert!(
+            ranges.len() > 1,
+            "{name}: this field must be large enough to chunk, or the guard is vacuous"
+        );
+    }
+}
+
+#[test]
+#[ignore]
+fn m5_r4_the_ner_treats_placeholders_as_inert() {
+    // M5-R4. `Vault::mask_all` masks to a FIXPOINT, and ARCHITECTURE proves it converges because
+    // "a placeholder is inert" — but that proof is about the REGEX RECOGNIZERS (`[KIND_N]` has no
+    // `@`, no `sk-`, not enough digits, and `[`/`]` are outside every character class). It is a
+    // construction proof, and it does NOT cover the NER: an ML model is under no such constraint,
+    // and nothing stops one from tagging `[PERSON_1]` as a Person.
+    //
+    // If it did, a mask pass would replace a placeholder, the text would not strictly shrink,
+    // MAX_MASK_PASSES would be exhausted, and the request would 400 — fail-closed (M4-R20 saw to
+    // that), so never a leak, but a hard availability failure on ordinary input.
+    //
+    // It holds for XLM-R int8 — EMPIRICALLY, which is not the same as by construction. This is the
+    // check a MODEL SWAP must not skip, and the Backlog's designated successor is GLiNER: a
+    // zero-shot, open-label, CONTEXT-driven extractor, i.e. exactly the kind of model that might
+    // look at `Contact [PERSON_1] at [ORG_1]` and tag both.
+    let detector = load_detector();
+
+    // Long enough to be chunked, so this covers the chunked path too (before M5's chunking fix, a
+    // field this size never reached the model at all).
+    let placeholders =
+        "Contact [PERSON_1] at [ORG_1] in [LOCATION_1] about [EMAIL_1] and [PHONE_1]. ".repeat(40);
+    assert!(
+        placeholders.len() > 2_000,
+        "must be large enough to exercise the chunked path"
+    );
+
+    let entities = detector
+        .try_detect(&placeholders)
+        .expect("NER must not error");
+    assert!(
+        entities.is_empty(),
+        "the NER tagged {} entities in placeholder-only text — placeholder inertness does NOT \
+         hold for this model, so `Vault::mask_all` can fail to reach a fixpoint and 400 on \
+         ordinary input. Found: {:?}",
+        entities.len(),
+        entities
+            .iter()
+            .map(|e| (e.kind, e.text.as_str()))
+            .collect::<Vec<_>>()
+    );
+
+    // …and the full hybrid really does converge on such a field.
+    let structured = llm_proxy_pii_rust::pii::recognizers::StructuredRecognizers::new();
+    let composite = llm_proxy_pii_rust::pii::composite::CompositeDetector::new(vec![
+        Box::new(structured),
+        Box::new(load_detector()),
+    ]);
+    let mut vault = Vault::new();
+    vault
+        .mask_all(&placeholders, &composite)
+        .expect("masking placeholder-dense text must reach a fixpoint, not exhaust its passes");
 }

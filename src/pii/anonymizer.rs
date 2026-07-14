@@ -71,6 +71,14 @@ impl Vault {
     /// digits; `[` / `]` are outside every pattern's character classes), so each pass
     /// strictly shrinks the un-masked text.
     ///
+    /// **That inertness is proved by construction for the recognizers, but only *measured* for the
+    /// NER (M5-R4).** `detector` here is the whole `CompositeDetector`, and an ML model is under no
+    /// such constraint — nothing structurally stops one from tagging `[PERSON_1]` as a `Person`. If
+    /// one did, this loop would never shrink the text and would exhaust its passes into a 400
+    /// (fail-closed, never a leak — see below). It holds for the current model, verified by
+    /// `tests/ner_perf.rs::m5_r4_the_ner_treats_placeholders_as_inert`. **A new NER model must
+    /// re-run that check** — see `ARCHITECTURE.md` → *Masking must run to a fixpoint*.
+    ///
     /// **Exhausting [`MAX_MASK_PASSES`] fails *closed* (M4-R20).** The bound is a safety
     /// net, not a proof: "each pass strictly shrinks the un-masked text" buys *eventual*
     /// convergence, never convergence **within** four passes. So the loop **confirms** the
