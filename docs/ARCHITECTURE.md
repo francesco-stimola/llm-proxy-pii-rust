@@ -362,6 +362,19 @@ coverage by default or **blocking every such request** under `NER_REQUIRED`. Chu
 **recall** mechanism only, never leak-relevant: structured PII is detected independently, over
 the whole field, and is never chunked.
 
+> **Boundary fragments are cleaned up by the *resolver*, not by the `dedup()` — and that is
+> load-bearing.** `infer_chunked`'s `dedup()` removes only **exact** duplicates. A window that
+> cuts an entity in half emits a *truncated* one (`Mil` where the neighbouring window sees
+> `Milan`); that is a different span, so it survives the dedup. What removes it is
+> `overlap::resolve_overlaps`' NER phase (see *Overlap resolution* above): all three NER kinds share
+> `PiiKind::priority() == 0`, so the phase tiebreaks on **span length, descending** — it takes the
+> whole entity first and drops the overlapping fragment. **So the correctness of chunking depends
+> on the NER kinds staying at equal priority.** Rank `Person` above `Location` and a truncated
+> boundary fragment could outrank the entity it was cut from. (The window/stride arithmetic bounds
+> how often this even arises: 480-token windows on a 448-token stride, so any entity ≤ 32 tokens is
+> whole in at least one window. A longer one split across both windows is a *recall* miss — the
+> OVL-02 / M2-R7 class, accepted for the best-effort NER layer.)
+
 **Model management (M2.5, feature `onnx`).** The model file is resolved in priority
 order (`src/pii/hf.rs` + `server.rs::load_onnx_ner`):
 

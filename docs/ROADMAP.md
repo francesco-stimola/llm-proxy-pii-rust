@@ -35,6 +35,7 @@ streams, and fronts OpenAI / Copilot / Anthropic via their OpenAI-compatible end
 | What | Where | Status |
 |---|---|---|
 | **M5** — integration & performance testing | [below](#m5) | [~] one box open — the manual live-provider check needs a human + a real key |
+| **M5 review round 1** — 6 findings, all open | [ledger](#m5-ledger) | [ ] no leak found; one stale doc, three hardening/invariant items, two accuracy nits |
 
 **M5 is unblocked.** Its prerequisite was a clean M4 ledger, and the last blocker was the DoS class — which
 took **two** fixes, not one, because the masking path has **two** size axes: field *size*
@@ -320,6 +321,21 @@ Prove the whole system holds **end-to-end** and **under load**, then document it
   GitHub Actions shapes but are only proven once a real push/PR/tag runs them. **The first tagged release
   is `1.0.0`** (bump from `0.4.0`) — cut when a real CI run is green and, ideally, the manual verification
   procedure below has actually been run once against a live provider.
+
+<a id="m5-ledger"></a>
+### Review ledger — M5 → [`reviews/M5.md`](reviews/M5.md)
+**Round 1 (2026-07-14): 6 findings, all open. No leak, no fail-open, no over-mask regression.** The
+chunking fix was verified against the **pre-fix** commit (the `Expand` error reproduces) and driven
+through the real binary end-to-end with NER on an oversized field.
+
+| ID | Title | Sev | Status |
+|---|---|---|---|
+| [M5-R1](reviews/M5.md#m5-r1) | TESTING.md still says the NER is unchunked and quadratic — the claim M5 disproved *and* fixed | docs | [ ] |
+| [M5-R2](reviews/M5.md#m5-r2) | `MAX_SEQUENCE_TOKENS` doesn't bound what reaches the model — chunks re-tokenize to 481–483 vs a usable limit of 512 | hardening | [ ] |
+| [M5-R3](reviews/M5.md#m5-r3) | The chunk slice hard-indexes tokenizer offsets — the one place on the masking path that can panic on attacker input | hardening | [ ] |
+| [M5-R4](reviews/M5.md#m5-r4) | The fixpoint's convergence proof covers the recognizers, not the NER — and chunking newly routes large fields through it | invariant | [ ] |
+| [M5-R5](reviews/M5.md#m5-r5) | CI never exercises the declared MSRV (both jobs pin `stable`) | low | [ ] |
+| [M5-R6](reviews/M5.md#m5-r6) | The READMEs' Status is self-referentially stale and understates the `1.0.0` gate | docs | [ ] |
 
 <a id="backlog"></a>
 ## Backlog — documented, not scheduled
