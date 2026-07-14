@@ -431,9 +431,10 @@ async fn e2e_streaming_non_sse_error_falls_back_to_json() {
 
 #[tokio::test]
 async fn e2e_masking_is_provider_agnostic() {
-    // M4: the masker walks the OpenAI-shaped JSON; provider presets only affect
-    // routing (path / headers), never masking — so the masked body reaching the
-    // upstream is identical regardless of the configured provider.
+    // M4/M5 (LOC-11): the masker walks the OpenAI-shaped JSON; provider presets only
+    // affect routing (path / headers), never masking — so the masked body reaching
+    // the upstream is identical regardless of the configured provider. Covers all
+    // three mock-upstream shapes M5 asks for: OpenAI, Copilot, Anthropic.
     let upstream = spawn_mock_upstream().await;
     let request = json!({
         "model": "x",
@@ -448,16 +449,271 @@ async fn e2e_masking_is_provider_agnostic() {
         request.clone(),
     )
     .await;
+    let via_copilot = chat(
+        spawn_proxy_provider(upstream, "copilot").await,
+        request.clone(),
+    )
+    .await;
     let via_anthropic = chat(spawn_proxy_provider(upstream, "anthropic").await, request).await;
 
     assert_eq!(
+        via_openai["upstream_received"], via_copilot["upstream_received"],
+        "masking must be provider-independent (copilot)"
+    );
+    assert_eq!(
         via_openai["upstream_received"], via_anthropic["upstream_received"],
-        "masking must be provider-independent"
+        "masking must be provider-independent (anthropic)"
     );
     let seen = via_openai["upstream_received"].to_string();
     assert!(seen.contains("[EMAIL_1]"));
     assert!(seen.contains("[IBAN_1]"));
     assert!(!seen.contains("bob@test.com"));
+}
+
+/// Mock upstream that echoes back, in the assistant reply, the content of the
+/// **last message with the given role** (instead of always the last `user`
+/// message) — used to drive PII sitting in `tool` result messages (E2E-02/04),
+/// while still exposing the exact (masked) body it received via
+/// `upstream_received`.
+async fn spawn_mock_upstream_echo_role(role: &'static str) -> SocketAddr {
+    let handler = move |Json(body): Json<Value>| async move {
+        let last = body["messages"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .rfind(|m| m["role"] == role)
+            .and_then(|m| m["content"].as_str())
+            .unwrap_or_default()
+            .to_string();
+
+        Json(json!({
+            "choices": [{
+                "message": { "role": "assistant", "content": format!("You said: {last}") }
+            }],
+            "upstream_received": body
+        }))
+    };
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let app = Router::new().route("/v1/chat/completions", post(handler));
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    addr
+}
+
+#[tokio::test]
+async fn e2e02_csv_tool_result_pii_is_masked_and_restored() {
+    // TC-02 / E2E-02: PII inside a CSV `tool_result` is masked upstream and
+    // restored to the client.
+    let proxy = spawn_proxy(spawn_mock_upstream_echo_role("tool").await).await;
+    let csv = "name,email,phone,iban\nBob,bob@test.com,555-111-2222,IT60X0542811101000000123456";
+
+    let reply = chat(
+        proxy,
+        json!({
+            "model": "gpt-x",
+            "messages": [
+                { "role": "user", "content": "here is the contacts export" },
+                { "role": "tool", "tool_call_id": "c1", "content": csv }
+            ]
+        }),
+    )
+    .await;
+
+    let seen_text = reply["upstream_received"].to_string();
+    assert!(!seen_text.contains("bob@test.com"), "leaked email upstream");
+    assert!(!seen_text.contains("555-111-2222"), "leaked phone upstream");
+    assert!(
+        !seen_text.contains("IT60X0542811101000000123456"),
+        "leaked IBAN upstream"
+    );
+    assert!(seen_text.contains("[EMAIL_1]"));
+    assert!(seen_text.contains("[PHONE_1]"));
+    assert!(seen_text.contains("[IBAN_1]"));
+
+    let content = reply["choices"][0]["message"]["content"].as_str().unwrap();
+    assert!(content.contains("bob@test.com"), "got: {content}");
+    assert!(content.contains("555-111-2222"), "got: {content}");
+    assert!(
+        content.contains("IT60X0542811101000000123456"),
+        "got: {content}"
+    );
+}
+
+#[tokio::test]
+async fn e2e04_db_query_result_all_categories_masked_and_restored() {
+    // TC-04 / E2E-04: a `SELECT … FROM DUAL`-style tabular result carrying every
+    // structured category in one field — all masked upstream, all restored to
+    // the client.
+    let proxy = spawn_proxy(spawn_mock_upstream_echo_role("tool").await).await;
+    let secret = "sk-ant-api01-test0000000000000000000000000000000000000000000000000";
+    let db_result = format!(
+        "SELECT * FROM DUAL: email=bob@test.com, phone=555-111-2222, ssn=123-45-6789, \
+         card=4111111111111111, iban=IT60X0542811101000000123456, secret={secret}"
+    );
+
+    let reply = chat(
+        proxy,
+        json!({
+            "model": "gpt-x",
+            "messages": [
+                { "role": "user", "content": "run the customer lookup query" },
+                { "role": "tool", "tool_call_id": "c1", "content": db_result }
+            ]
+        }),
+    )
+    .await;
+
+    let seen_text = reply["upstream_received"].to_string();
+    for raw in [
+        "bob@test.com",
+        "555-111-2222",
+        "123-45-6789",
+        "4111111111111111",
+        "IT60X0542811101000000123456",
+        secret,
+    ] {
+        assert!(
+            !seen_text.contains(raw),
+            "{raw} leaked upstream: {seen_text}"
+        );
+    }
+    for placeholder in [
+        "[EMAIL_1]",
+        "[PHONE_1]",
+        "[SSN_1]",
+        "[CARD_1]",
+        "[IBAN_1]",
+        "[SECRET_1]",
+    ] {
+        assert!(
+            seen_text.contains(placeholder),
+            "expected {placeholder} in {seen_text}"
+        );
+    }
+
+    let content = reply["choices"][0]["message"]["content"].as_str().unwrap();
+    for raw in [
+        "bob@test.com",
+        "555-111-2222",
+        "123-45-6789",
+        "4111111111111111",
+        "IT60X0542811101000000123456",
+        secret,
+    ] {
+        assert!(content.contains(raw), "{raw} not restored, got: {content}");
+    }
+}
+
+/// Mock upstream that ignores the request content and always answers with an
+/// assistant `tool_calls` response whose `arguments` reference a fixed
+/// placeholder (`[EMAIL_1]`) — the token a single-email request masks to.
+async fn spawn_mock_upstream_tool_call() -> SocketAddr {
+    async fn handler(Json(body): Json<Value>) -> Json<Value> {
+        Json(json!({
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": null,
+                    "tool_calls": [{
+                        "id": "1",
+                        "type": "function",
+                        "function": { "name": "send_email", "arguments": "{\"to\":\"[EMAIL_1]\"}" }
+                    }]
+                }
+            }],
+            "upstream_received": body
+        }))
+    }
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let app = Router::new().route("/v1/chat/completions", post(handler));
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    addr
+}
+
+#[tokio::test]
+async fn e2e_tool_call_arguments_round_trip_over_http() {
+    // Full HTTP round-trip version of INT-03 (which drives `PrivacyStage`
+    // directly): the vault is populated from the masked request, and the
+    // response's `tool_calls[].function.arguments` — carrying the placeholder
+    // the provider echoed back — is de-anonymized before the client sees it.
+    let proxy = spawn_proxy(spawn_mock_upstream_tool_call().await).await;
+
+    let reply = chat(
+        proxy,
+        json!({
+            "model": "gpt-x",
+            "messages": [{ "role": "user", "content": "email jane@example.com please" }]
+        }),
+    )
+    .await;
+
+    let seen_text = reply["upstream_received"].to_string();
+    assert!(!seen_text.contains("jane@example.com"), "leaked upstream");
+    assert!(seen_text.contains("[EMAIL_1]"));
+
+    let args = reply["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"]
+        .as_str()
+        .unwrap();
+    assert!(args.contains("jane@example.com"), "got: {args}");
+    assert!(!args.contains("[EMAIL_1]"), "got: {args}");
+}
+
+#[tokio::test]
+async fn e2e_multi_turn_determinism_across_stateless_requests() {
+    // Each HTTP request gets a fresh `Vault` (the proxy is stateless), so
+    // "multi-turn determinism" means: resending the same conversation history —
+    // exactly what an OpenAI-style stateless client does every turn — must
+    // reassign the **same** placeholder to a repeated value, because it is
+    // still the same value at the same first-occurrence position in reading
+    // order. Two real HTTP round-trips against the same proxy instance.
+    let upstream = spawn_mock_upstream().await;
+    let proxy = spawn_proxy(upstream).await;
+
+    let turn1 = chat(
+        proxy,
+        json!({
+            "model": "gpt-x",
+            "messages": [{ "role": "user", "content": "contact bob@test.com" }]
+        }),
+    )
+    .await;
+    let turn1_seen = turn1["upstream_received"].to_string();
+    assert!(turn1_seen.contains("[EMAIL_1]"), "got: {turn1_seen}");
+
+    // Turn 2 resends the full (de-masked, client-visible) history plus a new
+    // message that repeats bob@test.com and introduces a second value.
+    let history_reply = turn1["choices"][0]["message"]["content"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let turn2 = chat(
+        proxy,
+        json!({
+            "model": "gpt-x",
+            "messages": [
+                { "role": "user", "content": "contact bob@test.com" },
+                { "role": "assistant", "content": history_reply },
+                { "role": "user", "content": "also cc alice@a.com, and again bob@test.com" }
+            ]
+        }),
+    )
+    .await;
+    let turn2_seen = turn2["upstream_received"].to_string();
+
+    assert!(
+        !turn2_seen.contains("bob@test.com") && !turn2_seen.contains("alice@a.com"),
+        "leaked upstream: {turn2_seen}"
+    );
+    // bob@test.com is still the first distinct value in reading order → still [EMAIL_1].
+    assert!(
+        turn2_seen.contains("[EMAIL_1]"),
+        "the repeated value must keep its token across turns: {turn2_seen}"
+    );
+    assert!(
+        turn2_seen.contains("[EMAIL_2]"),
+        "the new value must get the next token: {turn2_seen}"
+    );
 }
 
 #[tokio::test]
