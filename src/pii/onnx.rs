@@ -69,7 +69,11 @@ pub const MAX_WINDOW_TOKENS: usize = 480;
 /// otherwise land right at a chunk boundary is still whole in at least one
 /// chunk. Generous relative to a Person/Org/Location span (rarely more than a
 /// handful of tokens).
-const CHUNK_OVERLAP_TOKENS: usize = 32;
+///
+/// `pub` for the same reason [`chunk_char_ranges`] is (M5-R9): the live guard in
+/// `tests/ner_perf.rs` drives the real chunker, and a hand-copied `32` there would be a second
+/// home for this fact — free to drift from the one that matters.
+pub const CHUNK_OVERLAP_TOKENS: usize = 32;
 
 // The relationships between the three constants above are **compile-time** invariants (M5-R2), not
 // runtime tests — get one wrong and the crate must not build at all.
@@ -232,34 +236,45 @@ impl OnnxNerDetector {
     /// the *same* text — this is the one-shot path shared by the direct call and
     /// each chunk of [`infer_chunked`](Self::infer_chunked).
     ///
-    /// **This is where [`MODEL_MAX_TOKENS`] is enforced (M5-R2)**, because it is the single
-    /// choke point every path into the session goes through — the direct call *and* every
-    /// re-tokenized chunk. A sequence longer than the model's usable length is **clamped**, not
-    /// forwarded: past it the ONNX graph fails outright (the PERF-01 `Expand` error), which by
-    /// default silently drops the whole field's NER and under `NER_REQUIRED` **400s the request**.
-    /// Clamping instead costs the tail of *one* window — and the next window's
-    /// [`CHUNK_OVERLAP_TOKENS`] of overlap re-covers it — so the failure degrades from "no NER at
-    /// all" to "a few tokens of one window", loudly (a kind-free `warn!`, never the text).
+    /// **This is where [`MODEL_MAX_TOKENS`] is enforced (M5-R2)**, because it is the single choke
+    /// point every path into the session goes through — the direct call *and* every re-tokenized
+    /// chunk. A sequence longer than the model's usable length is **rejected**, never forwarded:
+    /// past it the ONNX graph fails outright (the PERF-01 `Expand` error), so this turns a cryptic
+    /// tensor-shape failure into a named one, *before* the session ever sees it.
+    ///
+    /// **It returns `Err` — it does NOT clamp and continue (M5-R7).** The first version of this
+    /// fix truncated the sequence and returned `Ok(partial)`, reasoning that losing a window's tail
+    /// beats losing the whole field. That reasoning is fine; **making the call here is not.**
+    /// Whether a degraded NER is acceptable is a *posture* decision, and this codebase already has
+    /// exactly one place that owns it: the [`FailOpen`](super::composite::FailOpen) wrapper and the
+    /// [`try_detect`](PiiDetector::try_detect) error channel (M2-R1/R2). Under the default
+    /// (fail-open) posture `FailOpen` swallows this error and the request proceeds structured-only;
+    /// under **`NER_REQUIRED`** the detector is *unwrapped*, so the error propagates and the
+    /// request is **blocked (400)** — which is precisely what that operator asked for. Clamping
+    /// silently returned `Ok` in **both** postures, quietly forwarding a partially-scanned field to
+    /// someone who had explicitly demanded a block. That is not a smaller failure; it is the
+    /// failure *relocated* — the exact move the M4 retrospective is about.
+    ///
+    /// This path is **latent by design**: [`MAX_WINDOW_TOKENS`] leaves 32 tokens of headroom for
+    /// re-tokenization drift (measured +1…+3 over 17 adversarial scripts), and
+    /// `tests/ner_perf.rs::m5_r2_every_retokenized_window_stays_within_the_models_usable_length`
+    /// is the guard that keeps it that way. It is the *fail-safe*, not the mechanism.
     fn run_and_decode(&self, input: &str, encoding: &Encoding) -> Result<Vec<PiiEntity>> {
-        let full_len = encoding.get_ids().len();
-        if full_len == 0 {
+        let seq = encoding.get_ids().len();
+        if seq == 0 {
             return Ok(Vec::new());
         }
-        let seq = full_len.min(MODEL_MAX_TOKENS);
-        if seq < full_len {
-            // Never the text — a count only (the never-log-raw-PII rule).
-            tracing::warn!(
-                tokens = full_len,
-                limit = MODEL_MAX_TOKENS,
-                "NER sequence exceeds the model's usable length; clamping (the tail of this \
-                 window is not scanned by the NER — structured PII is unaffected)"
-            );
+        if seq > MODEL_MAX_TOKENS {
+            // Counts only, never the text (the never-log-raw-PII rule).
+            return Err(anyhow!(
+                "NER sequence is {seq} tokens, over the model's usable length of \
+                 {MODEL_MAX_TOKENS}; refusing to run it (the posture — fail open to \
+                 structured-only, or block under NER_REQUIRED — is decided by the caller)"
+            ));
         }
-        let ids: Vec<i64> = encoding.get_ids()[..seq]
-            .iter()
-            .map(|&i| i as i64)
-            .collect();
-        let mask: Vec<i64> = encoding.get_attention_mask()[..seq]
+        let ids: Vec<i64> = encoding.get_ids().iter().map(|&i| i as i64).collect();
+        let mask: Vec<i64> = encoding
+            .get_attention_mask()
             .iter()
             .map(|&i| i as i64)
             .collect();
@@ -278,10 +293,7 @@ impl OnnxNerDetector {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
 
         let outputs = if self.needs_token_type_ids {
-            let type_ids: Vec<i64> = encoding.get_type_ids()[..seq]
-                .iter()
-                .map(|&i| i as i64)
-                .collect();
+            let type_ids: Vec<i64> = encoding.get_type_ids().iter().map(|&i| i as i64).collect();
             let token_type_ids = Tensor::from_array(([1, seq], type_ids))
                 .map_err(|e| anyhow!("token_type_ids tensor: {e}"))?;
             session

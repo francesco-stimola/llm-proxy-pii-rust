@@ -27,7 +27,7 @@ use std::time::Instant;
 
 use llm_proxy_pii_rust::pii::anonymizer::Vault;
 use llm_proxy_pii_rust::pii::onnx::{
-    chunk_char_ranges, OnnxNerDetector, MAX_WINDOW_TOKENS, MODEL_MAX_TOKENS,
+    chunk_char_ranges, OnnxNerDetector, CHUNK_OVERLAP_TOKENS, MAX_WINDOW_TOKENS, MODEL_MAX_TOKENS,
 };
 use llm_proxy_pii_rust::pii::PiiDetector;
 
@@ -157,9 +157,10 @@ fn m5_r2_every_retokenized_window_stays_within_the_models_usable_length() {
     //
     // The real ceiling is `MODEL_MAX_TOKENS` (512 = XLM-R's 514 max_position_embeddings minus
     // RoBERTa's position-id offset of 2). Exceed it and the ONNX graph fails outright — the PERF-01
-    // `Expand` error, which by default silently drops the field's NER and under NER_REQUIRED 400s
-    // the request. `run_and_decode` now clamps as a last-resort safety valve, but a clamp is a
-    // *recall loss*: the planning window is supposed to make it never fire. This asserts that.
+    // `Expand` error. `run_and_decode` refuses such a sequence with a named `Err` rather than
+    // running it (and rather than silently clamping — that would decide the fail-open/fail-closed
+    // posture inside the detector, which is `FailOpen`/`NER_REQUIRED`'s job; see M5-R7). That error
+    // is the *fail-safe*. **This test is what keeps it from ever being the mechanism.**
     let tokenizer = load_tokenizer();
 
     for (name, input) in adversarial_fields() {
@@ -168,7 +169,7 @@ fn m5_r2_every_retokenized_window_stays_within_the_models_usable_length() {
             &input,
             full.get_offsets(),
             MAX_WINDOW_TOKENS,
-            32, // CHUNK_OVERLAP_TOKENS — private; kept in step with src/pii/onnx.rs
+            CHUNK_OVERLAP_TOKENS,
         );
 
         let mut worst = 0usize;
