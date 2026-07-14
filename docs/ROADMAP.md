@@ -22,10 +22,11 @@ invariants) and [`TESTING.md`](TESTING.md) (the guards) — read *those* to unde
 **M0 – M4 complete, and M4's ledger is clean — all 24 findings closed.** **M5 (integration &
 performance testing) is code-complete** — real integration tests, a performance/load harness,
 NER chunking (a real bug found and fixed along the way), the README rewrite, and CI/release
-workflows are all in place. **One box is deliberately still open**: the manual dual-run
-procedure needs a human with a real `ANTHROPIC_API_KEY` to actually execute it, which no
-session can do on its own — see the M5 section below. 132 tests green (default) / 144 + 4
+workflows are all in place. **Its review round 1 is closed too — all 6 findings.** **One box is deliberately still open**: the
+manual dual-run procedure needs a human with a real `ANTHROPIC_API_KEY` to actually execute it, which
+no session can do on its own — see the M5 section below. 132 tests green (default) / 145 + 6
 `#[ignore]`d (`--features onnx`), no warnings; `cargo fmt` + `clippy` clean on both feature sets.
+**MSRV 1.86** (default) / **1.89** (`--features onnx`) — *measured*, and now built by CI.
 `v0.4.0`, AGPL-3.0-or-later. The product masks structured PII (universal + national-ID packs for
 10 countries) and unstructured entities (ONNX NER, XLM-R int8, now chunked for large fields),
 streams, and fronts OpenAI / Copilot / Anthropic via their OpenAI-compatible endpoints.
@@ -35,7 +36,7 @@ streams, and fronts OpenAI / Copilot / Anthropic via their OpenAI-compatible end
 | What | Where | Status |
 |---|---|---|
 | **M5** — integration & performance testing | [below](#m5) | [~] one box open — the manual live-provider check needs a human + a real key |
-| **M5 review round 1** — 6 findings, all open | [ledger](#m5-ledger) | [ ] no leak found; one stale doc, three hardening/invariant items, two accuracy nits |
+| **First tagged release (`1.0.0`)** | [below](#m5) | [ ] gated on a real green CI run (the workflows have never actually run) |
 
 **M5 is unblocked.** Its prerequisite was a clean M4 ledger, and the last blocker was the DoS class — which
 took **two** fixes, not one, because the masking path has **two** size axes: field *size*
@@ -265,7 +266,11 @@ Prove the whole system holds **end-to-end** and **under load**, then document it
 > the masking path has **two** size axes: field *size* ([M4-R19](reviews/M4.md#m4-r19), the candidate rescan)
 > and entity *count* ([M4-R24](reviews/M4.md#m4-r24), the mask splice). Both are now linear and guarded —
 > DOS-01…03 vary the size, **DOS-04 varies the count** — so a load result measures the product, not an
-> algorithmic bug. CI has its MSRV ([M4-R22](reviews/M4.md#m4-r22)); `fmt` and `clippy` are green.
+> algorithmic bug. `fmt` and `clippy` are green.
+>
+> *(This box used to add "CI has its MSRV ([M4-R22](reviews/M4.md#m4-r22))". It did not:
+> [M5-R5](reviews/M5.md#m5-r5) found the declared `1.82` could not even parse the dependency tree. The
+> real floors — **1.86** default, **1.89** onnx — are measured and now **built** by CI.)*
 
 - [x] **Real integration tests** — full mask → forward → (stream) → de-mask round-trips, tool-call
   round-trips, multi-turn determinism, and the fail-closed paths. **Mock upstreams cover all three preset
@@ -324,18 +329,25 @@ Prove the whole system holds **end-to-end** and **under load**, then document it
 
 <a id="m5-ledger"></a>
 ### Review ledger — M5 → [`reviews/M5.md`](reviews/M5.md)
-**Round 1 (2026-07-14): 6 findings, all open. No leak, no fail-open, no over-mask regression.** The
+**Round 1 (2026-07-14): 6 findings — all closed. No leak, no fail-open, no over-mask regression.** The
 chunking fix was verified against the **pre-fix** commit (the `Expand` error reproduces) and driven
 through the real binary end-to-end with NER on an oversized field.
 
+**M5-R5 turned out to be the sharp one.** Chasing it revealed the declared MSRV was **fiction**: `1.82`
+cannot even *parse* the dependency tree. Measured, the real floors are **1.86** (default) and **1.89**
+(`--features onnx`) — and they *differ per feature set*, which a single `rust-version` cannot express. Both
+are now pinned in CI. This is exactly the failure M4-R22 tried to prevent and structurally could not:
+`rust-version` makes cargo refuse a too-**old** toolchain; it cannot notice the crate drifting **past** its
+own declared floor. **Only a job that builds on the MSRV can.**
+
 | ID | Title | Sev | Status |
 |---|---|---|---|
-| [M5-R1](reviews/M5.md#m5-r1) | TESTING.md still says the NER is unchunked and quadratic — the claim M5 disproved *and* fixed | docs | [ ] |
-| [M5-R2](reviews/M5.md#m5-r2) | `MAX_SEQUENCE_TOKENS` doesn't bound what reaches the model — chunks re-tokenize to 481–483 vs a usable limit of 512 | hardening | [ ] |
-| [M5-R3](reviews/M5.md#m5-r3) | The chunk slice hard-indexes tokenizer offsets — the one place on the masking path that can panic on attacker input | hardening | [ ] |
-| [M5-R4](reviews/M5.md#m5-r4) | The fixpoint's convergence proof covers the recognizers, not the NER — and chunking newly routes large fields through it | invariant | [ ] |
-| [M5-R5](reviews/M5.md#m5-r5) | CI never exercises the declared MSRV (both jobs pin `stable`) | low | [ ] |
-| [M5-R6](reviews/M5.md#m5-r6) | The READMEs' Status is self-referentially stale and understates the `1.0.0` gate | docs | [ ] |
+| [M5-R1](reviews/M5.md#m5-r1) | TESTING.md still says the NER is unchunked and quadratic — the claim M5 disproved *and* fixed | docs | [x] |
+| [M5-R2](reviews/M5.md#m5-r2) | `MAX_SEQUENCE_TOKENS` didn't bound what reaches the model — chunks re-tokenize to 481–483 vs a usable limit of 512 → the ceiling is now **enforced** at the one choke point, and the drift is **asserted** | hardening | [x] |
+| [M5-R3](reviews/M5.md#m5-r3) | The chunk slice hard-indexed tokenizer offsets — the one place on the masking path that could panic on attacker input | hardening | [x] |
+| [M5-R4](reviews/M5.md#m5-r4) | The fixpoint's convergence proof covers the recognizers, not the NER — placeholder inertness is **empirical** for the model, and a **model swap must re-check it** (GLiNER especially) | invariant | [x] |
+| [M5-R5](reviews/M5.md#m5-r5) | CI never exercised the declared MSRV → **and the declared MSRV was wrong**: measured 1.86 (default) / 1.89 (onnx), both now built in CI | low → med | [x] |
+| [M5-R6](reviews/M5.md#m5-r6) | The READMEs' Status was self-referentially stale and understated the `1.0.0` gate | docs | [x] |
 
 <a id="backlog"></a>
 ## Backlog — documented, not scheduled

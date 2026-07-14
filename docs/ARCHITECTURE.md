@@ -127,6 +127,26 @@ placeholder is **inert** (no recognizer can match `[KIND_N]` or span across it),
 shrinks the un-masked text. The round-trip stays exact — every pass records raw value → placeholder, and
 `demask` restores them all in one tolerant pass.
 
+> **…but that proof covers the *recognizers*, not the NER — and a model swap must re-check it (M5-R4).**
+> "A placeholder is inert" is proved **by construction** for the deterministic layer: `[KIND_N]` has no
+> `@`, no `sk-`, nowhere near enough digits, and `[` / `]` sit outside every pattern's character classes.
+> But `mask_all` runs the **`CompositeDetector`**, and the ML NER inside it is under no such constraint —
+> nothing *structurally* stops a model from tagging `[PERSON_1]`, or a dense run of placeholders, as a
+> `Person`/`Organization`. If one did, a pass would mask a placeholder, the text would not strictly shrink,
+> `MAX_MASK_PASSES` would exhaust, and the request would **400** — fail-*closed* (M4-R20 saw to that), so
+> **never a leak**, but a hard availability failure on ordinary input.
+>
+> For the current model it holds, and it is **measured, not assumed**: XLM-R int8 tags **zero** entities on
+> placeholder-only text, and the full hybrid `mask_all` converges (`tests/ner_perf.rs`,
+> `m5_r4_the_ner_treats_placeholders_as_inert`). That makes placeholder inertness an **empirical property of
+> the chosen model**, and therefore a **model-swap checkpoint** — one that matters more than it sounds,
+> because the Backlog's designated successor is **GLiNER**: a *zero-shot, open-label, **context**-driven*
+> span extractor, i.e. precisely the kind of model that could look at `Contact [PERSON_1] at [ORG_1]` and
+> tag both. **A new NER model must re-run that guard before it ships.**
+>
+> M5 is also what made this *reachable at scale*: before chunking, a field over ~500 tokens never reached
+> the NER at all (it errored). Chunking now routes exactly the large, placeholder-dense fields through it.
+
 **Exhausting `MAX_MASK_PASSES` fails *closed* (M4-R20).** The bound is a safety net, not a proof: *"each
 pass strictly shrinks the un-masked text"* buys **eventual** convergence, never convergence **within**
 four passes. So `mask_all` **confirms** the fixpoint rather than assuming it — one final `try_detect`,

@@ -62,8 +62,9 @@ forwarding something raw.
 
 ## Quick start
 
-Requires Rust (stable, MSRV 1.82). Build and run the default (structured-only,
-native-dependency-free) binary:
+Requires Rust **1.86+** (the default build's MSRV; `--features onnx` needs
+**1.89+**, and both are verified by CI). Build and run the default
+(structured-only, native-dependency-free) binary:
 
 ```sh
 cargo build --release
@@ -124,11 +125,22 @@ runs structured-only, same as the default build. See `docs/ARCHITECTURE.md` and
 
 ## Status
 
-**M0–M4 complete**, M5 (integration & performance testing) in progress. Ten
+**M0–M4 complete; M5 (integration & performance testing) is code-complete.** Ten
 national-ID packs, three-tier locale coverage, streaming, multi-provider routing,
-and an algorithmically-linear masking path (measured — see `docs/TESTING.md`)
-are all shipped and tested. `v0.4.0`, pre-1.0: the first tagged release
-(`1.0.0`) follows once M5's README/CI pass lands.
+an algorithmically-linear masking path, and a chunked NER for large fields are all
+shipped and tested (measured — see `docs/TESTING.md`).
+
+`v0.4.0`, pre-1.0. Two things stand between here and the first tagged release
+(`1.0.0`), and neither has happened yet:
+
+- **The CI and release workflows have never actually run.** They are written
+  (`.github/workflows/`) but no PR or tag has exercised them.
+- **The end-to-end check against a real provider has not been performed.** The
+  procedure is written (`docs/MANUAL_VERIFICATION.md`) and the opt-in smoke test
+  exists (`tests/anthropic_smoke.rs`), but both need a real API key to run.
+
+`1.0.0` is cut once CI is green on a real run — ideally after that manual
+verification. See [ROADMAP](docs/ROADMAP.md#m5) for the authoritative status.
 
 ## Development
 

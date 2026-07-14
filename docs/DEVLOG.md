@@ -3,6 +3,80 @@
 Newest first. One entry per meaningful change — note *what* and *why*, not just
 *what*. This is the running history so context is never lost between sessions.
 
+## 2026-07-14 — M5 review round 1 closed: five of six findings were a *claim that had stopped being true*
+
+All six M5 findings closed. **132 tests green (default) / 145 + 6 `#[ignore]`d (`--features onnx`);
+`fmt` + `clippy` clean on both.** Full record: [`reviews/M5.md`](reviews/M5.md). No leak, no fail-open,
+no over-mask regression — the reviewer reproduced the pre-fix `Expand` error from the parent commit and
+drove the real binary end-to-end with NER on an oversized field before finding anything.
+
+**Two findings were bigger than they were filed as, and for the same reason: the finding said "this
+claim is unverified", and verifying it showed the claim was *false*.**
+
+**M5-R5 — the declared MSRV was fiction (filed `low`; really the round's most load-bearing).** The
+finding was "CI pins `stable`, so `rust-version` is never exercised". It offered two fixes — add the
+job, or drop the claim. I measured instead, and **`1.82` cannot even parse the dependency tree**
+(`idna_adapter` needs `edition2024`). The real floors:
+
+| build | declared | true floor |
+|---|---|---|
+| default | 1.82 | **1.86** (`icu_*` / `idna_adapter`) |
+| `--features onnx` | 1.82 | **1.89** (`redb` ← `hf-xet`) |
+
+They **differ per feature set**, which one `rust-version` field cannot express: it now declares **1.86**
+(the shipped, native-dep-free default build) and documents 1.89 for onnx, where cargo's own
+`redb@3.1.3 requires rustc 1.89` is self-explanatory. A new `msrv` CI matrix **builds** both.
+
+> **This is the M4-R22 lesson finally landing.** M4-R22 added `rust-version` *to prevent exactly this*,
+> and it structurally cannot: the field makes cargo refuse a too-**old** toolchain; nothing makes the
+> crate stay compatible with it. **A declared MSRV with no job building on it is not a floor — it is a
+> comment shaped like a guarantee.** Only a job that builds on the MSRV can hold the MSRV.
+
+**M5-R2 — the constant that bounded nothing.** `MAX_SEQUENCE_TOKENS = 480` claimed to bound the sequence
+fed to the model. It bounded the *planning window*: `infer_chunked` **re-tokenizes** each window from its
+own text (it must — a middle window needs its own `<s>…</s>` framing), which adds the specials and drifts
+at the cut edges, so the real sequence was **always over** the "bound" — measured 481–483 against a
+usable ceiling of 512 (XLM-R's 514 `max_position_embeddings` minus RoBERTa's position-id offset of 2).
+29 tokens of headroom, held by nothing. Now: the constants are split (**`MAX_WINDOW_TOKENS`** vs
+**`MODEL_MAX_TOKENS`**), the ceiling is **enforced** in `run_and_decode` (the single choke point every
+path into the session goes through) with a clamp + kind-free `warn!`, their relationships are
+**compile-time** invariants (`const _: () = assert!(…)` — get one wrong and the crate doesn't build), and
+the drift is **asserted** by a live guard over six adversarial scripts (CJK, Cyrillic, zalgo, a
+4 000-char run of `あ` with no spaces), which independently reproduced the reviewer's 481–483.
+
+**M5-R3 — closed with the guard the codebase already had.** The chunk slice `&input[a..b]` hard-indexed
+tokenizer offsets — the one spot on the masking path that could panic on attacker input, while
+`decode_entities` (M2-R6), `Vault::mask` and `overlap::materialize` all refuse to. The fix is to *apply
+the existing rule*, not invent a parallel one: `chunk_char_ranges` now widens every window through
+**`overlap::widen_to_char_boundaries`** (promoted to `pub(crate)`), making the ranges sliceable **by
+construction**; `infer_chunked` still uses `.get()` + `debug_assert!` + skip. Its unit test carries **its
+own non-vacuity assertion** — it checks the offsets table really does cut a multi-byte char, because a
+guard that quietly stops exercising its hazard is exactly how M4-R13 and M4-R24 stayed invisible.
+
+**M5-R4 — the fixpoint's proof has a hole, and the *next* model is the one likely to fall in it.**
+"A placeholder is inert" is proved **by construction** for the regex recognizers (`[KIND_N]` has no `@`,
+no `sk-`, not enough digits). But `mask_all` runs the **composite**, and an ML model is under no such
+constraint. If a model tagged `[PERSON_1]`, masking would never shrink the text, `MAX_MASK_PASSES` would
+exhaust, and the request would **400** — fail-*closed*, never a leak, but a hard availability failure on
+ordinary input. It holds for XLM-R (0 entities on placeholder-only text — now a live guard), so it is an
+**empirical property of the chosen model**, not a theorem. Written down next to the invariant in
+ARCHITECTURE *and* on `mask_all`, because the Backlog's designated successor is **GLiNER** — a zero-shot,
+open-label, **context-driven** extractor, i.e. precisely the kind of model that would read
+`Contact [PERSON_1] at [ORG_1]` and tag both. **M5 is also what made this reachable**: before chunking, a
+field that large never reached the NER at all.
+
+**M5-R1 / M5-R6 — the docs.** TESTING.md still asserted the NER was unchunked and quadratic — the claim
+M5 both *disproved* and *fixed* — because that claim lived in **two** files and only ARCHITECTURE was
+updated; it is now a **pointer**, not a duplicate. Both READMEs named, as a future trigger for `1.0.0`,
+the very commit that contained the sentence; they now state the real gate (CI has never actually run; the
+live-provider check has never been performed) and defer to ROADMAP.
+
+> **The through-line.** Five of six findings are one shape: *a claim that was true when written, was
+> never re-checked, and had quietly stopped being true.* None leaked. All were **documentation of a
+> guarantee that had drifted from the guarantee.** The project's answer to that is already written down
+> for review findings — **one home for a fact** — and this round is what applied it to **design claims**,
+> which is where the drift actually lives.
+
 ## 2026-07-14 — M5: README + CI/release workflows — code-complete, one box left
 
 Closed the two remaining M5 items that don't need a live provider.

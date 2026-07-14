@@ -68,8 +68,9 @@ oscura invece di rischiare di inoltrare qualcosa in chiaro.
 
 ## Avvio rapido
 
-Richiede Rust (stable, MSRV 1.82). Compila ed esegui il binario di default
-(solo strutturato, privo di dipendenze native):
+Richiede Rust **1.86+** (l'MSRV della build di default; `--features onnx`
+richiede **1.89+**, ed entrambi sono verificati dalla CI). Compila ed esegui il
+binario di default (solo strutturato, privo di dipendenze native):
 
 ```sh
 cargo build --release
@@ -132,12 +133,25 @@ del modello.
 
 ## Stato
 
-**M0–M4 completi**, M5 (test di integrazione e prestazioni) in corso. Dieci
-pacchetti di documenti nazionali, copertura dei locale a tre livelli, streaming,
-instradamento multi-provider e un percorso di mascheramento algoritmicamente
-lineare (misurato — vedi `docs/TESTING.md`) sono tutti distribuiti e testati.
-`v0.4.0`, pre-1.0: la prima release taggata (`1.0.0`) seguirà una volta
-completato il passaggio README/CI di M5.
+**M0–M4 completi; M5 (test di integrazione e prestazioni) è completo lato
+codice.** Dieci pacchetti di documenti nazionali, copertura dei locale a tre
+livelli, streaming, instradamento multi-provider, un percorso di mascheramento
+algoritmicamente lineare e un NER suddiviso in finestre per i campi grandi sono
+tutti distribuiti e testati (misurato — vedi `docs/TESTING.md`).
+
+`v0.4.0`, pre-1.0. Due cose separano questo punto dalla prima release taggata
+(`1.0.0`), e nessuna delle due è ancora avvenuta:
+
+- **I workflow di CI e release non sono mai stati eseguiti davvero.** Sono
+  scritti (`.github/workflows/`) ma nessuna PR o tag li ha ancora esercitati.
+- **La verifica end-to-end contro un provider reale non è stata effettuata.** La
+  procedura è scritta (`docs/MANUAL_VERIFICATION.md`) e lo smoke test opzionale
+  esiste (`tests/anthropic_smoke.rs`), ma entrambi richiedono una chiave API
+  reale.
+
+`1.0.0` sarà rilasciata quando la CI sarà verde su un'esecuzione reale — idealmente
+dopo quella verifica manuale. Vedi la [ROADMAP](docs/ROADMAP.md#m5) per lo stato
+autoritativo.
 
 ## Sviluppo
 

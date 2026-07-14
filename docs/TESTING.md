@@ -292,9 +292,17 @@ asserts the value is still masked and round-trips, so a "fix" that buys speed wi
 > holds *constant*, not only what it varies.
 
 > **What is NOT covered here (stated so nobody reads more into it).** These guards bound the **structured**
-> (default-build) path. The optional `onnx` NER feeds the whole field as **one sequence** with no chunking,
-> so its self-attention is quadratic in field size — a separate, opt-in cost, to be **measured** by M5's
-> perf harness (PERF-01) before NER is recommended for large bodies.
+> (default-build) path. The optional `onnx` NER is a separate, opt-in cost with its own scaling behavior and
+> its own guards — it is **chunked** and measured linear in field size (PERF-01; `tests/ner_perf.rs` +
+> `src/pii/onnx.rs::chunk_tests`), and it is a **recall** mechanism only, never leak-relevant, because
+> structured PII is detected over the whole field, unchunked. The mechanism lives in
+> [`ARCHITECTURE.md`](ARCHITECTURE.md) → *NER chunking (M5, PERF-01)*; this file only points at it.
+>
+> **Why a pointer and not a restatement (M5-R1):** the earlier version of this box asserted the NER was
+> unchunked and quadratic in field size — a claim M5 both **disproved** (the real failure was an outright
+> position-embedding overflow, not a slowdown) and **fixed**. It went stale precisely *because* the same
+> claim lived in two files and only ARCHITECTURE was updated. **One home for a fact** is the project's rule
+> for review findings; it applies to design claims identically.
 
 ### Fail-closed — masking (`src/pii/anonymizer.rs`, M4-R20)
 - FC-06 — `mask_all_blocks_when_it_cannot_reach_a_fixpoint`: exhausting `MAX_MASK_PASSES` must return
@@ -345,6 +353,50 @@ asserts the value is still masked and round-trips, so a "fix" that buys speed wi
     offset is the sentinel `(0, 0)` — mistaking it for the real text end silently dropped the
     last window (a third of the entities lost on one measured input), so
     `the_last_window_reaches_the_true_text_end_not_the_closing_token_sentinel` pins it directly.
+
+### M5 review round 1 — the guards the findings left behind
+
+- **NER-CHUNK-01** — `every_window_is_sliceable_even_when_an_offset_lands_inside_a_multibyte_char`
+  (`src/pii/onnx.rs::chunk_tests`, M5-R3). The chunk window edges come from the **tokenizer**, and
+  `&input[a..b]` *panics* if one misses a `char` boundary — the one place on the masking path that
+  could, while `decode_entities` (M2-R6), `Vault::mask` and `overlap::materialize` all refuse to.
+  `chunk_char_ranges` now widens every window through the resolver's own
+  `overlap::widen_to_char_boundaries` (M4-R14), so the ranges are sliceable **by construction**.
+  Offsets that deliberately cut a 3-byte `€` and a 4-byte `𝄞` in half must still come back
+  sliceable. **Carries its own non-vacuity assertion** — it first checks the offsets table really
+  does land off a boundary, because a guard that quietly stops exercising its hazard is precisely
+  how M4-R13 and M4-R24 survived (*ask what the corpus holds constant*).
+- **NER-CHUNK-02** *(compile-time)* — `const _: () = assert!(MAX_WINDOW_TOKENS < MODEL_MAX_TOKENS)`
+  and `assert!(CHUNK_OVERLAP_TOKENS < MAX_WINDOW_TOKENS)` (`src/pii/onnx.rs`, M5-R2). Not a test — a
+  **build error**. The window must leave headroom for re-tokenization drift, and it must advance or
+  chunking wouldn't terminate; get either wrong and the crate does not compile.
+- **NER-CHUNK-03** *(live, `--features onnx`, `#[ignore]`d)* —
+  `m5_r2_every_retokenized_window_stays_within_the_models_usable_length` (`tests/ner_perf.rs`,
+  M5-R2). `MAX_WINDOW_TOKENS` (480) plans windows in the **whole field's** token coordinates, but
+  each window is **re-tokenized from its own text** (a middle window needs its own `<s>…</s>`
+  framing) — which adds the specials and drifts at the cut edges, so the sequence actually handed to
+  the model is `window + specials + drift`. Measured: **481–483 tokens, i.e. always over the
+  planning bound**, against a usable ceiling of **512** (`MODEL_MAX_TOKENS`). This drives the
+  **real** `chunk_char_ranges` (`pub` for exactly this — a copy in the test would drift from the code
+  it guards) with the **real** tokenizer over six adversarial fields (Chinese, Japanese, Cyrillic,
+  combining-mark/zalgo, mixed-script, and 4 000 chars of `あ` with no spaces at all), asserting each
+  window both chunks (non-vacuity) and stays under the ceiling. `run_and_decode` clamps as a
+  last-resort valve; **this is the guard that makes sure the valve never fires.**
+- **NER-INERT-01** *(live, `--features onnx`, `#[ignore]`d)* — `m5_r4_the_ner_treats_placeholders_as_inert`
+  (`tests/ner_perf.rs`, M5-R4). **The check a model swap must not skip.** `Vault::mask_all` masks to a
+  fixpoint, and its convergence proof — *"a placeholder is inert"* — is proved **by construction** only
+  for the regex recognizers. The NER is an ML model under no such constraint: tag `[PERSON_1]` and the
+  text stops shrinking, `MAX_MASK_PASSES` exhausts, and the request **400s** (fail-closed, never a leak,
+  but a hard availability failure on ordinary input). Asserts XLM-R tags **zero** entities across a
+  3 040-byte placeholder-only field — large enough to exercise the **chunked** path, the one M5 newly
+  opened — and that the full hybrid `mask_all` converges on it. Placeholder inertness is therefore an
+  **empirical property of the chosen model**; **GLiNER** (Backlog) is *zero-shot, open-label,
+  context-driven* — exactly the kind that could read `Contact [PERSON_1] at [ORG_1]` and tag both.
+- **MSRV-01** *(CI)* — the `msrv` matrix job (`.github/workflows/ci.yml`, M5-R5) **builds** the crate on
+  both declared floors: **1.86** (default) and **1.89** (`--features onnx`). They differ per feature set,
+  which one `rust-version` field cannot express. Before this, `rust-version` was a claim nothing checked —
+  and it was **false** (`1.82` could not even parse the dependency tree). **A declared MSRV with no job
+  building on it is not a floor; it is a comment shaped like a guarantee.**
 
 ### Dependency footprint (M2.5-R1)
 - DEP-01 — `tests/dependency_footprint.rs` (`default_build_excludes_the_onnx_and_hf_stack`): `cargo tree` on the **default** features must contain no `hf-hub`/`hf-xet`/`aws-lc`/`ort`/`tokenizers` — the ONNX/HF stack (heavy, native) stays behind the `onnx` feature so the shipped default build is native-dep-free.
