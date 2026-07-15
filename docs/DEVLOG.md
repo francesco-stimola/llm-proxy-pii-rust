@@ -8,10 +8,11 @@ Newest first. One entry per meaningful change — note *what* and *why*, not jus
 A deliberate change of approach to the GitHub Actions setup (maintainer's call), reversing part of the M5
 CI story:
 
-- **`ci.yml` disabled** (renamed `ci.yml.disabled`). No more per-push `fmt` / `clippy` / `cargo test` /
-  `msrv`, and no per-push all-targets compile. **The test suite is now a *local* gate only** — the CLAUDE.md
-  "green before done" bar still holds, but nothing on GitHub enforces it per push. A target break now surfaces
-  at `manual-build` / tag time, not on a PR. (Tradeoff accepted deliberately; recorded so it isn't a
+- **`ci.yml` disabled** (renamed `ci.yml.disabled`). Nothing runs on push/PR anymore. **`cargo test` was
+  moved into `release-build.yml`** (see below), so the suite still runs on GitHub — on *every* target's native
+  runner, at `manual-build` / tag time — just not per push; a release that fails its tests never publishes.
+  **`fmt` / `clippy` / `msrv` are now local-only** gates (the CLAUDE.md "green before done" bar). A lint break
+  surfaces at build time or locally, not on a PR. (Tradeoff accepted deliberately; recorded so it isn't a
   surprise.)
 - **`release-publish.yml` → `release-build-publish.yml`** (`name: Release build & publish`). Same tag-only
   trigger, same structural "no manual run can publish". The other workflows' cross-references were updated to
@@ -24,10 +25,15 @@ CI story:
   --features onnx` failed — but on a *local-toolchain* gap, not the target: `aws-lc-sys` (onnx TLS stack)
   compiles its ARMv8 crypto from source and needs the ARM64 MSVC toolchain this x86_64 box lacks (`CC=None`,
   `LNK1181 chacha-armv8.o`). aws-lc-sys *does* support the triple but has had win-arm64 friction upstream, so
-  it is plausible-but-unproven on the native runner. **Plan: a `manual-build` run validates every target
-  before any tag is pushed** — its output decides whether win-arm64 stays or needs a fix.
+  it is plausible-but-unproven on the native runner. **Now validated GREEN** — a `manual-build` run built all
+  5 targets, win-arm64 included (run 29437007077, 2026-07-15). The native `windows-11-arm` runner has the
+  ARM64 toolchain the local x86_64 box lacked, so aws-lc-sys built its ARMv8 crypto with no friction. The
+  caution was worth taking; the outcome is positive.
+- **Then `cargo test --features onnx` was added to `release-build.yml`** (per the maintainer) — so the tag
+  build and every manual build now test on each target's native runner (the old CI only tested x86_64 Linux).
+  This still needs one more `manual-build` to confirm the test step is green on all arches before the tag.
 - **Interim tag `v0.4.0`** (the current version) to populate the release badge — explicitly *not* the `1.0.0`
-  release, which still waits on M6. Cut only after `manual-build` is green on all targets.
+  release, which still waits on M6. Cut only after a `manual-build` (with the test step) is green on all targets.
 
 No source changed — workflows + docs only.
 

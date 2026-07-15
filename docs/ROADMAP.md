@@ -317,17 +317,18 @@ Prove the whole system holds **end-to-end** and **under load**, then document it
     - **`manual-build.yml`** (`name: Manual build`) — `workflow_dispatch` only; same `release-build.yml`, keeps
       binaries as **throwaway artifacts** (30-day). No publish job, so it *cannot* cut a release. With push CI
       gone, this is **the way to confirm every target still compiles before you tag**.
-    - **`ci.yml` is disabled** (renamed `ci.yml.disabled`) — a deliberate change of approach: no per-push
-      `fmt` / `clippy` / `cargo test` / `msrv`, and no per-push all-targets compile. **Consequence: the test
-      suite now runs only *locally*** (the CLAUDE.md "green before done" bar is a local gate now), and a target
-      break surfaces at `manual-build` / tag time rather than on a PR.
+    - **`ci.yml` is disabled** (renamed `ci.yml.disabled`) — a deliberate change of approach: nothing runs on
+      push/PR anymore. **`cargo test` moved into `release-build.yml`** (so the suite still runs — on every
+      target's native runner — but at `manual-build` / tag time, not per push; a release that fails its tests
+      never publishes). **`fmt` / `clippy` / `msrv` are now local-only** gates (the CLAUDE.md "green before
+      done" bar), so a lint break surfaces at build time or locally, not on a PR.
     - **Targets: Linux x86_64 + arm64, macOS arm64, Windows x86_64 + arm64.** macOS is arm64-only because
       `ort` ships no prebuilt ONNX Runtime for `x86_64-apple-darwin` at the pinned `rc.12` (Intel Macs are
       legacy). Linux and Windows each ship both arches, built **natively** on their own runner
-      (`ubuntu-24.04-arm`, `windows-11-arm`) — no cross-linker. **Windows-arm64 (`aarch64-pc-windows-msvc`) is
-      new and not yet validated here**: `aws-lc-sys` (pulled in by the onnx TLS stack) builds its ARMv8 crypto
-      from source and needs the runner's native ARM64 toolchain, and it has had win-arm64 friction upstream —
-      so it must be green on a real `manual-build` run before a tag relies on it. ONNX Runtime links
+      (`ubuntu-24.04-arm`, `windows-11-arm`) — no cross-linker. **Windows-arm64 (`aarch64-pc-windows-msvc`)
+      builds natively on `windows-11-arm`** — **validated green by a `manual-build` run (2026-07-15)**, despite
+      `aws-lc-sys`'s upstream win-arm64 friction (the native runner has the ARM64 toolchain it needs to build
+      its ARMv8 crypto from source; a local x86_64 cross-check could not). ONNX Runtime links
       **statically**, so each artifact is a single self-contained binary.
   - **The release profile is the max-optimization one** (`[profile.release]`): `opt-level = 3`,
     **fat LTO**, `codegen-units = 1`, symbols stripped — worth the ~5 min build, because the masking path

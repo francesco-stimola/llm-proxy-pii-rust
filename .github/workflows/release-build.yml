@@ -23,8 +23,9 @@ name: Release build
 # `windows-11-arm` runner (public-repo only). It must be native: `aws-lc-sys` (pulled in by the
 # onnx feature's TLS stack) compiles its ARMv8 crypto from source and needs the ARM64 MSVC
 # toolchain + clang-cl the runner provides — it cannot be cross-built from an x86_64 box.
-# aarch64-pc-windows-msvc is the newest target here and the least battle-tested (aws-lc-sys has had
-# win-arm64 build friction upstream), so VALIDATE it with a `manual-build` run before trusting a tag.
+# aarch64-pc-windows-msvc is the newest target here; despite aws-lc-sys's upstream win-arm64 build
+# friction it was validated GREEN on `windows-11-arm` by a manual-build run (2026-07-15) — the native
+# runner has the ARM64 MSVC toolchain aws-lc-sys needs to build its ARMv8 crypto from source.
 on:
   workflow_call:
     inputs:
@@ -78,6 +79,16 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: release-${{ matrix.target }}
+
+      # With per-push CI gone (ci.yml.disabled), the test suite runs HERE instead — and because
+      # this reusable workflow is called by both release-build-publish.yml (on a tag) and
+      # manual-build.yml, tests run on every entry point. Run on EACH target's native runner, so
+      # every arch is exercised (the old CI only ran tests on x86_64 Linux). Debug profile, to match
+      # the wall-clock budgets in tests/complexity.rs. Model-dependent NER tests are #[ignore]d, so
+      # no model file is needed. A failure stops the leg before the expensive fat-LTO build below —
+      # and, at tag time, blocks the release (a release that fails its tests never publishes).
+      - name: Test (--features onnx)
+        run: cargo test --features onnx
 
       # The release profile (Cargo.toml) is the max-optimization one: opt-level 3, fat LTO,
       # codegen-units = 1, symbols stripped. `panic` stays `unwind` ON PURPOSE — `abort` would
