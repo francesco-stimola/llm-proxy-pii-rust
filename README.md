@@ -152,6 +152,13 @@ UPSTREAM_PROVIDER=anthropic   # Anthropic's OpenAI-compat endpoint
 ...or any other OpenAI-compatible endpoint via `UPSTREAM_BASE_URL` (local models behind Ollama /
 vLLM / LM Studio, Groq, Mistral, …).
 
+> **Why a preset per provider if they're all OpenAI-compatible?** Because *"OpenAI-compatible"*
+> describes the request **body**, not the whole HTTP call. The presets share one JSON schema but
+> differ in the **envelope**: the path (Copilot drops the `/v1`) and the required client headers
+> (Anthropic needs `anthropic-version`, Copilot its editor headers). A preset just bundles those
+> per-provider deltas — it never changes the schema or what gets masked, and each part is overridable
+> (`UPSTREAM_CHAT_PATH`, `UPSTREAM_FORWARD_HEADERS`, `UPSTREAM_EXTRA_HEADERS`).
+
 **Clients — what can talk to it.** A client works with the proxy if you can point it at an
 **OpenAI-compatible base URL**. Most modern agents can (via BYOK / a custom provider); the
 exception is a client wired to a vendor's **native** protocol.

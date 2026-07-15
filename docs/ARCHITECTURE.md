@@ -337,7 +337,8 @@ untouched.
 
 **Multi-provider routing — Option A.** Every provider is reached through its
 **OpenAI-compatible** endpoint, so a single schema feeds the masker (no new leak
-surface). A `UPSTREAM_PROVIDER` preset (`openai` / `copilot` / `anthropic`) sets the
+surface). The request **body** is identical across the presets; only the HTTP **envelope**
+differs, and that is all a preset touches. A `UPSTREAM_PROVIDER` preset (`openai` / `copilot` / `anthropic`) sets the
 per-provider *shape* — the chat path (`upstream_chat_path`; Copilot drops `/v1`), the
 allowlist of client request headers to pass through (`forward_request_headers`, e.g.
 `anthropic-version` or editor headers), and any required static headers
