@@ -354,10 +354,12 @@ Prove the whole system holds **end-to-end** and **under load**, then document it
     panic — which today blocks **one** request, fail-closed ([M4-R19](reviews/M4.md#m4-r19)) — into a
     process abort, i.e. an **outage**. That is not a smaller failure; availability is a privacy property
     here (a proxy that is down protects nothing, and clients fail over to the raw provider).
-  - **Not yet exercised live** — no tag has been pushed and no PR has run the new CI. Both are standard
-    shapes, but "the YAML parses" is not "it is green". **The first tagged release is `1.0.0`** (bump from
-    `0.4.0`) — cut when a real CI run is green and, ideally, the manual verification procedure below has
-    actually been run once against a live provider.
+  - **CI is now green for real** (2026-07-15, push `9a966df`): all 8 jobs — `fmt`, `msrv`, `test` (default
+    + `onnx`), and the four `release-targets` cross-builds — passed with **no warnings**. The `Release build`
+    reusable workflow is therefore exercised on every push, and the manual run already proved the *publish*
+    path's build stage. **What remains for `1.0.0`** (bump from `0.4.0`): push a `v*.*.*` tag to exercise
+    `release-publish.yml` end-to-end (build → GitHub Release) and, ideally, run the manual live-provider
+    verification below once first.
 
 <a id="m5-ledger"></a>
 ### Review ledger — M5 → [`reviews/M5.md`](reviews/M5.md)
