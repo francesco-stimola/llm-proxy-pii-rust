@@ -425,22 +425,36 @@ route for Claude Code passthrough"*), reused as the blueprint. That project's mu
 adapter is **not** adopted (wrong shape for a native client, and against fail-closed) — it serves only as a
 **field map** for the Anthropic schema.
 
-- [ ] **Inbound `POST /v1/messages`** beside `/v1/chat/completions`. Unknown/unreadable shapes still **fail
-  closed** (FC-03 unchanged); every other path stays 404.
+- [ ] **Inbound `POST /v1/messages`** beside `/v1/chat/completions`, **registered only when
+  `UPSTREAM_PROVIDER=anthropic`** (decided 2026-07-15 — the only upstream that speaks native `/v1/messages`;
+  other providers 404 it, so no mis-route). Unknown/unreadable shapes still **fail closed** (FC-03 unchanged);
+  every other path stays 404. A `WireSchema` tag on `RequestContext` routes the privacy stage to the native
+  walk without disturbing the OpenAI path.
 - [ ] **Mask the native body in place** — no OpenAI round-trip. Coverage must be exhaustive (a missed field
   is a leak — the Option B risk, pinned by tests):
-  - `messages[].content` as a **string** *and* as an **array of content blocks** (`text`, `tool_use.input`,
-    `tool_result.content`);
-  - the top-level **`system`** field (Anthropic keeps it outside `messages[]` — inject-as-message → mask →
-    restore, per the prior route);
-  - `tools[].input_schema` (name / description / nested descriptions), mirroring today's OpenAI `tools`
-    coverage.
+  - the top-level **`system`** field (a string *or* a `{type:text}` block array) — masked **in place** (we
+    walk the native schema directly; no inject-as-message trick, unlike the prior proxy);
+  - `messages[].content` as a **string** *or* an **array of content blocks**, dispatched on `type`:
+    `text` → `text`; `tool_use` → every string leaf of `input` (a JSON *object*, not an encoded string);
+    `tool_result` → its `content` (string or nested block array — recursive); `thinking` → `thinking`;
+    `image` / `document` → non-text, skipped;
+  - `tools[].description` + `input_schema` descriptions (reuse the OpenAI `mask_schema_descriptions`).
+  - **Unknown block-type → fail closed, 400** (decided 2026-07-15 — strict, per this repo's ethos). The
+    consequence: the **known set must be exhaustive for real Claude Code traffic** (`text` / `image` /
+    `tool_use` / `tool_result` / `document` / `thinking` / `redacted_thinking` / server-side blocks), pinned
+    by a guard test — so a new Anthropic block type is a *conscious* addition, never a silent leak.
 - [ ] **Native→native forward + auth passthrough.** Forward the client's `Authorization: Bearer` (the OAuth
   `sk-ant-oat01-*` token Claude Code sends), `anthropic-version` and `anthropic-beta` **verbatim**; inject the
   proxy's own key as `x-api-key` **only** when the client sent none. **Never** place an OAuth token in
   `x-api-key` (Anthropic 401). *This is why auth is not a blocker — the proxy never needs to hold a key.*
-- [ ] **Anthropic SSE demask** — de-anonymize the streamed response (`event: content_block_delta` →
-  `delta.text`) with the same hold-back buffering `SseDemasker` already does for the OpenAI shape. **The prior
+- [ ] **Response demask (buffered) + native augmentation.** The reply is a top-level `content[]` array
+  (`text` + `tool_use.input`), not `choices[].message` — the buffered demask mirrors the request walk. The
+  placeholder-augmentation prompt is injected into the top-level `system` field (string or block array), only
+  when something was masked.
+- [ ] **Anthropic SSE demask** — de-anonymize the streamed response: `content_block_delta` with
+  `delta.type:text_delta` (`delta.text`) **and** `input_json_delta` (`delta.partial_json`, JSON-aware), held
+  back per content-block `index`. Factor `SseDemasker` into the shared split-placeholder core
+  (`split_demaskable`, the hold-back buffer) + a per-schema delta rewriter (OpenAI vs Anthropic). **The prior
   proxy left this a TODO — its streamed replies were forwarded un-demasked — and closing it is the point: a
   placeholder reaching the client is the exact failure this tool exists to prevent.**
 - [ ] **Verification.** A native-schema coverage / fail-closed suite against a mock upstream, an opt-in real
@@ -448,6 +462,11 @@ adapter is **not** adopted (wrong shape for a native client, and against fail-cl
   Code session at the proxy and compare Run A / Run B against live Anthropic.
 - **Out of scope:** Bedrock / Vertex native endpoints, `/v1/messages/count_tokens`, and the broad
   multi-provider translation registry — all remain Backlog.
+
+**Delivery (decided 2026-07-15):** one feature branch → PR (`feat/m6-anthropic-messages`), **streaming
+included from the start** (Claude Code streams by default, so a buffered-only first cut wouldn't be usable
+with the real client), tests adversarial-first; the reinstated per-PR CI gates it. The full implementation
+plan (files, the 7 stages, the schema walks) lives in DEVLOG 2026-07-15.
 
 **Gate to `1.0.0`.** The first tag ships only once Claude Code works end-to-end through this route, verified
 against real Anthropic — not merely once CI is green.

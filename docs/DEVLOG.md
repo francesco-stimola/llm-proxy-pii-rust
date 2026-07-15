@@ -3,6 +3,40 @@
 Newest first. One entry per meaningful change — note *what* and *why*, not just
 *what*. This is the running history so context is never lost between sessions.
 
+## 2026-07-15 — M6 implementation plan (design only — not built)
+
+The technical blueprint for M6 (native Anthropic `/v1/messages`, Claude Code passthrough), to hand to the
+builder. **No source written** — this is the plan; scope + the design decisions are pinned in ROADMAP → M6.
+
+**Reuse, don't rebuild.** The masking engine is already schema-agnostic: `Vault::mask_all` (the M4-R17
+fixpoint), the `spawn_blocking` + fail-closed handling in `server.rs`, the split-placeholder hold-back in
+`stream.rs`, and `AUGMENTATION_PROMPT` all carry over untouched. What M6 adds is *only* the Anthropic-schema
+walks (mask / demask / SSE) and the native forward/auth.
+
+**The 7 stages, with files:**
+- **T0 — schema tag.** `enum WireSchema { OpenAi, Anthropic }`; a field on `RequestContext` (`pipeline/mod.rs`);
+  `PrivacyStage` dispatches on it. Zero impact on the OpenAI path.
+- **T1 — route + handler** (`server.rs`). `/v1/messages` registered **only when `UPSTREAM_PROVIDER=anthropic`**;
+  a `messages` handler sharing the mask + fail-closed + streaming-detect flow with `chat_completions`
+  (factored), differing only in schema, forward, and SSE demasker.
+- **T2 — request mask** (`pipeline/privacy.rs`, `mask_anthropic_request`). `system` (in place),
+  `messages[].content` blocks dispatched on `type` (`text` / `tool_use.input` object leaves /
+  `tool_result.content` recursive / `thinking`), `tools[].description` + `input_schema`. **Unknown block-type
+  → fail closed, 400**; the known set is exhaustive for Claude Code and pinned by a guard.
+- **T3 — augmentation** into the top-level `system` (string or block array), only if something was masked.
+- **T4 — buffered response demask** (`demask_anthropic_response`): top-level `content[]` (`text` +
+  `tool_use.input`), mirroring T2.
+- **T5 — SSE demask** (`stream.rs`): factor `SseDemasker` into the shared split-placeholder core + a per-schema
+  rewriter; handle Anthropic `content_block_delta` (`text_delta` / `input_json_delta`), held back per block
+  `index`. *The privacy-critical piece the prior proxy punted.*
+- **T6 — native forward/auth** (`proxy.rs`, `send_messages`): path `/v1/messages`; proxy-key → `x-api-key`,
+  else client `Authorization: Bearer` (OAuth) verbatim, else client `x-api-key`, else 401; never OAuth in
+  `x-api-key`; forward `anthropic-version` (default `2023-06-01`) + `anthropic-beta`.
+- **T7 — tests** (adversarial-first): native coverage / fail-closed, buffered + SSE demask, e2e mock native
+  upstream, opt-in Claude Code smoke, and the M5 manual dual-run finally runnable via Claude Code → the proxy.
+
+**Delivery:** one branch → PR (`feat/m6-anthropic-messages`), streaming included, gated by the per-PR CI.
+
 ## 2026-07-15 — reqwest 0.12→0.13 (TLS backend pinned) + tower-http 0.6→0.7
 
 Took the two Dependabot cargo bumps deliberately, by hand, rather than merging the auto-PRs — because
