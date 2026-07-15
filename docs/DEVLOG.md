@@ -3,6 +3,35 @@
 Newest first. One entry per meaningful change — note *what* and *why*, not just
 *what*. This is the running history so context is never lost between sessions.
 
+## 2026-07-15 — the release workflow's first *real* run: two things a green local build can't show
+
+`release.yml` had never actually run — ROADMAP flagged exactly that as the open gate for `1.0.0`. A
+manual `workflow_dispatch` run finally exercised it, and (as the whole point of running it was to find
+out) it surfaced two things no amount of local `cargo build` could:
+
+- **`x86_64-apple-darwin` fails to build.** `ort`'s `download-binaries` ships **no prebuilt ONNX Runtime**
+  for Intel macOS at the pinned `=2.0.0-rc.12`; the build then falls back to compiling ONNX Runtime *from
+  source*, which needs a cmake toolchain we don't set up in CI → exit 101. The other three targets
+  (Linux x86_64, **macOS aarch64**, Windows x86_64-msvc) built clean and the publish step **correctly
+  skipped** (manual run, not a tag — the [M5-R11](reviews/M5.md#m5-r11) event-gate working as designed).
+  **Decision: drop the target, don't build ORT from source.** Intel Macs are legacy (Apple finished the
+  arm64 transition in 2023), `aarch64-apple-darwin` covers every current Mac, and a from-source ORT build
+  is a long, fragile, cmake-dependent step to maintain for a shrinking audience — the *over-engineering*
+  the project's bar rules out. An Intel-Mac user builds from source (`docs/SETUP.md`); we don't ship a
+  binary no one else here can reproduce.
+- **Node-20 deprecation warnings.** `actions/checkout@v4` and `actions/upload-artifact@v4` target Node 20,
+  which GitHub is retiring (the runner force-ran them on Node 24 and warned). Bumped the JS actions to the
+  current majors on Node 24 — `checkout@v5`, `upload-artifact@v5`, `download-artifact@v5` (verified those
+  majors exist and are the matched artifact generation). `Swatinem/rust-cache@v2` and
+  `softprops/action-gh-release@v2` were **not** flagged, so left as-is; `action-gh-release` sits in the
+  publish job the manual run skipped, so if it warns on the first *tagged* run we bump it then.
+
+No source changed — workflow + docs only. Both workflow files re-validated as YAML, the matrix now lists
+exactly the three buildable targets, and ROADMAP's target list is corrected (the DEVLOG entry that first
+recorded `release.yml` still reads "x86_64 + aarch64" — that was true when written; this entry supersedes
+it rather than rewriting history). **The `1.0.0` gate is unchanged: a real, fully-green run of these
+workflows, ideally after the manual live-provider check.**
+
 ## 2026-07-14 — M5 review round 3 closed: a guard's own guard, and the ledger goes clean (12/12)
 
 Round 3 reviewed the *product* changes (single MSRV, release profile, the manual release trigger, the

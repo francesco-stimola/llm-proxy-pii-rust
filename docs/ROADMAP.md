@@ -330,13 +330,16 @@ Prove the whole system holds **end-to-end** and **under load**, then document it
     the default build and `--features onnx`, plus an **`msrv` job that actually *builds* on the declared
     floor** ([M5-R5](reviews/M5.md#m5-r5) — before it, `rust-version` was a claim nothing checked, and it
     was false).
-  - **`release.yml`** — **does *not* run on every push to `main`**: four cross-compiled LTO targets per
-    commit is noise, not a release. Two triggers instead: a **`v*.*.*` tag** builds *and* publishes a
+  - **`release.yml`** — **does *not* run on every push to `main`**: cross-compiled LTO targets per
+    commit are noise, not a release. Two triggers instead: a **`v*.*.*` tag** builds *and* publishes a
     GitHub Release, and **`workflow_dispatch`** (the "Run workflow" button) builds the same binaries from
     any branch and attaches them as **workflow artifacts only** — the publish step is gated on a `v*`
     **ref**, so a manual run from a branch publishes nothing (verified; [M5-R11](reviews/M5.md#m5-r11)
-    tightens that gate from the *ref* to the *event*). Targets: Linux x86_64, macOS x86_64 + arm64, Windows
-    x86_64-msvc. ONNX Runtime links **statically**, so each artifact is a single self-contained binary.
+    tightens that gate from the *ref* to the *event*). Targets: **Linux x86_64, macOS arm64, Windows
+    x86_64-msvc** — macOS is arm64-only because `ort` ships no prebuilt ONNX Runtime for
+    `x86_64-apple-darwin` at the pinned `rc.12` (Intel Macs are legacy; the first real `workflow_dispatch`
+    run proved it, [DEVLOG 2026-07-15](DEVLOG.md)). ONNX Runtime links **statically**, so each artifact is
+    a single self-contained binary.
   - **The release profile is the max-optimization one** (`[profile.release]`): `opt-level = 3`,
     **fat LTO**, `codegen-units = 1`, symbols stripped — worth the ~5 min build, because the masking path
     *is* the product's latency. **`panic` stays `unwind` on purpose**: `abort` would turn a caught masking

@@ -1,10 +1,17 @@
 name: Release
 
-# Cross-compiles the full `--features onnx` product for Linux / macOS (x86_64 + arm64) /
-# Windows and attaches the binaries to a GitHub Release. CI (ci.yml) is the correctness gate
-# on every push/PR; this workflow only *packages* what CI already verified.
+# Cross-compiles the full `--features onnx` product for Linux / macOS (arm64) / Windows and
+# attaches the binaries to a GitHub Release. CI (ci.yml) is the correctness gate on every
+# push/PR; this workflow only *packages* what CI already verified.
 #
-# It does NOT run on every push to `main` — building four targets with LTO + codegen-units=1
+# macOS is arm64-only ON PURPOSE. `ort`'s `download-binaries` ships no prebuilt ONNX Runtime
+# for `x86_64-apple-darwin` at the pinned `=2.0.0-rc.12`, so that target's build fails asking
+# to compile ONNX Runtime from source — a cmake/long/fragile build we do not run in CI. Intel
+# Macs are legacy (Apple shipped its last Intel Mac in 2023 and has fully moved to arm64), so
+# `aarch64-apple-darwin` covers every current Mac. An Intel-Mac user builds from source
+# (docs/SETUP.md) rather than us shipping a from-source binary no one else here can reproduce.
+#
+# It does NOT run on every push to `main` — building three targets with LTO + codegen-units=1
 # takes real time, and a binary per commit is noise, not a release. Two triggers instead:
 #
 #   * push of a `v*.*.*` tag  -> builds AND publishes a GitHub Release (the real thing).
@@ -35,9 +42,7 @@ jobs:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             bin: llm-proxy-pii-rust
-          - os: macos-latest
-            target: x86_64-apple-darwin
-            bin: llm-proxy-pii-rust
+          # macOS is arm64-only — see the header comment (no ort prebuilt for Intel macOS).
           - os: macos-latest
             target: aarch64-apple-darwin
             bin: llm-proxy-pii-rust
@@ -45,7 +50,7 @@ jobs:
             target: x86_64-pc-windows-msvc
             bin: llm-proxy-pii-rust.exe
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -74,7 +79,7 @@ jobs:
           fi
           cp "$src" "$dest"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: llm-proxy-pii-rust-${{ matrix.target }}
           path: dist/*
@@ -92,7 +97,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           path: artifacts
 
