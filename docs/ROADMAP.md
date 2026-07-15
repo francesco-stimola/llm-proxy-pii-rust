@@ -330,16 +330,21 @@ Prove the whole system holds **end-to-end** and **under load**, then document it
     the default build and `--features onnx`, plus an **`msrv` job that actually *builds* on the declared
     floor** ([M5-R5](reviews/M5.md#m5-r5) — before it, `rust-version` was a claim nothing checked, and it
     was false).
-  - **`release.yml`** — **does *not* run on every push to `main`**: cross-compiled LTO targets per
-    commit are noise, not a release. Two triggers instead: a **`v*.*.*` tag** builds *and* publishes a
-    GitHub Release, and **`workflow_dispatch`** (the "Run workflow" button) builds the same binaries from
-    any branch and attaches them as **workflow artifacts only** — the publish step is gated on a `v*`
-    **ref**, so a manual run from a branch publishes nothing (verified; [M5-R11](reviews/M5.md#m5-r11)
-    tightens that gate from the *ref* to the *event*). Targets: **Linux x86_64, macOS arm64, Windows
-    x86_64-msvc** — macOS is arm64-only because `ort` ships no prebuilt ONNX Runtime for
-    `x86_64-apple-darwin` at the pinned `rc.12` (Intel Macs are legacy; the first real `workflow_dispatch`
-    run proved it, [DEVLOG 2026-07-15](DEVLOG.md)). ONNX Runtime links **statically**, so each artifact is
-    a single self-contained binary.
+  - **Build / release split across three files, one build definition (2026-07-15).** The cross-compile
+    matrix lives **once** in a reusable **`build.yml`** (`workflow_call`), called by two entry points that
+    therefore can't drift:
+    - **`release.yml`** — triggers **only on a `v*.*.*` tag**; calls `build.yml`, then publishes a GitHub
+      Release. It has **no `workflow_dispatch`** and no publish `if`-gate — "a manual run can't publish" is
+      now **structural** (the publishing workflow has no manual trigger at all), which retires
+      [M5-R11](reviews/M5.md#m5-r11)'s whole risk class rather than guarding it.
+    - **`manual-build.yml`** — `workflow_dispatch` only; calls the same `build.yml` and keeps the binaries
+      as **throwaway workflow artifacts** (30-day retention). It has **no publish job**, so it *cannot* cut
+      a release. This is the "does every target still compile?" button — run it before tagging.
+    - **Targets: Linux x86_64 + arm64, macOS arm64, Windows x86_64-msvc.** macOS is arm64-only because
+      `ort` ships no prebuilt ONNX Runtime for `x86_64-apple-darwin` at the pinned `rc.12` (Intel Macs are
+      legacy; the first real manual run proved it — [DEVLOG 2026-07-15](DEVLOG.md)). Linux ships both
+      arches, each built **natively** on its own runner (`ubuntu-24.04-arm` for aarch64) — no cross-linker.
+      ONNX Runtime links **statically**, so each artifact is a single self-contained binary.
   - **The release profile is the max-optimization one** (`[profile.release]`): `opt-level = 3`,
     **fat LTO**, `codegen-units = 1`, symbols stripped — worth the ~5 min build, because the masking path
     *is* the product's latency. **`panic` stays `unwind` on purpose**: `abort` would turn a caught masking

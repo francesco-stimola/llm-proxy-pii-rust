@@ -3,6 +3,38 @@
 Newest first. One entry per meaningful change — note *what* and *why*, not just
 *what*. This is the running history so context is never lost between sessions.
 
+## 2026-07-15 — release pipeline restructured: one build definition, two entry points, tag-only publish
+
+Follow-up to the first-run fixes below. Reworked the packaging pipeline from one `release.yml` into
+three files so the *manual* build and the *release* build share one definition and can't drift, and so
+"a manual run can never publish" stops being an `if`-gate and becomes structural:
+
+- **`build.yml`** — a **reusable** workflow (`on: workflow_call`) holding the whole cross-compile matrix
+  and the package/upload steps, with a `retention-days` input. It has **no publish step at all**.
+- **`release.yml`** — triggers **only on a `v*.*.*` tag**, calls `build.yml`, then publishes. It no longer
+  has a `workflow_dispatch` trigger or a publish `if`-gate: with no manual trigger on the *publishing*
+  workflow, a manual run structurally cannot cut a release. This **retires [M5-R11](reviews/M5.md#m5-r11)**
+  (the event-vs-ref gate) — there is nothing left to get wrong. *(A note the first-run entry got slightly
+  wrong: that run didn't publish primarily because a build failed; it didn't publish because it was a
+  **manual event**. Even four green builds would not have published. This restructure makes that guarantee
+  obvious instead of subtle.)*
+- **`manual-build.yml`** — `workflow_dispatch` only, calls the same `build.yml` with **30-day** retention
+  (manual builds are throwaway checks), and has **no publish job**. This is the pre-tag "do all targets
+  still compile?" button.
+
+**Added `aarch64-unknown-linux-gnu`** to the matrix — ARM Linux servers (Graviton et al.) are common and
+`ort` *does* ship a prebuilt for it (unlike Intel macOS). Built **natively** on GitHub's `ubuntu-24.04-arm`
+runner, so there's no cross-linker to maintain. Matrix is now Linux x86_64 + arm64, macOS arm64, Windows
+x86_64-msvc. Comments are kept **count-agnostic** so adding/removing a target doesn't need a prose edit.
+
+**On aligning CI with the release targets:** deliberately *not* done. A fat-LTO cross-build of four targets
+on every PR is slow and costly for marginal benefit; `manual-build.yml` *is* the on-demand all-targets
+check, run before a tag. (A scheduled weekly run is the cheap automation if drift-detection is ever wanted
+— noted, not built.) `ci.yml` stays the fast per-push correctness gate (test/clippy/msrv on ubuntu).
+
+All four workflows re-validated as YAML. No source changed. **`1.0.0` gate unchanged**: a real, fully-green
+run — now easiest to get by running `manual-build.yml` across all targets first, then pushing the tag.
+
 ## 2026-07-15 — the release workflow's first *real* run: two things a green local build can't show
 
 `release.yml` had never actually run — ROADMAP flagged exactly that as the open gate for `1.0.0`. A

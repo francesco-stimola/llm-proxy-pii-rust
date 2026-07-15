@@ -1,98 +1,30 @@
 name: Release
 
-# Cross-compiles the full `--features onnx` product for Linux / macOS (arm64) / Windows and
-# attaches the binaries to a GitHub Release. CI (ci.yml) is the correctness gate on every
-# push/PR; this workflow only *packages* what CI already verified.
+# Cuts a GitHub Release: builds every target (via the reusable build.yml) and publishes the
+# binaries. Triggers ONLY on a `v*.*.*` tag — there is deliberately NO `workflow_dispatch` here,
+# so no manual run can ever publish a release. That was M5-R11's whole worry, and it is now
+# structural (a workflow with no manual trigger and no publish path elsewhere) rather than an
+# `if`-gate that has to be got right. On-demand, throwaway builds live in `manual-build.yml`.
 #
-# macOS is arm64-only ON PURPOSE. `ort`'s `download-binaries` ships no prebuilt ONNX Runtime
-# for `x86_64-apple-darwin` at the pinned `=2.0.0-rc.12`, so that target's build fails asking
-# to compile ONNX Runtime from source — a cmake/long/fragile build we do not run in CI. Intel
-# Macs are legacy (Apple shipped its last Intel Mac in 2023 and has fully moved to arm64), so
-# `aarch64-apple-darwin` covers every current Mac. An Intel-Mac user builds from source
-# (docs/SETUP.md) rather than us shipping a from-source binary no one else here can reproduce.
-#
-# It does NOT run on every push to `main` — building three targets with LTO + codegen-units=1
-# takes real time, and a binary per commit is noise, not a release. Two triggers instead:
-#
-#   * push of a `v*.*.*` tag  -> builds AND publishes a GitHub Release (the real thing).
-#   * manual "Run workflow"   -> builds the same binaries and attaches them as workflow
-#     (workflow_dispatch)        ARTIFACTS only; it publishes NO release. Use it to get a
-#                                binary from an arbitrary branch, or to prove the workflow is
-#                                green before committing to a tag.
-#
-# The publish step is gated on the *event* (a tag push), not just the ref, so a manual run can
-# never accidentally cut a release — not even one launched from a tag ref (M5-R11).
+# CI (ci.yml) is the correctness gate on every push/PR; this workflow only *packages* what a
+# tag says is ready. Run `manual-build.yml` first to confirm every target still compiles before
+# you tag — nothing here builds until the tag is pushed.
 on:
   push:
     tags:
       - "v*.*.*"
-  workflow_dispatch:
-
-env:
-  CARGO_TERM_COLOR: always
 
 jobs:
+  # Reuse the exact same matrix the manual build uses — one definition, no drift. Release
+  # artifacts are consumed immediately by `publish`, so they need only a short retention.
   build:
-    name: build (${{ matrix.target }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            bin: llm-proxy-pii-rust
-          # macOS is arm64-only — see the header comment (no ort prebuilt for Intel macOS).
-          - os: macos-latest
-            target: aarch64-apple-darwin
-            bin: llm-proxy-pii-rust
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            bin: llm-proxy-pii-rust.exe
-    steps:
-      - uses: actions/checkout@v5
+    uses: ./.github/workflows/build.yml
+    with:
+      retention-days: 3
 
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: release-${{ matrix.target }}
-
-      # The release profile (Cargo.toml) is the max-optimization one: opt-level 3, fat LTO,
-      # codegen-units = 1, symbols stripped. `panic` stays `unwind` ON PURPOSE — `abort` would
-      # turn a caught masking panic (which currently blocks ONE request, fail-closed) into a
-      # process abort, i.e. an outage. See the profile's comment.
-      - name: Build (release, --features onnx)
-        run: cargo build --release --features onnx --target ${{ matrix.target }}
-
-      - name: Package
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p dist
-          src="target/${{ matrix.target }}/release/${{ matrix.bin }}"
-          dest="dist/llm-proxy-pii-rust-${{ matrix.target }}"
-          if [[ "${{ matrix.bin }}" == *.exe ]]; then
-            dest="${dest}.exe"
-          fi
-          cp "$src" "$dest"
-
-      - uses: actions/upload-artifact@v5
-        with:
-          name: llm-proxy-pii-rust-${{ matrix.target }}
-          path: dist/*
-
-  # Event-gated AND tag-gated: only a `push` of a `v*.*.*` tag cuts a GitHub Release. A manual
-  # (workflow_dispatch) run builds the binaries and stops there — they are downloadable as workflow
-  # artifacts from the run's summary page. The event check matters: GitHub's "Run workflow" ref
-  # picker lists tags too, so gating on the ref alone would let a manual run *on a tag ref* publish
-  # (M5-R11) — the one thing this gate promises can't happen.
   publish:
     name: publish release
     needs: build
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
       contents: write

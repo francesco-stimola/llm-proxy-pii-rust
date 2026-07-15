@@ -1,0 +1,85 @@
+name: Build
+
+# Reusable cross-compile matrix — the SINGLE definition of "build the full `--features onnx`
+# product and package one self-contained binary per target". It is called by two entry points
+# so they can never drift:
+#   * release.yml      (on a v*.*.* tag)      → then PUBLISHES the artifacts as a GitHub Release
+#   * manual-build.yml (on workflow_dispatch) → keeps them as throwaway workflow artifacts only
+#
+# There is deliberately no publish step here: a caller that only builds (manual-build.yml)
+# therefore *cannot* publish, structurally, rather than by an `if` gate.
+#
+# Targets: one native binary per matrix row. macOS is arm64-only ON PURPOSE — `ort`'s
+# `download-binaries` ships no prebuilt ONNX Runtime for `x86_64-apple-darwin` at the pinned
+# `=2.0.0-rc.12`, so that target falls back to a from-source ONNX Runtime build (cmake, long,
+# fragile) we do not run in CI. Intel Macs are legacy (Apple finished the arm64 transition in
+# 2023); `aarch64-apple-darwin` covers every current Mac. An Intel-Mac user builds from source
+# (docs/SETUP.md). Linux ships both x86_64 and arm64 (aarch64 servers are now common — Graviton
+# et al.), each built natively on its own runner so there is no cross-linker to maintain.
+on:
+  workflow_call:
+    inputs:
+      retention-days:
+        description: How many days to keep the uploaded artifacts.
+        type: number
+        required: false
+        default: 7
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: build (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            bin: llm-proxy-pii-rust
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            bin: llm-proxy-pii-rust
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            bin: llm-proxy-pii-rust
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            bin: llm-proxy-pii-rust.exe
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
+
+      # The release profile (Cargo.toml) is the max-optimization one: opt-level 3, fat LTO,
+      # codegen-units = 1, symbols stripped. `panic` stays `unwind` ON PURPOSE — `abort` would
+      # turn a caught masking panic (which currently blocks ONE request, fail-closed) into a
+      # process abort, i.e. an outage. See the profile's comment.
+      - name: Build (release, --features onnx)
+        run: cargo build --release --features onnx --target ${{ matrix.target }}
+
+      - name: Package
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          src="target/${{ matrix.target }}/release/${{ matrix.bin }}"
+          dest="dist/llm-proxy-pii-rust-${{ matrix.target }}"
+          if [[ "${{ matrix.bin }}" == *.exe ]]; then
+            dest="${dest}.exe"
+          fi
+          cp "$src" "$dest"
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: llm-proxy-pii-rust-${{ matrix.target }}
+          path: dist/*
+          retention-days: ${{ inputs.retention-days }}
