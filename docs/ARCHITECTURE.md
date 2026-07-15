@@ -546,8 +546,8 @@ from the build CI** (this is cheap and needs its own cadence):
   code change to fire a run), and on demand. `advisories` is the security core; `sources` pins crates to
   crates.io (an unknown git/registry host is the shape a supply-chain attack takes — fail closed); `bans`
   flags duplicate versions. It reads `Cargo.lock` (no compile), so it stays fast. The action's default cargo
-  (1.71) can't parse this tree — it pulls crates needing `edition2024` — so the workflow pins the project MSRV
-  (`rust-version: "1.89"`).
+  (1.71) can't parse this tree — it pulls crates needing `edition2024` — so the workflow sets
+  `rust-version: stable` (cargo-deny needs a cargo new enough to read the graph, ≥ 1.85, not the project MSRV).
   - **`licenses` is off the gating command on purpose.** It is *compliance*, not *security*, and noisy against
     the `onnx` crypto stack (`ring` / `aws-lc-sys` carry non-SPDX license refs). A ready-to-enable allow-list
     sits commented in `deny.toml` (this crate is AGPL-3.0-or-later) for when compliance — not vulnerability —

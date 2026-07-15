@@ -47,9 +47,10 @@ jobs:
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
           # The action defaults to cargo 1.71, which cannot even run `cargo metadata` on
-          # this tree (it pulls crates needing edition2024 -> cargo >= 1.85). Pin the
-          # project MSRV — the same floor Cargo.toml declares (see reviews/M5.md#m5-r5).
-          rust-version: "1.89"
+          # this tree (it pulls crates needing edition2024 -> cargo >= 1.85). cargo-deny only
+          # needs a cargo new enough to READ the dependency graph — not the project MSRV — so
+          # `stable` (always >= 1.85) is the lean choice: no hardcoded version to drift.
+          rust-version: stable
           # advisories = RustSec CVEs (the security core); sources = registry/git trust;
           # bans = duplicate-version hygiene. `licenses` is excluded on purpose — see deny.toml.
           # (Default `arguments: --all-features` is kept, so onnx deps are scanned too.)

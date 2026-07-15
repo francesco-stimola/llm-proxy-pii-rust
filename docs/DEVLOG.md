@@ -15,9 +15,11 @@ no source changed.
   flags duplicate versions. Triggers: PR + push-to-main **on dependency-manifest changes only** (paths-filtered,
   so doc commits don't spin it up), a **weekly `cron`** (the important one — a CVE can be disclosed against a
   dep you already have, with no code change to trigger a run), and `workflow_dispatch`.
-  - **Pinned `rust-version: "1.89"`** (the project MSRV). The action defaults to cargo 1.71, which can't even
-    run `cargo metadata` on this tree — it pulls crates needing `edition2024` (cargo ≥ 1.85). Left at the
-    default it would have failed on the first run. Same floor `Cargo.toml` declares (M5-R5).
+  - **Set `rust-version: stable`.** The action defaults to cargo 1.71, which can't even run `cargo metadata`
+    on this tree — it pulls crates needing `edition2024` (cargo ≥ 1.85). cargo-deny only needs a cargo new
+    enough to *read* the dependency graph, **not** the project MSRV, so `stable` (always ≥ 1.85) is the lean
+    choice — no hardcoded version to drift from `Cargo.toml`. (Left at the default it would have failed on the
+    first run.)
 - **`deny.toml`** — config for the above. `advisories.unmaintained = "workspace"` (flag OUR deps going
   unmaintained, not the dormant transitive world = noise); `sources` fail-closed; `bans` warn on dup versions,
   deny wildcards. **`licenses` is deliberately OFF the CI command** — compliance, not security, and noisy
