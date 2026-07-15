@@ -140,23 +140,23 @@ The proxy speaks **one** wire format — the OpenAI Chat Completions schema
 (`/v1/chat/completions`) — on *both* sides. So "does it work with X?" is really two questions:
 where it **forwards** (upstream) and what can **talk to it** (client).
 
-**Upstream — where it forwards.** Any OpenAI-compatible endpoint; masking is **identical**
-regardless (the preset only changes routing, never what gets scrubbed).
+**Upstream — where it forwards.** Any OpenAI-compatible endpoint. A `UPSTREAM_PROVIDER` preset picks
+the right *envelope* for a known provider (masking is **identical** regardless — the preset changes
+only routing, never what gets scrubbed):
 
-```sh
-UPSTREAM_PROVIDER=openai      # default
-UPSTREAM_PROVIDER=copilot     # GitHub Copilot
-UPSTREAM_PROVIDER=anthropic   # Anthropic's OpenAI-compat endpoint
-```
+| `UPSTREAM_PROVIDER` | Chat path | Client headers forwarded |
+|---|---|---|
+| `openai` (default) | `/v1/chat/completions` | `openai-organization`, `openai-project` |
+| `copilot` | `/chat/completions` *(no `/v1`)* | `editor-version`, `editor-plugin-version`, `copilot-integration-id`, `openai-intent` |
+| `anthropic` | `/v1/chat/completions` | `anthropic-version`, `anthropic-beta` |
 
 ...or any other OpenAI-compatible endpoint via `UPSTREAM_BASE_URL` (local models behind Ollama /
 vLLM / LM Studio, Groq, Mistral, …).
 
 > **Why a preset per provider if they're all OpenAI-compatible?** Because *"OpenAI-compatible"*
-> describes the request **body**, not the whole HTTP call. The presets share one JSON schema but
-> differ in the **envelope**: the path (Copilot drops the `/v1`) and the required client headers
-> (Anthropic needs `anthropic-version`, Copilot its editor headers). A preset just bundles those
-> per-provider deltas — it never changes the schema or what gets masked, and each part is overridable
+> describes the request **body**, not the whole HTTP call: all three share one JSON schema and differ
+> only in the **envelope** the table shows — path + headers. A preset just bundles those per-provider
+> deltas; it never changes the schema or what gets masked, and each part is overridable
 > (`UPSTREAM_CHAT_PATH`, `UPSTREAM_FORWARD_HEADERS`, `UPSTREAM_EXTRA_HEADERS`).
 
 **Clients — what can talk to it.** A client works with the proxy if you can point it at an

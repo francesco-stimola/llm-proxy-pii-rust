@@ -141,24 +141,24 @@ Il proxy parla **un solo** formato — lo schema OpenAI Chat Completions
 (`/v1/chat/completions`) — su *entrambi* i lati. Quindi "funziona con X?" sono in realtà due
 domande: verso cosa **inoltra** (upstream) e cosa può **parlargli** (client).
 
-**Upstream — verso cosa inoltra.** Qualsiasi endpoint compatibile con OpenAI; il mascheramento è
-**identico** in ogni caso (il preset cambia solo l'instradamento, mai cosa viene oscurato).
+**Upstream — verso cosa inoltra.** Qualsiasi endpoint compatibile con OpenAI. Un preset
+`UPSTREAM_PROVIDER` sceglie l'*involucro* giusto per un provider noto (il mascheramento è **identico**
+in ogni caso — il preset cambia solo l'instradamento, mai cosa viene oscurato):
 
-```sh
-UPSTREAM_PROVIDER=openai      # default
-UPSTREAM_PROVIDER=copilot     # GitHub Copilot
-UPSTREAM_PROVIDER=anthropic   # endpoint compatibile OpenAI di Anthropic
-```
+| `UPSTREAM_PROVIDER` | Chat path | Header client inoltrati |
+|---|---|---|
+| `openai` (default) | `/v1/chat/completions` | `openai-organization`, `openai-project` |
+| `copilot` | `/chat/completions` *(niente `/v1`)* | `editor-version`, `editor-plugin-version`, `copilot-integration-id`, `openai-intent` |
+| `anthropic` | `/v1/chat/completions` | `anthropic-version`, `anthropic-beta` |
 
 ...o qualsiasi altro endpoint compatibile con OpenAI tramite `UPSTREAM_BASE_URL` (modelli locali
 dietro Ollama / vLLM / LM Studio, Groq, Mistral, …).
 
 > **Perché un preset per provider se sono tutti OpenAI-compatibili?** Perché *"compatibile con OpenAI"*
-> descrive il **corpo** della richiesta, non l'intera chiamata HTTP. I preset condividono un unico schema
-> JSON ma differiscono nell'**involucro**: il path (Copilot toglie il `/v1`) e gli header client richiesti
-> (Anthropic vuole `anthropic-version`, Copilot i suoi header dell'editor). Un preset non fa che
-> impacchettare questi delta per-provider — non cambia mai lo schema né cosa viene mascherato, ed ogni
-> parte è sovrascrivibile (`UPSTREAM_CHAT_PATH`, `UPSTREAM_FORWARD_HEADERS`, `UPSTREAM_EXTRA_HEADERS`).
+> descrive il **corpo** della richiesta, non l'intera chiamata HTTP: tutti e tre condividono un unico
+> schema JSON e differiscono solo nell'**involucro** che mostra la tabella — path + header. Un preset non
+> fa che impacchettare questi delta per-provider; non cambia mai lo schema né cosa viene mascherato, ed
+> ogni parte è sovrascrivibile (`UPSTREAM_CHAT_PATH`, `UPSTREAM_FORWARD_HEADERS`, `UPSTREAM_EXTRA_HEADERS`).
 
 **Client — cosa può parlargli.** Un client funziona col proxy se puoi puntarlo a un **base URL
 compatibile con OpenAI**. La maggior parte degli agent moderni lo permette (via BYOK / provider
