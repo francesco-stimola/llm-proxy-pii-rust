@@ -20,12 +20,15 @@ invariants) and [`TESTING.md`](TESTING.md) (the guards) — read *those* to unde
 ## Status
 
 **M0 – M4 complete, and M4's ledger is clean — all 24 findings closed.** **M5 (integration &
-performance testing) is code-complete** — real integration tests, a performance/load harness,
-NER chunking (a real bug found and fixed along the way), the README rewrite, and CI/release
-workflows are all in place. **Both review rounds are closed — 9 findings, 9 closed.** Round 2 verified round 1's closures and
-opened 3 more ([M5-R7…R9](#m5-ledger)); the sharp one, **M5-R7**, was a fail-closed regression in my
-*own* M5-R2 fix (the overflow clamp returned `Ok` where `NER_REQUIRED` promises a block) — now an
-`Err`, with the rule promoted into ARCHITECTURE.
+performance testing) is code-complete and its ledger is clean — three review rounds, 12 findings,
+all 12 closed.** Real integration tests, a performance/load harness, NER chunking (a real bug found
+and fixed along the way), the README rewrite, and CI/release workflows are all in place. Round 2's
+[M5-R7](#m5-ledger) was the sharp one — a fail-closed regression in the *own* M5-R2 fix (the overflow
+clamp returned `Ok` where `NER_REQUIRED` promises a block); it is now an `Err`, **verified end-to-end
+through the real binary**, with the rule promoted into ARCHITECTURE. Round 3 opened
+**[M5-R10…R12](#m5-ledger)** from the product changes — R10 being the guard that the M5-R7 closure's
+"this can't happen" argument itself rests on: the compile-time invariant now pins the drift
+**headroom**, not the weaker `window < ceiling` it asserted before.
 **One box is deliberately still open**: the manual dual-run procedure needs a human with a real
 provider token to actually execute it, which no session can do on its own — see the M5 section below. 132 tests green (default) / 145 + 6
 `#[ignore]`d (`--features onnx`), no warnings; `cargo fmt` + `clippy` clean on both feature sets.
@@ -40,7 +43,7 @@ streams, and fronts OpenAI / Copilot / Anthropic via their OpenAI-compatible end
 
 | What | Where | Status |
 |---|---|---|
-| **M5** — integration & performance testing | [below](#m5) | [~] one box open — the manual live-provider check needs a human + a real token |
+| **M5** — integration & performance testing | [below](#m5) | [~] code + ledger done; one box open — the manual live-provider check needs a human + a real token |
 | **First tagged release (`1.0.0`)** | [below](#m5) | [ ] gated on a real green CI run (the workflows have never actually run) |
 
 **M5 is unblocked.** Its prerequisite was a clean M4 ledger, and the last blocker was the DoS class — which
@@ -330,8 +333,9 @@ Prove the whole system holds **end-to-end** and **under load**, then document it
   - **`release.yml`** — **does *not* run on every push to `main`**: four cross-compiled LTO targets per
     commit is noise, not a release. Two triggers instead: a **`v*.*.*` tag** builds *and* publishes a
     GitHub Release, and **`workflow_dispatch`** (the "Run workflow" button) builds the same binaries from
-    any branch and attaches them as **workflow artifacts only** — the publish step is tag-gated, so a
-    manual run can never accidentally cut a release. Targets: Linux x86_64, macOS x86_64 + arm64, Windows
+    any branch and attaches them as **workflow artifacts only** — the publish step is gated on a `v*`
+    **ref**, so a manual run from a branch publishes nothing (verified; [M5-R11](reviews/M5.md#m5-r11)
+    tightens that gate from the *ref* to the *event*). Targets: Linux x86_64, macOS x86_64 + arm64, Windows
     x86_64-msvc. ONNX Runtime links **statically**, so each artifact is a single self-contained binary.
   - **The release profile is the max-optimization one** (`[profile.release]`): `opt-level = 3`,
     **fat LTO**, `codegen-units = 1`, symbols stripped — worth the ~5 min build, because the masking path
@@ -385,6 +389,22 @@ degraded output is acceptable.**
 | [M5-R7](reviews/M5.md#m5-r7) | The clamp traded `NER_REQUIRED`'s fail-closed block for a silent partial scan — the M5-R2 fix *relocated* the failure → overflow is now an **`Err`**; the posture is the caller's | **fail-closed** | [x] |
 | [M5-R8](reviews/M5.md#m5-r8) | ARCHITECTURE's *NER chunking* still named the constant M5-R2 deleted — in the file M5-R1 had just made the single home | docs | [x] |
 | [M5-R9](reviews/M5.md#m5-r9) | The M5-R2 guard hand-copied the one constant `chunk_char_ranges` was made `pub` to avoid hand-copying | guard | [x] |
+
+**Round 3 (2026-07-14) — closure verification + the product changes: all 3 closures hold.** M5-R7's
+restored contract was driven **through the real binary** (a `run_and_decode` error → **400, nothing
+forwarded** under `NER_REQUIRED`; swallowed to structured-only by default), and the chunked path's
+recall is unchanged. The MSRV collapse, the release profile, the manual release trigger, the optional
+provider token and both READMEs check out — including the `curl` example, byte for byte. Three new
+findings, all from the product changes; **[M5-R10](reviews/M5.md#m5-r10) is the sharp one**: the
+compile-time invariant that the M5-R7 closure's "this path is unreachable" argument *rests on* pins
+`window < ceiling`, not the 32-token drift headroom it is cited for — measured, the assert passes at
+window values where most chunks overflow the model.
+
+| ID | Title | Sev | Status |
+|---|---|---|---|
+| [M5-R10](reviews/M5.md#m5-r10) | The compile-time invariant guards `window < ceiling`, not the drift headroom it is cited for — the assert passes where most chunks overflow | hardening | [x] |
+| [M5-R11](reviews/M5.md#m5-r11) | The release publish gate keys on the *ref*, not the *event* — a manual run on a tag ref does cut a release | low | [x] |
+| [M5-R12](reviews/M5.md#m5-r12) | The `panic = "unwind"` rationale cites the wrong status code for the path it exists to protect | docs | [x] |
 
 <a id="backlog"></a>
 ## Backlog — documented, not scheduled

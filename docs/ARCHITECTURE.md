@@ -404,15 +404,29 @@ field's* tokenization, but then **re-tokenized from its own text**, which adds t
 tokens and drifts at the cut edges — so the sequence that reaches the model is `window +
 specials + drift`, **measured at 481–483, i.e. always over the planning bound**. `MODEL_MAX_TOKENS`
 is 512 because XLM-R declares `max_position_embeddings: 514` but RoBERTa-family position ids
-start at `pad_token_id + 1 = 2`. The 32-token gap is the drift headroom, and it is a
-**compile-time invariant** (`const _: () = assert!(MAX_WINDOW_TOKENS < MODEL_MAX_TOKENS)`) — get
-it wrong and the crate does not build.
+start at `pad_token_id + 1 = 2`. The 32-token gap is the drift headroom, and **the headroom
+itself** — not the mere ordering — is the **compile-time invariant** (M5-R10):
 
-> **This is what the earlier wording got wrong, and it is worth keeping as a warning.** This
-> section used to say the window was *"conservatively under `max_position_embeddings`"* — a
-> single budget, assumed safe. That is precisely the hope M5-R2 refuted: the window *was* under
-> the limit and the **sequence was not**, on every single chunk. **A bound you do not check is not
-> a bound.**
+```rust
+const MIN_DRIFT_HEADROOM_TOKENS: usize = 16;
+const _: () = assert!(MODEL_MAX_TOKENS - MAX_WINDOW_TOKENS >= MIN_DRIFT_HEADROOM_TOKENS);
+```
+
+Get it wrong and the crate does not build — including a window *over* the ceiling, which underflows
+the const subtraction. This is the constraint the chunker actually relies on: `479 < 512` and
+`511 < 512` satisfy `<` identically, yet a 511-token window re-tokenizes to ~514 and the `Expand`
+error is back. The drift has "nowhere to go" the moment the headroom drops below it, not the moment
+the window reaches the ceiling — so it is the **headroom** that must be pinned.
+
+> **This is what two earlier wordings got wrong, and the pair is worth keeping as a warning.**
+> First (M5-R2) this section said the window was *"conservatively under `max_position_embeddings`"* —
+> a single budget, assumed safe; the window *was* under the limit and the **sequence was not**, on
+> every chunk. Then the fix's own guard asserted only `MAX_WINDOW_TOKENS < MODEL_MAX_TOKENS` (M5-R10)
+> — true at any headroom ≥ 1, so it approved a 511-token window that overflows. **A bound you do not
+> check is not a bound — and a compile-time invariant must encode the constraint the code relies on,
+> not a weaker one that happens to hold at today's values.** `A < B` is not "A leaves room for
+> drift"; and when the invariant is the *only* guard a modelless CI can run, the gap between those
+> two is the whole exposure.
 
 **The ceiling is checked at one choke point, and overflow is an `Err`, not a clamp (M5-R7).**
 `run_and_decode` is the only path into the ONNX session (the direct call *and* every chunk), and

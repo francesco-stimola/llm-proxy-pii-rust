@@ -3,6 +3,41 @@
 Newest first. One entry per meaningful change — note *what* and *why*, not just
 *what*. This is the running history so context is never lost between sessions.
 
+## 2026-07-14 — M5 review round 3 closed: a guard's own guard, and the ledger goes clean (12/12)
+
+Round 3 reviewed the *product* changes (single MSRV, release profile, the manual release trigger, the
+optional provider token, the README rewrite), re-verified the M5-R7 fail-closed fix **through the real
+binary**, and opened three findings — **all now closed. M5's ledger is 12/12 and clean.** Build + `fmt`
++ `clippy` clean on both feature sets. Record: [`reviews/M5.md`](reviews/M5.md).
+
+**M5-R10 — the guard the M5-R7 closure rests on guarded the wrong thing.** M5-R7 argued the token-overflow
+error path is unreachable, on the strength of 32 tokens of headroom. But the compile-time invariant that
+was supposed to *hold* that headroom asserted only `MAX_WINDOW_TOKENS < MODEL_MAX_TOKENS` — satisfied by
+**any** headroom ≥ 1. The reviewer measured it: a 511-token window passes the assert and re-tokenizes to
+~514, and the PERF-01 `Expand` error is back — reintroduced by a one-character edit that every CI-runnable
+guard approves. Fix: make the **headroom** the invariant —
+`MODEL_MAX_TOKENS - MAX_WINDOW_TOKENS >= MIN_DRIFT_HEADROOM_TOKENS` (16). The const subtraction underflows
+on a window over the ceiling, so it subsumes the old assert rather than sitting beside it. A 510-token
+window now **fails to compile** where it used to build green and overflow at runtime.
+
+> **The lesson, promoted to ARCHITECTURE:** *a compile-time invariant must encode the constraint the code
+> relies on, not the weakest one that happens to hold at today's values.* `A < B` is not "A leaves room
+> for drift" — and when that invariant is the **only** guard a modelless CI can run, the gap between the
+> two is the whole exposure. This is the M5-R2 lesson (*"a bound you do not check is not a bound"*)
+> recurring one level up: the *check itself* was bounded by a constant nothing checked.
+
+**M5-R11 / M5-R12 — the small ones, both "one home for a fact."** The release workflow's publish gate keyed
+on the *ref* (`startsWith(github.ref, 'refs/tags/v')`), but GitHub's "Run workflow" picker lists tags too,
+so a manual run *on a tag ref* would have cut a real release — the one thing the gate's comment promises
+can't happen. Now gated on the **event** as well (`github.event_name == 'push' && …`). And the
+`panic = "unwind"` rationale in `Cargo.toml` cited a **400** for the caught-panic path that is actually a
+**500**; rephrased to "blocks the request (fail-closed)", the load-bearing part that can't go stale (the
+profile's conclusion was always correct). Both are the *fourth and fifth* M5 items where a fact was right
+in one file and stale in a second that repeated it.
+
+Also, unrelated to the review: the README banner now spells **`llm-proxy-pii`** (was `llm-proxy`) — the
+`-PII` glyphs appended in the same ANSI Shadow font, EN + IT in step.
+
 ## 2026-07-14 — M5 review round 2: my own fix committed the M4 retrospective's signature move
 
 Round 2 verified round 1's six closures (five hold outright) and found three more. **All closed. M5's
