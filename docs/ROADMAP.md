@@ -342,8 +342,9 @@ Prove the whole system holds **end-to-end** and **under load**, then document it
   - **First tag is `v0.4.0` — an interim tag** to populate the release badge, cut only after a `manual-build`
     run is green on **all** targets (win-arm64 especially). It is **not** the `1.0.0` release: `1.0.0` still
     waits on **[M6](#m6)** — it ships only once Claude Code works end-to-end through the native `/v1/messages`
-    route against real Anthropic, plus the manual live-provider verification. *(The earlier per-push CI green
-    run — push `9a966df` — is now history: that CI is disabled. See DEVLOG 2026-07-15.)*
+    route against real Anthropic, plus the manual live-provider verification. *(The earlier per-push CI that
+    built every release target — push `9a966df` — was retired; a trimmed per-PR `ci.yml` (no cross-compile)
+    later returned. See DEVLOG 2026-07-15.)*
 
 <a id="m5-ledger"></a>
 ### Review ledger — M5 → [`reviews/M5.md`](reviews/M5.md)
