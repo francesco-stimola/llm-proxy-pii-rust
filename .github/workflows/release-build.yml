@@ -77,7 +77,7 @@ jobs:
             target: aarch64-pc-windows-msvc
             bin: llm-proxy-pii-rust.exe
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
         with:

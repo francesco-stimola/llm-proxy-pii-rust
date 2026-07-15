@@ -47,7 +47,7 @@ jobs:
           mkdir -p out
           find artifacts -type f -exec cp {} out/ \;
 
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           files: out/*
           generate_release_notes: true
