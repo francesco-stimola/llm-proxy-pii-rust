@@ -6,8 +6,9 @@ A privacy proxy in front of an OpenAI-compatible LLM: it masks PII locally
 
 ## Read these first
 - **`docs/ROADMAP.md` is the single source of truth for what's next.** Read it
-  before starting work; keep the checkboxes current as work lands. Its *Open work*
-  table at the top is the whole backlog — you should never have to scroll for it.
+  before starting work; keep the checkboxes current as work lands. Its **milestone
+  status table** at the top is the whole backlog at a glance — one row per milestone,
+  each linking to its section — so you never have to scroll for "what's open?".
 - `docs/ARCHITECTURE.md` — design, the fail-closed model, and **the invariants the
   detection layer rests on** (no-abandoned-bytes, mask-to-a-fixpoint, ASCII word
   boundaries). `docs/TESTING.md` — test strategy & catalog, incl. the property

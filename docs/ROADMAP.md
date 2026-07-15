@@ -19,56 +19,23 @@ invariants) and [`TESTING.md`](TESTING.md) (the guards) — read *those* to unde
 
 ## Status
 
-**M0 – M4 complete, and M4's ledger is clean — all 24 findings closed.** **M5 (integration &
-performance testing) is complete and its ledger is clean — three review rounds, 12 findings,
-all 12 closed.** Real integration tests, a performance/load harness, NER chunking (a real bug found
-and fixed along the way), the README rewrite, and CI/release workflows are all in place. Round 2's
-[M5-R7](#m5-ledger) was the sharp one — a fail-closed regression in the *own* M5-R2 fix (the overflow
-clamp returned `Ok` where `NER_REQUIRED` promises a block); it is now an `Err`, **verified end-to-end
-through the real binary**, with the rule promoted into ARCHITECTURE. Round 3 opened
-**[M5-R10…R12](#m5-ledger)** from the product changes — R10 being the guard that the M5-R7 closure's
-"this can't happen" argument itself rests on: the compile-time invariant now pins the drift
-**headroom**, not the weaker `window < ceiling` it asserted before.
-**M5's last box is now closed by redefining its bar (2026-07-15).** A run against the *real* provider needs
-a live token this environment lacks, and the natural workaround — routing this Claude Code session through
-the proxy — is blocked (Claude Code speaks only native `/v1/messages`; the proxy is OpenAI-compat-only, so
-it 404s → Option B, Backlog). The procedure was instead **dry-run-validated against a mock upstream through
-the real binary** (Run A → placeholders, Run B → restored values, DBG-02 clean on both); its permanent
-guarantee already lives in CI (DBG-01, DBG-02), and the real-provider dual-run is reclassified **opt-in** —
-see the M5 section below. 132 tests green (default) / 145 + 6
-`#[ignore]`d (`--features onnx`), no warnings; `cargo fmt` + `clippy` clean on both feature sets.
-**MSRV 1.89** — *measured*, and now built by CI (the floor of the **real** product, which runs
-with `onnx` on; a separate 1.86 "default-build" floor would be a promise about a configuration
-nobody deploys).
-`v0.4.0`, AGPL-3.0-or-later. The product masks structured PII (universal + national-ID packs for
-10 countries) and unstructured entities (ONNX NER, XLM-R int8, now chunked for large fields),
-streams, and fronts OpenAI / Copilot / Anthropic via their OpenAI-compatible endpoints.
-**M6 is now the active milestone:** native Anthropic `/v1/messages`, so a *native* client — **Claude Code** —
-can route through the proxy and be masked (promoting the Claude-Code slice of [Option B](#backlog)). The
-`1.0.0` tag now waits on it.
+This table is the whole backlog at a glance — each row links to its section below. It tracks **only
+completion**; findings, counts and closure notes live in each milestone's section and in
+[`reviews/`](reviews/), so this table can't drift out of sync with them.
 
-### Open work — everything not yet done
-
-| What | Where | Status |
-|---|---|---|
-| **M6** — native Anthropic `/v1/messages` (Claude Code passthrough) | [below](#m6) | [ ] not started — promotes the Claude-Code slice of Option B; the `1.0.0` gate now waits on it |
-| **First tagged release (`1.0.0`)** | [below](#m6) | [ ] CI is green (push `9a966df`); now gated on **M6** — ships only when Claude Code works end-to-end against real Anthropic |
-
-**M5 was unblocked** once its prerequisite — a clean M4 ledger — was met; the last blocker was the DoS class — which
-took **two** fixes, not one, because the masking path has **two** size axes: field *size*
-([M4-R19](reviews/M4.md#m4-r19), the O(n²) candidate rescan) and entity *count*
-([M4-R24](reviews/M4.md#m4-r24), the O(n²) mask splice). Both are now linear and guarded — DOS-01…03 vary
-the size, **DOS-04 varies the count** — so a perf harness now measures the product, not a bug. Measured:
-the 13.4 MiB many-entity body that took ~7 min of CPU masks in **1.8 s**.
-
-> **The perf item found while closing M4-R24 — measured, and it needed a fix, not just a number.**
-> The `onnx` NER fed the **whole field as one sequence**; the real failure mode was not the suspected
-> quadratic self-attention slowdown but something more abrupt: past the model's `max_position_embeddings`
-> (514), the ONNX graph's position-embedding lookup went **out of range** — an outright `Expand` op error
-> on any field over ~500 tokens (~2 KB of prose), silently downgrading NER by default or **blocking every
-> such request** under `NER_REQUIRED`. Fixed with overlapping-window chunking; measured **linear** afterward
-> (448 ms / 2.07 s / 7.53 s at 64×/256×/1024× a repeated sentence). Detail in
-> [`ARCHITECTURE.md`](ARCHITECTURE.md) → *NER chunking*.
+| Milestone | Status |
+|---|---|
+| [M0 — Project setup](#m0) | ✅ complete |
+| [M1 — Structured PII pipeline](#m1) | ✅ complete |
+| [M1.5 — Robustness & fail-closed](#m15) | ✅ complete |
+| [M2 — Unstructured entities (ONNX NER)](#m2) | ✅ complete |
+| [M2.5 — HuggingFace model management](#m25) | ✅ complete |
+| [M2.6 — Debug & observability modes](#m26) | ✅ complete |
+| [M3 — Streaming & multi-provider routing](#m3) | ✅ complete |
+| [M4 — Broad locale & language coverage](#m4) | ✅ complete |
+| [M5 — Integration & performance testing](#m5) | ✅ complete |
+| [**M6 — Native Anthropic `/v1/messages`**](#m6) | 🔨 **active** — Claude Code passthrough; gates `1.0.0` |
+| [First tagged release `1.0.0`](#m6) | ⬜ not started — CI green, gated on M6 |
 
 ---
 
