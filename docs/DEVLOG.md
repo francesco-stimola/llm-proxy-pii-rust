@@ -3,6 +3,36 @@
 Newest first. One entry per meaningful change — note *what* and *why*, not just
 *what*. This is the running history so context is never lost between sessions.
 
+## 2026-07-15 — Automated dependency-security scanning (Dependabot + cargo-deny)
+
+Added free, public-repo supply-chain scanning — a privacy proxy inherits the CVEs of everything it links, so
+the dependency surface is now scanned automatically instead of by hope. All three additions are infra/docs;
+no source changed.
+
+- **`.github/workflows/security.yml`** — runs **`cargo deny check advisories bans sources`** via
+  `EmbarkStudios/cargo-deny-action@v2`. `advisories` = the **RustSec** CVE DB (the security core); `sources`
+  pins crates to crates.io (an unknown git/registry host is the shape a supply-chain attack takes); `bans`
+  flags duplicate versions. Triggers: PR + push-to-main **on dependency-manifest changes only** (paths-filtered,
+  so doc commits don't spin it up), a **weekly `cron`** (the important one — a CVE can be disclosed against a
+  dep you already have, with no code change to trigger a run), and `workflow_dispatch`.
+  - **Pinned `rust-version: "1.89"`** (the project MSRV). The action defaults to cargo 1.71, which can't even
+    run `cargo metadata` on this tree — it pulls crates needing `edition2024` (cargo ≥ 1.85). Left at the
+    default it would have failed on the first run. Same floor `Cargo.toml` declares (M5-R5).
+- **`deny.toml`** — config for the above. `advisories.unmaintained = "workspace"` (flag OUR deps going
+  unmaintained, not the dormant transitive world = noise); `sources` fail-closed; `bans` warn on dup versions,
+  deny wildcards. **`licenses` is deliberately OFF the CI command** — compliance, not security, and noisy
+  against the `onnx` crypto stack (`ring` / `aws-lc-sys` carry non-SPDX license refs). A ready-to-enable
+  allow-list is commented in the file (this crate is AGPL-3.0-or-later).
+- **`.github/dependabot.yml`** — version updates for the `cargo` and `github-actions` ecosystems (grouped
+  weekly to keep PR noise down). Dependabot **alerts + security updates** are a separate repo toggle the
+  maintainer enables in *Settings → Code security & analysis* (same for native CodeQL / secret scanning).
+
+**On the push/PR posture.** The pipeline change below (same day) disabled the *build* CI — fmt/clippy/test
+moved to build/tag time. This adds back a **security-only** workflow on push/PR/schedule, deliberately narrow:
+it does not compile the crate (cargo-deny reads `Cargo.lock`), so it does not reintroduce per-push build cost,
+and fmt/clippy/test stay exactly as that change left them. The design posture is recorded in ARCHITECTURE →
+*Supply-chain & dependency security*.
+
 ## 2026-07-15 — Pipeline change: CI disabled, tag-driven release only, + Windows-arm64 target
 
 A deliberate change of approach to the GitHub Actions setup (maintainer's call), reversing part of the M5

@@ -1,0 +1,45 @@
+# cargo-deny — supply-chain / security linting of the dependency graph.
+# Run in CI by .github/workflows/security.yml (`check advisories bans sources`) and
+# locally with `cargo deny check` (install: `cargo install --locked cargo-deny`).
+#
+# This file gates on SECURITY, not license compliance: `advisories` (RustSec CVEs) is
+# the core; `sources` and `bans` are supply-chain hardening. `licenses` is left OFF the
+# CI command on purpose — see the commented block at the bottom.
+
+[advisories]
+# RustSec advisory DB. A known vulnerability in ANY dependency fails the check — that is
+# the point. `ignore` is the escape hatch: add an advisory id (with a note + link) only
+# when a CVE is assessed as not-applicable to how we actually use the crate.
+ignore = []
+# Unmaintained crates: error only for OUR direct dependencies, not the whole transitive
+# world (full of dormant-but-fine leaf crates). A privacy tool should notice its own deps
+# going unmaintained; a transitive one is noise, not signal.
+unmaintained = "workspace"
+
+[bans]
+# Duplicate versions bloat the binary but aren't a vulnerability — warn, don't fail.
+multiple-versions = "warn"
+# A `*` version requirement is an unpinned supply-chain risk. (crates.io forbids wildcard
+# requirements, so this can only fire on a local/path/git dep — exactly what to catch.)
+wildcards = "deny"
+
+[sources]
+# Only crates.io and the standard git are trusted. A crate pulled from an unknown registry
+# or git host is the shape a supply-chain attack takes — fail closed.
+unknown-registry = "deny"
+unknown-git = "deny"
+
+# --- License compliance (OFF by default) --------------------------------------------
+# Not in the CI gating command: it is compliance rather than security, and noisy against
+# the onnx crypto crates (`ring`, `aws-lc-sys` carry non-SPDX license refs needing explicit
+# clarification). To turn it on: (1) add `licenses` to the command in security.yml, and
+# (2) uncomment + tune the allow-list below (this crate itself is AGPL-3.0-or-later).
+#
+# [licenses]
+# confidence-threshold = 0.9
+# allow = [
+#   "AGPL-3.0-or-later",  # this crate
+#   "MIT", "Apache-2.0", "Apache-2.0 WITH LLVM-exception",
+#   "BSD-2-Clause", "BSD-3-Clause", "ISC", "Zlib",
+#   "Unicode-3.0", "Unicode-DFS-2016", "MPL-2.0",
+# ]

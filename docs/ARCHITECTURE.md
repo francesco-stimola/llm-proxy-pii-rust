@@ -534,6 +534,33 @@ admin rights, install rustup per-user and the MSVC linker via portable Build Too
 — full procedure in `docs/SETUP.md`. MSVC is required to link the `ort` / ONNX
 Runtime native library at M2.
 
+## Supply-chain & dependency security
+
+A privacy proxy inherits the vulnerabilities of everything it links, so the dependency surface is scanned
+automatically — not by hope. Two independent layers, both free on a public repo, deliberately kept **separate
+from the build CI** (this is cheap and needs its own cadence):
+
+- **`cargo-deny`** (`.github/workflows/security.yml` + `deny.toml`) runs **`check advisories bans sources`**
+  against the **RustSec** advisory DB — on PR / push that touch the dependency manifests, on a **weekly
+  schedule** (the important trigger: a CVE can be disclosed against a dependency you *already* have, with no
+  code change to fire a run), and on demand. `advisories` is the security core; `sources` pins crates to
+  crates.io (an unknown git/registry host is the shape a supply-chain attack takes — fail closed); `bans`
+  flags duplicate versions. It reads `Cargo.lock` (no compile), so it stays fast. The action's default cargo
+  (1.71) can't parse this tree — it pulls crates needing `edition2024` — so the workflow pins the project MSRV
+  (`rust-version: "1.89"`).
+  - **`licenses` is off the gating command on purpose.** It is *compliance*, not *security*, and noisy against
+    the `onnx` crypto stack (`ring` / `aws-lc-sys` carry non-SPDX license refs). A ready-to-enable allow-list
+    sits commented in `deny.toml` (this crate is AGPL-3.0-or-later) for when compliance — not vulnerability —
+    is the actual question.
+- **Dependabot** (`.github/dependabot.yml`) keeps the `cargo` and `github-actions` ecosystems patched (grouped
+  weekly to limit PR noise). Its vulnerability-driven side — **alerts + security updates**, from the GitHub
+  Advisory DB — is a separate repo toggle the maintainer enables in *Settings → Code security & analysis*.
+
+GitHub's native **code scanning (CodeQL — Rust is GA since 2025-10), secret scanning + push protection** are
+the maintainer's one-click complement in that same Settings pane; also free for public repos. cargo-deny and
+Dependabot overlap on advisories but do not duplicate: cargo-deny keys on the Rust-native **RustSec** DB and
+adds source/ban policy GitHub does not, while Dependabot keys on the **GitHub Advisory** DB and opens the fix PRs.
+
 ## Decisions & open points
 
 - **Placeholder format: `[KIND_N]`** (e.g. `[EMAIL_1]`) — ASCII, tokenizer-friendly.

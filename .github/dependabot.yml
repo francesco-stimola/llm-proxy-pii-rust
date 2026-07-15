@@ -1,0 +1,34 @@
+# Dependabot — automated dependency maintenance. Free on public repos.
+#
+# This file drives Dependabot VERSION UPDATES (keep dependencies current) and their
+# grouping. Dependabot ALERTS + SECURITY UPDATES (vulnerability-driven PRs from the
+# GitHub Advisory DB) are SEPARATE, repo-level toggles in Settings -> Code security &
+# analysis — enable them there; they do not need this file.
+# See docs/ARCHITECTURE.md -> "Supply-chain & dependency security".
+version: 2
+updates:
+  # Rust crates (Cargo). Grouped so a routine weekly bump is one PR, not a dozen.
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      cargo-minor-patch:
+        update-types: ["minor", "patch"]
+    # `ort` is pinned exactly (=2.0.0-rc.12, a prerelease) on purpose — see Cargo.toml.
+    # Dependabot may still propose a bump; treat prerelease bumps as review-by-hand
+    # (nothing here auto-merges regardless).
+
+  # The GitHub Actions the workflows pin (actions/checkout, cargo-deny-action, …).
+  # A stale action is its own supply-chain surface — keep them current too.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      github-actions:
+        patterns: ["*"]
