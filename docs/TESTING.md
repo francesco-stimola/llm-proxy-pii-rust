@@ -325,7 +325,11 @@ asserts the value is still masked and round-trips, so a "fix" that buys speed wi
   runs *logged* and returned, which needs a human to read the trace output. Run A
   (`PII_DEBUG_SKIP_DEMASK=1`) → client gets the placeholders; Run B (normal) → client gets the
   restored values. Proves the whole chain end-to-end against a real provider; trace logging
-  re-checks DBG-02 (never-log-raw-PII) on **real** data.
+  re-checks DBG-02 (never-log-raw-PII) on **real** data. **Dry-run-validated against a mock
+  upstream through the real binary on 2026-07-15** (Run A → placeholders, Run B → restored
+  values, DBG-02 clean on both; see DEVLOG); the *real-provider* execution is now **opt-in**,
+  not a milestone gate — the permanent guarantee is DBG-01 + DBG-02 in CI, and E2E-INT-01
+  (`tests/anthropic_smoke.rs`) is the ready automated companion.
 - **E2E-02 / E2E-04** — done; see *End-to-end* above.
 - **PERF-01** — system-level load harness, the companion to `tests/complexity.rs` (which pins
   the masking *algorithm's* complexity, no HTTP):

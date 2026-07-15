@@ -145,6 +145,13 @@ UPSTREAM_PROVIDER=copilot     # GitHub Copilot
 UPSTREAM_PROVIDER=anthropic   # Anthropic's OpenAI-compat endpoint
 ```
 
+> **Scope — the OpenAI-compatible API shape, on both sides.** The proxy speaks OpenAI Chat Completions
+> (`/v1/chat/completions`) to *both* your client and the upstream; Anthropic and Copilot are reached via
+> their **OpenAI-compatible** endpoints, not their native APIs. A client that speaks a provider's **native**
+> protocol is therefore not supported yet — most notably **Claude Code**, which talks to Anthropic's native
+> `/v1/messages`. Native Anthropic support, so Claude Code can route through the proxy, is the next milestone
+> — see the [roadmap](docs/ROADMAP.md).
+
 ---
 
 ## Configuration

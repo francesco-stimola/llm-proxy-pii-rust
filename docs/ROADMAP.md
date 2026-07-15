@@ -20,7 +20,7 @@ invariants) and [`TESTING.md`](TESTING.md) (the guards) — read *those* to unde
 ## Status
 
 **M0 – M4 complete, and M4's ledger is clean — all 24 findings closed.** **M5 (integration &
-performance testing) is code-complete and its ledger is clean — three review rounds, 12 findings,
+performance testing) is complete and its ledger is clean — three review rounds, 12 findings,
 all 12 closed.** Real integration tests, a performance/load harness, NER chunking (a real bug found
 and fixed along the way), the README rewrite, and CI/release workflows are all in place. Round 2's
 [M5-R7](#m5-ledger) was the sharp one — a fail-closed regression in the *own* M5-R2 fix (the overflow
@@ -29,8 +29,13 @@ through the real binary**, with the rule promoted into ARCHITECTURE. Round 3 ope
 **[M5-R10…R12](#m5-ledger)** from the product changes — R10 being the guard that the M5-R7 closure's
 "this can't happen" argument itself rests on: the compile-time invariant now pins the drift
 **headroom**, not the weaker `window < ceiling` it asserted before.
-**One box is deliberately still open**: the manual dual-run procedure needs a human with a real
-provider token to actually execute it, which no session can do on its own — see the M5 section below. 132 tests green (default) / 145 + 6
+**M5's last box is now closed by redefining its bar (2026-07-15).** A run against the *real* provider needs
+a live token this environment lacks, and the natural workaround — routing this Claude Code session through
+the proxy — is blocked (Claude Code speaks only native `/v1/messages`; the proxy is OpenAI-compat-only, so
+it 404s → Option B, Backlog). The procedure was instead **dry-run-validated against a mock upstream through
+the real binary** (Run A → placeholders, Run B → restored values, DBG-02 clean on both); its permanent
+guarantee already lives in CI (DBG-01, DBG-02), and the real-provider dual-run is reclassified **opt-in** —
+see the M5 section below. 132 tests green (default) / 145 + 6
 `#[ignore]`d (`--features onnx`), no warnings; `cargo fmt` + `clippy` clean on both feature sets.
 **MSRV 1.89** — *measured*, and now built by CI (the floor of the **real** product, which runs
 with `onnx` on; a separate 1.86 "default-build" floor would be a promise about a configuration
@@ -38,15 +43,18 @@ nobody deploys).
 `v0.4.0`, AGPL-3.0-or-later. The product masks structured PII (universal + national-ID packs for
 10 countries) and unstructured entities (ONNX NER, XLM-R int8, now chunked for large fields),
 streams, and fronts OpenAI / Copilot / Anthropic via their OpenAI-compatible endpoints.
+**M6 is now the active milestone:** native Anthropic `/v1/messages`, so a *native* client — **Claude Code** —
+can route through the proxy and be masked (promoting the Claude-Code slice of [Option B](#backlog)). The
+`1.0.0` tag now waits on it.
 
 ### Open work — everything not yet done
 
 | What | Where | Status |
 |---|---|---|
-| **M5** — integration & performance testing | [below](#m5) | [~] code + ledger done; one box open — the manual live-provider check needs a human + a real token |
-| **First tagged release (`1.0.0`)** | [below](#m5) | [ ] gated on a real green CI run (the workflows have never actually run) |
+| **M6** — native Anthropic `/v1/messages` (Claude Code passthrough) | [below](#m6) | [ ] not started — promotes the Claude-Code slice of Option B; the `1.0.0` gate now waits on it |
+| **First tagged release (`1.0.0`)** | [below](#m6) | [ ] CI is green (push `9a966df`); now gated on **M6** — ships only when Claude Code works end-to-end against real Anthropic |
 
-**M5 is unblocked.** Its prerequisite was a clean M4 ledger, and the last blocker was the DoS class — which
+**M5 was unblocked** once its prerequisite — a clean M4 ledger — was met; the last blocker was the DoS class — which
 took **two** fixes, not one, because the masking path has **two** size axes: field *size*
 ([M4-R19](reviews/M4.md#m4-r19), the O(n²) candidate rescan) and entity *count*
 ([M4-R24](reviews/M4.md#m4-r24), the O(n²) mask splice). Both are now linear and guarded — DOS-01…03 vary
@@ -288,16 +296,21 @@ Prove the whole system holds **end-to-end** and **under load**, then document it
   environment).
   - [x] Implement the two cataloged-but-missing e2e cases **E2E-02** (CSV `tool_result`) and **E2E-04**
     (`SELECT … FROM DUAL`) against a mock.
-- [ ] **Manual "does the whole structure hold?" procedure** (real Anthropic + `RUST_LOG=…=trace`). The
-  procedure itself is written — `docs/MANUAL_VERIFICATION.md` — but **running it needs a human with a real
-  `ANTHROPIC_API_KEY`**, so this box stays open until someone actually executes it. Run the same PII prompt
-  twice:
-  - **Run A** (`PII_DEBUG_SKIP_DEMASK=1`) — the client gets the **placeholders** → proof the request left
-    masked and the round-trip is wired.
-  - **Run B** (normal) — the client gets the **restored values** → proof of the full round-trip.
+- [x] **Manual "does the whole structure hold?" procedure** (`docs/MANUAL_VERIFICATION.md`). **Bar redefined
+  to opt-in (2026-07-15).** A run against the *real* provider needs a human with a live `ANTHROPIC_API_KEY`,
+  which this environment does not have — and the natural workaround (routing a Claude Code session through
+  the proxy) is blocked: Claude Code speaks only native `/v1/messages`, the proxy is OpenAI-compat-only, so
+  it 404s — that is Option B (Backlog). Instead the procedure was **dry-run-validated against a mock upstream,
+  through the real binary**, running the same PII prompt twice:
+  - **Run A** (`PII_DEBUG_SKIP_DEMASK=1`) — client got the **placeholder** (`[EMAIL_1]`); the upstream saw
+    only the placeholder; the raw value never appeared in the trace (DBG-02).
+  - **Run B** (normal) — client got the **restored value**; the trace still showed only the placeholder, and
+    the de-masked output was **never** logged.
 
-  Comparing A vs B on the same input shows the chain holds end-to-end against a real provider. Trace
-  logging also exercises the never-log-raw-PII rule (DBG-02) on **real** data.
+  A vs B on the same input yielded a **byte-identical masked body upstream** → the chain holds end-to-end.
+  The permanent guarantee lives in CI (DBG-01 `e2e_debug_skip_demask…`, DBG-02 `tests/log_safety.rs`); the
+  real-provider dual-run stays **ready and opt-in** in `docs/MANUAL_VERIFICATION.md` + `tests/anthropic_smoke.rs`
+  (E2E-INT-01) for whoever holds a key. See DEVLOG 2026-07-15.
 - [x] **Performance / load harness** — concurrent connections, large bodies, streaming throughput; latency
   of the mask → forward → de-mask path (NER on/off). *Stability under load was the founding
   motivation — measure it, don't assume it.* `tests/perf.rs` (system-level: concurrent connections,
@@ -359,7 +372,9 @@ Prove the whole system holds **end-to-end** and **under load**, then document it
     reusable workflow is therefore exercised on every push, and the manual run already proved the *publish*
     path's build stage. **What remains for `1.0.0`** (bump from `0.4.0`): push a `v*.*.*` tag to exercise
     `release-publish.yml` end-to-end (build → GitHub Release) and, ideally, run the manual live-provider
-    verification below once first.
+    verification below once first. **This gate now also waits on [M6](#m6)**: `1.0.0` ships only once Claude
+    Code works end-to-end through the native `/v1/messages` route against real Anthropic — fronting the LLM we
+    actually use is a `1.0` requirement, not a follow-on.
 
 <a id="m5-ledger"></a>
 ### Review ledger — M5 → [`reviews/M5.md`](reviews/M5.md)
@@ -419,6 +434,54 @@ window values where most chunks overflow the model.
 | [M5-R11](reviews/M5.md#m5-r11) | The release publish gate keys on the *ref*, not the *event* — a manual run on a tag ref does cut a release | low | [x] |
 | [M5-R12](reviews/M5.md#m5-r12) | The `panic = "unwind"` rationale cites the wrong status code for the path it exists to protect | docs | [x] |
 
+<a id="m6"></a>
+## M6 — Native Anthropic `/v1/messages` (Claude Code passthrough)
+Let a **native** Anthropic client — **Claude Code** (CLI + IDE extension) and the Anthropic SDK — route
+through the proxy and be masked, without the client converting to OpenAI. This **promotes the Claude-Code
+slice of [Option B](#backlog)**: today the proxy is OpenAI-compat-only, in *and* out, so a native client's
+`POST /v1/messages` hits a 404 and nothing is masked.
+
+> **Why now, and why this slice only.** The point of the tool is to sit in front of the LLM you actually
+> use — and the one we use is Claude Code. It speaks *only* the native Anthropic Messages API (confirmed: no
+> OpenAI-compat mode), so "front Claude Code" is precisely "accept `/v1/messages`". The broader Option B
+> (native adapters for *every* provider) stays in Backlog — a missed schema field is a leak, so we add
+> exactly one native schema: the one with a real user behind it.
+
+**Approach — native-in, mask-in-place (decided 2026-07-15).** Accept the Anthropic-native body and mask it
+**directly**, forwarding native→native — *not* translating it to the OpenAI shape and back. Translation adds
+two lossy schema boundaries, each a leak surface; masking in place adds none. This is the architecture of the
+prior proxy's own working Claude Code route (`llmproxy-extended` @ `d9962a4`, *"Anthropic-native /v1/messages
+route for Claude Code passthrough"*), reused as the blueprint. That project's multi-provider *translation*
+adapter is **not** adopted (wrong shape for a native client, and against fail-closed) — it serves only as a
+**field map** for the Anthropic schema.
+
+- [ ] **Inbound `POST /v1/messages`** beside `/v1/chat/completions`. Unknown/unreadable shapes still **fail
+  closed** (FC-03 unchanged); every other path stays 404.
+- [ ] **Mask the native body in place** — no OpenAI round-trip. Coverage must be exhaustive (a missed field
+  is a leak — the Option B risk, pinned by tests):
+  - `messages[].content` as a **string** *and* as an **array of content blocks** (`text`, `tool_use.input`,
+    `tool_result.content`);
+  - the top-level **`system`** field (Anthropic keeps it outside `messages[]` — inject-as-message → mask →
+    restore, per the prior route);
+  - `tools[].input_schema` (name / description / nested descriptions), mirroring today's OpenAI `tools`
+    coverage.
+- [ ] **Native→native forward + auth passthrough.** Forward the client's `Authorization: Bearer` (the OAuth
+  `sk-ant-oat01-*` token Claude Code sends), `anthropic-version` and `anthropic-beta` **verbatim**; inject the
+  proxy's own key as `x-api-key` **only** when the client sent none. **Never** place an OAuth token in
+  `x-api-key` (Anthropic 401). *This is why auth is not a blocker — the proxy never needs to hold a key.*
+- [ ] **Anthropic SSE demask** — de-anonymize the streamed response (`event: content_block_delta` →
+  `delta.text`) with the same hold-back buffering `SseDemasker` already does for the OpenAI shape. **The prior
+  proxy left this a TODO — its streamed replies were forwarded un-demasked — and closing it is the point: a
+  placeholder reaching the client is the exact failure this tool exists to prevent.**
+- [ ] **Verification.** A native-schema coverage / fail-closed suite against a mock upstream, an opt-in real
+  Claude Code smoke, and — the bonus — the **M5 manual dual-run finally executable for real**: point a Claude
+  Code session at the proxy and compare Run A / Run B against live Anthropic.
+- **Out of scope:** Bedrock / Vertex native endpoints, `/v1/messages/count_tokens`, and the broad
+  multi-provider translation registry — all remain Backlog.
+
+**Gate to `1.0.0`.** The first tag ships only once Claude Code works end-to-end through this route, verified
+against real Anthropic — not merely once CI is green.
+
 <a id="backlog"></a>
 ## Backlog — documented, not scheduled
 
@@ -461,7 +524,8 @@ The heavy alternative to M3's Option A: support each provider's **native** API (
 `POST /v1/messages`) instead of its OpenAI-compat endpoint. Needs a **per-provider, schema-aware masking
 adapter** (Anthropic uses `system`, content blocks, `tool_use`/`tool_result`, `tools[].input_schema`), plus
 native auth and paths. **Higher leak risk — a missed schema field is a leak** — so it stays unscheduled
-until a concrete need outweighs the OpenAI-compat path.
+until a concrete need outweighs the OpenAI-compat path. **The Anthropic slice now has that need and is
+promoted to [M6](#m6)** (Claude Code passthrough); native adapters for *other* providers remain here.
 
 ### Request-level provider routing *(moved out of M3)*
 Provider selection is **per-instance** today (`UPSTREAM_PROVIDER`, chosen at startup), which already covers

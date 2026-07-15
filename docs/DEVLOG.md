@@ -3,6 +3,82 @@
 Newest first. One entry per meaningful change — note *what* and *why*, not just
 *what*. This is the running history so context is never lost between sessions.
 
+## 2026-07-15 — M6 opened: native Anthropic `/v1/messages` (Claude Code passthrough); `1.0.0` gate moved behind it
+
+Promoted the Claude-Code slice of Option B into a scheduled milestone, **M6**, after establishing that the
+tool cannot front the LLM we actually use: Claude Code speaks **only** the native Anthropic Messages API
+(`POST /v1/messages`), and the proxy is OpenAI-compat-only (in *and* out), so a Claude Code session pointed
+at it just 404s.
+
+**Grounded in the prior proxy, not guessed.** Studied `francesco-stimola/llmproxy-extended` — specifically
+the maintainer's own commit `d9962a4` *"add Anthropic-native /v1/messages route for Claude Code passthrough"*
+(stabilized in `c658e6c`). Its design: accept `/v1/messages`, run the masking pipeline **on the
+Anthropic-native body in place** (inject the top-level `system` field as a temporary message so the masker's
+`messages[]` walk covers it, then restore), and forward **native→native** to Anthropic — no OpenAI
+translation. Auth is a verbatim passthrough of the client's `Authorization: Bearer` (the OAuth
+`sk-ant-oat01-*` token) + `anthropic-beta`; the proxy never holds a key. The commit's own note pins the
+gotcha: **an OAuth token in `x-api-key` → Anthropic 401** — Bearer for OAuth, x-api-key for API keys.
+
+**Two corrections to my earlier read, recorded honestly:**
+- *Auth is not a blocker.* I had said Claude Code was blocked on both schema *and* auth. The prior proxy
+  proves auth works via verbatim Bearer + `anthropic-beta` passthrough on a native route. The **only** real
+  blocker is the missing native schema handling.
+- *Translation is the wrong tool here.* The fork's base (Fabrizio Salmi) ships a full OpenAI↔native
+  translation adapter for ~25 providers. Considered and **rejected** for the masking path: two lossy schema
+  boundaries = two leak surfaces, against fail-closed. Adopted the maintainer's **mask-in-place** route
+  instead; the translation adapter is kept only as a *field map* for the Anthropic schema.
+
+**Where M6 improves on the prior proxy:** that route left **streaming demask as a TODO** — its streamed
+replies were forwarded un-demasked, i.e. placeholders could reach the client. M6 makes the Anthropic SSE
+demask (`content_block_delta` → `delta.text`) a scope item, reusing the hold-back `SseDemasker` we already
+have for the OpenAI shape. A placeholder reaching the client is the exact failure this tool exists to
+prevent, so it cannot be a TODO here.
+
+Also: the prior proxy's PII *detection* had real gaps (SECRET unreliable, IBAN misclassified, names missed —
+its own README's "Known Issues") — all already solved in this Rust proxy. M6 reuses the old **transport /
+schema** design, never its detection.
+
+**Release plan changed (per the maintainer):** the `1.0.0` tag now waits on M6 — a release ships only once
+Claude Code works end-to-end against real Anthropic. Fronting the LLM we actually use is a `1.0` requirement,
+not a follow-on. This also finally makes the M5 manual dual-run executable for real (a Claude Code
+subscription drives the native route). README + README.it now state the OpenAI-compat-only scope explicitly
+and point native-client support at M6. No source changed yet — M6 is scoped, not built.
+
+## 2026-07-15 — M5's manual verification: dry-run-validated against a mock; the live-provider bar redefined to opt-in
+
+Closed M5's last open box — the manual dual-run of `docs/MANUAL_VERIFICATION.md` — by **redefining its
+bar**, transparently. The box asked for a run against the *real* provider, which needs a live
+`ANTHROPIC_API_KEY` this environment does not hold.
+
+**The obvious workaround was investigated and ruled out.** "Use this Claude Code session's own Anthropic
+access as the credential" fails twice over: Claude Code speaks **only** the native Messages API
+(`POST /v1/messages`, content blocks / `tool_use`), while the proxy proxies **only** the OpenAI-compat
+`/v1/chat/completions` — a Claude Code session pointed at the proxy just 404s, nothing masked; and the
+subscription credential is an **OAuth token scoped to Claude Code's flow** (the `anthropic-beta` header
+carries an OAuth capability the upstream requires), not a plain `Bearer` usable against the raw API. So a
+real-provider run cannot be surrogated from inside a session. Routing Claude Code *through* the proxy is
+exactly **Option B** (native `/v1/messages` masking) — Backlog, out of M5.
+
+**What was actually done:** ran the procedure's Run A / Run B through the **real compiled binary** against a
+throwaway Node mock upstream that echoes the masked text it receives.
+- **Run A** (`PII_DEBUG_SKIP_DEMASK=1`) → client received `[EMAIL_1]`; the `forwarding masked request body
+  upstream` trace carried the placeholder; the mock saw only the placeholder; the raw email appeared in
+  **neither** log stream (DBG-02).
+- **Run B** (normal) → client received the restored `jane.doe@example.com`; the trace still showed only the
+  placeholder, and the de-masked client output was **never** logged.
+- **A vs B on the same input → a byte-identical masked body upstream**: the chain holds end-to-end.
+
+**Why this is enough to close the box (a conscious call, not a silent one):** the *permanent* guarantee
+already lives in CI — DBG-01 (`e2e_debug_skip_demask_returns_placeholders_to_client`) and DBG-02
+(`tests/log_safety.rs`) — plus the three-preset mock e2e (`tests/proxy_e2e.rs`). The manual dry-run only
+confirmed the **written procedure** itself works as documented. The real-provider dual-run is therefore
+reclassified from a close-gate to an **opt-in** extra, ready in `docs/MANUAL_VERIFICATION.md` and
+`tests/anthropic_smoke.rs` (E2E-INT-01) for whoever next holds a key. The `1.0.0` release gate is unchanged
+and still stands on its own (a real green CI run).
+
+Incidental finding folded into the guide: `tracing` writes to **stdout**, so the DBG-02 grep must include
+stdout (a `2>`-only redirect would miss the trace). No source changed; no tests added or removed.
+
 ## 2026-07-15 — CI builds every release target; workflows renamed; the Node-24 bump done right
 
 Three follow-ups after the first manual run went **green on all four targets** (including the new

@@ -40,6 +40,27 @@ credential out of the proxy's environment entirely:
 Mode B works with whatever token your account already uses — an API key, or a token
 issued to your user — because the proxy forwards it **verbatim** and never inspects it.
 
+### Can I route a Claude Code session through the proxy instead? — not yet (Option B)
+
+A natural idea: point a separate Claude Code session at this proxy
+(`ANTHROPIC_BASE_URL=http://127.0.0.1:8080`) so *its* traffic gets masked, using its
+credential instead of a standalone key. **This does not work today**, for two
+independent reasons:
+
+- **Schema.** Claude Code speaks *only* the **native** Anthropic Messages API
+  (`POST /v1/messages`, content blocks, `tool_use`/`tool_result`,
+  `tools[].input_schema`). This proxy proxies *only* the OpenAI-compat
+  `/v1/chat/completions` — everything else 404s, fail-closed (FC-03). A Claude Code
+  session pointed here would just get 404s, with nothing masked.
+- **Auth.** A Claude *subscription* login is an **OAuth token scoped to Claude Code's
+  own flow** (the `anthropic-beta` header carries an OAuth capability the upstream
+  requires); it is **not** a plain `Authorization: Bearer` usable against the raw
+  REST API.
+
+Masking real Claude Code traffic is exactly the value of **Option B** (native
+`/v1/messages` with a schema-aware masker) — see `docs/ROADMAP.md` → Backlog. Until
+then, use a real API key in mode B above.
+
 ## Procedure
 
 *(Shown in mode B. For mode A, drop the `Authorization` header from the `curl` and
@@ -80,6 +101,11 @@ issued to your user — because the proxy forwards it **verbatim** and never ins
      output for `jane.doe@example.com` finds **nothing** — the never-log-raw-PII
      rule (DBG-02) holds on real data, not just the synthetic case
      `tests/log_safety.rs` pins.
+
+   > **Where the trace goes:** `tracing` writes to **stdout**, not stderr. "Grep the
+   > whole terminal output" already covers it, but if you redirect to a file, capture
+   > **stdout** — a `2>`-only redirect would miss the `forwarding masked request body
+   > upstream` line and make the DBG-02 grep pass vacuously.
 
 4. **Restart for Run B** — same env, but drop `PII_DEBUG_SKIP_DEMASK`:
 
