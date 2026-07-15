@@ -326,25 +326,28 @@ Prove the whole system holds **end-to-end** and **under load**, then document it
   env reference (NER + debug folded into `<details>`). The **internal development status is deliberately
   *not* in the README** — that is what this file is for; the README defers here.
 - [x] **CI + release binaries (GitHub Actions).**
-  - **`ci.yml`** — on push to `main` and every PR: `fmt` (once) + `clippy` + `cargo test`, matrixed over
-    the default build and `--features onnx`, plus an **`msrv` job that actually *builds* on the declared
-    floor** ([M5-R5](reviews/M5.md#m5-r5) — before it, `rust-version` was a claim nothing checked, and it
-    was false).
-  - **Build / release split across three files, one build definition (2026-07-15).** The cross-compile
-    matrix lives **once** in a reusable **`build.yml`** (`workflow_call`), called by two entry points that
-    therefore can't drift:
-    - **`release.yml`** — triggers **only on a `v*.*.*` tag**; calls `build.yml`, then publishes a GitHub
-      Release. It has **no `workflow_dispatch`** and no publish `if`-gate — "a manual run can't publish" is
-      now **structural** (the publishing workflow has no manual trigger at all), which retires
-      [M5-R11](reviews/M5.md#m5-r11)'s whole risk class rather than guarding it.
-    - **`manual-build.yml`** — `workflow_dispatch` only; calls the same `build.yml` and keeps the binaries
-      as **throwaway workflow artifacts** (30-day retention). It has **no publish job**, so it *cannot* cut
-      a release. This is the "does every target still compile?" button — run it before tagging.
+  - **Four workflows, one build definition (2026-07-15).** The cross-compile matrix lives **once** in a
+    reusable **`release-build.yml`** (`workflow_call`, `name: Release build`), called by **three** entry
+    points that therefore can't drift:
+    - **`ci.yml`** (`name: CI`) — on push to `main` and every PR: `fmt` (once) + `clippy` + `cargo test`
+      matrixed over the default build and `--features onnx`, an **`msrv` job that actually *builds* on the
+      declared floor** ([M5-R5](reviews/M5.md#m5-r5)), **and** a `release-targets` job that calls
+      `release-build.yml` with `upload-artifacts: false` — so **every release target is compiled on every
+      push/PR** (a missing `ort` prebuilt or a cross-compile break shows up on a PR, not at tag time), with
+      no throwaway binaries. Free on public repos; the cost is a few minutes of wall-clock, accepted.
+    - **`release-publish.yml`** (`name: Release publish`) — triggers **only on a `v*.*.*` tag**; calls
+      `release-build.yml`, then publishes a GitHub Release. It has **no `workflow_dispatch`** and no publish
+      `if`-gate — "a manual run can't publish" is now **structural** (the publishing workflow has no manual
+      trigger at all), which retires [M5-R11](reviews/M5.md#m5-r11)'s whole risk class rather than guarding it.
+    - **`manual-build.yml`** (`name: Manual build`) — `workflow_dispatch` only; calls the same
+      `release-build.yml` and keeps the binaries as **throwaway workflow artifacts** (30-day retention). It
+      has **no publish job**, so it *cannot* cut a release. The way to grab a binary from an arbitrary branch.
     - **Targets: Linux x86_64 + arm64, macOS arm64, Windows x86_64-msvc.** macOS is arm64-only because
       `ort` ships no prebuilt ONNX Runtime for `x86_64-apple-darwin` at the pinned `rc.12` (Intel Macs are
       legacy; the first real manual run proved it — [DEVLOG 2026-07-15](DEVLOG.md)). Linux ships both
       arches, each built **natively** on its own runner (`ubuntu-24.04-arm` for aarch64) — no cross-linker.
-      ONNX Runtime links **statically**, so each artifact is a single self-contained binary.
+      All four targets **verified green** by the first manual run. ONNX Runtime links **statically**, so each
+      artifact is a single self-contained binary.
   - **The release profile is the max-optimization one** (`[profile.release]`): `opt-level = 3`,
     **fat LTO**, `codegen-units = 1`, symbols stripped — worth the ~5 min build, because the masking path
     *is* the product's latency. **`panic` stays `unwind` on purpose**: `abort` would turn a caught masking

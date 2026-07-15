@@ -1,0 +1,46 @@
+name: Release publish
+
+# Cuts a GitHub Release: builds every target (via the reusable release-build.yml) and publishes
+# the binaries. Triggers ONLY on a `v*.*.*` tag — there is deliberately NO `workflow_dispatch`
+# here, so no manual run can ever publish a release. That was M5-R11's whole worry, and it is now
+# structural (a workflow with no manual trigger and no publish path elsewhere) rather than an
+# `if`-gate that has to be got right. On-demand, throwaway builds live in `manual-build.yml`.
+#
+# CI (ci.yml) is the correctness gate on every push/PR — and now also builds every release target
+# (via the same release-build.yml) as an early-warning check, so a target-specific break shows up
+# on a PR rather than only when you tag. This workflow only *packages* what a tag says is ready;
+# nothing here builds until the tag is pushed.
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+jobs:
+  # Reuse the exact same matrix CI and the manual build use — one definition, no drift. Release
+  # artifacts are consumed immediately by `publish`, so they need only a short retention.
+  build:
+    uses: ./.github/workflows/release-build.yml
+    with:
+      retention-days: 3
+
+  publish:
+    name: publish release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      # v8 is the current major on Node 24 (v6 still targets Node 20; v7 was the first on Node 24).
+      - uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+
+      - name: Flatten artifacts
+        run: |
+          mkdir -p out
+          find artifacts -type f -exec cp {} out/ \;
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: out/*
+          generate_release_notes: true

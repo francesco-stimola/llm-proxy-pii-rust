@@ -70,3 +70,14 @@ jobs:
         with:
           key: msrv
       - run: cargo check --all-targets --features onnx
+
+  # Build EVERY release target on push/PR, using the same reusable workflow the release itself
+  # runs — so a target-specific break (a missing `ort` prebuilt, a cross-compile failure) is
+  # caught here instead of at tag time. `upload-artifacts: false`: this is a compile check, not
+  # a release, so it produces no throwaway binaries. GitHub Actions is free for public repos, so
+  # the only cost is a few minutes of wall-clock — deliberately accepted for the early warning.
+  release-targets:
+    name: build all release targets
+    uses: ./.github/workflows/release-build.yml
+    with:
+      upload-artifacts: false

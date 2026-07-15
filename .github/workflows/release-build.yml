@@ -1,13 +1,15 @@
-name: Build
+name: Release build
 
 # Reusable cross-compile matrix — the SINGLE definition of "build the full `--features onnx`
-# product and package one self-contained binary per target". It is called by two entry points
+# product and package one self-contained binary per target". It is called by three entry points
 # so they can never drift:
-#   * release.yml      (on a v*.*.* tag)      → then PUBLISHES the artifacts as a GitHub Release
-#   * manual-build.yml (on workflow_dispatch) → keeps them as throwaway workflow artifacts only
+#   * release-publish.yml (on a v*.*.* tag)      → then PUBLISHES the artifacts as a GitHub Release
+#   * manual-build.yml    (on workflow_dispatch) → keeps them as throwaway workflow artifacts
+#   * ci.yml              (on push/PR)           → builds all targets as an early-warning check,
+#                                                  with `upload-artifacts: false` (no artifacts)
 #
-# There is deliberately no publish step here: a caller that only builds (manual-build.yml)
-# therefore *cannot* publish, structurally, rather than by an `if` gate.
+# There is deliberately no publish step here: a caller that only builds therefore *cannot*
+# publish, structurally, rather than by an `if` gate.
 #
 # Targets: one native binary per matrix row. macOS is arm64-only ON PURPOSE — `ort`'s
 # `download-binaries` ships no prebuilt ONNX Runtime for `x86_64-apple-darwin` at the pinned
@@ -24,6 +26,14 @@ on:
         type: number
         required: false
         default: 7
+      upload-artifacts:
+        description: >-
+          Upload the built binaries as workflow artifacts. Callers that only want a
+          compile check across every target (ci.yml) pass false, so a per-push CI run
+          builds all targets without cluttering storage with throwaway binaries.
+        type: boolean
+        required: false
+        default: true
 
 env:
   CARGO_TERM_COLOR: always
@@ -78,7 +88,11 @@ jobs:
           fi
           cp "$src" "$dest"
 
-      - uses: actions/upload-artifact@v5
+      # v7 is the current major on Node 24 (v5 still targets the deprecated Node 20, v6 was the
+      # first on Node 24). upload- and download-artifact carry different latest majors because
+      # they are separate repos — both are Node 24.
+      - uses: actions/upload-artifact@v7
+        if: ${{ inputs.upload-artifacts }}
         with:
           name: llm-proxy-pii-rust-${{ matrix.target }}
           path: dist/*

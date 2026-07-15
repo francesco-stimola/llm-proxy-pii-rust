@@ -1,9 +1,9 @@
 name: Manual build
 
-# On-demand cross-target build: the "does every target still compile?" button, and the way to
-# grab a binary from an arbitrary branch before committing to a tag. It runs the SAME reusable
-# build.yml as the release, so the two can never drift — but it has NO publish job, so it can
-# never cut a release (releases go only through a `v*.*.*` tag; see release.yml).
+# On-demand cross-target build: the way to grab a binary from an arbitrary branch. It runs the
+# SAME reusable release-build.yml as the release, so the two can never drift — but it has NO
+# publish job, so it can never cut a release (releases go only through a `v*.*.*` tag; see
+# release-publish.yml).
 #
 # Artifacts here are throwaway — 30-day retention, since a manual build is almost always a
 # one-off check rather than something to keep.
@@ -14,6 +14,6 @@ on:
 
 jobs:
   build:
-    uses: ./.github/workflows/build.yml
+    uses: ./.github/workflows/release-build.yml
     with:
       retention-days: 30

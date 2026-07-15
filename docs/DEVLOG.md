@@ -3,6 +3,31 @@
 Newest first. One entry per meaningful change — note *what* and *why*, not just
 *what*. This is the running history so context is never lost between sessions.
 
+## 2026-07-15 — CI builds every release target; workflows renamed; the Node-24 bump done right
+
+Three follow-ups after the first manual run went **green on all four targets** (including the new
+`aarch64-unknown-linux-gnu` on `ubuntu-24.04-arm` — so that runner and `ort`'s linux-arm64 prebuilt both
+exist):
+
+- **The Node-20 warning, fixed *properly* this time.** The previous bump to `@v5` was wrong: reading the
+  actions' own `action.yml`, **`upload-artifact@v5` still declares `using: node20`** (v6 was the first on
+  node24), and **`download-artifact@v6` is node20** too (v7 was its first node24). Bumped to the current
+  node24 majors — **`upload-artifact@v7`, `download-artifact@v8`** (they differ because they are separate
+  repos); `checkout@v5` was already node24. Lesson: don't infer an action's Node runtime from its version
+  number — read `runs.using` in its `action.yml`.
+- **CI now builds every release target** (reverses the "CI stays lean" call in the entry below). That call
+  was made on *cost* grounds — and GitHub Actions is **free for public repos**, so the premise was wrong.
+  `ci.yml` gained a `release-targets` job that calls the reusable `release-build.yml` with
+  `upload-artifacts: false`: every push/PR now cross-compiles all four targets (a compile check, no
+  artifacts), so a target-specific break like the Intel-mac one surfaces on a PR instead of at tag time.
+  The reuse means "what CI checks" and "what a release builds" are the *same definition*, byte for byte.
+- **Workflows renamed for clarity** (no more "build" vs "release" ambiguity): `build.yml` → `release-build.yml`
+  (`name: Release build`), `release.yml` → `release-publish.yml` (`name: Release publish`). `manual-build.yml`
+  keeps its name. The reusable workflow grew an `upload-artifacts` boolean input (default true; CI passes
+  false) so the one definition serves both "build and keep" and "build to check".
+
+All four workflows re-validated as YAML; no source changed.
+
 ## 2026-07-15 — release pipeline restructured: one build definition, two entry points, tag-only publish
 
 Follow-up to the first-run fixes below. Reworked the packaging pipeline from one `release.yml` into
