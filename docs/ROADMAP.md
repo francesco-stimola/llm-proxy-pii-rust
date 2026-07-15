@@ -321,9 +321,10 @@ Prove the whole system holds **end-to-end** and **under load**, then document it
       push/PR anymore. **`cargo test` moved into `release-build.yml`** (so the suite still runs — on every
       target's native runner — but at `manual-build` / tag time, not per push; a release that fails its tests
       never publishes). **`fmt` / `clippy` / `msrv` are now local-only** gates (the CLAUDE.md "green before
-      done" bar), so a lint break surfaces at build time or locally, not on a PR. *(A security-only workflow
-      was added afterwards — `security.yml`, cargo-deny on PR + weekly schedule — but it does not compile the
-      crate, so this build story is unchanged. See DEVLOG 2026-07-15 / ARCHITECTURE → Supply-chain.)*
+      done" bar), so a lint break surfaces at build time or locally, not on a PR. *(Partly reversed later,
+      when Dependabot was enabled: `security.yml` (cargo-deny) and a **trimmed `ci.yml`** (fmt/clippy/test on
+      push + PR) were added so dependency-bump PRs self-verify. The all-target cross-compile stays tag/manual
+      only. See DEVLOG 2026-07-15 / ARCHITECTURE → Supply-chain.)*
     - **Targets: Linux x86_64 + arm64, macOS arm64, Windows x86_64 + arm64.** macOS is arm64-only because
       `ort` ships no prebuilt ONNX Runtime for `x86_64-apple-darwin` at the pinned `rc.12` (Intel Macs are
       legacy). Linux and Windows each ship both arches, built **natively** on their own runner

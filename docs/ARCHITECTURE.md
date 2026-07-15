@@ -566,6 +566,13 @@ read-only by default, with `contents: write` granted *only* to the release **pub
 `GITHUB_TOKEN` never inherits the repo's (possibly read-write) default. This is CodeQL's
 `actions/missing-workflow-permissions` closed as a standing rule rather than a one-off.
 
+**PRs are gated for correctness, too.** `ci.yml` runs fmt / clippy / test (both `default` and `--features
+onnx`) plus an MSRV `cargo check` on every push and PR — lightweight, one platform, **no cross-compile** — so
+a dependency bump (Dependabot's especially) that fails to build or breaks a test cannot be merged green. The
+all-target release build stays tag/manual-only (`release-build.yml`). This is why Dependabot version updates
+are safe to run: the gate, not vigilance, catches a breaking bump — including the 0.x "minor" bumps Dependabot
+cannot recognise as breaking.
+
 ## Decisions & open points
 
 - **Placeholder format: `[KIND_N]`** (e.g. `[EMAIL_1]`) — ASCII, tokenizer-friendly.

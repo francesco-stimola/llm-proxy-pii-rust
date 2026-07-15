@@ -1,0 +1,81 @@
+name: CI
+
+# Lean correctness gate: fmt + clippy + test (default and --features onnx) + an MSRV build.
+# Its job is to make PRs — Dependabot's dependency bumps ESPECIALLY — self-verifying: a bump
+# that fails to compile or breaks a test must never reach main green-in-the-UI.
+#
+# It deliberately does NOT build the release targets (that cross-compile stays in
+# manual-build.yml and the tag release, via release-build.yml). This is a fast
+# "does it still build and pass tests?" check on one platform, not a cross-compile.
+#
+# History: this file was once disabled (ci.yml.disabled) for a tag-driven-only pipeline that
+# ran nothing on push/PR. It was brought back TRIMMED when Dependabot was enabled and its
+# version-update PRs needed a build/test gate. See docs/DEVLOG.md.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Least privilege (CodeQL actions/missing-workflow-permissions) — build + test need only read.
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fmt:
+    name: fmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --check
+
+  # One leg for the default (structured-only, native-dependency-free) build, one for
+  # --features onnx (ONNX NER). Model-dependent tests are #[ignore]d, so the onnx leg compiles
+  # and runs everything except the live-model checks — no model file is needed (docs/TESTING.md).
+  test:
+    name: test (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: default
+            features: ""
+          - name: onnx
+            features: "--features onnx"
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.name }}
+      - name: clippy
+        run: cargo clippy --all-targets ${{ matrix.features }} -- -D warnings
+      - name: test
+        run: cargo test ${{ matrix.features }}
+
+  # Build on the declared MSRV so `rust-version` in Cargo.toml is a checked floor, not a claim
+  # nothing verifies (the M5-R5 lesson). The floor is READ FROM Cargo.toml, not hardcoded here,
+  # so CI and the manifest can't drift. `--no-deps` reads only the workspace manifest, so the
+  # runner's preinstalled cargo parses it without resolving the edition2024 dependency tree.
+  msrv:
+    name: msrv (from Cargo.toml, --features onnx)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - id: msrv
+        run: echo "value=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].rust_version')" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.msrv.outputs.value }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: msrv
+      - run: cargo check --all-targets --features onnx

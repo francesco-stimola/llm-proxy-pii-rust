@@ -3,6 +3,32 @@
 Newest first. One entry per meaningful change — note *what* and *why*, not just
 *what*. This is the running history so context is never lost between sessions.
 
+## 2026-07-15 — CI reinstated (trimmed) as a per-PR gate; Dependabot tuned down
+
+Enabling Dependabot (below) exposed a gap: version-update PRs had **no automated build/test**. The
+tag-driven pipeline only builds at tag/manual time, and cargo-deny / CodeQL check vulnerabilities and
+patterns — not "does it still compile". So a bump like reqwest 0.12→0.13 (a *breaking* 0.x bump) could read
+"Ready to merge" in the UI yet break `main` silently. Fixed on two sides:
+
+- **`ci.yml` brought back, trimmed** (was `ci.yml.disabled`). On push-to-main + PR: `fmt`, `clippy` + `test`
+  on both feature sets (`default` and `--features onnx`), and an MSRV `cargo check`. It **drops** the
+  all-targets release build — that stays in `manual-build.yml` / the tag release (`release-build.yml`). So
+  every PR, Dependabot's especially, is now self-verifying. Ships with `permissions: contents: read` (no
+  repeat of the missing-workflow-permissions alert).
+  - The MSRV leg **reads the floor from `Cargo.toml`** (`cargo metadata --no-deps | jq .rust_version`)
+    instead of hardcoding it, so CI and the manifest can't drift — the M5-R5 lesson, applied.
+- **`dependabot.yml` tuned down** — `weekly`→`monthly`; all non-major cargo updates **grouped** into one PR;
+  true `semver-major` (1.x→2.x) bumps **ignored** (done by hand). Caveat recorded in the file: Dependabot
+  classifies 0.x breaking bumps (reqwest 0.12→0.13) as *minor*, so `ignore semver-major` does **not** suppress
+  them — `ci.yml` is what makes those safe.
+
+**This partly reverses the same-day pipeline change** (which had moved fmt/clippy/test off push/PR). The
+reversal is deliberate and narrow: the tag-driven *release* is unchanged, and the all-target cross-compile is
+still tag/manual-only — what came back is only the lightweight *correctness* gate, because Dependabot needs
+one. The 3 Dependabot PRs already open (reqwest 0.13, tower-http 0.7, a github-actions group) are unaffected by
+the config change (it applies to future runs); once `ci.yml` lands on `main`, Dependabot rebases them and the
+gate runs on each — so their check status shows directly whether the breaking bumps build.
+
 ## 2026-07-15 — Least-privilege GITHUB_TOKEN across all workflows (CodeQL alert)
 
 First finding from the just-enabled CodeQL default setup — `actions/missing-workflow-permissions`, on **all

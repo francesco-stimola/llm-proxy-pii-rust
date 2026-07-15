@@ -11,23 +11,30 @@ updates:
   - package-ecosystem: cargo
     directory: "/"
     schedule:
-      interval: weekly
-      day: monday
+      interval: monthly # was weekly — a solo repo does not need weekly dependency churn
     open-pull-requests-limit: 5
     groups:
-      cargo-minor-patch:
+      # One PR per run for all non-major cargo updates — low noise. If a 0.x "minor" that
+      # is actually breaking (e.g. reqwest 0.12 -> 0.13) lands in the group, the CI gate
+      # (ci.yml: build + test on every PR) turns the PR red, so it can't be merged blind.
+      cargo:
+        patterns: ["*"]
         update-types: ["minor", "patch"]
-    # `ort` is pinned exactly (=2.0.0-rc.12, a prerelease) on purpose — see Cargo.toml.
-    # Dependabot may still propose a bump; treat prerelease bumps as review-by-hand
-    # (nothing here auto-merges regardless).
+    ignore:
+      # True semver-major bumps (1.x -> 2.x) are done by hand, not auto-PR'd.
+      # CAVEAT: Dependabot classifies 0.x breaking bumps (0.12 -> 0.13) as "minor", NOT
+      # major — so this does NOT suppress them. ci.yml is what makes those safe.
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+    # `ort` is pinned exactly (=2.0.0-rc.12, a prerelease) — expect any bump to need a
+    # hand review regardless.
 
   # The GitHub Actions the workflows pin (actions/checkout, cargo-deny-action, …).
   # A stale action is its own supply-chain surface — keep them current too.
   - package-ecosystem: github-actions
     directory: "/"
     schedule:
-      interval: weekly
-      day: monday
+      interval: monthly
     open-pull-requests-limit: 5
     groups:
       github-actions:
