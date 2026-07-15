@@ -1,12 +1,12 @@
 name: Release build
 
 # Reusable cross-compile matrix — the SINGLE definition of "build the full `--features onnx`
-# product and package one self-contained binary per target". It is called by three entry points
+# product and package one self-contained binary per target". It is called by two entry points
 # so they can never drift:
-#   * release-publish.yml (on a v*.*.* tag)      → then PUBLISHES the artifacts as a GitHub Release
-#   * manual-build.yml    (on workflow_dispatch) → keeps them as throwaway workflow artifacts
-#   * ci.yml              (on push/PR)           → builds all targets as an early-warning check,
-#                                                  with `upload-artifacts: false` (no artifacts)
+#   * release-build-publish.yml (on a v*.*.* tag)      → then PUBLISHES the artifacts as a GitHub Release
+#   * manual-build.yml          (on workflow_dispatch) → keeps them as throwaway workflow artifacts
+# (The former per-push `ci.yml` caller, which built all targets as an early-warning check, is
+# disabled — see ci.yml.disabled. There is no per-push CI now; verify with a manual build.)
 #
 # There is deliberately no publish step here: a caller that only builds therefore *cannot*
 # publish, structurally, rather than by an `if` gate.
@@ -18,6 +18,13 @@ name: Release build
 # 2023); `aarch64-apple-darwin` covers every current Mac. An Intel-Mac user builds from source
 # (docs/SETUP.md). Linux ships both x86_64 and arm64 (aarch64 servers are now common — Graviton
 # et al.), each built natively on its own runner so there is no cross-linker to maintain.
+#
+# Windows ships both x86_64 and arm64 too; the arm64 leg builds NATIVELY on GitHub's free
+# `windows-11-arm` runner (public-repo only). It must be native: `aws-lc-sys` (pulled in by the
+# onnx feature's TLS stack) compiles its ARMv8 crypto from source and needs the ARM64 MSVC
+# toolchain + clang-cl the runner provides — it cannot be cross-built from an x86_64 box.
+# aarch64-pc-windows-msvc is the newest target here and the least battle-tested (aws-lc-sys has had
+# win-arm64 build friction upstream), so VALIDATE it with a `manual-build` run before trusting a tag.
 on:
   workflow_call:
     inputs:
@@ -57,6 +64,9 @@ jobs:
             bin: llm-proxy-pii-rust
           - os: windows-latest
             target: x86_64-pc-windows-msvc
+            bin: llm-proxy-pii-rust.exe
+          - os: windows-11-arm
+            target: aarch64-pc-windows-msvc
             bin: llm-proxy-pii-rust.exe
     steps:
       - uses: actions/checkout@v5

@@ -305,43 +305,41 @@ Prove the whole system holds **end-to-end** and **under load**, then document it
   NER languages), the fail-closed / never-log / linear-under-load bars, provider presets, and the full
   env reference (NER + debug folded into `<details>`). The **internal development status is deliberately
   *not* in the README** — that is what this file is for; the README defers here.
-- [x] **CI + release binaries (GitHub Actions).**
-  - **Four workflows, one build definition (2026-07-15).** The cross-compile matrix lives **once** in a
-    reusable **`release-build.yml`** (`workflow_call`, `name: Release build`), called by **three** entry
-    points that therefore can't drift:
-    - **`ci.yml`** (`name: CI`) — on push to `main` and every PR: `fmt` (once) + `clippy` + `cargo test`
-      matrixed over the default build and `--features onnx`, an **`msrv` job that actually *builds* on the
-      declared floor** ([M5-R5](reviews/M5.md#m5-r5)), **and** a `release-targets` job that calls
-      `release-build.yml` with `upload-artifacts: false` — so **every release target is compiled on every
-      push/PR** (a missing `ort` prebuilt or a cross-compile break shows up on a PR, not at tag time), with
-      no throwaway binaries. Free on public repos; the cost is a few minutes of wall-clock, accepted.
-    - **`release-publish.yml`** (`name: Release publish`) — triggers **only on a `v*.*.*` tag**; calls
-      `release-build.yml`, then publishes a GitHub Release. It has **no `workflow_dispatch`** and no publish
-      `if`-gate — "a manual run can't publish" is now **structural** (the publishing workflow has no manual
-      trigger at all), which retires [M5-R11](reviews/M5.md#m5-r11)'s whole risk class rather than guarding it.
-    - **`manual-build.yml`** (`name: Manual build`) — `workflow_dispatch` only; calls the same
-      `release-build.yml` and keeps the binaries as **throwaway workflow artifacts** (30-day retention). It
-      has **no publish job**, so it *cannot* cut a release. The way to grab a binary from an arbitrary branch.
-    - **Targets: Linux x86_64 + arm64, macOS arm64, Windows x86_64-msvc.** macOS is arm64-only because
+- [x] **Release binaries (GitHub Actions) — tag-driven pipeline.**
+  - **Pipeline restructured (2026-07-15) — tag-driven, no push CI.** The cross-compile matrix lives **once**
+    in a reusable **`release-build.yml`** (`workflow_call`, `name: Release build`), called by **two** entry
+    points that can't drift:
+    - **`release-build-publish.yml`** (`name: Release build & publish`) — triggers **only on a `v*.*.*` tag**;
+      builds every target, then publishes a GitHub Release. **No `workflow_dispatch`** and no publish `if`-gate —
+      "a manual run can't publish" is **structural** (no manual trigger at all), which retires
+      [M5-R11](reviews/M5.md#m5-r11)'s whole risk class rather than guarding it. **Its status badge is what the
+      READMEs now show** — "did the last tag build?".
+    - **`manual-build.yml`** (`name: Manual build`) — `workflow_dispatch` only; same `release-build.yml`, keeps
+      binaries as **throwaway artifacts** (30-day). No publish job, so it *cannot* cut a release. With push CI
+      gone, this is **the way to confirm every target still compiles before you tag**.
+    - **`ci.yml` is disabled** (renamed `ci.yml.disabled`) — a deliberate change of approach: no per-push
+      `fmt` / `clippy` / `cargo test` / `msrv`, and no per-push all-targets compile. **Consequence: the test
+      suite now runs only *locally*** (the CLAUDE.md "green before done" bar is a local gate now), and a target
+      break surfaces at `manual-build` / tag time rather than on a PR.
+    - **Targets: Linux x86_64 + arm64, macOS arm64, Windows x86_64 + arm64.** macOS is arm64-only because
       `ort` ships no prebuilt ONNX Runtime for `x86_64-apple-darwin` at the pinned `rc.12` (Intel Macs are
-      legacy; the first real manual run proved it — [DEVLOG 2026-07-15](DEVLOG.md)). Linux ships both
-      arches, each built **natively** on its own runner (`ubuntu-24.04-arm` for aarch64) — no cross-linker.
-      All four targets **verified green** by the first manual run. ONNX Runtime links **statically**, so each
-      artifact is a single self-contained binary.
+      legacy). Linux and Windows each ship both arches, built **natively** on their own runner
+      (`ubuntu-24.04-arm`, `windows-11-arm`) — no cross-linker. **Windows-arm64 (`aarch64-pc-windows-msvc`) is
+      new and not yet validated here**: `aws-lc-sys` (pulled in by the onnx TLS stack) builds its ARMv8 crypto
+      from source and needs the runner's native ARM64 toolchain, and it has had win-arm64 friction upstream —
+      so it must be green on a real `manual-build` run before a tag relies on it. ONNX Runtime links
+      **statically**, so each artifact is a single self-contained binary.
   - **The release profile is the max-optimization one** (`[profile.release]`): `opt-level = 3`,
     **fat LTO**, `codegen-units = 1`, symbols stripped — worth the ~5 min build, because the masking path
     *is* the product's latency. **`panic` stays `unwind` on purpose**: `abort` would turn a caught masking
     panic — which today blocks **one** request, fail-closed ([M4-R19](reviews/M4.md#m4-r19)) — into a
     process abort, i.e. an **outage**. That is not a smaller failure; availability is a privacy property
     here (a proxy that is down protects nothing, and clients fail over to the raw provider).
-  - **CI is now green for real** (2026-07-15, push `9a966df`): all 8 jobs — `fmt`, `msrv`, `test` (default
-    + `onnx`), and the four `release-targets` cross-builds — passed with **no warnings**. The `Release build`
-    reusable workflow is therefore exercised on every push, and the manual run already proved the *publish*
-    path's build stage. **What remains for `1.0.0`** (bump from `0.4.0`): push a `v*.*.*` tag to exercise
-    `release-publish.yml` end-to-end (build → GitHub Release) and, ideally, run the manual live-provider
-    verification below once first. **This gate now also waits on [M6](#m6)**: `1.0.0` ships only once Claude
-    Code works end-to-end through the native `/v1/messages` route against real Anthropic — fronting the LLM we
-    actually use is a `1.0` requirement, not a follow-on.
+  - **First tag is `v0.4.0` — an interim tag** to populate the release badge, cut only after a `manual-build`
+    run is green on **all** targets (win-arm64 especially). It is **not** the `1.0.0` release: `1.0.0` still
+    waits on **[M6](#m6)** — it ships only once Claude Code works end-to-end through the native `/v1/messages`
+    route against real Anthropic, plus the manual live-provider verification. *(The earlier per-push CI green
+    run — push `9a966df` — is now history: that CI is disabled. See DEVLOG 2026-07-15.)*
 
 <a id="m5-ledger"></a>
 ### Review ledger — M5 → [`reviews/M5.md`](reviews/M5.md)

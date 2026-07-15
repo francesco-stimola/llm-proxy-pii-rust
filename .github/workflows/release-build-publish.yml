@@ -1,4 +1,4 @@
-name: Release publish
+name: Release build & publish
 
 # Cuts a GitHub Release: builds every target (via the reusable release-build.yml) and publishes
 # the binaries. Triggers ONLY on a `v*.*.*` tag — there is deliberately NO `workflow_dispatch`
@@ -6,10 +6,10 @@ name: Release publish
 # structural (a workflow with no manual trigger and no publish path elsewhere) rather than an
 # `if`-gate that has to be got right. On-demand, throwaway builds live in `manual-build.yml`.
 #
-# CI (ci.yml) is the correctness gate on every push/PR — and now also builds every release target
-# (via the same release-build.yml) as an early-warning check, so a target-specific break shows up
-# on a PR rather than only when you tag. This workflow only *packages* what a tag says is ready;
-# nothing here builds until the tag is pushed.
+# There is no push/PR CI anymore (ci.yml is disabled — see ci.yml.disabled), so this tag build is
+# the only automated cross-target compile that gates a release, and its status badge is what the
+# READMEs show ("last tag built successfully?"). Run `manual-build.yml` on a branch FIRST to catch
+# a target break before tagging — nothing here builds until the tag is pushed.
 on:
   push:
     tags:

@@ -15,7 +15,8 @@
 
 Rilevamento local-first · segnaposto reversibili · fail-closed · streaming · compatibile OpenAI
 
-[![CI](https://github.com/francesco-stimola/llm-proxy-pii-rust/actions/workflows/ci.yml/badge.svg)](https://github.com/francesco-stimola/llm-proxy-pii-rust/actions/workflows/ci.yml)
+[![Release build & publish](https://github.com/francesco-stimola/llm-proxy-pii-rust/actions/workflows/release-build-publish.yml/badge.svg)](https://github.com/francesco-stimola/llm-proxy-pii-rust/actions/workflows/release-build-publish.yml)
+[![Ultima release](https://img.shields.io/github/v/release/francesco-stimola/llm-proxy-pii-rust?sort=semver&label=release)](https://github.com/francesco-stimola/llm-proxy-pii-rust/releases/latest)
 [![License: AGPL v3](https://img.shields.io/badge/license-AGPL--3.0--or--later-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.89%2B-orange.svg)](https://www.rust-lang.org)
 [![Locales](https://img.shields.io/badge/documenti%20nazionali-10%20paesi-green.svg)](#cosa-rileva)

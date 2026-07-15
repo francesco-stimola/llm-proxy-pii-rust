@@ -3,6 +3,34 @@
 Newest first. One entry per meaningful change — note *what* and *why*, not just
 *what*. This is the running history so context is never lost between sessions.
 
+## 2026-07-15 — Pipeline change: CI disabled, tag-driven release only, + Windows-arm64 target
+
+A deliberate change of approach to the GitHub Actions setup (maintainer's call), reversing part of the M5
+CI story:
+
+- **`ci.yml` disabled** (renamed `ci.yml.disabled`). No more per-push `fmt` / `clippy` / `cargo test` /
+  `msrv`, and no per-push all-targets compile. **The test suite is now a *local* gate only** — the CLAUDE.md
+  "green before done" bar still holds, but nothing on GitHub enforces it per push. A target break now surfaces
+  at `manual-build` / tag time, not on a PR. (Tradeoff accepted deliberately; recorded so it isn't a
+  surprise.)
+- **`release-publish.yml` → `release-build-publish.yml`** (`name: Release build & publish`). Same tag-only
+  trigger, same structural "no manual run can publish". The other workflows' cross-references were updated to
+  match.
+- **READMEs now badge the release, not CI**: the `release-build-publish` workflow status ("did the last tag
+  build?") plus a `github/v/release` version badge, replacing the old `ci.yml` badge. A tag is needed before
+  either shows anything — hence the interim `v0.4.0` below.
+- **Added Windows-arm64** (`aarch64-pc-windows-msvc`) to the matrix, built natively on GitHub's free
+  `windows-11-arm` runner. **Not yet validated.** A local `cargo check --target aarch64-pc-windows-msvc
+  --features onnx` failed — but on a *local-toolchain* gap, not the target: `aws-lc-sys` (onnx TLS stack)
+  compiles its ARMv8 crypto from source and needs the ARM64 MSVC toolchain this x86_64 box lacks (`CC=None`,
+  `LNK1181 chacha-armv8.o`). aws-lc-sys *does* support the triple but has had win-arm64 friction upstream, so
+  it is plausible-but-unproven on the native runner. **Plan: a `manual-build` run validates every target
+  before any tag is pushed** — its output decides whether win-arm64 stays or needs a fix.
+- **Interim tag `v0.4.0`** (the current version) to populate the release badge — explicitly *not* the `1.0.0`
+  release, which still waits on M6. Cut only after `manual-build` is green on all targets.
+
+No source changed — workflows + docs only.
+
 ## 2026-07-15 — M6 opened: native Anthropic `/v1/messages` (Claude Code passthrough); `1.0.0` gate moved behind it
 
 Promoted the Claude-Code slice of Option B into a scheduled milestone, **M6**, after establishing that the

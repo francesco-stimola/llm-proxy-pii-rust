@@ -15,7 +15,8 @@
 
 Local-first detection · reversible placeholders · fail-closed · streaming · OpenAI-compatible
 
-[![CI](https://github.com/francesco-stimola/llm-proxy-pii-rust/actions/workflows/ci.yml/badge.svg)](https://github.com/francesco-stimola/llm-proxy-pii-rust/actions/workflows/ci.yml)
+[![Release build & publish](https://github.com/francesco-stimola/llm-proxy-pii-rust/actions/workflows/release-build-publish.yml/badge.svg)](https://github.com/francesco-stimola/llm-proxy-pii-rust/actions/workflows/release-build-publish.yml)
+[![Latest release](https://img.shields.io/github/v/release/francesco-stimola/llm-proxy-pii-rust?sort=semver&label=release)](https://github.com/francesco-stimola/llm-proxy-pii-rust/releases/latest)
 [![License: AGPL v3](https://img.shields.io/badge/license-AGPL--3.0--or--later-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.89%2B-orange.svg)](https://www.rust-lang.org)
 [![Locales](https://img.shields.io/badge/national%20IDs-10%20countries-green.svg)](#what-it-detects)

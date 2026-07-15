@@ -3,7 +3,8 @@ name: Manual build
 # On-demand cross-target build: the way to grab a binary from an arbitrary branch. It runs the
 # SAME reusable release-build.yml as the release, so the two can never drift — but it has NO
 # publish job, so it can never cut a release (releases go only through a `v*.*.*` tag; see
-# release-publish.yml).
+# release-build-publish.yml). With per-push CI disabled (ci.yml.disabled), this is the way to
+# check that every target still compiles before you tag.
 #
 # Artifacts here are throwaway — 30-day retention, since a manual build is almost always a
 # one-off check rather than something to keep.
