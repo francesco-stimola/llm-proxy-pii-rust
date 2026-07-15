@@ -76,10 +76,10 @@ strip = "symbols"    # smaller artifact; we don't ship debuginfo
 
 # **`panic` stays `unwind` — deliberately, and this is a correctness bar, not a preference.**
 # `panic = "abort"` is the usual last squeeze here, and it would BREAK the fail-closed model:
-# masking runs on `tokio::task::spawn_blocking`, and `server.rs` treats a panic in a stage as a
-# JoinError -> **block the request (400)**, because at that point we hold a body whose PII status
-# is unknown (M4-R19). With `abort`, that panic kills the whole process instead of being caught —
-# turning "one request is refused" into "the proxy is down", i.e. converting a contained
+# masking runs on `tokio::task::spawn_blocking`, and `server.rs` catches a panic in a stage as a
+# JoinError and **blocks the request (fail-closed)** — because at that point we hold a body whose
+# PII status is unknown (M4-R19). With `abort`, that panic kills the whole process instead of being
+# caught — turning "one request is refused" into "the proxy is down", i.e. converting a contained
 # fail-closed into an outage. Availability is a privacy property here: a proxy that is down
 # forwards nothing, but it also protects nothing, and clients may simply fail over to the raw
 # provider. Do not set it.

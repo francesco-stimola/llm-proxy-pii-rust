@@ -75,15 +75,32 @@ pub const MAX_WINDOW_TOKENS: usize = 480;
 /// home for this fact — free to drift from the one that matters.
 pub const CHUNK_OVERLAP_TOKENS: usize = 32;
 
-// The relationships between the three constants above are **compile-time** invariants (M5-R2), not
-// runtime tests — get one wrong and the crate must not build at all.
+/// The re-tokenization headroom a window must leave below [`MODEL_MAX_TOKENS`]: the two special
+/// tokens a re-tokenized chunk re-adds, plus the cut-edge drift (measured **+1…+3** for XLM-R —
+/// but nothing *structurally* bounds it, so the margin itself is the guard). A tokenizer swap
+/// re-opens this number.
+///
+/// **This — not the mere ordering `window < ceiling` — is the invariant the chunker relies on
+/// (M5-R10).** `479 < 512` and `511 < 512` satisfy `<` identically, but a 511-token window
+/// re-tokenizes to ~514 and the PERF-01 `Expand` error is back. The drift has "nowhere to go" the
+/// moment the headroom drops below it, not the moment the window reaches the ceiling — so the
+/// headroom is what must be pinned. It is deliberately larger than the measured +1…+3: this is the
+/// *only* guard in this area that a modelless CI can run, so it holds the constraint the code
+/// actually depends on, with room to spare.
+pub const MIN_DRIFT_HEADROOM_TOKENS: usize = 16;
+
+// The relationships between the constants above are **compile-time** invariants (M5-R2, M5-R10),
+// not runtime tests — get one wrong and the crate must not build at all.
 //
-// 1. The planning window must sit strictly under the model ceiling, or re-tokenization drift
-//    (measured +1…+3) has nowhere to go and the PERF-01 `Expand` error comes straight back.
+// 1. The planning window must leave at least MIN_DRIFT_HEADROOM_TOKENS below the model ceiling, or
+//    re-tokenization drift overflows it and the PERF-01 `Expand` error comes straight back. The
+//    subtraction is const-evaluated, so a window *over* the ceiling underflows and is a compile
+//    error too — this subsumes the weaker `MAX_WINDOW_TOKENS < MODEL_MAX_TOKENS` rather than
+//    sitting beside it.
 // 2. A window must advance by at least one token, or chunking would not terminate.
 const _: () = assert!(
-    MAX_WINDOW_TOKENS < MODEL_MAX_TOKENS,
-    "the planning window must leave headroom for re-tokenization drift"
+    MODEL_MAX_TOKENS - MAX_WINDOW_TOKENS >= MIN_DRIFT_HEADROOM_TOKENS,
+    "the planning window must leave room for re-tokenization drift (specials + cut-edge drift)"
 );
 const _: () = assert!(
     CHUNK_OVERLAP_TOKENS < MAX_WINDOW_TOKENS,

@@ -13,7 +13,8 @@ name: Release
 #                                binary from an arbitrary branch, or to prove the workflow is
 #                                green before committing to a tag.
 #
-# The publish step is tag-gated, so a manual run can never accidentally cut a release.
+# The publish step is gated on the *event* (a tag push), not just the ref, so a manual run can
+# never accidentally cut a release — not even one launched from a tag ref (M5-R11).
 on:
   push:
     tags:
@@ -78,13 +79,15 @@ jobs:
           name: llm-proxy-pii-rust-${{ matrix.target }}
           path: dist/*
 
-  # Tag-gated: a manual (workflow_dispatch) run builds the binaries and stops there — they are
-  # downloadable as workflow artifacts from the run's summary page. Only a `v*.*.*` tag actually
-  # cuts a GitHub Release.
+  # Event-gated AND tag-gated: only a `push` of a `v*.*.*` tag cuts a GitHub Release. A manual
+  # (workflow_dispatch) run builds the binaries and stops there — they are downloadable as workflow
+  # artifacts from the run's summary page. The event check matters: GitHub's "Run workflow" ref
+  # picker lists tags too, so gating on the ref alone would let a manual run *on a tag ref* publish
+  # (M5-R11) — the one thing this gate promises can't happen.
   publish:
     name: publish release
     needs: build
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
       contents: write
