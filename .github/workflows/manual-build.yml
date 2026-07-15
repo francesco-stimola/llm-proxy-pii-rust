@@ -13,6 +13,11 @@ name: Manual build
 on:
   workflow_dispatch:
 
+# Least privilege (CodeQL actions/missing-workflow-permissions). This only calls the reusable
+# build workflow, which needs read of repo contents and nothing more.
+permissions:
+  contents: read
+
 jobs:
   build:
     uses: ./.github/workflows/release-build.yml

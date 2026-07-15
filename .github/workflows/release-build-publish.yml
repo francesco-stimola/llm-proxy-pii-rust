@@ -15,6 +15,13 @@ on:
     tags:
       - "v*.*.*"
 
+# Least-privilege default for every job (CodeQL actions/missing-workflow-permissions). The
+# `build` job (which only calls the reusable workflow) inherits this read-only token; the
+# `publish` job overrides it with `contents: write` below — the one privilege that creates
+# the Release. `write` subsumes `read`, so publish needs nothing else.
+permissions:
+  contents: read
+
 jobs:
   # Reuse the exact same matrix CI and the manual build use — one definition, no drift. Release
   # artifacts are consumed immediately by `publish`, so they need only a short retention.

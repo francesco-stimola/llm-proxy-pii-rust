@@ -43,6 +43,13 @@ on:
         required: false
         default: true
 
+# Least privilege (CodeQL actions/missing-workflow-permissions). Checkout, build and
+# upload-artifact need only read of repo contents — artifact upload uses the Actions
+# runtime token, not GITHUB_TOKEN. A caller can only ever grant this reusable workflow
+# less, never more.
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
 

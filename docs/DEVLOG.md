@@ -3,6 +3,19 @@
 Newest first. One entry per meaningful change — note *what* and *why*, not just
 *what*. This is the running history so context is never lost between sessions.
 
+## 2026-07-15 — Least-privilege GITHUB_TOKEN across all workflows (CodeQL alert)
+
+First finding from the just-enabled CodeQL default setup — `actions/missing-workflow-permissions`, on **all
+three** build workflows. A true positive: a workflow with no `permissions:` block runs on the repo's default
+token, which can be read-write; that violates least privilege for no reason.
+
+Added a top-level `permissions: contents: read` to `release-build.yml` (reusable), `manual-build.yml`, and
+`release-build-publish.yml`. The release **publish** job keeps its own `contents: write` — the one privilege
+that creates the Release (`write` subsumes `read`); everything else (checkout, build, test, artifact upload)
+needs only read (artifact upload uses the Actions runtime token, not `GITHUB_TOKEN`). `security.yml` already
+ran read-only. `ci.yml.disabled` is parked — not scanned by Actions/CodeQL — and gets the same block if it is
+ever revived. No release behaviour changes.
+
 ## 2026-07-15 — Automated dependency-security scanning (Dependabot + cargo-deny)
 
 Added free, public-repo supply-chain scanning — a privacy proxy inherits the CVEs of everything it links, so

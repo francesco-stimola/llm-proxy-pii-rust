@@ -561,6 +561,11 @@ the maintainer's one-click complement in that same Settings pane; also free for 
 Dependabot overlap on advisories but do not duplicate: cargo-deny keys on the Rust-native **RustSec** DB and
 adds source/ban policy GitHub does not, while Dependabot keys on the **GitHub Advisory** DB and opens the fix PRs.
 
+**Workflow tokens run least-privilege.** Every Actions workflow declares an explicit `permissions:` block —
+read-only by default, with `contents: write` granted *only* to the release **publish** job — so the
+`GITHUB_TOKEN` never inherits the repo's (possibly read-write) default. This is CodeQL's
+`actions/missing-workflow-permissions` closed as a standing rule rather than a one-off.
+
 ## Decisions & open points
 
 - **Placeholder format: `[KIND_N]`** (e.g. `[EMAIL_1]`) — ASCII, tokenizer-friendly.
