@@ -343,7 +343,50 @@ allowlist of client request headers to pass through (`forward_request_headers`, 
 `anthropic-version` or editor headers), and any required static headers
 (`upstream_extra_headers`) — each overridable by env. Base URL + API key stay
 env-driven. Auth: the client's own `Authorization` wins, else the configured key as
-`Bearer`. Anthropic's *native* `/v1/messages` schema is out of scope (Option B, Backlog).
+`Bearer`. Anthropic's *native* `/v1/messages` schema is **not** served here — that is the
+inbound work of **[M6](ROADMAP.md#m6)** (the rest of Option B stays Backlog); see *The
+wire-format boundary* next.
+
+## The wire-format boundary — who speaks what to whom
+
+The single most confusing question about this proxy — *"which providers does it work
+with?"* — has a one-line answer once the axis is named: **the proxy speaks exactly one
+wire format, the OpenAI Chat Completions schema (`POST /v1/chat/completions`), on *both*
+hops.** That is the whole point of Option A above — one schema feeds the masker, so there
+is a single shape to get right and no translation layer to leak through.
+
+```
+          OpenAI Chat Completions                        OpenAI Chat Completions
+  client ───────────────────────────►  PROXY  ───────────────────────────►  upstream provider
+  (OpenAI-compatible caller)          mask / restore     (any endpoint speaking that schema)
+```
+
+So *"which providers"* is really **two** independent questions, and conflating them is the
+confusion:
+
+- **Upstream — what the proxy forwards *to*.** Any endpoint that accepts the OpenAI Chat
+  Completions schema. Presets (`UPSTREAM_PROVIDER`): `openai`, `copilot`, and
+  **`anthropic` — via Anthropic's *OpenAI-compatible* endpoint, not its native API** —
+  plus anything else through `UPSTREAM_BASE_URL` (local models behind Ollama / vLLM /
+  LM Studio, Groq, Mistral, …). The preset only sets the *shape* (path, forwarded
+  headers); the masking is identical for all.
+- **Client — what speaks *to* the proxy.** Any OpenAI-compatible client: the OpenAI SDK,
+  `curl` with OpenAI JSON, editor agents that target `/v1/chat/completions` (Cline,
+  Continue), …
+
+**The exception that trips everyone up:** *"works with Anthropic"* (as an **upstream**) is
+true; *"works with Claude Code"* (as a **client**) is not — and they are not the same
+statement. Claude Code is **not** an OpenAI client: it speaks Anthropic's **native**
+Messages API (`POST /v1/messages`, content blocks, `tool_use`/`tool_result`), a path this
+proxy does not serve, so it 404s (fail-closed). Serving that native *inbound* schema — so a
+native client like Claude Code can be masked — is **[M6](ROADMAP.md#m6)**.
+
+> **Why this framing is worth keeping in mind when planning work.** A feature request lands
+> on exactly one of the two axes. *"Support provider X"* is usually **upstream** work — a
+> preset, trivial when X is OpenAI-compatible. *"Support client Y"* is **inbound** work, and
+> if Y speaks a native protocol it means **a new schema on the masking path** — the
+> expensive, leak-sensitive kind (M6, and the remainder of Option B). Name the axis first,
+> and the size and risk of the change follow.
 
 ## Module layout
 

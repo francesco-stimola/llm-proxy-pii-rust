@@ -135,11 +135,14 @@ vengono suddivisi in finestre, così funzionano anche i documenti lunghi.
 
 ---
 
-## Provider
+## Provider e client
 
-Una sola impostazione instrada verso qualsiasi endpoint compatibile con OpenAI. Il mascheramento
-è **identico** in ogni caso — il preset cambia solo l'instradamento (percorso, header), mai cosa
-viene oscurato.
+Il proxy parla **un solo** formato — lo schema OpenAI Chat Completions
+(`/v1/chat/completions`) — su *entrambi* i lati. Quindi "funziona con X?" sono in realtà due
+domande: verso cosa **inoltra** (upstream) e cosa può **parlargli** (client).
+
+**Upstream — verso cosa inoltra.** Qualsiasi endpoint compatibile con OpenAI; il mascheramento è
+**identico** in ogni caso (il preset cambia solo l'instradamento, mai cosa viene oscurato).
 
 ```sh
 UPSTREAM_PROVIDER=openai      # default
@@ -147,12 +150,34 @@ UPSTREAM_PROVIDER=copilot     # GitHub Copilot
 UPSTREAM_PROVIDER=anthropic   # endpoint compatibile OpenAI di Anthropic
 ```
 
-> **Ambito — la forma API compatibile con OpenAI, su entrambi i lati.** Il proxy parla lo schema OpenAI Chat
-> Completions (`/v1/chat/completions`) *sia* verso il tuo client *sia* verso l'upstream; Anthropic e Copilot
-> sono raggiunti tramite i loro endpoint **compatibili con OpenAI**, non le loro API native. Un client che
-> parla il protocollo **nativo** di un provider non è quindi ancora supportato — in particolare **Claude
-> Code**, che usa l'API nativa `/v1/messages` di Anthropic. Il supporto nativo per Anthropic, così che Claude
-> Code possa passare dal proxy, è il prossimo traguardo — vedi la [roadmap](docs/ROADMAP.md).
+...o qualsiasi altro endpoint compatibile con OpenAI tramite `UPSTREAM_BASE_URL` (modelli locali
+dietro Ollama / vLLM / LM Studio, Groq, Mistral, …).
+
+**Client — cosa può parlargli.** Un client funziona col proxy se puoi puntarlo a un **base URL
+compatibile con OpenAI**. La maggior parte degli agent moderni lo permette (via BYOK / provider
+custom); l'eccezione è un client legato al protocollo **nativo** di un vendor.
+
+*Compatibilità client verificata il **2026-07-15** — il supporto BYOK / endpoint custom in questi
+strumenti cambia in fretta; verifica la doc corrente di ciascuno prima di farci affidamento.*
+
+| Client | Passa dal proxy? | Come |
+|---|---|---|
+| SDK OpenAI · `curl` (JSON OpenAI) · Cline · Continue | ✅ | imposta il `base_url` del client sul proxy |
+| **opencode** | ✅ | un provider `@ai-sdk/openai-compatible` custom, `baseURL: http://127.0.0.1:8080/v1` |
+| **pi** (`@earendil-works/pi`) | ✅ | un provider con `"api": "openai-completions"`, `"baseUrl": ".../v1"` |
+| **GitHub Copilot CLI** | ✅ | BYOK: `COPILOT_PROVIDER_BASE_URL=http://127.0.0.1:8080/v1` (il modello deve supportare tool + streaming) |
+| **GitHub Copilot Chat** (VS Code) | ✅ | BYOK → un provider "OpenAI Compatible" puntato al proxy (solo chat) |
+| **Claude Code** · SDK Anthropic | ❌ non ancora | solo nativo `/v1/messages` — nessuna modalità OpenAI-compat → [M6](docs/ROADMAP.md#m6) |
+
+> **Il discrimine è il base URL, non il brand.** GitHub Copilot compare su *entrambi* gli assi — un
+> preset *upstream* (`UPSTREAM_PROVIDER=copilot`) **e**, via BYOK, un *client* (Copilot CLI / Chat):
+> stesso brand, due impostazioni indipendenti. (Il BYOK a endpoint custom di Copilot Chat è solo per
+> la chat ed era in fase di rilascio in VS Code al momento della scrittura; quello della CLI è già
+> disponibile.)
+
+Quindi **Anthropic funziona come *upstream*** (via il suo endpoint compatibile con OpenAI), ma un
+**client nativo come Claude Code *non* funziona** — stesso provider, domanda diversa. Il supporto
+nativo `/v1/messages` è il prossimo traguardo.
 
 ---
 
