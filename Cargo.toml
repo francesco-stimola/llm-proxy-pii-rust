@@ -34,8 +34,15 @@ readme = "README.md"
 tokio = { version = "1", features = ["full"] }
 axum = "0.8"
 tower = "0.5"
-tower-http = { version = "0.6", features = ["trace"] }
-reqwest = { version = "0.12", features = ["json", "stream"] }
+tower-http = { version = "0.7", features = ["trace"] }
+# TLS backend PINNED explicitly (default-features = false + native-tls) instead of inherited from
+# reqwest's `default-tls`. reqwest 0.13 silently flipped that default from native-tls to
+# rustls + aws-lc-rs — which would pull aws-lc-rs into the DEFAULT build and break the
+# native-dep-free guarantee (tests/dependency_footprint.rs, M2.5-R1). Pinning native-tls keeps the
+# default build native-dep-free AND makes the crypto backend a deliberate choice, not a
+# dependency's shifting default. `http2`/`charset`/`system-proxy` re-add what reqwest's own
+# `default` set carries, so runtime behavior matches 0.12; `json`/`stream` are what this proxy uses.
+reqwest = { version = "0.13", default-features = false, features = ["native-tls", "json", "stream", "http2", "charset", "system-proxy"] }
 futures-util = "0.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

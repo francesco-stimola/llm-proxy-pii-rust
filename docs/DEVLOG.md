@@ -3,6 +3,31 @@
 Newest first. One entry per meaningful change — note *what* and *why*, not just
 *what*. This is the running history so context is never lost between sessions.
 
+## 2026-07-15 — reqwest 0.12→0.13 (TLS backend pinned) + tower-http 0.6→0.7
+
+Took the two Dependabot cargo bumps deliberately, by hand, rather than merging the auto-PRs — because
+reqwest 0.13 hid a trap.
+
+- **tower-http 0.6 → 0.7**: a clean bump. No `http`/`hyper`/`tower` major change, and the only thing this
+  crate uses — `TraceLayer::new_for_http()` — is unchanged. Nothing to do but the version.
+- **reqwest 0.12 → 0.13**: the source APIs this crate uses (`Client`, `.json()`, `.bytes_stream()`,
+  `.headers()`, `header::*`) are all unchanged — but reqwest 0.13 **silently flipped its default TLS backend**
+  from native-tls to **rustls + aws-lc-rs**. Dependabot's PR kept the default features, so it would have
+  pulled `aws-lc-rs` into the **default** build — breaking the native-dep-free guarantee that
+  `tests/dependency_footprint.rs` (M2.5-R1) exists to hold, and adding a cmake/NASM build requirement on the
+  Windows/arm64 release. So the bump **pins the TLS backend explicitly**:
+  `default-features = false, features = ["native-tls", "json", "stream", "http2", "charset", "system-proxy"]`
+  — same runtime behaviour as 0.12, native-dep-free default preserved, and the crypto backend is now a
+  deliberate choice rather than a dependency's shifting default (the lesson is recorded next to the dep in
+  `Cargo.toml`).
+
+Verified locally on the default build: `cargo build`, the full default `cargo test` (incl. the footprint
+guard — green, no `aws-lc-rs`), and `cargo clippy -D warnings` all pass. reqwest deduplicates to a single
+`0.13.4` (the onnx/hf-hub stack already used it). One benign new duplicate: reqwest 0.13 is now built on
+tower, so it pulls its own `tower-http 0.6.11` alongside our `0.7.0` — cargo-deny only **warns** on that
+(`multiple-versions = "warn"`). The onnx leg / MSRV / fmt are left to CI (`ci.yml`), which now gates this
+through a PR. Landed on a branch so the gate runs before merge.
+
 ## 2026-07-15 — CI reinstated (trimmed) as a per-PR gate; Dependabot tuned down
 
 Enabling Dependabot (below) exposed a gap: version-update PRs had **no automated build/test**. The
