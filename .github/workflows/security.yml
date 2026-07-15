@@ -43,7 +43,7 @@ jobs:
     name: cargo-deny (advisories, bans, sources)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
           # The action defaults to cargo 1.71, which cannot even run `cargo metadata` on
