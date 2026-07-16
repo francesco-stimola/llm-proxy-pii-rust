@@ -54,6 +54,7 @@ async fn e2e_int01_anthropic_real_provider_roundtrip() {
         max_body_bytes: DEFAULT_MAX_BODY_BYTES,
         provider: "anthropic".to_string(),
         upstream_chat_path: "/v1/chat/completions".to_string(),
+        upstream_messages_path: "/v1/messages".to_string(),
         upstream_extra_headers: Vec::new(),
         forward_request_headers: vec!["anthropic-version".to_string()],
         pii_locales: vec!["it".to_string(), "us".to_string()],

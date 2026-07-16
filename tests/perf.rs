@@ -51,6 +51,7 @@ async fn spawn_proxy(upstream: SocketAddr) -> SocketAddr {
         max_body_bytes: DEFAULT_MAX_BODY_BYTES,
         provider: "openai".to_string(),
         upstream_chat_path: "/v1/chat/completions".to_string(),
+        upstream_messages_path: "/v1/messages".to_string(),
         upstream_extra_headers: Vec::new(),
         forward_request_headers: Vec::new(),
         pii_locales: vec!["it".to_string(), "us".to_string()],

@@ -2,6 +2,15 @@
 //! model how to read the placeholders, and restore the originals in the incoming
 //! response. The only stage wired in the current milestone.
 //!
+//! ## Two wire schemas (M6)
+//!
+//! The masking *engine* (`mask_all`, the `Vault`, the fixpoint) is
+//! schema-agnostic; what differs per schema is the field-by-field walk of the
+//! body. The stage dispatches on [`RequestContext::schema`]:
+//! [`WireSchema::OpenAi`] runs the Chat Completions walk documented below;
+//! [`WireSchema::Anthropic`] runs the native `/v1/messages` walk (in the
+//! *Anthropic native* section). Both share one `Vault` per request.
+//!
 //! ## What gets masked (request)
 //!
 //! Every text-bearing field of the OpenAI chat payload is masked with a shared
@@ -32,7 +41,7 @@ use serde_json::{json, Value};
 
 use crate::pii::anonymizer::Vault;
 use crate::pii::PiiDetector;
-use crate::pipeline::{RequestContext, Stage};
+use crate::pipeline::{RequestContext, Stage, WireSchema};
 use crate::proxy::{ProxyRequest, ProxyResponse};
 
 /// System instruction injected when the request contained PII, so the model
@@ -67,6 +76,7 @@ impl Stage for PrivacyStage {
     }
 
     fn on_request(&self, req: &mut ProxyRequest, ctx: &mut RequestContext) {
+        let schema = ctx.schema;
         // Scope the vault borrow so it's released before we re-read the vault.
         // `detect_error` captures a *required* detector failure so we can fail
         // closed after the walk (its message carries no input text).
@@ -89,7 +99,13 @@ impl Stage for PrivacyStage {
                     text.to_string()
                 }
             };
-            mask_request(&mut req.body, &mut mask)
+            // Dispatch to the schema-specific walk (M6). The masking engine
+            // itself (`mask_all`, the fixpoint, the vault) is schema-agnostic;
+            // only the field-by-field traversal of the body differs.
+            match schema {
+                WireSchema::OpenAi => mask_request(&mut req.body, &mut mask),
+                WireSchema::Anthropic => mask_anthropic_request(&mut req.body, &mut mask),
+            }
         };
 
         // Fail closed: a required detector errored → block, don't forward.
@@ -104,7 +120,10 @@ impl Stage for PrivacyStage {
 
         // Only touch the prompt when we actually masked something.
         if !ctx.vault.is_empty() {
-            inject_augmentation(&mut req.body);
+            match schema {
+                WireSchema::OpenAi => inject_augmentation(&mut req.body),
+                WireSchema::Anthropic => inject_augmentation_anthropic(&mut req.body),
+            }
         }
     }
 
@@ -112,7 +131,10 @@ impl Stage for PrivacyStage {
         if ctx.vault.is_empty() {
             return;
         }
-        demask_response(&mut resp.body, &ctx.vault);
+        match ctx.schema {
+            WireSchema::OpenAi => demask_response(&mut resp.body, &ctx.vault),
+            WireSchema::Anthropic => demask_anthropic_response(&mut resp.body, &ctx.vault),
+        }
     }
 }
 
@@ -263,6 +285,281 @@ fn demask_content(content: &mut Value, f: &mut dyn FnMut(&str) -> String) {
     }
 }
 
+// ── Anthropic native `/v1/messages` (M6) ────────────────────────────────────
+//
+// The proxy masks the Anthropic-native body **in place** — no OpenAI round-trip —
+// so there is no lossy translation boundary to leak through. The masking engine
+// (`mask_all`, the vault, the fixpoint) is identical to the OpenAI path; only the
+// schema walk below is new. Coverage must be exhaustive: an unscanned text field
+// is a leak, and an **unknown content-block type fails closed** (400) so a new
+// Anthropic block type is a conscious addition, never a silent leak.
+
+/// Mask every text-bearing field of an Anthropic `/v1/messages` request.
+///
+/// Covers the top-level `system` (string or text-block array), every
+/// `messages[].content` block (dispatched on `type`), and `tools[].description`
+/// plus every `description` inside `tools[].input_schema`. Returns `Err(reason)`
+/// to fail closed on an unrecognized shape or an unknown content-block type.
+fn mask_anthropic_request(
+    body: &mut Value,
+    f: &mut dyn FnMut(&str) -> String,
+) -> Result<(), String> {
+    // Top-level `system` — a string or an array of text blocks (optional).
+    if let Some(system) = body.get_mut("system") {
+        mask_anthropic_system(system, f)?;
+    }
+
+    let messages = body
+        .get_mut("messages")
+        .ok_or("request has no `messages` field")?
+        .as_array_mut()
+        .ok_or("`messages` is not an array")?;
+    for message in messages {
+        if let Some(content) = message.get_mut("content") {
+            mask_anthropic_content(content, f)?;
+        }
+    }
+
+    // Tool definitions: free-text `description` and every `description` nested in
+    // the tool's JSON-Schema `input_schema` can carry example PII. (Anthropic
+    // tools are flat — `name`/`description`/`input_schema` — unlike OpenAI's
+    // `function.*` nesting.)
+    if let Some(tools) = body.get_mut("tools").and_then(Value::as_array_mut) {
+        for tool in tools {
+            if let Some(description) = tool.get_mut("description") {
+                transform_string_value(description, f);
+            }
+            if let Some(schema) = tool.get_mut("input_schema") {
+                mask_schema_descriptions(schema, f);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Mask the top-level `system` field: a string, or an array of text blocks.
+/// Fails closed on a shape we can't interpret as text.
+fn mask_anthropic_system(
+    system: &mut Value,
+    f: &mut dyn FnMut(&str) -> String,
+) -> Result<(), String> {
+    match system {
+        Value::String(s) => {
+            *s = f(s);
+            Ok(())
+        }
+        // `system` blocks are text-only in the Anthropic schema; mask each
+        // block's `text` (covers a plain `{type:text}` and a cache-control block).
+        Value::Array(blocks) => {
+            for block in blocks {
+                if let Some(text) = block.get_mut("text") {
+                    transform_string_value(text, f);
+                } else if !block.is_object() {
+                    return Err("`system` array has an unrecognized element".to_string());
+                }
+            }
+            Ok(())
+        }
+        Value::Null => Ok(()),
+        _ => Err("`system` has an unrecognized shape".to_string()),
+    }
+}
+
+/// Mask a `messages[].content`: a string, or an array of content blocks.
+fn mask_anthropic_content(
+    content: &mut Value,
+    f: &mut dyn FnMut(&str) -> String,
+) -> Result<(), String> {
+    match content {
+        Value::String(s) => {
+            *s = f(s);
+            Ok(())
+        }
+        Value::Array(blocks) => {
+            for block in blocks {
+                mask_anthropic_block(block, f)?;
+            }
+            Ok(())
+        }
+        Value::Null => Ok(()),
+        _ => Err("message `content` has an unrecognized shape".to_string()),
+    }
+}
+
+/// Mask one Anthropic content block, dispatched on its `type`. **The known set is
+/// exhaustive for real Claude Code traffic and an unknown type fails closed** —
+/// pinned by a guard test, so a new Anthropic block type can never silently leak.
+///
+/// - `text` → the `text` string;
+/// - `tool_use` → every string leaf of `input` (a JSON *object* — the tool
+///   arguments the model chose, restored to real values in the response, so on a
+///   replay they hold real PII);
+/// - `tool_result` → its `content` (string or nested block array — recursive; a
+///   client-run tool's output, the CSV-export leak class E2E-02);
+/// - `thinking` → the `thinking` string (see the note below);
+/// - `document` with a **text** source → its `source.data` (plaintext with PII);
+/// - `image` / other `document` / `redacted_thinking` → non-text or opaque, skipped.
+///
+/// **`thinking` is masked but never *de*-masked** (the response walk leaves it
+/// alone). A thinking block is generated by the model over already-masked input,
+/// so it naturally contains only placeholders; leaving them intact keeps the
+/// block's cryptographic `signature` valid across a multi-turn replay (re-masking
+/// an inert placeholder is a no-op, so the bytes — and the signature — never
+/// change). Masking here only bites if a client injects *fresh* real PII into a
+/// thinking block, which we still refuse to forward in clear.
+fn mask_anthropic_block(
+    block: &mut Value,
+    f: &mut dyn FnMut(&str) -> String,
+) -> Result<(), String> {
+    // A bare string element in a content array *is* text (skipping = leak).
+    if let Value::String(s) = block {
+        *s = f(s);
+        return Ok(());
+    }
+    if !block.is_object() {
+        return Err("message `content` array has an unrecognized element".to_string());
+    }
+    match block.get("type").and_then(Value::as_str) {
+        Some("text") => {
+            if let Some(text) = block.get_mut("text") {
+                transform_string_value(text, f);
+            }
+            Ok(())
+        }
+        Some("tool_use") => {
+            if let Some(input) = block.get_mut("input") {
+                transform_string_leaves(input, f);
+            }
+            Ok(())
+        }
+        Some("tool_result") => {
+            if let Some(content) = block.get_mut("content") {
+                mask_tool_result_content(content, f)?;
+            }
+            Ok(())
+        }
+        Some("thinking") => {
+            if let Some(text) = block.get_mut("thinking") {
+                transform_string_value(text, f);
+            }
+            Ok(())
+        }
+        Some("document") => {
+            // A base64 file source is opaque (skip); a *text* source carries
+            // plaintext that can hold PII, so mask its `data` (never-leak beats
+            // the "skip document" simplification).
+            if let Some(source) = block.get_mut("source") {
+                if source.get("type").and_then(Value::as_str) == Some("text") {
+                    if let Some(data) = source.get_mut("data") {
+                        transform_string_value(data, f);
+                    }
+                }
+            }
+            Ok(())
+        }
+        // Non-text / opaque blocks — nothing to mask, but *known* (not a leak).
+        Some("image") | Some("redacted_thinking") => Ok(()),
+        // Fail closed. The message deliberately carries **no** client value (the
+        // `type` is attacker-influenced), per never-log-raw-PII.
+        Some(_) => Err("unknown Anthropic content block type".to_string()),
+        None => Err("Anthropic content block has no `type`".to_string()),
+    }
+}
+
+/// Mask a `tool_result.content`: a string, or an array of `text`/`image` blocks.
+/// Fails closed on an unknown sub-block, matching the top-level dispatch.
+fn mask_tool_result_content(
+    content: &mut Value,
+    f: &mut dyn FnMut(&str) -> String,
+) -> Result<(), String> {
+    match content {
+        Value::String(s) => {
+            *s = f(s);
+            Ok(())
+        }
+        Value::Array(blocks) => {
+            for block in blocks {
+                if let Value::String(s) = block {
+                    *s = f(s);
+                    continue;
+                }
+                if !block.is_object() {
+                    return Err(
+                        "`tool_result` content array has an unrecognized element".to_string()
+                    );
+                }
+                match block.get("type").and_then(Value::as_str) {
+                    Some("text") => {
+                        if let Some(text) = block.get_mut("text") {
+                            transform_string_value(text, f);
+                        }
+                    }
+                    Some("image") => {}
+                    Some(_) => {
+                        return Err("unknown Anthropic tool_result content block".to_string())
+                    }
+                    None => {
+                        return Err("Anthropic tool_result content block has no `type`".to_string())
+                    }
+                }
+            }
+            Ok(())
+        }
+        Value::Null => Ok(()),
+        _ => Err("`tool_result` content has an unrecognized shape".to_string()),
+    }
+}
+
+/// Prepend the augmentation to the top-level `system` field (string or text-block
+/// array), or create it — the native analogue of [`inject_augmentation`]. Called
+/// only when something was masked.
+fn inject_augmentation_anthropic(body: &mut Value) {
+    let Some(obj) = body.as_object_mut() else {
+        return;
+    };
+    match obj.get_mut("system") {
+        Some(Value::String(s)) => *s = format!("{s}\n\n{AUGMENTATION_PROMPT}"),
+        Some(Value::Array(blocks)) => {
+            blocks.push(json!({ "type": "text", "text": AUGMENTATION_PROMPT }));
+        }
+        // No `system` yet, or a shape we don't recognize → set it to the prompt.
+        Some(other) => *other = json!(AUGMENTATION_PROMPT),
+        None => {
+            obj.insert("system".to_string(), json!(AUGMENTATION_PROMPT));
+        }
+    }
+}
+
+/// Restore placeholders in an Anthropic `/v1/messages` response: the top-level
+/// `content[]` array — `text` blocks and `tool_use.input` string leaves.
+///
+/// Mirrors the request walk, with two deliberate omissions: `thinking` is left
+/// with placeholders (keeps its `signature` valid on replay — see
+/// [`mask_anthropic_block`]), and `tool_use.input` is a real JSON *object*, so its
+/// string leaves are restored with the **plain** demask — serde re-escapes on
+/// serialization, unlike OpenAI's JSON-encoded `arguments` string (M3-R2).
+fn demask_anthropic_response(body: &mut Value, vault: &Vault) {
+    let Some(content) = body.get_mut("content").and_then(Value::as_array_mut) else {
+        return;
+    };
+    for block in content {
+        match block.get("type").and_then(Value::as_str) {
+            Some("text") => {
+                if let Some(text) = block.get_mut("text") {
+                    transform_string_value(text, &mut |t| vault.demask(t));
+                }
+            }
+            Some("tool_use") => {
+                if let Some(input) = block.get_mut("input") {
+                    transform_string_leaves(input, &mut |t| vault.demask(t));
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 // ── Shared helpers ─────────────────────────────────────────────────────────
 
 /// Apply `f` to each `tool_calls[].function.arguments` string on a message.
@@ -281,6 +578,19 @@ fn transform_tool_call_args(message: &mut Value, f: &mut dyn FnMut(&str) -> Stri
 fn transform_string_value(value: &mut Value, f: &mut dyn FnMut(&str) -> String) {
     if let Value::String(s) = value {
         *s = f(s);
+    }
+}
+
+/// Apply `f` to **every string leaf** of a JSON value, recursing through arrays
+/// and object *values* (never object keys — those are field names, not PII).
+/// Used for an Anthropic `tool_use.input` object, whose leaves are the tool
+/// arguments; numbers / bools / null are left untouched.
+fn transform_string_leaves(value: &mut Value, f: &mut dyn FnMut(&str) -> String) {
+    match value {
+        Value::String(s) => *s = f(s),
+        Value::Array(items) => items.iter_mut().for_each(|v| transform_string_leaves(v, f)),
+        Value::Object(map) => map.values_mut().for_each(|v| transform_string_leaves(v, f)),
+        _ => {}
     }
 }
 
@@ -319,6 +629,7 @@ fn merge_augmentation(message: &mut Value) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pii::recognizers::StructuredRecognizers;
     use crate::pii::{Confidence, PiiEntity, PiiKind};
 
     /// A vault mapping `[PERSON_1]` to `value` (built via `mask` from one entity).
@@ -372,5 +683,217 @@ mod tests {
                 .and_then(Value::as_str),
             Some(r#"from O'Ac"me today"#)
         );
+    }
+
+    // ── Anthropic native `/v1/messages` (M6) ────────────────────────────────
+
+    /// Mask `body` in place through the real structured recognizers, returning
+    /// the populated vault. Panics on a fail-closed shape (tests that want the
+    /// error call `mask_anthropic_request` directly).
+    fn mask_anthropic(body: &mut Value) -> Vault {
+        let detector = StructuredRecognizers::new();
+        let mut vault = Vault::new();
+        {
+            let mut mask = |t: &str| vault.mask_all(t, &detector).unwrap();
+            mask_anthropic_request(body, &mut mask).expect("known Anthropic shape");
+        }
+        vault
+    }
+
+    #[test]
+    fn anthropic_masks_every_text_bearing_field() {
+        // Coverage: a value in every place M6 must scan is masked; a value in a
+        // non-text leaf (image data, a numeric tool arg, a thinking `signature`)
+        // is left untouched. A miss here is a leak.
+        let mut body = json!({
+            "model": "claude-x",
+            "system": "ops at sys@corp.com",
+            "messages": [
+                { "role": "user", "content": "top-level string a@b.com" },
+                { "role": "user", "content": [
+                    { "type": "text", "text": "text block c@d.com" },
+                    { "type": "tool_use", "id": "t1", "name": "f",
+                      "input": { "to": "e@f.com", "count": 3, "nested": { "cc": "g@h.com" } } },
+                    { "type": "tool_result", "tool_use_id": "t1",
+                      "content": "csv row i@j.com" },
+                    { "type": "thinking", "thinking": "reasoning k@l.com", "signature": "SIG==" },
+                    { "type": "image", "source": { "type": "base64", "data": "AAAA" } },
+                    { "type": "redacted_thinking", "data": "ENCRYPTED" }
+                ] }
+            ],
+            "tools": [
+                { "name": "lookup", "description": "desc m@n.com",
+                  "input_schema": { "type": "object",
+                    "properties": { "x": { "type": "string", "description": "prop o@p.com" } } } }
+            ]
+        });
+
+        let _vault = mask_anthropic(&mut body);
+        let dump = body.to_string();
+        for raw in [
+            "sys@corp.com",
+            "a@b.com",
+            "c@d.com",
+            "e@f.com",
+            "g@h.com",
+            "i@j.com",
+            "k@l.com",
+            "m@n.com",
+            "o@p.com",
+        ] {
+            assert!(!dump.contains(raw), "leaked {raw} upstream: {dump}");
+        }
+        // Non-text leaves are preserved verbatim.
+        assert_eq!(body["messages"][1]["content"][1]["input"]["count"], 3);
+        assert_eq!(body["messages"][1]["content"][3]["signature"], "SIG==");
+        assert_eq!(body["messages"][1]["content"][4]["source"]["data"], "AAAA");
+        assert_eq!(body["messages"][1]["content"][5]["data"], "ENCRYPTED");
+        // The masked email is a placeholder the model can read back.
+        assert!(dump.contains("[EMAIL_1]"), "no placeholder minted: {dump}");
+    }
+
+    #[test]
+    fn anthropic_masks_text_source_document_but_skips_file_source() {
+        // A text-source document carries plaintext PII (never-leak beats "skip
+        // document"); a base64 file source is opaque and left alone.
+        let mut body = json!({
+            "messages": [ { "role": "user", "content": [
+                { "type": "document",
+                  "source": { "type": "text", "media_type": "text/plain", "data": "leak q@r.com" } },
+                { "type": "document",
+                  "source": { "type": "base64", "media_type": "application/pdf", "data": "JVBERi0=" } }
+            ] } ]
+        });
+        let _vault = mask_anthropic(&mut body);
+        assert!(
+            !body.to_string().contains("q@r.com"),
+            "text document leaked"
+        );
+        assert_eq!(
+            body["messages"][0]["content"][1]["source"]["data"], "JVBERi0=",
+            "base64 file source must be untouched"
+        );
+    }
+
+    #[test]
+    fn anthropic_masks_nested_tool_result_block_array() {
+        // `tool_result.content` can itself be a block array — recurse into it.
+        let mut body = json!({
+            "messages": [ { "role": "user", "content": [
+                { "type": "tool_result", "tool_use_id": "t1", "content": [
+                    { "type": "text", "text": "first s@t.com" },
+                    { "type": "image", "source": { "type": "base64", "data": "BBBB" } },
+                    "bare u@v.com"
+                ] } ]
+            } ]
+        });
+        let _vault = mask_anthropic(&mut body);
+        let dump = body.to_string();
+        assert!(!dump.contains("s@t.com"), "text sub-block leaked: {dump}");
+        assert!(
+            !dump.contains("u@v.com"),
+            "bare-string sub-block leaked: {dump}"
+        );
+        assert_eq!(
+            body["messages"][0]["content"][0]["content"][1]["source"]["data"],
+            "BBBB"
+        );
+    }
+
+    #[test]
+    fn anthropic_unknown_block_type_fails_closed_without_echoing_it() {
+        // Strict: an unknown content block blocks the request, and the reason
+        // carries no client-controlled value (never-log-raw-PII).
+        let mut body = json!({
+            "messages": [ { "role": "user", "content": [
+                { "type": "video-with-ssn-123-45-6789", "url": "x" }
+            ] } ]
+        });
+        let mut f = |t: &str| t.to_string();
+        let err = mask_anthropic_request(&mut body, &mut f).expect_err("unknown block → Err");
+        assert!(!err.contains("123-45-6789"), "reason echoed input: {err}");
+        assert!(
+            !err.contains("video-with-ssn"),
+            "reason echoed the type: {err}"
+        );
+    }
+
+    #[test]
+    fn anthropic_block_without_type_and_missing_messages_fail_closed() {
+        let mut f = |t: &str| t.to_string();
+
+        let mut no_type =
+            json!({ "messages": [ { "role": "user", "content": [ { "text": "hi" } ] } ] });
+        assert!(mask_anthropic_request(&mut no_type, &mut f).is_err());
+
+        let mut no_messages = json!({ "model": "claude-x" });
+        assert!(mask_anthropic_request(&mut no_messages, &mut f).is_err());
+
+        let mut messages_not_array = json!({ "messages": "nope" });
+        assert!(mask_anthropic_request(&mut messages_not_array, &mut f).is_err());
+    }
+
+    #[test]
+    fn anthropic_augmentation_covers_absent_string_and_array_system() {
+        // Absent → created.
+        let mut absent = json!({ "messages": [] });
+        inject_augmentation_anthropic(&mut absent);
+        assert!(absent["system"].as_str().unwrap().contains("placeholder"));
+
+        // String → appended (existing content preserved first).
+        let mut string_sys = json!({ "system": "base rules", "messages": [] });
+        inject_augmentation_anthropic(&mut string_sys);
+        let s = string_sys["system"].as_str().unwrap();
+        assert!(
+            s.starts_with("base rules") && s.contains("placeholder"),
+            "got: {s}"
+        );
+
+        // Array → pushed as a trailing text block.
+        let mut array_sys =
+            json!({ "system": [ { "type": "text", "text": "base" } ], "messages": [] });
+        inject_augmentation_anthropic(&mut array_sys);
+        let blocks = array_sys["system"].as_array().unwrap();
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(blocks[1]["type"], "text");
+        assert!(blocks[1]["text"].as_str().unwrap().contains("placeholder"));
+    }
+
+    #[test]
+    fn anthropic_response_demasks_text_and_tool_use_input_but_not_thinking() {
+        let vault = vault_for("real-value");
+        let mut body = json!({
+            "type": "message",
+            "role": "assistant",
+            "content": [
+                { "type": "text", "text": "see [PERSON_1] now" },
+                { "type": "tool_use", "id": "t", "name": "f",
+                  "input": { "who": "[PERSON_1]", "count": 1 } },
+                { "type": "thinking", "thinking": "about [PERSON_1]", "signature": "SIG==" }
+            ]
+        });
+        demask_anthropic_response(&mut body, &vault);
+
+        assert_eq!(body["content"][0]["text"], "see real-value now");
+        assert_eq!(body["content"][1]["input"]["who"], "real-value");
+        assert_eq!(body["content"][1]["input"]["count"], 1);
+        // Thinking keeps the placeholder so its `signature` stays valid on replay.
+        assert_eq!(body["content"][2]["thinking"], "about [PERSON_1]");
+        assert_eq!(body["content"][2]["signature"], "SIG==");
+    }
+
+    #[test]
+    fn anthropic_tool_use_input_demask_stays_valid_json_through_a_quote() {
+        // `tool_use.input` is a real JSON object, so a value with a `"` restored
+        // into a string leaf must survive re-serialization (serde escapes it).
+        let vault = vault_for(r#"Ac"me"#);
+        let mut body = json!({
+            "content": [ { "type": "tool_use", "input": { "vendor": "[PERSON_1]" } } ]
+        });
+        demask_anthropic_response(&mut body, &vault);
+        assert_eq!(body["content"][0]["input"]["vendor"], r#"Ac"me"#);
+        // …and the whole thing round-trips through a serialize → parse cycle.
+        let reparsed: Value = serde_json::from_str(&body.to_string()).unwrap();
+        assert_eq!(reparsed["content"][0]["input"]["vendor"], r#"Ac"me"#);
     }
 }
