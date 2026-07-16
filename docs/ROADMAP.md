@@ -561,8 +561,21 @@ schemas **every turn** → **20–40 s per message**. Full measurements: DEVLOG 
   dominates the payload. Any answer here (content-keyed cache of the *entities*, leaving the
   per-request vault to mint placeholders as it does now) adds state, and state on the masking path
   needs its own threat argument — which is why this is listed last, not first.
-- [ ] **Re-run the CC battery** once the numbers move, and record the per-turn latency as a product
-  figure next to the RAM ones in the READMEs.
+- [ ] **Rewrite the CC prompts as natural agent tasks** — a **verification debt from M6**, tracked
+  here because M7 owns the re-run. The battery said *"reply with exactly this sentence: contact
+  jane.doe@example.com, IBAN …"*, and the model **refused it as an injection attempt** — correctly.
+  Claude Code is an *agent with a repo context*, not a completion endpoint, and it inherited that
+  context precisely because the fixture lives **inside** the repo. So CC-01/CC-02/CC-08 never ran.
+  > **The design question underneath, worth answering once:** *how do you test PII masking with a
+  > client that refuses suspicious prompts?* The answer is not to argue the agent out of its
+  > judgement (a `CLAUDE.md` telling it to comply would work and would be the wrong fix — it makes
+  > the test a special case of itself). It is to use prompts that are **plausible work**: read this
+  > file and summarise it, format this contact as JSON, run this query. Which is *also* what real
+  > Claude Code traffic looks like — so the rewrite makes the battery both runnable **and** more
+  > representative. CC-03/04/06/09 are already this shape; the chat-only ones are not.
+- [ ] **Re-run the CC battery** once the prompts are fixed and the numbers move — 9 scenarios × 2
+  runs is not practical at 27 s/turn, which is a second reason the latency gates the verification.
+  Record the per-turn latency as a product figure next to the RAM ones in the READMEs.
 
 > **Do not "fix" this with a build profile.** Measured: `release` (fat LTO, opt-level 3) buys **3%**
 > — 27,728 ms → 26,863 ms on 29 KB. The cost is inside ONNX Runtime, a prebuilt native library that
