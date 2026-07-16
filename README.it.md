@@ -156,6 +156,28 @@ Scegli la build in base alla minaccia che hai davvero: il solo strutturato copre
 carte, secret e 10 schemi di identificativo nazionale, ed è indipendente dalla lingua. Il NER ti
 compra nomi, organizzazioni e luoghi — nient'altro.
 
+### Latenza — anch'essa misurata, su un payload realistico
+
+Mascheramento di **un turno realistico di Claude Code** (22,8 KB: system prompt + 10 schemi di
+tool + un messaggio utente), 2026-07-16, stessa macchina (6 core / 12 thread), build debug:
+
+| rilevamento | per turno | per KB |
+|---|---|---|
+| **solo strutturato** | **~20 ms** | ~0,7 ms |
+| **ibrido**, pool di default (`2`, thread derivati → 6) | **~2,85 s** | ~128 ms |
+| **ibrido**, forma a client singolo (`NER_POOL_SIZE=1` → 12 thread) | **~2,09 s** | ~94 ms |
+
+**Il NER è ~100% del costo** — il livello deterministico è ~1.400× più veloce sugli stessi byte.
+Se metti il proxy davanti a un singolo client (un agente di coding, un IDE), imposta
+**`NER_POOL_SIZE=1`**: è la forma con la latenza *e* la RAM più basse, perché una singola richiesta
+occupa comunque una sola sessione. Il pool di default esiste per un proxy **condiviso**, dove vale
+circa il 30% di throughput in più.
+
+> Misura prima di credere a questi numeri sulla tua macchina: `cargo test-onnx --test m7_latency --
+> --ignored --nocapture`. L'harness stampa il dettaglio per campo e uno sweep sui thread. Questi
+> numeri vengono da una build *debug* perché la release qui è irrilevante (misurato: 3%) — il costo
+> è dentro ONNX Runtime, una libreria nativa precompilata.
+
 ---
 
 ## Provider e client
@@ -241,7 +263,8 @@ Tutto è pilotato da variabili d'ambiente.
 | `NER_MODEL_PATH` + `NER_TOKENIZER_PATH` + `NER_LABELS` | *(non impostate)* | File di modello locali espliciti — **zero chiamate in uscita**, hanno sempre la precedenza |
 | `NER_MODEL_REPO` | *(non impostata)* | Download automatico opzionale (`owner/name`) di un modello con revisione fissata nella cache HuggingFace standard. È l'unica chiamata in uscita dell'intero strumento, fatta una volta all'avvio, e scarica **artefatti del modello, non dati utente** |
 | `NER_MODEL_REVISION` | `478a2a3` | Revisione fissata per il download automatico |
-| `NER_POOL_SIZE` | `2` | Dimensione del pool di sessioni ONNX concorrenti |
+| `NER_POOL_SIZE` | `2` | Dimensione del pool di sessioni ONNX concorrenti. **`1` dimezza circa la RAM ed è la forma da usare davanti a un singolo client** (vedi la nota sulla latenza sopra) |
+| `NER_INTRA_THREADS` | *derivato* | Thread **per sessione**. Default `max(1, core / NER_POOL_SIZE)` — le due manopole si **moltiplicano**, e il prodotto deve stare nella macchina. Impostala solo se sai perché |
 | `NER_REQUIRED` | disattivato | **Fail closed per i nomi**: un NER mancante o fallito blocca la richiesta (400) invece di degradare silenziosamente al solo strutturato |
 
 Senza né `NER_MODEL_PATH` né `NER_MODEL_REPO`, la build esegue semplicemente il solo rilevamento

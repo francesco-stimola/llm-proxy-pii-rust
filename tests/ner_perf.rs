@@ -37,7 +37,10 @@ fn load_detector() -> OnnxNerDetector {
     let tokenizer = std::env::var("NER_TOKENIZER_PATH").expect("set NER_TOKENIZER_PATH");
     let labels = std::env::var("NER_LABELS").expect("set NER_LABELS");
     let id2label = labels.split(',').map(str::to_string).collect();
-    OnnxNerDetector::load(&model, &tokenizer, id2label, 1, false).expect("load NER model")
+    // pool=1, intra=1: these guards measure *recall* and *pass counts*, not wall clock, so they
+    // pin the historical single-threaded shape rather than inheriting M7's derived default (which
+    // would make their numbers depend on the runner's core count).
+    OnnxNerDetector::load(&model, &tokenizer, id2label, 1, 1, false).expect("load NER model")
 }
 
 fn load_tokenizer() -> tokenizers::Tokenizer {

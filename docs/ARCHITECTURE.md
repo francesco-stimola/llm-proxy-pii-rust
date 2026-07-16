@@ -503,9 +503,38 @@ and — when the `onnx` feature is on and the model env vars are set — the
 `OnnxNerDetector` over the same text, merging spans through `overlap`. NER config
 is env-driven: `NER_MODEL_PATH`, `NER_TOKENIZER_PATH`, `NER_LABELS` (comma-separated
 labels in class-id order), optional `NER_POOL_SIZE` (session pool for concurrency),
-`NER_TOKEN_TYPE_IDS` (BERT-family models), and `NER_REQUIRED` (fail-closed switch).
+`NER_INTRA_THREADS` (per-session threads — M7, see below), `NER_TOKEN_TYPE_IDS`
+(BERT-family models), and `NER_REQUIRED` (fail-closed switch).
 A missing/failed model logs and falls back to structured-only. The model was chosen
 by *measurement* (XLM-R int8 — `docs/M2-NER-EVALUATION.md`, `docs/DEVLOG.md`).
+
+**NER threading — the two knobs multiply (M7).** `NER_POOL_SIZE × NER_INTRA_THREADS` is the
+process's NER thread count under saturated load, and **the invariant is that the product fits the
+box**, not that either factor saturates it (`intra = 12` with `pool = 2` puts 24 threads on 12
+cores — oversubscription, plausibly slower than one). So `NER_INTRA_THREADS` **defaults to a
+derived value**, `max(1, available_parallelism() / NER_POOL_SIZE)` (`onnx::default_intra_threads`);
+a fixed constant is wrong on a 2-core VM and a 64-core server alike. An explicit env value wins; a
+`0` is treated as unset, never as ONNX Runtime's "pick for me", which would reintroduce exactly the
+oversubscription the derivation prevents.
+
+**A single request occupies one session, so the product is the *saturated-load* count — not what a
+lone request gets.** The masking path is sequential at three nested levels: the field walk holds
+`&mut Vault`, `infer_chunked` loops its windows, and only then does the session run. A lone request
+therefore reaches `intra`, never `pool × intra`, and the pool is **inert at concurrency 1**
+(measured: `2×1` ≈ `1×1`). This is why the right shape is a **deployment** question the proxy
+cannot answer for itself: a personal proxy in front of Claude Code (concurrency ≈ 1) wants
+`NER_POOL_SIZE=1` → all cores on the one request, and half the RAM since each session holds its own
+copy of the weights; a shared proxy wants the pooled shape. **Both are legitimate, which is why
+this is config with a derived default rather than a constant.** Neither is free: `pool=1` was
+measured at **−23% throughput** under concurrent load, because intra-op scaling is sublinear
+(12 threads buy ~2.2×, not 12×) and independent sessions aggregate better. Numbers: DEVLOG
+2026-07-16.
+
+> **Parallelize *detection*, never *minting*.** Chunk-level fan-out would be safe — windows are
+> read-only w.r.t. the `Vault` and `infer_chunked` already merges them deterministically. The
+> **field** walk is not, and `&mut Vault` is not merely why it's hard, it's why it's *wrong*:
+> placeholder numbering follows encounter order, so racing two fields makes `[EMAIL_1]` vs
+> `[EMAIL_2]` a coin flip and breaks the determinism M1 Part B pins.
 
 **NER chunking (M5, PERF-01).** `OnnxNerDetector` tokenizes a field once; if it fits, it runs
 exactly as before (M2). A field that doesn't is split into overlapping token windows

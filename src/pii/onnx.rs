@@ -107,6 +107,38 @@ const _: () = assert!(
     "a chunk window must advance, or chunking would not terminate"
 );
 
+/// Derive the default intra-op thread count for **one** session, given the pool size — the
+/// `NER_INTRA_THREADS` default (M7).
+///
+/// **The two knobs multiply, and that is the trap.** `NER_POOL_SIZE × intra_threads` is the
+/// process's NER thread count under saturated load; the invariant is that the **product** fits the
+/// machine, not that either factor saturates it. A fixed `intra = 12` with `pool = 2` puts 24
+/// threads on a 12-core box — oversubscription, plausibly *slower* than one thread. So the default
+/// is derived from the box rather than picked: a constant is wrong on a 2-core VM and on a 64-core
+/// server alike.
+///
+/// **What this does NOT buy, and the measurement that says so (M7/S1a).** The product is the
+/// *saturated-load* count. A **single** request is sequential at three nested levels — the field
+/// walk holds `&mut Vault`, [`infer_chunked`](OnnxNerDetector::infer_chunked) loops its windows,
+/// and only then does the session run — so one request can reach `intra`, never `pool × intra`; the
+/// pool only wakes for a *second* concurrent request. At `pool = 2` this returns 6 on a 12-thread
+/// box, and a lone Claude Code request then leaves 6 cores idle. That is the right trade for a
+/// shared proxy and the wrong one for a personal proxy, which is exactly why it is overridable and
+/// why `NER_POOL_SIZE=1` is the documented personal-proxy shape.
+pub fn default_intra_threads(pool_size: usize) -> usize {
+    let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
+    derive_intra_threads(pool_size, cores)
+}
+
+/// The pure core of [`default_intra_threads`], split out so it is testable without depending on
+/// the host's core count (the CI runner's box must not decide whether this is correct).
+fn derive_intra_threads(pool_size: usize, cores: usize) -> usize {
+    // `max(1)` on both sides: a zero pool is already clamped to 1 by `load`, and ONNX Runtime
+    // treats intra_threads = 0 as "pick for me" — which would silently reintroduce the
+    // oversubscription this function exists to prevent.
+    (cores / pool_size.max(1)).max(1)
+}
+
 /// NER-based detector backed by an ONNX Runtime session.
 ///
 /// Holds a small **pool** of sessions so inference isn't a single-threaded
@@ -127,13 +159,15 @@ impl OnnxNerDetector {
     /// Load the model + tokenizer from disk and build a CPU session pool.
     ///
     /// `id2label` is the model's label list (index = class id); `pool_size` is
-    /// clamped to at least 1; `needs_token_type_ids` threads a zero
-    /// `token_type_ids` input for BERT-family models.
+    /// clamped to at least 1; `intra_threads` is the per-session intra-op thread count (see
+    /// [`default_intra_threads`] — the caller derives it, this only clamps);
+    /// `needs_token_type_ids` threads a zero `token_type_ids` input for BERT-family models.
     pub fn load(
         model_path: &str,
         tokenizer_path: &str,
         id2label: Vec<String>,
         pool_size: usize,
+        intra_threads: usize,
         needs_token_type_ids: bool,
     ) -> Result<Self> {
         let tokenizer =
@@ -143,6 +177,9 @@ impl OnnxNerDetector {
         // different error param, so convert to a string at every step rather
         // than chaining/propagating them into `anyhow` directly.
         let pool_size = pool_size.max(1);
+        // 0 would mean "ONNX Runtime picks", which on a 12-thread box is 12 *per session* — the
+        // oversubscription `default_intra_threads` exists to prevent. Never let it through.
+        let intra_threads = intra_threads.max(1);
         let mut sessions = Vec::with_capacity(pool_size);
         for _ in 0..pool_size {
             let builder = Session::builder().map_err(|e| anyhow!("session builder: {e}"))?;
@@ -151,7 +188,7 @@ impl OnnxNerDetector {
                 .map_err(|e| anyhow!("optimization level: {e}"))?;
             // `commit_from_file` takes `&mut self`, so this binding must be mut.
             let mut builder = builder
-                .with_intra_threads(1)
+                .with_intra_threads(intra_threads)
                 .map_err(|e| anyhow!("intra threads: {e}"))?;
             let session = builder
                 .commit_from_file(model_path)
@@ -434,6 +471,55 @@ pub fn chunk_char_ranges(
         token_start += stride;
     }
     ranges
+}
+
+#[cfg(test)]
+mod thread_tests {
+    use super::derive_intra_threads;
+
+    #[test]
+    fn the_two_knobs_multiply_to_at_most_the_box() {
+        // The invariant M7 rests on: pool × intra must fit the machine. Anything that lets the
+        // product exceed the core count is the oversubscription this derivation exists to prevent
+        // (12 cores, intra=12, pool=2 → 24 threads, plausibly slower than one).
+        for cores in [1usize, 2, 4, 6, 8, 12, 16, 64] {
+            for pool in [1usize, 2, 3, 4, 8] {
+                let intra = derive_intra_threads(pool, cores);
+                assert!(
+                    intra >= 1,
+                    "cores={cores} pool={pool}: intra must never be 0"
+                );
+                assert!(
+                    pool * intra <= cores.max(pool),
+                    "cores={cores} pool={pool}: derived intra={intra} → {} threads, over the box",
+                    pool * intra
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn derives_the_documented_shapes() {
+        // The personal proxy (Claude Code, concurrency ~1): one session, the whole box. This is
+        // the shape that matters for M7's latency bar.
+        assert_eq!(derive_intra_threads(1, 12), 12);
+        // The default pool on this 12-thread box: 6 each. Note what this means and why it is
+        // documented rather than hidden — a LONE request reaches 6, not 12, because one request
+        // only ever occupies one session (M7/S1a).
+        assert_eq!(derive_intra_threads(2, 12), 6);
+        assert_eq!(derive_intra_threads(4, 12), 3);
+    }
+
+    #[test]
+    fn never_returns_zero_on_a_small_box_or_a_silly_pool() {
+        // A 2-core VM with the default pool, and the degenerate cases. Zero would mean "ONNX
+        // Runtime picks for me" — i.e. every session grabbing every core, which is exactly the
+        // oversubscription we are avoiding. It must clamp to 1 instead.
+        assert_eq!(derive_intra_threads(2, 1), 1);
+        assert_eq!(derive_intra_threads(8, 2), 1);
+        // A zero pool is clamped by `load`, but the arithmetic must not divide by zero here.
+        assert_eq!(derive_intra_threads(0, 12), 12);
+    }
 }
 
 #[cfg(test)]

@@ -155,6 +155,27 @@ build to match the threat you actually have: structured-only already covers emai
 secrets and 10 national ID schemes, and it is language-independent. The NER buys you names,
 organizations and locations — nothing else.
 
+### Latency — also measured, on a realistic payload
+
+Masking one **realistic Claude Code turn** (22.8 KB: system prompt + 10 tool schemas + a user
+message), 2026-07-16, same box (6 cores / 12 threads), debug build:
+
+| detection | per turn | per KB |
+|---|---|---|
+| **structured only** | **~20 ms** | ~0.7 ms |
+| **hybrid**, default pool (`2`, threads derived → 6) | **~2.85 s** | ~128 ms |
+| **hybrid**, single-client shape (`NER_POOL_SIZE=1` → 12 threads) | **~2.09 s** | ~94 ms |
+
+**The NER is ~100% of the cost** — the deterministic layer is ~1,400× faster on the same bytes.
+If you front a single client (a coding agent, an IDE), set **`NER_POOL_SIZE=1`**: it is the
+lowest-latency *and* lowest-RAM shape, because a single request only ever occupies one session.
+The pooled default exists for a **shared** proxy, where it is worth ~30% more throughput.
+
+> Measure before believing any of this on your box: `cargo test-onnx --test m7_latency --
+> --ignored --nocapture`. The harness prints the per-field breakdown and a thread sweep. These
+> numbers come from a *release* build being irrelevant here (measured: 3%) — the cost is inside
+> ONNX Runtime, a prebuilt native library.
+
 ---
 
 ## Providers & clients
@@ -238,7 +259,8 @@ Everything is environment-driven.
 | `NER_MODEL_PATH` + `NER_TOKENIZER_PATH` + `NER_LABELS` | *(unset)* | Explicit local model files — **zero outbound calls**, always wins if set |
 | `NER_MODEL_REPO` | *(unset)* | Opt-in auto-download (`owner/name`) of a revision-pinned model into the standard HuggingFace cache. The only outbound call in the whole tool, made once at startup, and it fetches **model artifacts, not user data** |
 | `NER_MODEL_REVISION` | `478a2a3` | Pinned revision for auto-download |
-| `NER_POOL_SIZE` | `2` | Concurrent ONNX session pool size |
+| `NER_POOL_SIZE` | `2` | Concurrent ONNX session pool size. **`1` roughly halves RAM and is the shape to use in front of a single client** (see the latency note above) |
+| `NER_INTRA_THREADS` | *derived* | Threads **per session**. Defaults to `max(1, cores / NER_POOL_SIZE)` — the two knobs **multiply**, and the product must fit the box. Set it only if you know why |
 | `NER_REQUIRED` | off | **Fail closed for names**: a missing or failing NER blocks the request (400) instead of silently degrading to structured-only |
 
 With neither `NER_MODEL_PATH` nor `NER_MODEL_REPO` set, the build simply runs

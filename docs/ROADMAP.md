@@ -35,8 +35,8 @@ completion**; findings, counts and closure notes live in each milestone's sectio
 | [M4 — Broad locale & language coverage](#m4) | ✅ complete |
 | [M5 — Integration & performance testing](#m5) | ✅ complete |
 | [**M6 — Native Anthropic `/v1/messages`**](#m6) | ✅ **code-complete**, and **verified live**: a real Claude Code session round-trips through the proxy (2026-07-16) |
-| [**M7 — NER latency**](#m7) | 🔨 **active** — the hybrid is ~1 s/KB, i.e. 20–40 s per Claude Code turn. **Now what gates `1.0.0`** |
-| [First tagged release `1.0.0`](#m6) | ⬜ not started — gated on [M7](#m7): the product we advertise must be usable, not just correct |
+| [**M7 — NER latency**](#m7) | 🔨 **active** — code-complete: a realistic turn masks in **2.17 s** (was 4.24 s measured / 27 s claimed), bar met. **Open: the CC battery re-run** (needs a human + a live key) |
+| [First tagged release `1.0.0`](#m6) | ⬜ not started — gated on [M7](#m7)'s battery re-run: the product we advertise must be usable, not just correct |
 
 ---
 
@@ -546,20 +546,42 @@ DEVLOG 2026-07-16 → *M7 implementation plan*; start at S0.**
 > shape again: *a corpus has a shape, and that shape is a blind spot.* A synthetic benchmark's shape
 > is "one field, grown"; a real client's is "the same 30 KB of boilerplate, re-sent forever".
 
-- [ ] **Re-measure first, with a *realistic* fixture — this gates every box below.** The headline
-  numbers came from a blob densely packed with names; real traffic is ~30 KB of near-PII-free
-  boilerplate + a ~100-byte user message, and `mask_all` runs **per field**, so the boilerplate costs
-  **one** pass, not two. Build the sparse fixture, measure per field, then **re-read the leads** —
-  the order below is a hypothesis, not a finding. *(Don't reuse the captured real body from the
-  trace log: it is already **masked**, so its NER pass finds nothing and the number lies.)*
-- [ ] **Declare the bar, and stop at it: a realistic turn under ~3 s ships.** If threads alone get
-  there, do **not** do the fixpoint or the cache — both trade real risk (lost detection; state on
-  the masking path) for speed already banked. **Optimize to a bar, not to exhaustion.**
-- [ ] **Use more than 1 core of 12.** `with_intra_threads(1)` (`src/pii/onnx.rs`) is deliberate — a
-  *pool* of single-threaded sessions optimizes **concurrent throughput** and is exactly wrong for
-  **single-request latency**: ~18 chunks run sequentially, each on one core. Measure the real
-  trade-off (latency vs throughput under concurrent load) rather than picking by intuition — both
-  matter, and the current choice was made when a "field" was a sentence.
+- [x] **Re-measure first, with a *realistic* fixture — this gates every box below.** Done
+  (`tests/m7_latency.rs`, 112 fields / 22.8 KB, shape-asserted). **The headline was 6× pessimistic:
+  a realistic turn masked in 4.24 s, not 27 s** — and not the ~9 s predicted below either. But
+  **the stated mechanism was wrong**, and that is the more useful half: see the box under this list.
+- [x] **Declare the bar, and stop at it: a realistic turn under ~3 s ships.** **Met: 2.17 s** with
+  the derived thread default. So S3 (cache) and S4 (fixpoint) are **not done, on purpose** — both
+  trade real risk (state on the masking path; lost detection) for speed already banked.
+  **Optimized to a bar, not to exhaustion.**
+- [x] **Use more than 1 core of 12.** `NER_INTRA_THREADS` (`src/pii/onnx.rs`,
+  `default_intra_threads`) — explicit env wins, else **derived**: `max(1, available_parallelism() /
+  NER_POOL_SIZE)`. Measured on both axes rather than picked by intuition, and the numbers refuted
+  two of the three things this box originally assumed. **The default improves *both* axes over
+  what shipped** — latency 4.58 s → 2.85 s (1.61×) *and* throughput 0.288 → 0.609 turns/s (2.11×),
+  so it is not a trade against the shared-proxy case at all. Full table: DEVLOG 2026-07-16.
+
+> **What the measurement overturned.** Three claims in this milestone's own text did not survive
+> contact with a realistic fixture. Recording them because the *pattern* is the point — this is
+> the third time in this repo a shape has been mistaken for a finding (M4-R13, M5's PERF-01, now).
+>
+> 1. **"The boilerplate has ~zero PII, so it costs one pass."** It does not. The hybrid tags
+>    `(Organization, "An")` — a **two-character fragment of "Anthropic's"** — in PII-free
+>    instruction prose, so the biggest field in the turn pays a **second** full NER scan. A real
+>    Claude Code system prompt says "Anthropic" and "GitHub" constantly, so this is the normal
+>    case, not an edge one. **The fixpoint lead (S4) is therefore *more* relevant than the plan
+>    concluded, not less** — though the bar was met without it.
+> 2. **"`pool = 1` is not a trade at all"** (my own words, one level up). Measured: it **regresses
+>    throughput 23%** (0.472 vs 0.609 turns/s at concurrency 4). Intra-op scaling is sublinear, so
+>    4 sessions × 3 threads beats 1 × 12 in aggregate. The deployment-shape argument below stands
+>    exactly as written — which is why the default is derived and overridable, not a constant.
+> 3. **"SMT may hurt; 6 may beat 12."** It does not — 12 logical threads beat 6 (2.09 s vs
+>    2.46 s). Hyperthreading helps this int8 model. *Both* of the "measure, don't reason" items
+>    resolved against the intuition that was written down.
+>
+> **Confirmed, on the other hand:** a lone request really does occupy **one session**, so the pool
+> is inert at concurrency 1 (`2×1` 4.58 s ≈ `1×1` 4.48 s) — the S1a correction holds. And scaling
+> really is sublinear: 12 threads buy **2.19×**, not 12×.
 
   > **The two knobs multiply — that is the trap.** `NER_POOL_SIZE × intra_threads` is the thread
   > count. Today it is `2 × 1 = 2`. Naively setting `intra = 12` while `pool = 2` gives **24 threads
@@ -602,11 +624,16 @@ DEVLOG 2026-07-16 → *M7 implementation plan*; start at S0.**
   dominates the payload. Any answer here (content-keyed cache of the *entities*, leaving the
   per-request vault to mint placeholders as it does now) adds state, and state on the masking path
   needs its own threat argument — which is why this is listed last, not first.
-- [ ] **Rewrite the CC prompts as natural agent tasks** — a **verification debt from M6**, tracked
+- [x] **Rewrite the CC prompts as natural agent tasks** — a **verification debt from M6**, tracked
   here because M7 owns the re-run. The battery said *"reply with exactly this sentence: contact
   jane.doe@example.com, IBAN …"*, and the model **refused it as an injection attempt** — correctly.
   Claude Code is an *agent with a repo context*, not a completion endpoint, and it inherited that
   context precisely because the fixture lives **inside** the repo. So CC-01/CC-02/CC-08 never ran.
+  **Done:** CC-01 formats a contact as JSON, CC-02 writes a release note thanking a person at an org
+  in a city (so it *must* carry Person/Org/Location), CC-08 generates a reminder list from the CSV
+  (so it must restore the same placeholders across ~30 streamed lines). The rationale is promoted to
+  [TESTING.md → the prompt-design box](TESTING.md#cc-prompt-design) — it governs every future
+  scenario, not just these three.
   > **The design question underneath, worth answering once:** *how do you test PII masking with a
   > client that refuses suspicious prompts?* The answer is not to argue the agent out of its
   > judgement (a `CLAUDE.md` telling it to comply would work and would be the wrong fix — it makes
@@ -614,9 +641,15 @@ DEVLOG 2026-07-16 → *M7 implementation plan*; start at S0.**
   > file and summarise it, format this contact as JSON, run this query. Which is *also* what real
   > Claude Code traffic looks like — so the rewrite makes the battery both runnable **and** more
   > representative. CC-03/04/06/09 are already this shape; the chat-only ones are not.
-- [ ] **Re-run the CC battery** once the prompts are fixed and the numbers move — 9 scenarios × 2
-  runs is not practical at 27 s/turn, which is a second reason the latency gates the verification.
-  Record the per-turn latency as a product figure next to the RAM ones in the READMEs.
+- [ ] **Re-run the CC battery** — **now unblocked on both counts** (prompts rewritten; a turn masks
+  in ~2.2 s, so 9 scenarios × 2 runs is a coffee break rather than an afternoon), and **the last
+  thing standing between here and `1.0.0`**. It needs a human at the keyboard with a live key and a
+  real Claude Code — this environment has neither, so it cannot be automated away. Procedure:
+  [`MANUAL_VERIFICATION.md`](MANUAL_VERIFICATION.md); **`NER_REQUIRED=1` is non-negotiable** (it is
+  what makes a silently structured-only run fatal — the trap that made the first M6 live run test
+  half the product).
+  - [x] Per-turn latency recorded as a product figure next to the RAM ones in both READMEs —
+    measured on the realistic fixture, not claimed.
 
 > **Do not "fix" this with a build profile.** Measured: `release` (fat LTO, opt-level 3) buys **3%**
 > — 27,728 ms → 26,863 ms on 29 KB. The cost is inside ONNX Runtime, a prebuilt native library that

@@ -161,6 +161,15 @@ async fn load_onnx_ner() -> anyhow::Result<Option<Box<dyn PiiDetector>>> {
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(2);
+    // M7. Explicit `NER_INTRA_THREADS` wins; otherwise derive from the box, because the two knobs
+    // multiply (`pool × intra` threads under load) and a fixed number is wrong on a 2-core VM and a
+    // 64-core server alike. A `0` is treated as unset rather than as ONNX Runtime's "pick for me",
+    // which would put `pool ×` *all cores* threads on the machine.
+    let intra_threads = std::env::var("NER_INTRA_THREADS")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or_else(|| crate::pii::onnx::default_intra_threads(pool_size));
     let needs_token_type_ids = env_flag("NER_TOKEN_TYPE_IDS");
     let labels_override = std::env::var("NER_LABELS").ok();
 
@@ -203,9 +212,12 @@ async fn load_onnx_ner() -> anyhow::Result<Option<Box<dyn PiiDetector>>> {
         &tokenizer,
         id2label,
         pool_size,
+        intra_threads,
         needs_token_type_ids,
     )?;
-    tracing::info!(model, pool_size, "ONNX NER detector loaded");
+    // `intra_threads` is logged because it is *derived* by default: an operator debugging latency
+    // must be able to see what was picked without reproducing the arithmetic.
+    tracing::info!(model, pool_size, intra_threads, "ONNX NER detector loaded");
     Ok(Some(Box::new(detector)))
 }
 

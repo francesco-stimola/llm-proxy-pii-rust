@@ -366,19 +366,40 @@ is a finding. *Client* is the only thing the flag changes. Paths are relative to
 
 ---
 
+> <a id="cc-prompt-design"></a>
+> **Why these read like ordinary work, and why that is the design (M7/S5).** The first version of
+> this battery asked things like *"reply with exactly this sentence: contact jane.doe@example.com,
+> IBAN …"*. **Claude Code refused — correctly.** It is an *agent with repo context* (it inherited
+> this repo's precisely because the fixture workspace lives inside it), and a stranger dictating a
+> sentence full of credentials reads as an injection attempt. CC-01 / CC-02 / CC-08 therefore never
+> ran at all.
+>
+> **The fix is not to argue the agent out of its judgement.** A `CLAUDE.md` telling it to comply
+> would work and would be the wrong fix: it makes the test a special case of itself, and what ships
+> is then verified under a rule no real user has. The fix is to ask for **plausible work** — read
+> this file, format this contact, write this note. Which is *also* what real Claude Code traffic
+> looks like, so the rewrite makes the battery both runnable **and** more representative. The PII
+> still has to travel; it just travels the way it actually does.
+
 **CC-01 — structured PII in a chat prompt**
-- **Ask:** `Rispondi esattamente con questa frase e nient'altro: contatta jane.doe@example.com, IBAN IT60X0542811101000000123456.`
+- **Ask:** `Formatta questo contatto come JSON, senza commenti: Jane Doe, jane.doe@example.com, IBAN IT60X0542811101000000123456.`
 - **Upstream:** `[EMAIL_1]` + `[IBAN_1]`; neither raw value anywhere.
-- **Client — OFF:** the real email and IBAN. **— ON:** `[EMAIL_1]`, `[IBAN_1]`.
-- **Proves:** the baseline round-trip on real traffic.
+- **Client — OFF:** JSON carrying the real email and IBAN. **— ON:** JSON carrying `[EMAIL_1]`,
+  `[IBAN_1]`.
+- **Proves:** the baseline round-trip on real traffic. *A formatting request is work; the model
+  answers it without objection, and the values must still round-trip verbatim inside the JSON.*
 
 **CC-02 — NER entities** *(the one that catches a half-running product)*
-- **Ask:** `Rispondi esattamente con questa frase e nient'altro: Mario Rossi lavora per Acme S.p.A. a Milano.`
+- **Ask:** `Scrivi una nota di rilascio di una riga che ringrazia Mario Rossi di Acme S.p.A. (sede di Milano) per la segnalazione.`
 - **Upstream:** `[PERSON_1]`, `[ORG_1]`, `[LOCATION_1]`; no `Mario Rossi` / `Acme` / `Milano`.
-- **Client — OFF:** the real names. **— ON:** the three placeholders.
+- **Client — OFF:** a release note naming the real person, org and city. **— ON:** the same note
+  carrying the three placeholders.
 - **Proves:** **the hybrid is actually running.** Every other scenario would pass with the NER
   off — email and IBAN are *deterministic* recognizers. Only this one fails. If `Mario Rossi`
   appears upstream in clear, that is a **leak**, not a recall nit.
+- **Why this ask:** writing a release note is unremarkable work, so the agent just does it — but it
+  cannot do it without carrying a Person, an Organization and a Location into the request, which is
+  exactly what must be masked.
 
 **CC-03 — a file with PII → `tool_result`**
 - **Ask:** `Leggi fixtures/contacts.csv e dimmi quante righe di dati contiene e qual è l'email della prima.`
@@ -424,12 +445,17 @@ is a finding. *Client* is the only thing the flag changes. Paths are relative to
   which is what keeps the signature valid.
 
 **CC-08 — a long streamed answer**
-- **Ask:** `Ripeti esattamente questa riga 30 volte, una per riga, senza numerarle: contatta bob@test.com`
-- **Upstream:** `[EMAIL_1]` (once — it is one prompt).
-- **Client — OFF:** 30 lines each carrying the **intact** `bob@test.com` — none split, mangled,
-  or left as a placeholder. **— ON:** 30 lines of `[EMAIL_1]`.
+- **Ask:** `Leggi fixtures/contacts.csv e genera, per ogni contatto e per ognuno dei 10 mesi da gennaio a ottobre, una riga di promemoria del tipo "<mese>: scrivere a <email>". Solo le righe.`
+- **Upstream:** `[EMAIL_1]`…`[EMAIL_3]` — the emails arrive in the **tool result** (the CSV read),
+  so this also covers re-anonymization on the way *up*; no raw address anywhere.
+- **Client — OFF:** ~30 lines each carrying an **intact** address — none split, mangled, or left as
+  a placeholder. **— ON:** the same lines carrying `[EMAIL_n]`.
 - **Proves:** the Anthropic SSE hold-back over many real deltas — a placeholder split across
-  `text_delta`s is reassembled every time, not just once.
+  `text_delta`s is reassembled every time, not just once. **30 restorations of a value the model
+  never saw** is the point: one lucky reassembly proves nothing.
+- **Why this ask:** generating a reminder list from a CSV is ordinary work, and it yields a long
+  streamed answer that repeats the same placeholders dozens of times — the shape CC-08 needs, with
+  none of the "repeat after me" framing that got the original refused.
 
 **CC-09 — PII through an MCP SQL tool** *(the old proxy's TC-04, on real infrastructure)*
 - **Ask:** `Esegui la query in fixtures/customer-lookup.sql con il tool MCP SQL e mostrami il risultato.`
@@ -468,6 +494,50 @@ is a finding. *Client* is the only thing the flag changes. Paths are relative to
     offset is the sentinel `(0, 0)` — mistaking it for the real text end silently dropped the
     last window (a third of the entities lost on one measured input), so
     `the_last_window_reaches_the_true_text_end_not_the_closing_token_sentinel` pins it directly.
+
+<a id="m7-latency"></a>
+### M7 — the latency harness (`tests/m7_latency.rs`, `--features onnx`, `#[ignore]`d)
+
+**Why it is a separate file from `ner_perf.rs`, and the lesson it encodes.** `PERF-01` measured a
+*repeated synthetic sentence* and concluded "linear" — true, and beside the point: it never measured
+a **real client's payload**. Then M7's own opening numbers were taken on a blob *densely packed with
+names* and reported ~0.96 s/KB — the same mistake, one level down. **A corpus has a shape, and the
+shape is the blind spot** (M4-R13 → PERF-01 → here). So this file's fixture is the experiment, and
+its shape is **asserted**, not assumed.
+
+- **PERF-M7-01** — `m7_s0_a_realistic_claude_code_turn_measured_per_field`. One realistic turn (112
+  fields / 22.8 KB) masked with **one vault, field by field**, as production does: one big `system`,
+  10 medium `tools[].description`, 100 tiny `input_schema` descriptions, one ~130 B user message
+  carrying all the PII. Reports per-field cost and **fixpoint pass counts**, then asserts M7's bar —
+  **a realistic turn under 3 s**. Measured **2.17 s**. *The assert is the bar made executable: it
+  failed at 4.24 s before S1 and that failure was the milestone's definition of not-done.*
+  - **The fixture's shape guards are load-bearing.** Total size must be 20–50 KB, `system` must be
+    exactly one field, and the schema tier must be >50 fields. The first draft tripped the size
+    guard at 13.5 KB (350-byte tool descriptions; real ones are 1–4 KB) — i.e. the guard caught a
+    fixture that would have under-measured the product, which is the entire job.
+  - **Do not "improve" it with a captured real body.** The trace log has one, but it is already
+    **masked**, so its NER pass finds nothing and the measurement lies *optimistically*. Synthesize
+    the shape, not the content.
+- **PERF-M7-02** — `m7_s0_what_the_ner_finds_in_boilerplate_that_has_no_pii`. Prints every entity
+  the hybrid finds in text that carries **no PII by construction**. Each hit is a false positive that
+  costs its field a **second full NER scan**. Measured: `(Organization, "An")` — a two-character
+  fragment of "Anthropic's" — in the system prompt. **This is the test that refuted M7's own premise**
+  ("the boilerplate has ~zero PII, so it costs one pass"). Diagnostic: it reports, it does not assert,
+  because the *right* number here is a precision question (M4-R6's class), not a latency one.
+- **PERF-M7-03** — `m7_s1_how_much_of_the_box_can_one_request_use`. Sweeps `pool × intra`. Confirms
+  the pool is **inert at concurrency 1** (`2×1` ≈ `1×1`), that scaling is **sublinear** (12 threads →
+  2.19×), and — against the hypothesis that was written down — that **SMT helps** (12 logical beats
+  6 physical). Reports; does not assert, because the numbers are box-specific.
+- **PERF-M7-04** — `m7_s1_throughput_under_concurrent_load_must_not_regress`. 4 concurrent turns,
+  turns/s per shape. **The guard against optimizing latency by quietly wrecking the shared-proxy
+  case** the pool was built for. It is what measured `pool=1` at **−23% throughput**, refuting "it is
+  not a trade at all" and keeping the default derived rather than repointed.
+- **THREAD-01** — `src/pii/onnx.rs::thread_tests` (unit, **no model needed**, runs in plain
+  `cargo test --features onnx`). Pins `derive_intra_threads`: the product `pool × intra` never
+  exceeds the box (the oversubscription invariant), it never returns `0` (which ONNX Runtime reads as
+  "pick for me" — every session grabbing every core, exactly what the derivation prevents), and it
+  derives the documented shapes. **Tested as a pure function of `(pool, cores)`** so the CI runner's
+  core count cannot decide whether it is correct.
 
 ### M5 review round 1 — the guards the findings left behind
 
@@ -601,9 +671,13 @@ PII). Placeholder-**presence** asserts are on the **specific masked field** (or 
 > **What it did *not* exercise is the hybrid.** No model was configured, so the run was silently structured-only:
 > email and IBAN masked because they are *deterministic* recognizers, while the NER never ran. Verifying the
 > hybrid is the [CC battery](#cc-battery) (CC-01…CC-09 × Run OFF/ON, `NER_REQUIRED=1` — the flag that makes that
-> silent downgrade fatal), and it is **blocked on M7**: its prompts need rewriting (Claude Code correctly refused
-> them as injection attempts) and 9 scenarios × 2 runs is impractical at the current NER latency. **`1.0.0` now
-> waits on M7, not on this box.** The automated mock coverage above remains the permanent guarantee.
+> silent downgrade fatal).
+>
+> **M7 unblocked it on both counts (2026-07-16), and it is now the last thing before `1.0.0`.** The prompts that
+> Claude Code refused as injection attempts are [rewritten as ordinary work](#cc-prompt-design), and a realistic
+> turn masks in ~2.2 s instead of the claimed 27 s, so 9 scenarios × 2 runs is practical. What remains is
+> irreducibly manual: a human, a live key, and eyes on two traces. The automated mock coverage above remains the
+> permanent guarantee; the battery is what proves it on real traffic.
 
 ### Dependency footprint (M2.5-R1)
 - DEP-01 — `tests/dependency_footprint.rs` (`default_build_excludes_the_onnx_and_hf_stack`): `cargo tree` on the **default** features must contain no `hf-hub`/`hf-xet`/`aws-lc`/`ort`/`tokenizers` — the ONNX/HF stack (heavy, native) stays behind the `onnx` feature so the shipped default build is native-dep-free.

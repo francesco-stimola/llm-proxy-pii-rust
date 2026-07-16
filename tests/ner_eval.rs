@@ -128,8 +128,10 @@ fn evaluate_ner_model_against_corpus() {
     };
 
     eprintln!("scoring model: {model}");
-    let ner =
-        OnnxNerDetector::load(&model, &tokenizer, id2label, 1, needs_tt).expect("load NER model");
+    // pool=1, intra=1: this harness scores *recall*, not latency — pinning both knobs keeps a
+    // score reproducible across boxes with different core counts.
+    let ner = OnnxNerDetector::load(&model, &tokenizer, id2label, 1, 1, needs_tt)
+        .expect("load NER model");
     let detector =
         CompositeDetector::new(vec![Box::new(StructuredRecognizers::new()), Box::new(ner)]);
 

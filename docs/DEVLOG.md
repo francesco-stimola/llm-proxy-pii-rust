@@ -103,6 +103,116 @@ which half is true. `release-build.yml`'s `upload-artifacts` input is also docum
 caller passes it, and the caller its rationale cited (the retired per-push `ci.yml`) no longer
 exists.
 
+## 2026-07-16 — M7 built: S0 measured the plan wrong, S1 met the bar, S3/S4 deliberately not done
+
+**The plan said start at S0 and re-measure because the headline number was suspect. It was — by
+6×. And the *reasoning* was wrong in a more interesting way than the number.**
+
+### S0 — the fixture is the experiment
+
+`tests/m7_latency.rs`: one realistic Claude Code turn — 112 fields, 22.8 KB — as the walk actually
+sees it (one big `system`, 10 medium `tools[].description`, 100 tiny `input_schema` descriptions,
+one ~130 B user message holding all the PII). The shape is **asserted**, not hoped for: the first
+draft came out at 13.5 KB because I wrote 350-byte tool descriptions when the real ones are 1–4 KB,
+and the guard rejected it. That guard is the whole point of the file.
+
+**A realistic turn masks in 4.24 s — not 27 s.** The 903 ms/KB headline came from a blob densely
+packed with Italian names; a realistic turn runs at ~186 ms/KB. Per field, before any change:
+
+| part | fields | bytes | ms | ms/KB | passes |
+|---|---|---|---|---|---|
+| `system` | 1 | 6,151 | 1,881 | 313 | **2** |
+| `tools[].description` | 10 | 9,482 | 1,157 | 125 | 10 |
+| `input_schema` descriptions | 100 | 7,060 | 1,094 | 159 | 100 |
+| user message | 1 | 130 | 46 | 362 | 2 |
+
+### …and S0's *mechanism* was wrong, which matters more than its number
+
+The plan asserts the boilerplate carries **~zero PII**, therefore costs **one** fixpoint pass —
+and demotes the fixpoint lead on that basis. **False.** `m7_s0_what_the_ner_finds_in_boilerplate_that_has_no_pii`
+prints exactly one hit in text that contains no PII by construction:
+
+```text
+system  →  [(Organization, "An")]
+```
+
+A **two-character fragment of "Anthropic's"**, tagged `Organization`. So the largest field in the
+turn pays a second full NER scan — ~940 ms of the original 4.24 s. And a real Claude Code system
+prompt names Anthropic and GitHub constantly, so this is the **normal** case. Two consequences:
+
+- **S4 (skip the NER on later fixpoint passes) is *more* relevant than the plan concluded, not
+  less.** It is not done anyway — see S2 — but the reason is the bar, not irrelevance.
+- **It is also an over-mask**: `"Anthropic's"` becomes `"[ORG_1]thropic's"` in the system prompt
+  the model receives. Not a leak (it fails toward masking) and squarely the accepted M4-R6 class,
+  but it is *boilerplate corruption* nobody had seen, because nobody had run the NER over a real
+  system prompt. **Logged as a finding for the review, not fixed here** — precision work is not
+  M7's scope and would need its own recall argument.
+
+### S1 — measured on both axes, and the numbers refuted the intuition twice
+
+`NER_INTRA_THREADS`, explicit-wins-else-derived (`default_intra_threads` = `max(1,
+available_parallelism() / NER_POOL_SIZE)`). The two knobs multiply, so the **product** must fit the
+box; a `0` is treated as unset rather than ONNX Runtime's "pick for me", which would put
+`pool × all-cores` threads on the machine.
+
+**Latency — one request, 22.8 KB turn, 12 logical cores:**
+
+| pool | intra | ms | ms/KB | vs shipped |
+|---|---|---|---|---|
+| **2** | **1** | **4,582** | 206 | 1.00× ← what shipped |
+| 1 | 1 | 4,481 | 201 | 1.02× |
+| 1 | 2 | 4,112 | 184 | 1.11× |
+| 1 | 4 | 2,922 | 131 | 1.57× |
+| 1 | 6 | 2,462 | 110 | 1.86× |
+| **1** | **12** | **2,092** | 94 | **2.19×** |
+| 2 | 6 | 2,847 | 128 | 1.61× ← the new default here |
+| 4 | 3 | 3,218 | 144 | 1.42× |
+
+**Throughput — 4 concurrent turns:**
+
+| pool | intra | turns/s |
+|---|---|---|
+| 2 | 1 | 0.288 ← what shipped |
+| **2** | **6** | **0.609** ← the new default here |
+| 1 | 12 | 0.472 |
+| 4 | 3 | **0.731** |
+
+**Three things the measurement settled — two against what was written down:**
+
+1. **The pool is inert at concurrency 1** — `2×1` (4.58 s) ≈ `1×1` (4.48 s). The S1a correction
+   holds: one request occupies one session, so a lone request reaches `intra`, never `pool × intra`.
+2. **`pool=1` is *not* free** — I had written "it is not a trade at all". It is: **−23% throughput**
+   (0.472 vs 0.609). Intra-op scaling is sublinear, so 4 sessions × 3 threads aggregate better than
+   1 × 12. The deployment-shape argument in ROADMAP → M7 stands exactly as written, which is why
+   the default is derived and overridable rather than repointed at the personal case.
+3. **SMT helps here** — 12 logical threads beat 6 (2.09 s vs 2.46 s), against the "6 may beat 12"
+   hypothesis. Both "measure, don't reason" items resolved *against* the intuition.
+
+**The derived default improves both axes over what shipped** — 4.58 → 2.85 s latency *and*
+0.288 → 0.609 turns/s — so it is not a trade against the shared proxy at all. The personal proxy
+(`NER_POOL_SIZE=1` → intra 12) gets **2.09 s and half the RAM**, since each session holds its own
+copy of the weights.
+
+### S2 — the bar, honoured
+
+**2.17 s < 3 s → stop.** `S3` (content-keyed cache) and `S4` (skip the NER on later passes) are
+**not implemented, deliberately**. Both were gated on the bar being missed; both put real risk on
+the masking path — state, and lost detection respectively — and buying that risk for speed already
+banked is how a privacy tool grows a leak. The bar was declared *before* the numbers precisely so
+this decision couldn't be rationalised afterwards.
+
+**Stated honestly:** the fixture is 22.8 KB and real Claude Code turns run **20–40 KB**. At the top
+of that range the same rates give ~3.7 s (personal shape) — **over the bar**. The bar is met for a
+realistic turn, not for the worst turn. If the re-run battery (S6) lands over it on real traffic,
+S3 is the next lead and its threat argument is already written.
+
+### An asymmetry worth recording for whoever picks this up
+
+At `intra=12`, the **100 tiny schema descriptions became the single biggest tier** — 909 ms of the
+2.17 s turn, for only 7 KB. They barely improved (1,094 → 909 ms, 1.2×) while the tool descriptions
+improved 2.5×: a ~20-token sequence cannot use 12 threads, so it is nearly all per-call overhead
+(~9 ms × 100). **Threads are done here; batching those calls is the next lead, not more threads.**
+
 ## 2026-07-16 — M7 implementation plan (design only — not built)
 
 The technical blueprint for M7 (NER latency), to hand to the builder. **No source written.** Scope
