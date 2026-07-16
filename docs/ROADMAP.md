@@ -531,6 +531,25 @@ schemas **every turn** → **20–40 s per message**. Full measurements: DEVLOG 
   **single-request latency**: ~18 chunks run sequentially, each on one core. Measure the real
   trade-off (latency vs throughput under concurrent load) rather than picking by intuition — both
   matter, and the current choice was made when a "field" was a sentence.
+
+  > **The two knobs multiply — that is the trap.** `NER_POOL_SIZE × intra_threads` is the thread
+  > count. Today it is `2 × 1 = 2`. Naively setting `intra = 12` while `pool = 2` gives **24 threads
+  > on 12 cores** — oversubscription, and plausibly *slower* than now. The invariant is that the
+  > **product** fits the box, not that either factor saturates it. So the default should be
+  > **derived**, not fixed: `intra = max(1, available_parallelism() / NER_POOL_SIZE)`, overridable by
+  > env like `NER_POOL_SIZE` already is. A fixed number is wrong on a 2-core VM and on a 64-core
+  > server alike.
+  >
+  > **And the right shape depends on the deployment, which the proxy cannot know.** A personal proxy
+  > in front of Claude Code (the M6 case) has concurrency ≈ 1 → latency is everything → `pool=1,
+  > intra=all`. A shared proxy fronting many clients wants the current shape, scaled. Both are
+  > legitimate; that is precisely why this is config with a sane default, not a constant.
+  >
+  > **Two things to measure, not reason about:** (1) **SMT** — `available_parallelism()` reports
+  > *logical* cores (12 = 6 physical × HT), and for dense math hyperthreading often *hurts*, so 6 may
+  > beat 12; (2) **scaling is sublinear** — expect ~3× from 6 threads, not 6×, and less on an **int8**
+  > model whose kernels are memory-bandwidth-bound rather than ALU-bound. Benchmark both axes before
+  > believing either.
 - [ ] **Stop paying twice for the fixpoint.** A no-PII 34.7 KB field (one pass) masks in 9.9 s
   = 286 ms/KB; a *smaller* 29.4 KB field with PII (two passes) takes 26.6 s = 903 ms/KB — **2.7×
   slower while 15% shorter**. M4-R21 accepted that cost when the NER saw sentences. The lead:
