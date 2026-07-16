@@ -175,7 +175,7 @@ strumenti cambia in fretta; verifica la doc corrente di ciascuno prima di farci 
 | **pi** (`@earendil-works/pi`) | ✅ | un provider con `"api": "openai-completions"`, `"baseUrl": ".../v1"` |
 | **GitHub Copilot CLI** | ✅ | BYOK: `COPILOT_PROVIDER_BASE_URL=http://127.0.0.1:8080/v1` (il modello deve supportare tool + streaming) |
 | **GitHub Copilot Chat** (VS Code) | ✅ | BYOK → un provider "OpenAI Compatible" puntato al proxy (solo chat) |
-| **Claude Code** · SDK Anthropic | ❌ non ancora | solo nativo `/v1/messages` — nessuna modalità OpenAI-compat → [M6](docs/ROADMAP.md#m6) |
+| **Claude Code** · SDK Anthropic | ✅ novità (M6) | puntalo al proxy con `UPSTREAM_PROVIDER=anthropic`; il body nativo `/v1/messages` è mascherato **in place** (nessuna traduzione OpenAI). *La verifica end-to-end dal vivo contro Anthropic reale è il [gate `1.0.0`](docs/ROADMAP.md#m6) ancora aperto.* |
 
 > **Il discrimine è il base URL, non il brand.** GitHub Copilot compare su *entrambi* gli assi — un
 > preset *upstream* (`UPSTREAM_PROVIDER=copilot`) **e**, via BYOK, un *client* (Copilot CLI / Chat):
@@ -183,9 +183,11 @@ strumenti cambia in fretta; verifica la doc corrente di ciascuno prima di farci 
 > la chat ed era in fase di rilascio in VS Code al momento della scrittura; quello della CLI è già
 > disponibile.)
 
-Quindi **Anthropic funziona come *upstream*** (via il suo endpoint compatibile con OpenAI), ma un
-**client nativo come Claude Code *non* funziona** — stesso provider, domanda diversa. Il supporto
-nativo `/v1/messages` è il prossimo traguardo.
+Quindi **Anthropic funziona come *upstream*** (via il suo endpoint compatibile con OpenAI) **e ora
+anche come *client nativo*** — **M6** serve il `/v1/messages` nativo di Anthropic (blocchi di
+contenuto, `tool_use`/`tool_result`, streaming), così un client nativo come Claude Code è mascherato
+senza una modalità OpenAI-compat. La rotta è registrata solo quando `UPSTREAM_PROVIDER=anthropic`; su
+qualsiasi altro upstream `/v1/messages` restituisce ancora 404.
 
 ---
 
@@ -198,8 +200,9 @@ Tutto è pilotato da variabili d'ambiente.
 | `LISTEN_ADDR` | `127.0.0.1:8080` | Indirizzo di ascolto del proxy |
 | `UPSTREAM_BASE_URL` | `https://api.openai.com` | URL base del provider a monte |
 | `UPSTREAM_API_KEY` | *(non impostata)* | Iniettata come `Authorization: Bearer …` **solo** se il client non ne invia una propria |
-| `UPSTREAM_PROVIDER` | `openai` | `openai` / `copilot` / `anthropic` — preset di instradamento |
+| `UPSTREAM_PROVIDER` | `openai` | `openai` / `copilot` / `anthropic` — preset di instradamento (`anthropic` abilita anche la rotta nativa `/v1/messages`, M6) |
 | `UPSTREAM_CHAT_PATH` | *(preset)* | Sovrascrive il percorso delle chat completions |
+| `UPSTREAM_MESSAGES_PATH` | `/v1/messages` | Sovrascrive il percorso Messages nativo di Anthropic (M6; usato solo con `UPSTREAM_PROVIDER=anthropic`) |
 | `UPSTREAM_FORWARD_HEADERS` | *(preset)* | Header del client da inoltrare, separati da virgola |
 | `UPSTREAM_EXTRA_HEADERS` | *(nessuno)* | `Chiave=Valore;Chiave2=Valore2` header statici per ogni richiesta a monte |
 | `MAX_BODY_BYTES` | `16777216` | Limite del corpo della richiesta (16 MiB) |

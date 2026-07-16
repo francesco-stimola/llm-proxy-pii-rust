@@ -34,8 +34,8 @@ completion**; findings, counts and closure notes live in each milestone's sectio
 | [M3 — Streaming & multi-provider routing](#m3) | ✅ complete |
 | [M4 — Broad locale & language coverage](#m4) | ✅ complete |
 | [M5 — Integration & performance testing](#m5) | ✅ complete |
-| [**M6 — Native Anthropic `/v1/messages`**](#m6) | 🔨 **active** — Claude Code passthrough; gates `1.0.0` |
-| [First tagged release `1.0.0`](#m6) | ⬜ not started — CI green, gated on M6 |
+| [**M6 — Native Anthropic `/v1/messages`**](#m6) | ✅ **code-complete** (streaming incl.) — live Claude Code verification is opt-in |
+| [First tagged release `1.0.0`](#m6) | ⬜ not started — gated on the M6 live-provider verification |
 
 ---
 
@@ -425,43 +425,61 @@ route for Claude Code passthrough"*), reused as the blueprint. That project's mu
 adapter is **not** adopted (wrong shape for a native client, and against fail-closed) — it serves only as a
 **field map** for the Anthropic schema.
 
-- [ ] **Inbound `POST /v1/messages`** beside `/v1/chat/completions`, **registered only when
+- [x] **Inbound `POST /v1/messages`** beside `/v1/chat/completions`, **registered only when
   `UPSTREAM_PROVIDER=anthropic`** (decided 2026-07-15 — the only upstream that speaks native `/v1/messages`;
   other providers 404 it, so no mis-route). Unknown/unreadable shapes still **fail closed** (FC-03 unchanged);
   every other path stays 404. A `WireSchema` tag on `RequestContext` routes the privacy stage to the native
   walk without disturbing the OpenAI path.
-- [ ] **Mask the native body in place** — no OpenAI round-trip. Coverage must be exhaustive (a missed field
+- [x] **Mask the native body in place** — no OpenAI round-trip. Coverage must be exhaustive (a missed field
   is a leak — the Option B risk, pinned by tests):
   - the top-level **`system`** field (a string *or* a `{type:text}` block array) — masked **in place** (we
     walk the native schema directly; no inject-as-message trick, unlike the prior proxy);
   - `messages[].content` as a **string** *or* an **array of content blocks**, dispatched on `type`:
     `text` → `text`; `tool_use` → every string leaf of `input` (a JSON *object*, not an encoded string);
     `tool_result` → its `content` (string or nested block array — recursive); `thinking` → `thinking`;
-    `image` / `document` → non-text, skipped;
+    `document` with a **text** source → `source.data` (a leak the plan's "skip document" would have left —
+    never-leak beats the simplification); `image` / base64 `document` / `redacted_thinking` → non-text, skipped;
   - `tools[].description` + `input_schema` descriptions (reuse the OpenAI `mask_schema_descriptions`).
   - **Unknown block-type → fail closed, 400** (decided 2026-07-15 — strict, per this repo's ethos). The
-    consequence: the **known set must be exhaustive for real Claude Code traffic** (`text` / `image` /
-    `tool_use` / `tool_result` / `document` / `thinking` / `redacted_thinking` / server-side blocks), pinned
-    by a guard test — so a new Anthropic block type is a *conscious* addition, never a silent leak.
-- [ ] **Native→native forward + auth passthrough.** Forward the client's `Authorization: Bearer` (the OAuth
-  `sk-ant-oat01-*` token Claude Code sends), `anthropic-version` and `anthropic-beta` **verbatim**; inject the
-  proxy's own key as `x-api-key` **only** when the client sent none. **Never** place an OAuth token in
-  `x-api-key` (Anthropic 401). *This is why auth is not a blocker — the proxy never needs to hold a key.*
-- [ ] **Response demask (buffered) + native augmentation.** The reply is a top-level `content[]` array
-  (`text` + `tool_use.input`), not `choices[].message` — the buffered demask mirrors the request walk. The
+    consequence: the **known set must be exhaustive for real Claude Code traffic** — pinned by a guard test, so
+    a new Anthropic block type is a *conscious* addition, never a silent leak. **First cut handles the core
+    Claude-Code request blocks** (`text` / `tool_use` / `tool_result` / `thinking` / `image` / `document` /
+    `redacted_thinking`); **server-side result blocks** (`server_tool_use` / `web_search_tool_result`, sent
+    only when server-side tools are enabled) fail closed for now — safe (no leak), a conscious future addition.
+  - **`thinking` is masked but never *de*-masked:** it is generated over already-masked input, so it holds only
+    placeholders; leaving them intact keeps the block's `signature` valid across a multi-turn replay (re-masking
+    an inert placeholder is a no-op). Promoted to ARCHITECTURE.
+- [x] **Native→native forward + auth passthrough.** The client's own credential wins — `Authorization: Bearer`
+  (the OAuth `sk-ant-oat01-*` token Claude Code sends) forwarded **verbatim**, else a client `x-api-key`, else
+  the proxy's configured key injected as `x-api-key`; no credential at all → **401** before forwarding.
+  `anthropic-version` (default `2023-06-01` when the client omits it) + `anthropic-beta` pass through the
+  allowlist. **Never** place an OAuth token in `x-api-key` (Anthropic 401). *This is why auth is not a blocker
+  — the proxy never needs to hold a key.* *(Client-credential-wins matches this scope item and the existing
+  chat-path posture; the terser DEVLOG T6 line had proxy-key first — reconciled toward the ROADMAP + precedent,
+  recorded in DEVLOG 2026-07-16.)*
+- [x] **Response demask (buffered) + native augmentation.** The reply is a top-level `content[]` array
+  (`text` + `tool_use.input` string leaves, restored with the **plain** demask since `input` is a real JSON
+  object serde re-escapes), not `choices[].message` — the buffered demask mirrors the request walk. The
   placeholder-augmentation prompt is injected into the top-level `system` field (string or block array), only
   when something was masked.
-- [ ] **Anthropic SSE demask** — de-anonymize the streamed response: `content_block_delta` with
+- [x] **Anthropic SSE demask** — de-anonymize the streamed response: `content_block_delta` with
   `delta.type:text_delta` (`delta.text`) **and** `input_json_delta` (`delta.partial_json`, JSON-aware), held
-  back per content-block `index`. Factor `SseDemasker` into the shared split-placeholder core
+  back per content-block `index` and flushed at each `content_block_stop` (a delta after the stop is
+  protocol-invalid, so the flush is injected **before** the whole stop frame — the demasker holds the `event:`
+  line to control frame ordering). `SseDemasker` is factored into the shared split-placeholder core
   (`split_demaskable`, the hold-back buffer) + a per-schema delta rewriter (OpenAI vs Anthropic). **The prior
   proxy left this a TODO — its streamed replies were forwarded un-demasked — and closing it is the point: a
   placeholder reaching the client is the exact failure this tool exists to prevent.**
-- [ ] **Verification.** A native-schema coverage / fail-closed suite against a mock upstream, an opt-in real
-  Claude Code smoke, and — the bonus — the **M5 manual dual-run finally executable for real**: point a Claude
-  Code session at the proxy and compare Run A / Run B against live Anthropic.
-- **Out of scope:** Bedrock / Vertex native endpoints, `/v1/messages/count_tokens`, and the broad
-  multi-provider translation registry — all remain Backlog.
+- [x] **Verification.** A native-schema coverage / fail-closed suite against a mock upstream (9 e2e +
+  14 unit) — round-trip, tool defs, fail-closed on an unknown block, 404-when-not-anthropic, the full auth
+  matrix, and the streaming split-placeholder. **Still open (the `1.0.0` gate):** the opt-in real Claude Code
+  smoke — point a Claude Code session at the proxy and compare the M5 dual-run Run A / Run B against live
+  Anthropic. Needs a human with Claude Code + credentials; not runnable in this environment.
+- **Out of scope:** Bedrock / Vertex native endpoints, `/v1/messages/count_tokens`, the broad multi-provider
+  translation registry, and **server-side tool-result blocks** — all remain Backlog.
+
+### Review ledger — M6 → [`reviews/M6.md`](reviews/M6.md)
+_Pending first review round._
 
 **Delivery (decided 2026-07-15):** one feature branch → PR (`feat/m6-anthropic-messages`), **streaming
 included from the start** (Claude Code streams by default, so a buffered-only first cut wouldn't be usable

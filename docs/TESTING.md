@@ -406,6 +406,79 @@ asserts the value is still masked and round-trips, so a "fix" that buys speed wi
   > to keep honest, buying nothing. So the manifest declares the floor of the *real* product. The default
   > build still happens to compile on 1.86; we simply don't promise it.
 
+### M6 — native Anthropic `/v1/messages` (Claude Code passthrough)
+
+The native schema is a **new shape on the masking path**, so a missed field is a leak. Coverage is pinned at
+three levels: the request/response walk (`src/pipeline/privacy.rs`), the SSE rewriter (`src/stream.rs`), and
+the full HTTP round-trip against a **mock native upstream** (`tests/anthropic_messages_e2e.rs`). The mock
+echoes the received (masked) body under `upstream_received` and the auth headers under `upstream_auth`, both
+outside the `content[]` restore path — so a test inspects exactly what the provider saw. Every round-trip
+e2e first asserts the echo is present, so a `!contains(raw)` check can never pass **vacuously** on a 401/400
+body (the bug that bit the first draft — a credential-less forward 401s, and `null.to_string()` contains no
+PII).
+
+**Unit — request/response walk (`src/pipeline/privacy.rs`)**
+- ANT-01 — `anthropic_masks_every_text_bearing_field`: a value in **every** place M6 scans (top-level `system`,
+  a `content` string, `text` / `tool_use.input` object leaves incl. nested / `tool_result` / `thinking` blocks,
+  `tools[].description` + `input_schema` description) is masked; non-text leaves (image `data`, a numeric tool
+  arg, a `thinking.signature`, `redacted_thinking.data`) are untouched. **A miss here is a leak.**
+- ANT-02 — `anthropic_masks_text_source_document_but_skips_file_source`: a `document` with a **text** source has
+  its `source.data` masked (plaintext PII), while a base64 file source is left opaque.
+- ANT-03 — `anthropic_masks_nested_tool_result_block_array`: `tool_result.content` as a block array (text /
+  image / bare string) is recursed into.
+- ANT-04 — `anthropic_unknown_block_type_fails_closed_without_echoing_it`: an unknown block type → `Err`
+  (→ 400), and the reason carries **no** client-controlled value (never-log-raw-PII — the type is
+  attacker-influenced).
+- ANT-05 — `anthropic_block_without_type_and_missing_messages_fail_closed`: a typeless block, a missing
+  `messages`, and a non-array `messages` each fail closed.
+- ANT-06 — `anthropic_augmentation_covers_absent_string_and_array_system`: the augmentation is created (absent
+  `system`), appended (string), or pushed as a trailing text block (array).
+- ANT-07 — `anthropic_response_demasks_text_and_tool_use_input_but_not_thinking`: the buffered demask restores
+  `content[].text` and `tool_use.input` leaves, and **leaves `thinking` with placeholders** (keeps its
+  `signature` valid on replay — the M6 invariant).
+- ANT-08 — `anthropic_tool_use_input_demask_stays_valid_json_through_a_quote`: a value with a `"` restored into
+  a `tool_use.input` string leaf survives serialization (serde re-escapes; `input` is a real object, so the
+  **plain** demask is correct — unlike OpenAI's JSON-encoded `arguments`).
+
+**Unit — Anthropic SSE (`src/stream.rs`)**
+- ANT-SSE-01 — `anthropic_text_delta_split_across_events_is_restored`: `[EMAIL_1]` split across two
+  `content_block_delta` `text_delta` events is reassembled and de-masked; no placeholder leaks.
+- ANT-SSE-02 — `anthropic_input_json_delta_split_is_restored_and_valid`: a placeholder split across
+  `input_json_delta.partial_json` fragments is restored and the reassembled JSON parses (JSON-aware demask).
+- ANT-SSE-03 — `anthropic_held_back_tail_is_flushed_before_its_block_stop`: a block ending on a
+  partial-placeholder tail flushes it at `content_block_stop`, and the flushed delta is emitted **before** the
+  stop frame (a delta after the stop is protocol-invalid — the `event:`-line hold-back guards frame ordering).
+- ANT-SSE-04 — `anthropic_non_delta_events_pass_through`: `message_start` (and other non-delta events) pass
+  through untouched.
+
+**End-to-end — mock native upstream (`tests/anthropic_messages_e2e.rs`)**
+- ANT-E2E-01 — `messages_buffered_roundtrip_masks_upstream_and_restores_to_client`: multi-PII round-trip — the
+  upstream saw only placeholders, the augmentation merged into the top-level `system`, and the client got the
+  real values back in `content[].text`.
+- ANT-E2E-02 — `messages_masks_system_content_blocks_and_tool_definitions`: PII in `system` (block array),
+  content blocks (`text` / `tool_use.input` / `tool_result`), and tool defs (`description` + `input_schema`)
+  is all masked upstream.
+- ANT-E2E-03 — `messages_unknown_block_type_fails_closed_400`: an unknown content block → 400
+  (`error.type == "blocked"`), nothing forwarded.
+- ANT-E2E-04 — `messages_route_is_404_when_provider_is_not_anthropic`: with `provider = openai`, a native body
+  to `/v1/messages` → 404 (the route is registered only for `anthropic`).
+- ANT-E2E-05 — `messages_client_bearer_is_forwarded_verbatim_never_as_x_api_key`: a client
+  `Authorization: Bearer` (OAuth) is forwarded verbatim and wins over the configured proxy key, and is **never**
+  copied into `x-api-key`.
+- ANT-E2E-06 — `messages_proxy_key_is_injected_as_x_api_key_when_client_sends_none`: with no client credential,
+  the configured proxy key is injected as `x-api-key`, and a default `anthropic-version: 2023-06-01` is added.
+- ANT-E2E-07 — `messages_no_credential_returns_401_without_forwarding`: no client auth and no proxy key → 401
+  (`error.type == "unauthorized"`), nothing forwarded.
+- ANT-E2E-08 — `messages_client_anthropic_version_is_forwarded_not_overridden`: a client `anthropic-version`
+  passes through unchanged (the default only fills an absent one).
+- ANT-E2E-09 — `messages_streaming_deanonymizes_split_placeholder`: a `stream:true` round-trip through a mock
+  Anthropic SSE upstream that fragments the reply — the client receives the de-masked value with no `[EMAIL_1]`
+  leak, and the upstream saw only the masked body.
+
+> **Still open (the `1.0.0` gate):** the opt-in **live** Claude Code smoke — point a real Claude Code session
+> at the proxy and run the M5 dual-run (Run A / Run B) against live Anthropic. Not runnable without Claude Code
+> + credentials; the automated mock coverage above is the permanent guarantee.
+
 ### Dependency footprint (M2.5-R1)
 - DEP-01 — `tests/dependency_footprint.rs` (`default_build_excludes_the_onnx_and_hf_stack`): `cargo tree` on the **default** features must contain no `hf-hub`/`hf-xet`/`aws-lc`/`ort`/`tokenizers` — the ONNX/HF stack (heavy, native) stays behind the `onnx` feature so the shipped default build is native-dep-free.
 

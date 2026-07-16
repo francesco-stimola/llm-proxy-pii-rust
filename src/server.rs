@@ -1,9 +1,10 @@
 //! HTTP server: axum router and request handlers.
 //!
-//! Scope (fail-closed by default): only `POST /v1/chat/completions` is proxied
-//! and `GET /healthz` is served. Every other path/method returns 404 and is
-//! **never forwarded** — an un-modelled endpoint could leak PII, so we don't
-//! proxy what we don't understand.
+//! Scope (fail-closed by default): `POST /v1/chat/completions` is always proxied
+//! (OpenAI schema); `POST /v1/messages` (the native Anthropic schema, M6) is
+//! proxied **only when `UPSTREAM_PROVIDER=anthropic`**; `GET /healthz` is served.
+//! Every other path/method returns 404 and is **never forwarded** — an un-modelled
+//! endpoint could leak PII, so we don't proxy what we don't understand.
 
 use std::sync::Arc;
 

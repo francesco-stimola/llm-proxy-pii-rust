@@ -242,9 +242,10 @@ For a privacy proxy the failure mode *is* the product: anything unexpected must
   object/scalar) or a missing/!array `messages`. The proxy then returns **400**
   and never forwards. Masking always runs *before* forwarding, so a masked value
   can't leak even on a later error.
-- **API scope.** Only `POST /v1/chat/completions` is proxied; `GET /healthz` is
-  served for liveness. Every other path/method returns **404** via the router
-  `fallback` and is never forwarded — we don't proxy schemas we don't model
+- **API scope.** `POST /v1/chat/completions` is always proxied; `POST /v1/messages`
+  (the native Anthropic schema, M6) is proxied **only when `UPSTREAM_PROVIDER=anthropic`**;
+  `GET /healthz` is served for liveness. Every other path/method returns **404** via the
+  router `fallback` and is never forwarded — we don't proxy schemas we don't model
   (`/v1/responses`, `/v1/embeddings`, … are out of scope for now).
 - **Field coverage.** The masker scans *every* text-bearing field of the chat
   schema — message `content` (string and the `text` of array parts, all roles),
@@ -323,10 +324,17 @@ runs, so the upstream never sees raw PII regardless.
 a buffered request, forwards it, and streams the response back while
 **de-anonymizing incrementally** (`src/stream.rs`). A placeholder like `[EMAIL_1]`
 can be split across two token deltas, so `SseDemasker` keeps a **hold-back buffer** per
-streamed field — one for each choice's `delta.content` **and** one per
-`delta.tool_calls[].function.arguments` — emitting everything up to the last point that
-could still be an incomplete placeholder and holding the rest until the next delta (or
-stream end) resolves it. Robustness: if the upstream answers a `stream:true` request
+streamed field, emitting everything up to the last point that could still be an incomplete
+placeholder and holding the rest until the next delta (or stream end) resolves it. The
+line-buffering and split-placeholder hold-back (`split_demaskable`) are **schema-agnostic**;
+a per-`WireSchema` rewriter knows where the text lives in each wire format (M6): OpenAI's
+`choices[].delta.content` + `delta.tool_calls[].function.arguments`, or Anthropic's
+`content_block_delta` (`text_delta.text` plain, `input_json_delta.partial_json` JSON-aware),
+held back per content-block `index`. An Anthropic block's tail is flushed at its
+`content_block_stop` — injected **before** the whole stop frame (a `content_block_delta`
+after the stop is protocol-invalid), which is why the demasker holds each `event:` line until
+its `data:` line so it controls frame ordering; OpenAI streams have no `event:` lines, so the
+mechanism is inert there. Robustness: if the upstream answers a `stream:true` request
 with a **non-SSE** body (a JSON error, or a provider that ignored `stream`), the proxy
 falls back to the buffered path (real status + content-type, `on_response` de-mask)
 rather than forcing an event-stream; a **mid-stream upstream error** becomes a terminal
@@ -351,43 +359,114 @@ wire-format boundary* next.
 ## The wire-format boundary — who speaks what to whom
 
 The single most confusing question about this proxy — *"which providers does it work
-with?"* — has a one-line answer once the axis is named: **the proxy speaks exactly one
-wire format, the OpenAI Chat Completions schema (`POST /v1/chat/completions`), on *both*
-hops.** That is the whole point of Option A above — one schema feeds the masker, so there
-is a single shape to get right and no translation layer to leak through.
+with?"* — turns on one axis. The default answer: **the proxy speaks the OpenAI Chat
+Completions schema (`POST /v1/chat/completions`) on *both* hops** — Option A, one schema
+feeds the masker, a single shape to get right and no translation layer to leak through.
+**M6 adds one *inbound* exception:** it also accepts the **native Anthropic Messages
+schema** (`POST /v1/messages`) and masks it **in place**, native→native — see *Native
+Anthropic Messages* below.
 
 ```
           OpenAI Chat Completions                        OpenAI Chat Completions
   client ───────────────────────────►  PROXY  ───────────────────────────►  upstream provider
   (OpenAI-compatible caller)          mask / restore     (any endpoint speaking that schema)
+
+          Anthropic /v1/messages  ┐                  ┌  Anthropic /v1/messages   (M6, when
+  Claude Code ───────────────────►│      PROXY       │──────────────────────►    UPSTREAM_PROVIDER
+  (native client)                 ┘  mask / restore  └                           = anthropic)
 ```
 
 So *"which providers"* is really **two** independent questions, and conflating them is the
 confusion:
 
-- **Upstream — what the proxy forwards *to*.** Any endpoint that accepts the OpenAI Chat
-  Completions schema. Presets (`UPSTREAM_PROVIDER`): `openai`, `copilot`, and
-  **`anthropic` — via Anthropic's *OpenAI-compatible* endpoint, not its native API** —
-  plus anything else through `UPSTREAM_BASE_URL` (local models behind Ollama / vLLM /
-  LM Studio, Groq, Mistral, …). The preset only sets the *shape* (path, forwarded
-  headers); the masking is identical for all.
-- **Client — what speaks *to* the proxy.** Any OpenAI-compatible client: the OpenAI SDK,
-  `curl` with OpenAI JSON, editor agents that target `/v1/chat/completions` (Cline,
-  Continue), …
+- **Upstream — what the proxy forwards *to*.** Either the OpenAI Chat Completions schema
+  (presets `openai`, `copilot`, and `anthropic`'s *OpenAI-compatible* endpoint, plus
+  anything through `UPSTREAM_BASE_URL` — Ollama / vLLM / LM Studio, Groq, Mistral, …), or —
+  on the M6 route — Anthropic's **native** `/v1/messages`. The preset sets the *shape*
+  (path, forwarded headers); masking is identical across the OpenAI presets.
+- **Client — what speaks *to* the proxy.** Any OpenAI-compatible client (the OpenAI SDK,
+  `curl`, editor agents targeting `/v1/chat/completions` — Cline, Continue), **or** a
+  **native Anthropic client** — Claude Code (CLI + IDE) and the Anthropic SDK — on the M6
+  `/v1/messages` route.
 
-**The exception that trips everyone up:** *"works with Anthropic"* (as an **upstream**) is
-true; *"works with Claude Code"* (as a **client**) is not — and they are not the same
-statement. Claude Code is **not** an OpenAI client: it speaks Anthropic's **native**
-Messages API (`POST /v1/messages`, content blocks, `tool_use`/`tool_result`), a path this
-proxy does not serve, so it 404s (fail-closed). Serving that native *inbound* schema — so a
-native client like Claude Code can be masked — is **[M6](ROADMAP.md#m6)**.
+**The exception that used to trip everyone up — now closed for Claude Code (M6).** *"works
+with Anthropic"* (as an **upstream**) was always true; *"works with Claude Code"* (as a
+**client**) was not, because Claude Code speaks Anthropic's **native** Messages API
+(`POST /v1/messages`, content blocks, `tool_use`/`tool_result`), which the proxy did not
+serve. **M6 serves it** — registered only when `UPSTREAM_PROVIDER=anthropic` (the only
+upstream that speaks it), so on any other provider `/v1/messages` still 404s (fail-closed).
 
 > **Why this framing is worth keeping in mind when planning work.** A feature request lands
 > on exactly one of the two axes. *"Support provider X"* is usually **upstream** work — a
 > preset, trivial when X is OpenAI-compatible. *"Support client Y"* is **inbound** work, and
 > if Y speaks a native protocol it means **a new schema on the masking path** — the
-> expensive, leak-sensitive kind (M6, and the remainder of Option B). Name the axis first,
+> expensive, leak-sensitive kind (M6 did exactly this for Claude Code; the remainder of
+> Option B — native adapters for *other* providers — stays Backlog). Name the axis first,
 > and the size and risk of the change follow.
+
+## Native Anthropic Messages (M6) — Claude Code passthrough
+
+A **native** Anthropic client (Claude Code, the Anthropic SDK) speaks `POST /v1/messages`,
+not the OpenAI schema. M6 serves it by masking the native body **in place** and forwarding
+native→native — *not* translating to the OpenAI shape and back, which would add two lossy
+schema boundaries, each a leak surface. The masking *engine* is unchanged (`Vault::mask_all`,
+the fixpoint, `spawn_blocking` fail-closed); M6 adds only the schema walk, the native
+forward/auth, and the Anthropic SSE rewriter. The route is registered **only when
+`UPSTREAM_PROVIDER=anthropic`** (the only upstream that speaks it); everywhere else
+`/v1/messages` 404s like any un-modelled endpoint.
+
+**A [`WireSchema`](../src/pipeline/mod.rs) tag on `RequestContext`** (default `OpenAi`)
+selects the walk. `PrivacyStage` and `SseDemasker` dispatch on it, so the OpenAI path is
+entirely undisturbed — it gets the default.
+
+**Request coverage (a missed field is a leak).** `mask_anthropic_request` walks:
+- the top-level **`system`** (a string *or* a text-block array) — masked in place;
+- each `messages[].content` block, dispatched on `type`: `text` → `text`; `tool_use` →
+  every **string leaf** of `input` (a JSON *object* — the tool arguments, restored in the
+  response, so a replay holds real PII); `tool_result` → its `content` (string or nested
+  block array, recursive); `thinking` → `thinking` (see the signature note); a **text-source**
+  `document` → `source.data` (plaintext PII); `image` / base64 `document` /
+  `redacted_thinking` → non-text or opaque, skipped;
+- `tools[].description` + every `description` in `tools[].input_schema` (the shared
+  `mask_schema_descriptions`).
+
+**Unknown block type → fail closed (400).** The known set is exhaustive for real Claude Code
+traffic and pinned by a guard test, so a new Anthropic block type is a *conscious* addition,
+never a silent leak. The block-type value is **never** echoed into the block reason (it is
+attacker-influenced — the never-log-raw-PII rule). *Server-side result blocks*
+(`server_tool_use` / `web_search_tool_result`, sent only with server-side tools enabled)
+fail closed for now — safe, a conscious future addition (Backlog).
+
+> **`thinking` is masked on the way up but never de-masked on the way down — and that keeps
+> the block signature valid.** An extended-thinking block is generated by the model over
+> *already-masked* input, so it naturally contains only placeholders, and its cryptographic
+> `signature` signs that placeholder text. Leaving the placeholders intact means the block's
+> bytes never change across a multi-turn replay (re-masking an inert placeholder is a no-op),
+> so the signature stays valid — **robustly, even if placeholder numbering shifts elsewhere**
+> in the conversation. De-masking `thinking` would either invalidate the signature or make
+> correctness depend on reproducing byte-identical numbering. So the request walk *masks*
+> `thinking` (safety, in case a client injects fresh PII) and the response walk deliberately
+> *skips* it. This is why `demask_anthropic_response` restores only `text` and
+> `tool_use.input`.
+
+**Augmentation** goes into the top-level `system` field (created / string-appended /
+block-array-pushed), only when something was masked — the native analogue of the OpenAI
+system-message injection.
+
+**Response demask (buffered + streamed) mirrors the request walk.** The buffered reply is a
+top-level `content[]` array; `text` blocks and `tool_use.input` string leaves are restored.
+`tool_use.input` is a real JSON object, so its leaves use the **plain** demask (serde
+re-escapes on serialization) — unlike the OpenAI JSON-*encoded* `arguments` string, which
+needs the JSON-aware demask (M3-R2).
+
+**Auth: the client's credential wins, the proxy key is the fallback** (`Upstream::messages_auth`).
+Order: client `Authorization` (Claude Code's OAuth `Bearer sk-ant-oat01-…`, forwarded
+**verbatim**) → client `x-api-key` → the proxy's configured key as `x-api-key` → **401** if
+none. **An OAuth token never lands in `x-api-key`** (Anthropic 401): it only ever rides
+`Authorization`. `anthropic-version` (default `2023-06-01` when the client omits it) and
+`anthropic-beta` pass through the allowlist. This is the same "client credential wins"
+posture as the chat path, and it is what lets the proxy front Claude Code **without ever
+holding a key**.
 
 ## Module layout
 
@@ -395,11 +474,11 @@ native client like Claude Code can be masked — is **[M6](ROADMAP.md#m6)**.
 |------|----------------|
 | `src/main.rs` | binary entry: tracing, config, run server |
 | `src/config.rs` | runtime configuration |
-| `src/server.rs` | axum router + handlers |
-| `src/proxy.rs` | request/response value objects + the upstream HTTP client (per-provider path/headers, raw + JSON send) |
-| `src/stream.rs` | streaming (SSE) incremental de-anonymizer with the split-placeholder hold-back buffer (M3) |
-| `src/pipeline/mod.rs` | `Stage` trait |
-| `src/pipeline/privacy.rs` | the privacy stage (only one wired) |
+| `src/server.rs` | axum router + handlers (`/v1/chat/completions`; `/v1/messages` when `provider=anthropic`, M6); shared mask / fail-closed / buffered / streaming flow |
+| `src/proxy.rs` | request/response value objects + the upstream HTTP client (per-provider path/headers, raw + JSON send; native `send_messages` / `forward_messages` + `messages_auth`, M6) |
+| `src/stream.rs` | streaming (SSE) incremental de-anonymizer — shared split-placeholder hold-back core + a per-`WireSchema` delta rewriter (OpenAI, M3; Anthropic, M6) |
+| `src/pipeline/mod.rs` | `Stage` trait; `RequestContext`; `WireSchema` (OpenAI / Anthropic, M6) |
+| `src/pipeline/privacy.rs` | the privacy stage (only one wired) — OpenAI **and** Anthropic-native (M6) mask/demask walks, dispatched on `WireSchema` |
 | `src/pii/mod.rs` | `PiiDetector` trait, `PiiEntity` / `PiiKind` / `Confidence` |
 | `src/pii/recognizers.rs` | deterministic structured-PII recognizers (M1) |
 | `src/pii/overlap.rs` | shared span overlap resolution — the *no-abandoned-bytes* invariant: structured union-merge → NER drop (`PiiKind::priority` only *labels* a union; enclosure by an email is a **naming** rule, `name_of` — the containment *gate* was removed in M4-R15) |
