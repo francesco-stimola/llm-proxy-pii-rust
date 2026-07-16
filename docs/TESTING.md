@@ -594,9 +594,16 @@ PII). Placeholder-**presence** asserts are on the **specific masked field** (or 
   Anthropic SSE upstream that fragments the reply — the client receives the de-masked value with no `[EMAIL_1]`
   leak, and the upstream saw only the masked body.
 
-> **Still open (the `1.0.0` gate):** the opt-in **live** Claude Code smoke — point a real Claude Code session
-> at the proxy and run the M5 dual-run (Run A / Run B) against live Anthropic. Not runnable without Claude Code
-> + credentials; the automated mock coverage above is the permanent guarantee.
+> **The live Claude Code smoke has run, and it held** (2026-07-16): a real session round-tripped through the
+> proxy against real Anthropic — native route, auth passthrough, in-place masking, response de-mask and DBG-02
+> (zero raw PII in the trace, on real traffic). That closed M6's own gate. See DEVLOG 2026-07-16.
+>
+> **What it did *not* exercise is the hybrid.** No model was configured, so the run was silently structured-only:
+> email and IBAN masked because they are *deterministic* recognizers, while the NER never ran. Verifying the
+> hybrid is the [CC battery](#cc-battery) (CC-01…CC-09 × Run OFF/ON, `NER_REQUIRED=1` — the flag that makes that
+> silent downgrade fatal), and it is **blocked on M7**: its prompts need rewriting (Claude Code correctly refused
+> them as injection attempts) and 9 scenarios × 2 runs is impractical at the current NER latency. **`1.0.0` now
+> waits on M7, not on this box.** The automated mock coverage above remains the permanent guarantee.
 
 ### Dependency footprint (M2.5-R1)
 - DEP-01 — `tests/dependency_footprint.rs` (`default_build_excludes_the_onnx_and_hf_stack`): `cargo tree` on the **default** features must contain no `hf-hub`/`hf-xet`/`aws-lc`/`ort`/`tokenizers` — the ONNX/HF stack (heavy, native) stays behind the `onnx` feature so the shipped default build is native-dep-free.
