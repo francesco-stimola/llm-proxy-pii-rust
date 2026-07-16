@@ -415,22 +415,27 @@ echoes the received (masked) body under `upstream_received` and the auth headers
 outside the `content[]` restore path — so a test inspects exactly what the provider saw. Every round-trip
 e2e first asserts the echo is present, so a `!contains(raw)` check can never pass **vacuously** on a 401/400
 body (the bug that bit the first draft — a credential-less forward 401s, and `null.to_string()` contains no
-PII).
+PII). Placeholder-**presence** asserts are on the **specific masked field** (or a token like `[PHONE_1]` /
+`[EMAIL_6]` **absent from the augmentation prompt**), not the whole body — the prompt itself contains
+`[EMAIL_1]` / `[IBAN_1]` as examples, so a whole-body `contains` would be weaker than it reads (M6-R4).
 
 **Unit — request/response walk (`src/pipeline/privacy.rs`)**
 - ANT-01 — `anthropic_masks_every_text_bearing_field`: a value in **every** place M6 scans (top-level `system`,
   a `content` string, `text` / `tool_use.input` object leaves incl. nested / `tool_result` / `thinking` blocks,
   `tools[].description` + `input_schema` description) is masked; non-text leaves (image `data`, a numeric tool
   arg, a `thinking.signature`, `redacted_thinking.data`) are untouched. **A miss here is a leak.**
-- ANT-02 — `anthropic_masks_text_source_document_but_skips_file_source`: a `document` with a **text** source has
-  its `source.data` masked (plaintext PII), while a base64 file source is left opaque.
+- ANT-02 — `anthropic_masks_document_text_and_content_sources_title_and_context` (M6-R1): a `document` masks
+  **every** text-bearing part — a `text` source's `data`, a **`content`** source's nested block array, and the
+  `title` / `context` metadata — while a base64 file source and a nested image stay opaque.
+- ANT-09 — `anthropic_unknown_document_source_type_fails_closed` (M6-R1): a `document` `source.type` we don't
+  model → `Err` (→ 400), the same fail-closed rule as an unknown block type, one level down.
 - ANT-03 — `anthropic_masks_nested_tool_result_block_array`: `tool_result.content` as a block array (text /
   image / bare string) is recursed into.
 - ANT-04 — `anthropic_unknown_block_type_fails_closed_without_echoing_it`: an unknown block type → `Err`
   (→ 400), and the reason carries **no** client-controlled value (never-log-raw-PII — the type is
   attacker-influenced).
 - ANT-05 — `anthropic_block_without_type_and_missing_messages_fail_closed`: a typeless block, a missing
-  `messages`, and a non-array `messages` each fail closed.
+  `messages`, a non-array `messages`, **and a `system` array object with no `text`** (M6-R2) each fail closed.
 - ANT-06 — `anthropic_augmentation_covers_absent_string_and_array_system`: the augmentation is created (absent
   `system`), appended (string), or pushed as a trailing text block (array).
 - ANT-07 — `anthropic_response_demasks_text_and_tool_use_input_but_not_thinking`: the buffered demask restores
@@ -458,6 +463,9 @@ PII).
 - ANT-E2E-02 — `messages_masks_system_content_blocks_and_tool_definitions`: PII in `system` (block array),
   content blocks (`text` / `tool_use.input` / `tool_result`), and tool defs (`description` + `input_schema`)
   is all masked upstream.
+- ANT-E2E-10 — `messages_content_source_document_is_masked_upstream` (M6-R1): a `content`-source `document`
+  (a nested text-block array — the shape the first cut forwarded in clear) is masked in place; the assertion
+  is on the document's own text block, so it can't be satisfied by the augmentation prompt (M6-R4).
 - ANT-E2E-03 — `messages_unknown_block_type_fails_closed_400`: an unknown content block → 400
   (`error.type == "blocked"`), nothing forwarded.
 - ANT-E2E-04 — `messages_route_is_404_when_provider_is_not_anthropic`: with `provider = openai`, a native body

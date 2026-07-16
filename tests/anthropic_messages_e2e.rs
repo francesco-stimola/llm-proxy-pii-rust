@@ -155,9 +155,20 @@ async fn messages_buffered_roundtrip_masks_upstream_and_restores_to_client() {
         !seen.contains("IT60X0542811101000000123456"),
         "leaked IBAN upstream"
     );
+    // Assert the placeholders on the **user message** specifically, not the whole
+    // body — the augmentation prompt itself contains `[EMAIL_1]` / `[IBAN_1]` as
+    // examples, so a whole-body `contains` would pass even if this field weren't
+    // masked (M6-R4). The message content excludes the prompt (it lives in `system`).
+    let user_msg = reply["upstream_received"]["messages"]
+        .as_array()
+        .and_then(|m| m.iter().rev().find(|m| m["role"] == "user"))
+        .and_then(|m| m["content"].as_str())
+        .expect("masked user message");
     assert!(
-        seen.contains("[EMAIL_1]") && seen.contains("[PHONE_1]") && seen.contains("[IBAN_1]"),
-        "expected placeholders in: {seen}"
+        user_msg.contains("[EMAIL_1]")
+            && user_msg.contains("[PHONE_1]")
+            && user_msg.contains("[IBAN_1]"),
+        "expected placeholders in the user message: {user_msg}"
     );
 
     // The augmentation was merged into the top-level `system` (native, in place).
@@ -220,7 +231,12 @@ async fn messages_masks_system_content_blocks_and_tool_definitions() {
         "expected the mock's echo, got: {reply}"
     );
     let seen = reply["upstream_received"].to_string();
-    assert!(seen.contains("[EMAIL_1]"), "nothing masked: {seen}");
+    // `[EMAIL_6]` (six distinct emails were masked) is not among the augmentation
+    // prompt's example tokens, so this genuinely proves masking happened (M6-R4).
+    assert!(
+        seen.contains("[EMAIL_6]"),
+        "expected 6 masked emails: {seen}"
+    );
     for raw in [
         "sys@corp.com",
         "a@b.com",
@@ -231,6 +247,54 @@ async fn messages_masks_system_content_blocks_and_tool_definitions() {
     ] {
         assert!(!seen.contains(raw), "leaked {raw} upstream: {seen}");
     }
+}
+
+#[tokio::test]
+async fn messages_content_source_document_is_masked_upstream() {
+    // M6-R1: a `document` with a `content` source (a nested text-block array) —
+    // the shape the first cut forwarded in clear — must be masked in place.
+    let proxy = spawn_proxy(
+        spawn_mock_messages().await,
+        Some("sk-ant-api-k".to_string()),
+    )
+    .await;
+
+    let reply: Value = messages(
+        proxy,
+        json!({
+            "model": "claude-3-5-sonnet",
+            "max_tokens": 64,
+            "messages": [{ "role": "user", "content": [
+                { "type": "document", "source": { "type": "content", "content": [
+                    { "type": "text",
+                      "text": "contact doc@corp.com, IBAN IT60X0542811101000000123456" }
+                ] } }
+            ] }]
+        }),
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+
+    assert!(
+        reply.get("upstream_received").is_some_and(|v| !v.is_null()),
+        "expected the mock's echo, got: {reply}"
+    );
+    // Assert on the document's own text block — field-specific, so it can't be
+    // satisfied by the augmentation prompt (M6-R4).
+    let doc_text = reply["upstream_received"]["messages"][0]["content"][0]["source"]["content"][0]
+        ["text"]
+        .as_str()
+        .expect("masked document text block");
+    assert!(
+        !doc_text.contains("doc@corp.com") && !doc_text.contains("IT60X0542811101000000123456"),
+        "content-source document leaked: {doc_text}"
+    );
+    assert!(
+        doc_text.contains("[EMAIL_1]") && doc_text.contains("[IBAN_1]"),
+        "content-source document not masked: {doc_text}"
+    );
 }
 
 #[tokio::test]
@@ -445,9 +509,18 @@ async fn messages_streaming_deanonymizes_split_placeholder() {
         !upstream_saw.contains("bob@test.com"),
         "leaked email upstream"
     );
+    // Assert on the user message specifically — the augmentation prompt (in the
+    // top-level `system`) also contains `[EMAIL_1]`, so a whole-body check would be
+    // weaker than it reads (M6-R4).
+    let saw: Value = serde_json::from_str(&upstream_saw).unwrap();
+    let user_msg = saw["messages"]
+        .as_array()
+        .and_then(|m| m.iter().find(|m| m["role"] == "user"))
+        .and_then(|m| m["content"].as_str())
+        .expect("masked user message");
     assert!(
-        upstream_saw.contains("[EMAIL_1]"),
-        "expected placeholder upstream"
+        user_msg.contains("[EMAIL_1]"),
+        "expected placeholder in the user message: {user_msg}"
     );
 
     // The client's reassembled stream carries the real value, no placeholder —

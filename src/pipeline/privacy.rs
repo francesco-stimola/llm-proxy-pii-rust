@@ -349,13 +349,16 @@ fn mask_anthropic_system(
             *s = f(s);
             Ok(())
         }
-        // `system` blocks are text-only in the Anthropic schema; mask each
-        // block's `text` (covers a plain `{type:text}` and a cache-control block).
+        // `system` blocks are text-only in the Anthropic schema; mask each block's
+        // `text` (covers a plain `{type:text}` and a cache-control block). Anything
+        // without a `text` field — a non-object element *or* an object of an
+        // unrecognized shape — **fails closed** (M6-R2), matching the block-level
+        // rule, so a future non-text system block leaks nothing.
         Value::Array(blocks) => {
             for block in blocks {
                 if let Some(text) = block.get_mut("text") {
                     transform_string_value(text, f);
-                } else if !block.is_object() {
+                } else {
                     return Err("`system` array has an unrecognized element".to_string());
                 }
             }
@@ -445,19 +448,7 @@ fn mask_anthropic_block(
             }
             Ok(())
         }
-        Some("document") => {
-            // A base64 file source is opaque (skip); a *text* source carries
-            // plaintext that can hold PII, so mask its `data` (never-leak beats
-            // the "skip document" simplification).
-            if let Some(source) = block.get_mut("source") {
-                if source.get("type").and_then(Value::as_str) == Some("text") {
-                    if let Some(data) = source.get_mut("data") {
-                        transform_string_value(data, f);
-                    }
-                }
-            }
-            Ok(())
-        }
+        Some("document") => mask_anthropic_document(block, f),
         // Non-text / opaque blocks — nothing to mask, but *known* (not a leak).
         Some("image") | Some("redacted_thinking") => Ok(()),
         // Fail closed. The message deliberately carries **no** client value (the
@@ -511,7 +502,51 @@ fn mask_tool_result_content(
     }
 }
 
-/// Prepend the augmentation to the top-level `system` field (string or text-block
+/// Mask a `document` block (M6-R1). A document carries text in several places, and
+/// **every text-bearing one must be covered** — a missed one is a leak:
+///
+/// - `title` / `context` — optional citation metadata strings;
+/// - `source`, dispatched on `source.type` the way blocks dispatch on `type`:
+///   - `text` → the plaintext `source.data`;
+///   - `content` → a nested block array (text / image), recursed like a
+///     `tool_result` content — this is the shape M6-R1 forwarded in clear;
+///   - `base64` / `url` → opaque binary or a fetch target that must not be
+///     rewritten (the accepted non-text tradeoff, same as `image`) — skipped;
+///   - **any other source type → fail closed**, matching the block-level rule, so a
+///     new Anthropic document source is a conscious addition, never a silent leak.
+fn mask_anthropic_document(
+    block: &mut Value,
+    f: &mut dyn FnMut(&str) -> String,
+) -> Result<(), String> {
+    if let Some(title) = block.get_mut("title") {
+        transform_string_value(title, f);
+    }
+    if let Some(context) = block.get_mut("context") {
+        transform_string_value(context, f);
+    }
+    let Some(source) = block.get_mut("source") else {
+        return Ok(()); // no source → no body to leak (a malformed doc Anthropic rejects)
+    };
+    match source.get("type").and_then(Value::as_str) {
+        Some("text") => {
+            if let Some(data) = source.get_mut("data") {
+                transform_string_value(data, f);
+            }
+            Ok(())
+        }
+        Some("content") => {
+            if let Some(content) = source.get_mut("content") {
+                mask_tool_result_content(content, f)?;
+            }
+            Ok(())
+        }
+        Some("base64") | Some("url") => Ok(()),
+        Some(_) => Err("unknown Anthropic document source type".to_string()),
+        None => Err("Anthropic document `source` has no `type`".to_string()),
+    }
+}
+
+/// Append the augmentation to the top-level `system` field (string or text-block
 /// array), or create it — the native analogue of [`inject_augmentation`]. Called
 /// only when something was masked.
 fn inject_augmentation_anthropic(body: &mut Value) {
@@ -753,26 +788,50 @@ mod tests {
     }
 
     #[test]
-    fn anthropic_masks_text_source_document_but_skips_file_source() {
-        // A text-source document carries plaintext PII (never-leak beats "skip
-        // document"); a base64 file source is opaque and left alone.
+    fn anthropic_masks_document_text_and_content_sources_title_and_context() {
+        // Every text-bearing part of a `document` is masked (M6-R1): a `text`
+        // source's `data`, a `content` source's nested block array, and the
+        // `title` / `context` metadata. A base64 file source stays opaque.
         let mut body = json!({
             "messages": [ { "role": "user", "content": [
+                { "type": "document", "title": "re: q@r.com", "context": "from s@t.com",
+                  "source": { "type": "text", "media_type": "text/plain", "data": "leak a1@b.com" } },
                 { "type": "document",
-                  "source": { "type": "text", "media_type": "text/plain", "data": "leak q@r.com" } },
+                  "source": { "type": "content", "content": [
+                      { "type": "text", "text": "content-src c1@d.com" },
+                      { "type": "image", "source": { "type": "base64", "data": "IMG" } }
+                  ] } },
                 { "type": "document",
                   "source": { "type": "base64", "media_type": "application/pdf", "data": "JVBERi0=" } }
             ] } ]
         });
         let _vault = mask_anthropic(&mut body);
-        assert!(
-            !body.to_string().contains("q@r.com"),
-            "text document leaked"
+        let dump = body.to_string();
+        for raw in ["q@r.com", "s@t.com", "a1@b.com", "c1@d.com"] {
+            assert!(!dump.contains(raw), "leaked {raw}: {dump}");
+        }
+        // base64 file source + nested image data are opaque, untouched.
+        assert_eq!(
+            body["messages"][0]["content"][2]["source"]["data"],
+            "JVBERi0="
         );
         assert_eq!(
-            body["messages"][0]["content"][1]["source"]["data"], "JVBERi0=",
-            "base64 file source must be untouched"
+            body["messages"][0]["content"][1]["source"]["content"][1]["source"]["data"],
+            "IMG"
         );
+    }
+
+    #[test]
+    fn anthropic_unknown_document_source_type_fails_closed() {
+        // A `document` source type we don't model fails closed — the same rule as
+        // an unknown block type, so a new source is a conscious addition (M6-R1).
+        let mut body = json!({
+            "messages": [ { "role": "user", "content": [
+                { "type": "document", "source": { "type": "hologram", "data": "x" } }
+            ] } ]
+        });
+        let mut f = |t: &str| t.to_string();
+        assert!(mask_anthropic_request(&mut body, &mut f).is_err());
     }
 
     #[test]
@@ -831,6 +890,11 @@ mod tests {
 
         let mut messages_not_array = json!({ "messages": "nope" });
         assert!(mask_anthropic_request(&mut messages_not_array, &mut f).is_err());
+
+        // A `system` array object with no `text` fails closed too (M6-R2) —
+        // an unrecognized sub-shape is never skipped open.
+        let mut system_no_text = json!({ "system": [ { "type": "mystery" } ], "messages": [] });
+        assert!(mask_anthropic_request(&mut system_no_text, &mut f).is_err());
     }
 
     #[test]

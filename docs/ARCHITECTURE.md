@@ -424,15 +424,19 @@ entirely undisturbed — it gets the default.
 - each `messages[].content` block, dispatched on `type`: `text` → `text`; `tool_use` →
   every **string leaf** of `input` (a JSON *object* — the tool arguments, restored in the
   response, so a replay holds real PII); `tool_result` → its `content` (string or nested
-  block array, recursive); `thinking` → `thinking` (see the signature note); a **text-source**
-  `document` → `source.data` (plaintext PII); `image` / base64 `document` /
-  `redacted_thinking` → non-text or opaque, skipped;
+  block array, recursive); `thinking` → `thinking` (see the signature note); a `document` →
+  its `title` / `context` metadata **and** its `source`, dispatched on `source.type` the way
+  blocks dispatch on `type` (`text` → `source.data`; `content` → a nested block array,
+  recursed like a `tool_result`; `base64` / `url` → opaque binary or a fetch target, skipped;
+  **any other source type → fail closed** — M6-R1); `image` / `redacted_thinking` → non-text
+  or opaque, skipped;
 - `tools[].description` + every `description` in `tools[].input_schema` (the shared
   `mask_schema_descriptions`).
 
 **Unknown block type → fail closed (400).** The known set is exhaustive for real Claude Code
 traffic and pinned by a guard test, so a new Anthropic block type is a *conscious* addition,
-never a silent leak. The block-type value is **never** echoed into the block reason (it is
+never a silent leak — and the **same rule applies one level down**, to a `document`'s
+`source.type` (M6-R1). The block-type value is **never** echoed into the block reason (it is
 attacker-influenced — the never-log-raw-PII rule). *Server-side result blocks*
 (`server_tool_use` / `web_search_tool_result`, sent only with server-side tools enabled)
 fail closed for now — safe, a conscious future addition (Backlog).

@@ -437,8 +437,9 @@ adapter is **not** adopted (wrong shape for a native client, and against fail-cl
   - `messages[].content` as a **string** *or* an **array of content blocks**, dispatched on `type`:
     `text` → `text`; `tool_use` → every string leaf of `input` (a JSON *object*, not an encoded string);
     `tool_result` → its `content` (string or nested block array — recursive); `thinking` → `thinking`;
-    `document` with a **text** source → `source.data` (a leak the plan's "skip document" would have left —
-    never-leak beats the simplification); `image` / base64 `document` / `redacted_thinking` → non-text, skipped;
+    `document` → `title` / `context` + its `source` dispatched on `source.type` (`text` → `data`, `content` →
+    nested block array recursed, `base64` / `url` → skipped, **unknown → fail closed** — M6-R1; the plan's
+    "skip document" would have leaked a text-bearing document); `image` / `redacted_thinking` → non-text, skipped;
   - `tools[].description` + `input_schema` descriptions (reuse the OpenAI `mask_schema_descriptions`).
   - **Unknown block-type → fail closed, 400** (decided 2026-07-15 — strict, per this repo's ethos). The
     consequence: the **known set must be exhaustive for real Claude Code traffic** — pinned by a guard test, so
@@ -470,25 +471,27 @@ adapter is **not** adopted (wrong shape for a native client, and against fail-cl
   (`split_demaskable`, the hold-back buffer) + a per-schema delta rewriter (OpenAI vs Anthropic). **The prior
   proxy left this a TODO — its streamed replies were forwarded un-demasked — and closing it is the point: a
   placeholder reaching the client is the exact failure this tool exists to prevent.**
-- [x] **Verification.** A native-schema coverage / fail-closed suite against a mock upstream (9 e2e +
-  14 unit) — round-trip, tool defs, fail-closed on an unknown block, 404-when-not-anthropic, the full auth
-  matrix, and the streaming split-placeholder. **Still open (the `1.0.0` gate):** the opt-in real Claude Code
+- [x] **Verification.** A native-schema coverage / fail-closed suite against a mock upstream (10 e2e +
+  13 unit) — round-trip, tool defs (incl. a content-source document), fail-closed on an unknown block/document
+  source, 404-when-not-anthropic, the full auth matrix, and the streaming split-placeholder. **Still open (the
+  `1.0.0` gate):** the opt-in real Claude Code
   smoke — point a Claude Code session at the proxy and compare the M5 dual-run Run A / Run B against live
   Anthropic. Needs a human with Claude Code + credentials; not runnable in this environment.
 - **Out of scope:** Bedrock / Vertex native endpoints, `/v1/messages/count_tokens`, the broad multi-provider
   translation registry, and **server-side tool-result blocks** — all remain Backlog.
 
 ### Review ledger — M6 → [`reviews/M6.md`](reviews/M6.md)
-**Round 1 (2026-07-16): 5 findings — 1 leak, 1 hardening, 3 docs/test-quality.** Build green on both feature
-sets (84 default / 96 onnx lib), `fmt`/`clippy` clean. The leak (R1) was reproduced through the real router.
+**Round 1 (2026-07-16): 5 findings — 1 leak, 1 hardening, 3 docs/test-quality. All closed.** Build green on
+both feature sets (**85** default / **97** onnx lib after the fixes), `fmt`/`clippy` clean. The leak (R1) was
+reproduced through the real router and is now pinned by a unit test + an e2e.
 
 | ID | Title | Sev | Status |
 |---|---|---|---|
-| [M6-R1](reviews/M6.md#m6-r1) | A `document` block with a non-text-but-text-bearing source (`source.type:content`) is forwarded **unmasked** | **leak** | [ ] |
-| [M6-R2](reviews/M6.md#m6-r2) | `mask_anthropic_system`'s array branch fails **open** on an unrecognized object (same class as R1, one level up) | hardening | [ ] |
-| [M6-R3](reviews/M6.md#m6-r3) | M6 test counts are wrong: DEVLOG "96 lib tests default" (default is 84) + ROADMAP/DEVLOG "14 unit" (actual 12) | docs | [ ] |
-| [M6-R4](reviews/M6.md#m6-r4) | Some e2e placeholder-presence asserts are satisfiable by the augmentation prompt text (non-vacuous via the `!contains(raw)` checks, but weaker than they read) | test-quality | [ ] |
-| [M6-R5](reviews/M6.md#m6-r5) | `inject_augmentation_anthropic` doc says "Prepend" but the code appends | docs | [ ] |
+| [M6-R1](reviews/M6.md#m6-r1) | A `document` block with a non-text-but-text-bearing source (`source.type:content`) is forwarded **unmasked** → `source.type` dispatch + fail-closed on unknown | **leak** | [x] |
+| [M6-R2](reviews/M6.md#m6-r2) | `mask_anthropic_system`'s array branch fails **open** on an unrecognized object (same class as R1, one level up) | hardening | [x] |
+| [M6-R3](reviews/M6.md#m6-r3) | M6 test counts are wrong: DEVLOG "96 lib tests default" (default is 84) + ROADMAP/DEVLOG "14 unit" (actual 12) | docs | [x] |
+| [M6-R4](reviews/M6.md#m6-r4) | Some e2e placeholder-presence asserts are satisfiable by the augmentation prompt text (non-vacuous via the `!contains(raw)` checks, but weaker than they read) | test-quality | [x] |
+| [M6-R5](reviews/M6.md#m6-r5) | `inject_augmentation_anthropic` doc says "Prepend" but the code appends | docs | [x] |
 
 **Delivery (decided 2026-07-15):** one feature branch → PR (`feat/m6-anthropic-messages`), **streaming
 included from the start** (Claude Code streams by default, so a buffered-only first cut wouldn't be usable

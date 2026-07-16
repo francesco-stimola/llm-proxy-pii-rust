@@ -3,14 +3,39 @@
 Newest first. One entry per meaningful change — note *what* and *why*, not just
 *what*. This is the running history so context is never lost between sessions.
 
+## 2026-07-16 — M6 review round 1 closed (5/5): the leak was a source *inside* a known block
+
+Independent reviewer pass over the M6 landing (`0cdd251` + `98d9f55`). **Five findings, all closed.** Full
+record: [`reviews/M6.md`](reviews/M6.md). Post-fix: **85** lib tests default / **97** with `--features onnx`,
+**10** e2e; `fmt` + `clippy` clean on both.
+
+**M6-R1 — the one real leak, and it hid one level down from where the guard looks.** The block-type dispatch
+is strict (unknown *block* → 400), but inside the known `document` block the **`source.type`** dispatch was
+fail-*open*: the first cut masked only a `text` source and skipped every other source type. Anthropic has a
+**`content`** document source — `{type:document, source:{type:content, content:[{type:text, text:"…"}]}}` —
+whose blocks carry plaintext PII, and the reviewer reproduced it through the real router: a raw email + IBAN
+reached the mock upstream **in clear**. The fix mirrors the block-level rule one level down —
+`mask_anthropic_document` dispatches `source.type` (`text`→data, `content`→recurse the nested array,
+`base64`/`url`→skip, **unknown→fail closed**) and also masks the `title` / `context` metadata the first cut
+skipped. **The lesson: "unknown → fail closed" has to hold at *every* dispatch, not just the outermost one —
+a fail-open branch inside a known block is exactly as much a leak as an unmodelled block.** R2 is the same
+class one level up (the `system` array skipped a no-`text` object open) — closed the same way.
+
+**M6-R3/R4/R5 — the docs/test-quality trio.** R3: the test counts were wrong (a "96 lib default" that was
+really the onnx count, "14 unit" that was 12) — corrected and restated in the "N default / M onnx" form the
+M4 miscount lesson prescribes. R4: three e2e placeholder-*presence* asserts were satisfiable by the
+augmentation prompt (which literally contains `[EMAIL_1]`/`[IBAN_1]` as examples) — not vacuous (the
+`!contains(raw)` checks are the real guard), but weaker than they read; now they assert the **specific masked
+field** or a token absent from the prompt (`[PHONE_1]` / `[EMAIL_6]`). R5: a "Prepend" comment that appends.
+
 ## 2026-07-16 — M6 built: native Anthropic `/v1/messages` (Claude Code passthrough)
 
 Implemented M6 end to end on `feat/m6-anthropic-messages`, following the 7-stage plan below. The proxy now
 accepts a **native** Anthropic Messages body, masks it **in place** (no OpenAI translation), forwards
 native→native, and de-anonymizes both the buffered reply and the SSE stream. The masking engine
 (`Vault::mask_all`, the fixpoint, `spawn_blocking` + fail-closed) carried over untouched — M6 is *only* the
-Anthropic-schema walks plus the native forward/auth. **Green on both feature sets** (96 lib tests default /
-+onnx, 9 new e2e; `fmt` + `clippy` clean).
+Anthropic-schema walks plus the native forward/auth. **Green on both feature sets** (after review round 1:
+**85** lib tests default / **97** with `--features onnx`, **10** new e2e; `fmt` + `clippy` clean).
 
 **What landed, per stage:**
 - **T0 — `WireSchema` tag** (`pipeline/mod.rs`): `enum WireSchema { OpenAi, Anthropic }` on `RequestContext`,
@@ -32,8 +57,9 @@ Anthropic-schema walks plus the native forward/auth. **Green on both feature set
 - **T6 — native forward/auth** (`proxy.rs`, `send_messages` / `forward_messages` / `messages_auth`): path
   `/v1/messages` (`config.upstream_messages_path`, default `/v1/messages`); credential resolution; default
   `anthropic-version`.
-- **T7 — tests:** 14 unit (`privacy.rs` mask coverage / fail-closed / augmentation / demask; `stream.rs` SSE
-  split / `input_json_delta` / pre-stop flush / pass-through) + 9 e2e (`tests/anthropic_messages_e2e.rs`).
+- **T7 — tests:** 13 unit (`privacy.rs` ×9: mask coverage / document sources / fail-closed / augmentation /
+  demask; `stream.rs` ×4: SSE split / `input_json_delta` / pre-stop flush / pass-through) + 10 e2e
+  (`tests/anthropic_messages_e2e.rs`). *(Counts are post-review-round-1.)*
 
 **Four design calls made while building, recorded honestly:**
 
