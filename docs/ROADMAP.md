@@ -513,8 +513,17 @@ against real Anthropic — not merely once CI is green.
 
 **Opened 2026-07-16 by the M6 live gate, and it now holds `1.0.0`.** M6 proved the chain is
 *correct* against real Anthropic. The same session proved the product is *too slow to use*: with the
-NER on, masking costs **~0.96 s/KB**, and Claude Code re-sends 20–40 KB of system prompt + tool
-schemas **every turn** → **20–40 s per message**. Full measurements: DEVLOG 2026-07-16.
+NER on, Claude Code re-sends 20–40 KB of system prompt + tool schemas **every turn**, and we
+re-scan all of it from scratch. Full measurements: DEVLOG 2026-07-16. **The plan is
+DEVLOG 2026-07-16 → *M7 implementation plan*; start at S0.**
+
+> **Start by re-measuring — the headline numbers are suspect, and that is the first finding.** The
+> ~0.96 s/KB figure came from a fixture **densely packed with names**. Real traffic is the opposite
+> shape: ~30 KB of boilerplate with **~zero** PII plus a ~100-byte user message that has it all —
+> and `mask_all` runs **per field**, so the boilerplate takes **one** pass (~286 ms/KB → ~9 s/turn),
+> not two. A realistic turn is likely **~9 s, not 27 s**, which **reorders the leads**: the fixpoint
+> matters far less than written, the cache far more. *The corpus had a shape, and the shape was a
+> blind spot — the exact charge this milestone levels at M5's PERF-01, earned one level down.*
 
 > **This is not a leak and not an algorithmic bug** — the path is linear (M4's DoS guards hold) and
 > the structured layer is free (20 ms for 29 KB, ~1,400× faster than the hybrid). It is a *constant

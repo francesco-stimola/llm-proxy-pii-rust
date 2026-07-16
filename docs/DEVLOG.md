@@ -3,6 +3,109 @@
 Newest first. One entry per meaningful change — note *what* and *why*, not just
 *what*. This is the running history so context is never lost between sessions.
 
+## 2026-07-16 — M7 implementation plan (design only — not built)
+
+The technical blueprint for M7 (NER latency), to hand to the builder. **No source written.** Scope
+and the measurements that opened it are in ROADMAP → M7 and the entry below.
+
+### S0 — Fix the measurement first, because mine is probably wrong
+
+**Start here, and do not skip it.** The entry below reports **903 ms/KB** and concludes the
+fixpoint's second pass triples the cost. That number came from 29 KB **densely packed with names**
+(`"Il cliente Mario Rossi di Acme SpA a Milano…"` ×450). **A real Claude Code request has the
+opposite shape**: ~30 KB of boilerplate with **almost no PII**, plus a ~100-byte user message that
+has it all.
+
+And `Vault::mask_all` runs **per field**, not over the whole body. So on real traffic:
+
+| field | size | entities | fixpoint passes | cost @ 286 ms/KB |
+|---|---|---|---|---|
+| `system` + tool schemas | ~30 KB | ~0 | **1** (detect → empty → return) | ~8.6 s |
+| the user's message | ~100 B | 2–3 | 2 | negligible |
+
+**Which changes the whole priority order.** A real turn is likely **~9 s, not 27 s**, and **lead 2
+(the fixpoint) is worth almost nothing** — it only doubles fields that *contain* PII, and those are
+tiny. Meanwhile **lead 3 (the cache) gets bigger**: ~8.6 s per turn spent re-scanning byte-identical
+boilerplate, every turn, forever.
+
+> **This is the M5 mistake, one level down, and it is mine.** The entry below scolds PERF-01 for
+> measuring *a repeated synthetic sentence instead of a real payload* — and then measures *a dense
+> synthetic blob instead of a real payload*. The corpus had a shape; the shape was a blind spot.
+> **The fixture is the experiment.** Build it right before trusting a single number, including the
+> ones I wrote down.
+
+**Do:**
+- Add a **realistic** payload fixture: ~30 KB of system prompt + ~10 tool `input_schema`s + a short
+  user message carrying a few PII values. Sparse entities, exactly like real traffic. *(A captured
+  real body is tempting — the trace log has one — but it is **masked**, so its NER pass finds
+  nothing and the measurement lies in the other direction. Synthesize the shape, not the content.)*
+- Re-measure per-field, not per-body: it is the field distribution that decides everything.
+- **Then re-read the leads.** If a real turn is ~9 s and threads buy 3×, it is ~3 s and M7 may be
+  done without touching the fixpoint or adding a cache.
+
+### S1 — Lead 1: use more than one core (`src/pii/onnx.rs`)
+
+`with_intra_threads(1)` + a pool of sessions optimizes **concurrent throughput**; we need
+**single-request latency**. Replace the constant with a **derived, overridable** value:
+
+```rust
+// NER_INTRA_THREADS, else derive. The two knobs MULTIPLY: pool × intra is the thread count,
+// and it must fit the machine — `intra = 12` with `pool = 2` puts 24 threads on 12 cores.
+let intra = env("NER_INTRA_THREADS")
+    .unwrap_or_else(|| max(1, available_parallelism() / pool_size));
+```
+
+**Measure both axes** (this is the trade-off, not a tuning knob):
+- **latency**: one request, wall clock — the Claude Code case (concurrency ≈ 1);
+- **throughput**: N concurrent requests, req/s — the shared-proxy case, which the current design
+  was built for and which must not regress silently.
+
+**Two things to measure rather than assume:** SMT (`available_parallelism()` = 12 logical = 6
+physical × HT; dense math often prefers **6**), and sublinear scaling (expect ~3× from 6 threads,
+less on an **int8** model whose kernels are memory-bandwidth-bound).
+
+### S2 — The stop criterion, declared *before* the numbers
+
+**If a realistic turn drops below ~3 s, stop.** Ship it, re-run the battery, tag. Do **not** do S3 or
+S4. Adding state to the masking path or removing a detector pass are both real risks, and buying
+them "because we were already in there" is how a privacy tool grows a leak. **Optimize to a bar, not
+to exhaustion.**
+
+### S3 — Lead 3: don't re-scan an unchanged system prompt *(only if S2 says so)*
+
+The boilerplate is byte-identical every turn. A **content-keyed cache** (hash of the field text →
+the `Vec<PiiEntity>` found) makes turn 2+ nearly free; the per-request `Vault` still mints the
+placeholders, so determinism and the per-request round-trip are untouched.
+
+**It needs its own threat argument before it ships**, because it puts **state on the masking path**:
+- what is the key, and can two different texts collide into one entity set? (hash choice is a
+  *security* decision here, not a perf one);
+- bounded size + eviction — an unbounded cache on an **unauthenticated** path is the M4-R19 shape
+  again, in memory instead of CPU;
+- what happens on a cache **miss vs a wrong hit**? A miss costs time; a wrong hit **leaks**. Fail
+  closed: on any doubt, re-scan.
+
+### S4 — Lead 2: the fixpoint's second pass *(probably unnecessary — see S0)*
+
+Only if S0's realistic numbers still show it matters. The idea: passes ≥2 exist to catch masking
+**exposing** PII (a masked phone splits a digit run, revealing a card) — a **deterministic**
+phenomenon. So re-run only the structured layer on later passes and skip the NER.
+
+**The correctness argument must be made and tested first**, on paper and in the corpus: masking
+`John Smith` inside `John Smith-Jones` yields `[PERSON_1]-Jones` — **does the NER then tag `Jones`,
+and do we lose it if pass 2 skips the NER?** Decide it with a test, not an opinion. This is the one
+lead that can **lose detection**; the other two cannot.
+
+### S5 — Rewrite the CC prompts as natural agent tasks *(independent — do it anytime)*
+
+No measurement blocks this. See ROADMAP → M7 for the design question (do **not** fix it with a
+`CLAUDE.md` telling the agent to comply).
+
+### S6 — Re-run the battery, then publish the numbers
+
+CC-01…CC-09 × {OFF, ON} with `NER_REQUIRED=1`, and record per-turn latency next to the RAM figures
+in both READMEs — measured, like the RAM ones, not claimed.
+
 ## 2026-07-16 — The live gate closed, then re-opened: the hybrid is unusable with Claude Code
 
 The first real Claude Code session through the proxy **worked** — and then the same afternoon of
