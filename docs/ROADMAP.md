@@ -546,6 +546,15 @@ DEVLOG 2026-07-16 → *M7 implementation plan*; start at S0.**
 > shape again: *a corpus has a shape, and that shape is a blind spot.* A synthetic benchmark's shape
 > is "one field, grown"; a real client's is "the same 30 KB of boilerplate, re-sent forever".
 
+- [ ] **Re-measure first, with a *realistic* fixture — this gates every box below.** The headline
+  numbers came from a blob densely packed with names; real traffic is ~30 KB of near-PII-free
+  boilerplate + a ~100-byte user message, and `mask_all` runs **per field**, so the boilerplate costs
+  **one** pass, not two. Build the sparse fixture, measure per field, then **re-read the leads** —
+  the order below is a hypothesis, not a finding. *(Don't reuse the captured real body from the
+  trace log: it is already **masked**, so its NER pass finds nothing and the number lies.)*
+- [ ] **Declare the bar, and stop at it: a realistic turn under ~3 s ships.** If threads alone get
+  there, do **not** do the fixpoint or the cache — both trade real risk (lost detection; state on
+  the masking path) for speed already banked. **Optimize to a bar, not to exhaustion.**
 - [ ] **Use more than 1 core of 12.** `with_intra_threads(1)` (`src/pii/onnx.rs`) is deliberate — a
   *pool* of single-threaded sessions optimizes **concurrent throughput** and is exactly wrong for
   **single-request latency**: ~18 chunks run sequentially, each on one core. Measure the real
@@ -559,6 +568,18 @@ DEVLOG 2026-07-16 → *M7 implementation plan*; start at S0.**
   > **derived**, not fixed: `intra = max(1, available_parallelism() / NER_POOL_SIZE)`, overridable by
   > env like `NER_POOL_SIZE` already is. A fixed number is wrong on a 2-core VM and on a 64-core
   > server alike.
+  >
+  > **…but that product is the *saturated-load* count, and the divisor is a pessimization here —
+  > read the code before adopting the formula** (DEVLOG → S1a). A single request is sequential at
+  > **three** nested levels — fields (`&mut vault`), chunks (`infer_chunked`'s `for` loop), then the
+  > model call — so **one request uses exactly one core no matter what `pool` is**; the pool only
+  > wakes for a *second* concurrent request. A single request can reach `intra`, never `pool ×
+  > intra`. At the default `pool = 2` the formula yields `12 / 2 = 6` and leaves **6 cores idle** in
+  > precisely the concurrency ≈ 1 case M7 exists for. Either fan the chunks across the pool
+  > (near-linear, but each session copies the weights: ~400 MB each, so `pool = 6` ≈ **2.5 GB** vs
+  > today's 834 MB) or run `pool = 1, intra = all` (free, sublinear ~3×). **And parallelize
+  > *detection*, never *minting*** — placeholder numbering follows encounter order, so a parallel
+  > field walk makes `[EMAIL_1]` a coin flip; the `&mut` is load-bearing.
   >
   > **And the right shape depends on the deployment, which the proxy cannot know.** A personal proxy
   > in front of Claude Code (the M6 case) has concurrency ≈ 1 → latency is everything → `pool=1,

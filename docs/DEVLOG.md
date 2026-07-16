@@ -164,6 +164,50 @@ let intra = env("NER_INTRA_THREADS")
 physical × HT; dense math often prefers **6**), and sublinear scaling (expect ~3× from 6 threads,
 less on an **int8** model whose kernels are memory-bandwidth-bound).
 
+#### S1a — …and the derived formula is wrong at concurrency 1, because the pool does nothing there
+
+**Read the code before believing the formula above — I didn't, and it divides by the wrong thing.**
+A single request is sequential at **three nested levels**, and only the innermost is `intra_threads`:
+
+| level | where | today |
+|---|---|---|
+| fields | `privacy.rs:92` — `mask` is a closure holding `&mut vault` | sequential **by construction** |
+| chunks | `onnx.rs:219` — `infer_chunked`'s plain `for` loop | sequential |
+| the model call | `onnx.rs:154` — `with_intra_threads(1)` | 1 thread |
+
+So **one request uses exactly one core, whatever `NER_POOL_SIZE` is.** The pool buys *concurrent*
+capacity: a second session only ever runs when a second request is in flight. `pool × intra` is
+therefore the thread count **under saturated load**, not the count a single request can reach —
+that one is `intra` alone.
+
+Which makes `intra = available_parallelism() / pool_size` a **pessimization in the case M7 exists
+for**: at the default `pool = 2` it yields `12 / 2 = 6`, and the Claude Code case (concurrency ≈ 1)
+then runs 6 threads while **6 cores sit idle** waiting for a second request that never comes. The
+divisor is right for the shared proxy and wrong for the personal one.
+
+**Two ways out — and they are not equivalent:**
+- **Chunk-level parallelism** (`infer_chunked` fans its ~18 *independent* chunks across the pool).
+  Near-linear — chunks are embarrassingly parallel — where intra-op scaling is sublinear (~3×). It
+  is also what makes the divisor honest: `pool = 2 × intra = 6` would then really be 12 threads on
+  one request. **Costs RAM, and this is the trade:** each session holds its own copy of the weights
+  — measured **~834 MB at `pool = 2`** (README), i.e. ~400 MB per session, so `pool = 6` ≈ **2.5 GB**
+  against a *lean-RAM* bar. Latency bought in gigabytes.
+- **`pool = 1, intra = all`** — free, no RAM change, and already the ROADMAP's recommendation for the
+  personal case. It gets the sublinear ~3×, not the ~6×.
+
+> **The boundary that decides which parallelism is even legal: parallelize *detection*, never
+> *minting*.** Chunk fan-out is safe because chunks are read-only w.r.t. the `Vault` — they only
+> detect, and `infer_chunked` already merges by a deterministic `sort` + `dedup`. The **field** walk
+> is not safe to parallelize, and `&mut vault` is not merely why it's hard, it's why it's *wrong*:
+> placeholder **numbering follows encounter order**, so racing two fields makes `[EMAIL_1]` vs
+> `[EMAIL_2]` a coin flip and breaks the determinism M1 Part B pins. Whoever picks this up: the
+> `&mut` is load-bearing, not an obstacle to route around.
+
+**So S1's real question is not "what value for `intra_threads`" — it is "does a single request get
+to use the box at all?"** Measure `pool=1, intra=6` and `pool=1, intra=12` first (free, no RAM),
+and only reach for chunk fan-out if the sublinear ceiling isn't enough — with S2's bar, not to
+exhaustion.
+
 ### S2 — The stop criterion, declared *before* the numbers
 
 **If a realistic turn drops below ~3 s, stop.** Ship it, re-run the battery, tag. Do **not** do S3 or
