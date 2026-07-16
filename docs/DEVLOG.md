@@ -3,6 +3,106 @@
 Newest first. One entry per meaningful change — note *what* and *why*, not just
 *what*. This is the running history so context is never lost between sessions.
 
+## 2026-07-16 — The onnx build gets its own target dir (the clobber footgun, closed)
+
+**Infra, no source change.** The default and `onnx` builds both wrote
+`target/debug/llm-proxy-pii-rust.exe`, so *any* default-features command — `cargo test`, `cargo
+clippy --all-targets`, a plain `cargo build` — silently replaced the hybrid binary with a
+structured-only one. Not hypothetical: it is what made the first live M6 run test half the product
+(entry below), and `MANUAL_VERIFICATION.md` had been carrying it as a **warning box** — i.e. as a
+discipline to remember, which is the weakest kind of guard this repo accepts anywhere else.
+
+**Why not just rename the binary** (the first instinct, and the ask): **Cargo cannot name a binary
+per feature.** Features are additive and crate-wide; `required-features` gates *whether* a bin
+builds, never what it is called; and "not onnx" is inexpressible. A second `[[bin]]` with
+`required-features = ["onnx"]` *would* give a distinct name — but `cargo build --features onnx`
+would still also build the ambiguous `llm-proxy-pii-rust.exe` (a wasted link, ~5 min under fat
+LTO), so the trap binary survives next to the safe one and you must now *know which to point at*.
+That relocates the confusion instead of removing it.
+
+**So the split is by directory, not by name** — `.cargo/config.toml` aliases add `--features onnx
+--target-dir target/onnx`:
+
+| Path | Contains |
+|---|---|
+| `target/onnx/debug/llm-proxy-pii-rust.exe` | **the hybrid — always.** Only the aliases write here |
+| `target/debug/llm-proxy-pii-rust.exe` | whatever the last default-features command left; structured-only *by convention* |
+
+**Only the first row is a guarantee** — an explicit `cargo build --features onnx` still writes a
+hybrid to `target/debug/`, and seven milestones of docs trained exactly that habit. The asymmetry
+is fine because it runs in the safe direction: the *dangerous* case (structured-only masquerading
+as the hybrid) is the one `NER_REQUIRED=1` makes fatal. The shipped artifact name is untouched.
+`cargo build-onnx` / `run-onnx` / `test-onnx` / `clippy-onnx`; extra args append
+(`cargo build-onnx --release`). Run them from the repo root — `--target-dir` is cwd-relative, so
+from a subdirectory you get a stray `<subdir>/target/onnx/` that a root `cargo clean` won't find.
+
+**Verified, not assumed** (this box exists because the last one wasn't): both suites run green
+through the aliases — **85 lib tests default, 97 with `cargo test-onnx`**, zero warnings, `fmt`
+clean, `clippy-onnx -- -D warnings` clean, and all five workflow YAMLs parse. `cargo build-onnx`
+then `cargo build` left **both** binaries alive — 54.9 MB (links ONNX Runtime) vs 13.2 MB, the
+default command finishing in 2.1 s without touching the hybrid. `cargo run-onnx` rebuilds and
+launches `target/onnx/debug/`. And the two binaries are genuinely different builds, proved by the
+backstop they each hit under `NER_REQUIRED=1`:
+
+```text
+target\debug\…       Error: NER_REQUIRED is set but this binary was built without the `onnx` feature
+target\onnx\debug\…  Error: NER_REQUIRED is set but the NER is not configured (set NER_MODEL_PATH / …)
+```
+
+**`NER_REQUIRED=1` stays mandatory for the CC battery.** The aliases make the right build
+automatic; the flag makes the wrong one fatal. Two guards, and the cheap one is not a reason to
+drop the other — the flag is what *caught* this in the first place.
+
+**What the split does NOT close — and the review caught me claiming otherwise.** The clobber was
+**loud**: it destroyed the binary, so `NER_REQUIRED` turned it into a fatal error. A binary in its
+own directory is never destroyed — it goes **stale**, and a stale hybrid loads the NER and prints
+both green startup lines. `NER_REQUIRED` sees a *missing feature*, never *old code*. My first draft
+dropped MANUAL_VERIFICATION's old imperative ("always rebuild immediately before starting") on the
+grounds that the trap was now closed by construction — which is the M4-retrospective move exactly:
+*the failure relocated, and the doc stopped warning about it*. Fixed structurally rather than by
+restoring the imperative: the recipe now runs **`cargo run-onnx`**, so cargo rebuilds before
+launching and staleness is impossible.
+
+**Bonus, and not free:** two target dirs are two caches, so flipping between default and `onnx`
+stops invalidating the ort/tokenizers/hf-hub tree each time (that round trip was a ~7.5 min
+recompile). Paid in disk — `target/onnx/` measures 8.9 GiB of a 36.1 GiB `target/`.
+
+**The pipelines were already correct and are unchanged** (checked, since the question was asked):
+`release-build.yml` is `--features onnx` throughout, and its packaged artifact comes from
+`--target <triple>` — its own directory — with the build running *after* the tests, so a
+structured-only binary cannot ship. A comment now says why it doesn't use the aliases (rust-cache
+would stop covering a nested target dir), so nobody "fixes" it later.
+
+**`ci.yml`'s default leg stays — but my recorded reason for it was wrong**, which the reviewer
+rightly called the more dangerous half. I wrote that it guards the native-dep-free invariant
+(DEP-01, M2.5-R1). It does not: `tests/dependency_footprint.rs` shells `cargo tree` with **no
+`--features` flag**, so it asserts the same thing in the onnx leg — DEP-01 needs no default leg at
+all, and a future builder who notices that deletes the leg as redundant *and is being reasonable*.
+What the leg actually guards is what nothing else in CI compiles: the default feature set linking
+and passing green without the native stack, and `src/server.rs`'s `#[cfg(not(feature = "onnx"))]`
+block — the **only** not-onnx path in the tree, and the source of the `NER_REQUIRED` backstop error
+this entire change leans on. That reason now lives in `ci.yml` next to the leg, not only here.
+
+Docs realigned to the onnx variant: both READMEs' quick start, `SETUP.md`,
+`MANUAL_VERIFICATION.md` (the warning box now *describes the split* and its stale-binary limit),
+`TESTING.md` → *Running* (it taught only `cargo test` while the READMEs taught the pair), and the
+`ner_eval` / `ner_perf` header commands.
+
+**Not promoted to ARCHITECTURE/TESTING, deliberately** (the reviewer's call, and it's the right
+one). The durable rule here is *"a live verification must prove which build it ran"* — and
+TESTING.md already carries it, next to the thing it governs: the hybrid-with-`NER_REQUIRED=1` bar
+and CC-02, "the one that catches a half-running product". The build-dir split is the *ergonomic
+implementation* of that rule, with no runtime surface — implementations belong in SETUP, so
+ARCHITECTURE would only be noise.
+
+**Stale workflow comments fixed while verifying the pipeline claims** (in scope, since the entry
+above asserts the pipelines were checked): three files still said per-push CI no longer exists and
+pointed at a `ci.yml.disabled` that isn't there — `ci.yml` was brought back trimmed when Dependabot
+was enabled. The cross-compile really is tag/manual-only; *CI* isn't gone, so the comments now say
+which half is true. `release-build.yml`'s `upload-artifacts` input is also documented honestly: no
+caller passes it, and the caller its rationale cited (the retired per-push `ci.yml`) no longer
+exists.
+
 ## 2026-07-16 — M7 implementation plan (design only — not built)
 
 The technical blueprint for M7 (NER latency), to hand to the builder. **No source written.** Scope

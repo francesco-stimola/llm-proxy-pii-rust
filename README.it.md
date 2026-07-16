@@ -57,9 +57,15 @@ Fai puntare il tuo client compatibile con OpenAI al proxy. Nient'altro nel tuo s
 Richiede Rust **1.89+**.
 
 ```sh
-cargo build --release --features onnx
-UPSTREAM_API_KEY=sk-... ./target/release/llm-proxy-pii-rust
+cargo build-onnx --release
+UPSTREAM_API_KEY=sk-... ./target/onnx/release/llm-proxy-pii-rust
 ```
+
+> `build-onnx` è un alias del repo per `build --features onnx --target-dir target/onnx`
+> (`.cargo/config.toml`). L'ibrido compila in una **directory propria**, così un semplice
+> `cargo build`/`cargo test` — che scrive lo stesso nome di file sotto `target/` — non può
+> sovrascriverlo con un binario solo-strutturato. Anche la build di default funziona, ma
+> rinuncia alla NER: solo PII strutturata.
 
 Poi parlaci esattamente come faresti col provider reale:
 
@@ -272,8 +278,8 @@ Procedura completa: [`docs/MANUAL_VERIFICATION.md`](docs/MANUAL_VERIFICATION.md)
 | [Setup di sviluppo](docs/SETUP.md) | Toolchain (incl. Windows, senza permessi di admin) |
 
 ```sh
-cargo test                    # suite solo strutturato
-cargo test --features onnx    # + il percorso NER
+cargo test         # suite solo strutturato  (target/)
+cargo test-onnx    # + il percorso NER       (target/onnx/)
 ```
 
 ---

@@ -6,10 +6,10 @@ name: Release build & publish
 # structural (a workflow with no manual trigger and no publish path elsewhere) rather than an
 # `if`-gate that has to be got right. On-demand, throwaway builds live in `manual-build.yml`.
 #
-# There is no push/PR CI anymore (ci.yml is disabled — see ci.yml.disabled), so this tag build is
-# the only automated cross-target compile that gates a release, and its status badge is what the
-# READMEs show ("last tag built successfully?"). Run `manual-build.yml` on a branch FIRST to catch
-# a target break before tagging — nothing here builds until the tag is pushed.
+# `ci.yml` does run on push/PR, but it deliberately does not cross-compile — so this tag build is
+# still the only automated cross-target compile that gates a release, and its status badge is what
+# the READMEs show ("last tag built successfully?"). Run `manual-build.yml` on a branch FIRST to
+# catch a target break before tagging — nothing here builds until the tag is pushed.
 on:
   push:
     tags:

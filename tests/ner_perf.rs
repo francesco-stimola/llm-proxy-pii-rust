@@ -19,7 +19,7 @@
 //! set NER_MODEL_PATH=…\model_quantized.onnx
 //! set NER_TOKENIZER_PATH=…\tokenizer.json
 //! set NER_LABELS=O,B-DATE,I-DATE,B-PER,I-PER,B-ORG,I-ORG,B-LOC,I-LOC
-//! cargo test --features onnx --test ner_perf -- --ignored --nocapture
+//! cargo test-onnx --test ner_perf -- --ignored --nocapture
 //! ```
 #![cfg(feature = "onnx")]
 

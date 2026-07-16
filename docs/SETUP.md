@@ -66,6 +66,15 @@ The default build is native-dep-free and structured-PII only. The unstructured-e
 NER (names / orgs / locations) needs the `onnx` feature **and** a model. Two ways to
 provide it — pick one:
 
+> **Build the hybrid with the `-onnx` aliases** (`.cargo/config.toml`): `cargo build-onnx`,
+> `run-onnx`, `test-onnx`, `clippy-onnx`. Each adds `--features onnx --target-dir target/onnx`,
+> so the hybrid lands in `target/onnx/` — its **own** directory. This is not cosmetic: without
+> it, `cargo build --features onnx` and a plain `cargo build` write the *same* file, so `cargo
+> test` silently replaces your hybrid binary with a structured-only one (it has really
+> happened — see [`MANUAL_VERIFICATION.md`](MANUAL_VERIFICATION.md)). Cargo cannot name a
+> binary per feature, so the split is by directory. Extra args append, e.g.
+> `cargo build-onnx --release`.
+
 **(A) Opt-in auto-download (M2.5, recommended).** Let `hf-hub` fetch the picked,
 revision-pinned model into the standard HF cache (`%USERPROFILE%\.cache\huggingface\hub`,
 shared/deduped with other tools). Only the repo is required; the rest default to the
@@ -77,7 +86,7 @@ $env:NER_MODEL_REPO = "jiting/xlm-roberta-base-ner-hrl_onnx"
 #   $env:NER_MODEL_REVISION = "478a2a3"
 #   $env:NER_MODEL_FILE     = "onnx/model_quantized.onnx"
 #   $env:NER_TOKENIZER_FILE = "tokenizer.json"
-cargo run --features onnx
+cargo run-onnx
 ```
 
 The fetch is **one-time** (cached afterwards), **opt-in** (nothing downloads unless
@@ -91,7 +100,7 @@ already have; nothing is fetched:
 $env:NER_MODEL_PATH      = "C:\path\model_quantized.onnx"
 $env:NER_TOKENIZER_PATH  = "C:\path\tokenizer.json"
 $env:NER_LABELS          = "O,B-DATE,I-DATE,B-PER,I-PER,B-ORG,I-ORG,B-LOC,I-LOC"  # class-id order
-cargo run --features onnx
+cargo run-onnx
 ```
 
 Common knobs (both modes): `NER_POOL_SIZE` (session pool for concurrency),

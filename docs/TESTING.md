@@ -626,5 +626,13 @@ PII). Placeholder-**presence** asserts are on the **specific masked field** (or 
 
 ## Running
 
-- `cargo test` — unit + property + integration (from M1 onward).
+- `cargo test` — unit + property + integration (from M1 onward), structured-only.
+- `cargo test-onnx` — the same suite **plus** the NER path. A `.cargo/config.toml` alias for
+  `--features onnx --target-dir target/onnx`: the hybrid builds into its **own** directory, so a
+  later plain `cargo test` cannot overwrite the hybrid binary with a structured-only one (they
+  otherwise share `target/debug/llm-proxy-pii-rust.exe` — the footgun that once made a live
+  verification test half the product; see [`MANUAL_VERIFICATION.md`](MANUAL_VERIFICATION.md)).
+  Run it from the repo root: `--target-dir` is relative to the cwd.
+- Live-model tests (EVAL-01, the NER-CHUNK / NER-INERT / perf guards) are `#[ignore]`d and need a
+  configured model — `cargo test-onnx --test ner_perf -- --ignored --nocapture`.
 - End-to-end against a mock provider — harness added in M1.

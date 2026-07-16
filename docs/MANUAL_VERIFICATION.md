@@ -60,9 +60,7 @@ An OAuth token is **never** placed in `x-api-key` (Anthropic 401s that). If a se
 **and** the NER. Verify with anything less and CC-02 tests nothing.
 
 ```powershell
-# from the repo root
-cargo build --features onnx
-
+# from the repo root — the aliases' --target-dir is relative to your cwd
 $env:LISTEN_ADDR='127.0.0.1:8787'
 $env:UPSTREAM_PROVIDER='anthropic'                       # gates the /v1/messages route
 $env:UPSTREAM_BASE_URL='https://api.anthropic.com'
@@ -70,7 +68,7 @@ $env:RUST_LOG='llm_proxy_pii_rust=trace'                 # the masked-body trace
 $env:NER_MODEL_REPO='jiting/xlm-roberta-base-ner-hrl_onnx'   # revision-pinned, cached after the first fetch
 $env:NER_REQUIRED='1'                                    # see the box below
 # UPSTREAM_API_KEY deliberately UNSET — the client passes its own credential
-.\target\debug\llm-proxy-pii-rust.exe
+cargo run-onnx     # rebuilds, THEN runs target\onnx\debug\ — see the box below
 ```
 
 Confirm **both** lines before trusting a single result:
@@ -88,15 +86,34 @@ INFO … listening on http://127.0.0.1:8787
 > downgrade into a fatal startup error, which is the only way "is the hybrid actually on?" stops
 > being a question you can get wrong. (DEVLOG 2026-07-16.)
 
-> **The footgun that makes the flag earn its keep: `cargo test` silently un-does your onnx
-> build.** `cargo build` and `cargo build --features onnx` write the **same** file
+> **The footgun this used to carry — now closed by construction: `cargo test` silently un-did
+> your onnx build.** `cargo build` and `cargo build --features onnx` write the **same** file
 > (`target/debug/llm-proxy-pii-rust.exe`), so *any* default-features command — `cargo test`,
-> `cargo clippy --all-targets`, a plain `cargo build` — overwrites the hybrid binary with a
-> structured-only one. Nothing warns you. **Always `cargo build --features onnx` immediately
-> before starting the proxy**, and let `NER_REQUIRED=1` be the backstop: it turns the mistake
-> into `Error: NER_REQUIRED is set but this binary was built without the 'onnx' feature` instead
-> of a green-looking run that tests half the product. (This is not hypothetical — it happened
-> while writing this file, minutes after the paragraph above was added. The flag caught it.)
+> `cargo clippy --all-targets`, a plain `cargo build` — overwrote the hybrid binary with a
+> structured-only one, with no warning. It was not hypothetical: it happened while writing this
+> file, minutes after the paragraph above was added, and `NER_REQUIRED=1` is what caught it.
+>
+> **The fix is a build directory, not a discipline** (2026-07-16). Cargo cannot name a binary per
+> feature — features are additive and crate-wide, `required-features` gates *whether* a bin builds
+> and not what it is called, and "not onnx" is inexpressible. So the hybrid gets its **own target
+> dir** via the `.cargo/config.toml` aliases:
+>
+> | Path | Contains |
+> |---|---|
+> | `target/onnx/debug/llm-proxy-pii-rust.exe` | **the hybrid — always.** Only the aliases write here, so no default-features command can reach it |
+> | `target/debug/llm-proxy-pii-rust.exe` | whatever the last default-features command left. Structured-only *by convention* — an explicit `cargo build --features onnx` still writes a hybrid here |
+>
+> **But read the asymmetry, because it is the whole point.** Only the first row is a guarantee. The
+> second is a habit, and the guarantee runs in the safe direction: the *dangerous* mistake
+> (structured-only masquerading as the hybrid) is what `NER_REQUIRED=1` makes fatal.
+>
+> **And the clobber was loud — this trades it for something quiet.** Overwriting *destroyed* the
+> hybrid, so `NER_REQUIRED=1` caught it instantly. A binary in its own directory is never
+> destroyed; it goes **stale**, and a stale hybrid loads the NER and prints both green lines above.
+> `NER_REQUIRED` detects a *missing feature*, never *old code*. That is why the recipe runs
+> **`cargo run-onnx`** rather than launching the path directly: cargo rebuilds first, so staleness
+> is impossible by construction instead of by remembering to rebuild. Belt and braces — the alias
+> makes the right build automatic, the flag makes the wrong one fatal.
 
 ## Procedure
 

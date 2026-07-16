@@ -58,9 +58,15 @@ changes.
 Requires Rust **1.89+**.
 
 ```sh
-cargo build --release --features onnx
-UPSTREAM_API_KEY=sk-... ./target/release/llm-proxy-pii-rust
+cargo build-onnx --release
+UPSTREAM_API_KEY=sk-... ./target/onnx/release/llm-proxy-pii-rust
 ```
+
+> `build-onnx` is a repo alias for `build --features onnx --target-dir target/onnx`
+> (`.cargo/config.toml`). The hybrid builds into **its own directory** so that a plain
+> `cargo build`/`cargo test` — which writes the same filename under `target/` — can never
+> overwrite it with a structured-only binary. A default build works too, and drops the NER:
+> structured PII only.
 
 Then talk to it exactly like the real provider:
 
@@ -267,8 +273,8 @@ Full procedure: [`docs/MANUAL_VERIFICATION.md`](docs/MANUAL_VERIFICATION.md).
 | [Development setup](docs/SETUP.md) | Toolchain (incl. Windows, no admin) |
 
 ```sh
-cargo test                    # structured-only suite
-cargo test --features onnx    # + the NER path
+cargo test         # structured-only suite  (target/)
+cargo test-onnx    # + the NER path         (target/onnx/)
 ```
 
 ---
