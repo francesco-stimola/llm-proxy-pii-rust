@@ -3,6 +3,87 @@
 Newest first. One entry per meaningful change — note *what* and *why*, not just
 *what*. This is the running history so context is never lost between sessions.
 
+## 2026-07-16 — The live gate closed, then re-opened: the hybrid is unusable with Claude Code
+
+The first real Claude Code session through the proxy **worked** — and then the same afternoon of
+measurement turned the celebration into the most useful set of numbers this project has. Nothing
+here is a leak; all of it is the kind of thing only a real client on a real provider can show.
+
+**What held (measured, 2026-07-16).** A subscription-logged-in Claude Code, pointed at the proxy
+with **no credential configured anywhere**, got **200 on the first request — no 401, no retry**.
+It forwards its own credential; the proxy passed it verbatim while `UPSTREAM_API_KEY` was unset.
+The request left masked (`contatta [EMAIL_1], IBAN [IBAN_1]`), the reply came back with the real
+values restored, and a grep of the whole trace for the raw email and IBAN found **zero** — DBG-02
+on real traffic, not the synthetic case `tests/log_safety.rs` pins.
+
+> **The auth doc was backwards, and only the test could say so.** The previous
+> `MANUAL_VERIFICATION.md` asserted that routing Claude Code through the proxy was impossible on
+> **two** counts: schema *and* auth ("an OAuth token scoped to Claude Code's own flow… not a plain
+> Bearer usable against the raw API"). M6 disproved the schema half by construction. The live run
+> disproved the auth half by observation. Third-party write-ups still claim a custom
+> `ANTHROPIC_BASE_URL` *requires* setting `ANTHROPIC_AUTH_TOKEN`; for 2.1.211 it does not.
+
+**Then: the first run was testing half the product, silently.** No model was configured, so
+`load_onnx_ner` returned `Ok(None)` and the proxy ran **structured-only** — the deliberate
+fail-*open* posture for names. Email and IBAN masked perfectly *because they are deterministic
+recognizers*, so everything looked green while **the NER never ran**; a `Person` would have gone
+upstream in clear. `NER_REQUIRED=1` is now mandatory for the battery: it makes that silent
+downgrade a fatal startup error. It proved itself within minutes — `cargo test` (default features)
+overwrites the onnx binary at the **same path**, with no warning, and the flag caught exactly that.
+
+**And with the NER actually on, the proxy is not usable with Claude Code.** Measured on this box
+(Ryzen 5 PRO 8540U, 6 cores / 12 threads), timing the *masking alone* (a credential-less request
+masks fully, then 401s — so the time to the 401 **is** the masking cost):
+
+| what | 29 KB field | per KB |
+|---|---|---|
+| structured only | **20 ms** | ~0.7 ms |
+| hybrid, debug | 27,728 ms | 956 ms |
+| hybrid, **release** (fat LTO) | 26,863 ms | 926 ms |
+
+- **The masking is linear** — ~0.96 s/KB, constant across 2 / 10 / 29 KB. M4's DoS guards hold;
+  this is not an algorithmic bug.
+- **The NER is ~100% of the cost**: 20 ms vs 27 s on the same 29 KB — a factor of **~1,400×**.
+  The deterministic layer is free, exactly as the README claims.
+- **Release buys 3%.** The cost is inside ONNX Runtime — a prebuilt, already-optimized native
+  library. Compiling *our* Rust faster changes nothing. (Worth knowing before anyone "fixes" this
+  with a profile flag.)
+- **Claude Code sends 20–40 KB every turn** (its system prompt plus every tool's `input_schema`),
+  which we re-scan from scratch each time → **20–40 s per message**.
+
+**Why nobody saw it.** M5's PERF-01 measured the NER on a *repeated synthetic sentence* and
+concluded "linear" — correctly. It never measured a **real client's payload**, which is dominated
+by boilerplate re-sent every turn. "Linear" was true and beside the point: the constant is what
+makes it unusable, and only a live client exposes the constant.
+
+**Three leads, measured not guessed:**
+
+1. **We use 1 core of 12.** `OnnxNerDetector::load` sets `with_intra_threads(1)` deliberately — the
+   design holds a *pool* of single-threaded sessions, which optimizes **concurrent throughput** and
+   is exactly wrong for **single-request latency**: an oversized field's ~18 chunks run one after
+   another, each on one core.
+2. **The fixpoint's second pass costs more than the first.** A 34.7 KB field with **no** PII (one
+   detector pass) masks in **9,923 ms** = 286 ms/KB. A *smaller* 29.4 KB field **with** PII (two
+   passes) takes **26,567 ms** = 903 ms/KB — **2.7× slower while being 15% shorter**. M4-R21
+   accepted that "~2×" when the NER saw small fields; on a 30 KB system prompt it is ~13 s of
+   re-scanning per turn. And the phenomenon the second pass exists for — masking *exposing* PII by
+   splitting a digit run — is a **structured-recognizer** effect. Masking a name to `[PERSON_1]`
+   does not reveal a new name. Re-running only the *deterministic* layer on passes ≥2 is the
+   obvious lead; it needs a real argument about NER recall at the seams before it ships.
+3. **The static prompt is re-scanned every turn.** The system prompt and tool schemas are identical
+   across turns. Nothing exploits that today.
+
+**Two flaws were in the test, not the product.** The battery's prompts said *"reply with exactly
+this sentence: contact jane.doe@example.com, IBAN …"* — and the model **refused**, correctly reading
+it as an injection attempt ("it has nothing to do with this repository"). Claude Code is an *agent
+with a repo context*, not a completion endpoint, and it inherited that context precisely because we
+moved the fixture **inside** the repo. The scenarios must be **natural agent tasks** (read this
+file, format this contact), which is also what real usage looks like. Rewriting them is the next
+step.
+
+**Status: the `1.0.0` tag waits.** Not for a leak — for an honest answer to "is the product we
+advertise actually usable?". Investigating leads 1–3 before tagging.
+
 ## 2026-07-16 — M6 review round 1 closed (5/5): the leak was a source *inside* a known block
 
 Independent reviewer pass over the M6 landing (`0cdd251` + `98d9f55`). **Five findings, all closed.** Full

@@ -34,8 +34,9 @@ completion**; findings, counts and closure notes live in each milestone's sectio
 | [M3 — Streaming & multi-provider routing](#m3) | ✅ complete |
 | [M4 — Broad locale & language coverage](#m4) | ✅ complete |
 | [M5 — Integration & performance testing](#m5) | ✅ complete |
-| [**M6 — Native Anthropic `/v1/messages`**](#m6) | ✅ **code-complete** (streaming incl.) — live Claude Code verification is opt-in |
-| [First tagged release `1.0.0`](#m6) | ⬜ not started — gated on the M6 live-provider verification |
+| [**M6 — Native Anthropic `/v1/messages`**](#m6) | ✅ **code-complete**, and **verified live**: a real Claude Code session round-trips through the proxy (2026-07-16) |
+| [**M7 — NER latency**](#m7) | 🔨 **active** — the hybrid is ~1 s/KB, i.e. 20–40 s per Claude Code turn. **Now what gates `1.0.0`** |
+| [First tagged release `1.0.0`](#m6) | ⬜ not started — gated on [M7](#m7): the product we advertise must be usable, not just correct |
 
 ---
 
@@ -506,6 +507,47 @@ plan (files, the 7 stages, the schema walks) lives in DEVLOG 2026-07-15.
 
 **Gate to `1.0.0`.** The first tag ships only once Claude Code works end-to-end through this route, verified
 against real Anthropic — not merely once CI is green.
+
+<a id="m7"></a>
+## M7 — NER latency: make the hybrid usable with a real client
+
+**Opened 2026-07-16 by the M6 live gate, and it now holds `1.0.0`.** M6 proved the chain is
+*correct* against real Anthropic. The same session proved the product is *too slow to use*: with the
+NER on, masking costs **~0.96 s/KB**, and Claude Code re-sends 20–40 KB of system prompt + tool
+schemas **every turn** → **20–40 s per message**. Full measurements: DEVLOG 2026-07-16.
+
+> **This is not a leak and not an algorithmic bug** — the path is linear (M4's DoS guards hold) and
+> the structured layer is free (20 ms for 29 KB, ~1,400× faster than the hybrid). It is a *constant
+> factor*, and **availability is a privacy property here**: a proxy too slow to keep switched on
+> protects nothing, because it gets switched off.
+>
+> **Why M5 missed it.** PERF-01 measured a *repeated synthetic sentence* and concluded "linear" —
+> true, and beside the point. It never measured a **real client's payload**. The lesson is the M4-R13
+> shape again: *a corpus has a shape, and that shape is a blind spot.* A synthetic benchmark's shape
+> is "one field, grown"; a real client's is "the same 30 KB of boilerplate, re-sent forever".
+
+- [ ] **Use more than 1 core of 12.** `with_intra_threads(1)` (`src/pii/onnx.rs`) is deliberate — a
+  *pool* of single-threaded sessions optimizes **concurrent throughput** and is exactly wrong for
+  **single-request latency**: ~18 chunks run sequentially, each on one core. Measure the real
+  trade-off (latency vs throughput under concurrent load) rather than picking by intuition — both
+  matter, and the current choice was made when a "field" was a sentence.
+- [ ] **Stop paying twice for the fixpoint.** A no-PII 34.7 KB field (one pass) masks in 9.9 s
+  = 286 ms/KB; a *smaller* 29.4 KB field with PII (two passes) takes 26.6 s = 903 ms/KB — **2.7×
+  slower while 15% shorter**. M4-R21 accepted that cost when the NER saw sentences. The lead:
+  passes ≥2 exist to catch masking **exposing** PII (a masked phone splits a digit run, revealing a
+  card) — a **deterministic-recognizer** phenomenon. Masking a name to `[PERSON_1]` does not reveal
+  a new name. So re-run only the structured layer on later passes. **Needs a real argument about NER
+  recall at the seams before it ships** — `[PERSON_1]-Jones` is exactly the shape that would decide it.
+- [ ] **Don't re-scan an unchanged system prompt every turn.** It is byte-identical across turns and
+  dominates the payload. Any answer here (content-keyed cache of the *entities*, leaving the
+  per-request vault to mint placeholders as it does now) adds state, and state on the masking path
+  needs its own threat argument — which is why this is listed last, not first.
+- [ ] **Re-run the CC battery** once the numbers move, and record the per-turn latency as a product
+  figure next to the RAM ones in the READMEs.
+
+> **Do not "fix" this with a build profile.** Measured: `release` (fat LTO, opt-level 3) buys **3%**
+> — 27,728 ms → 26,863 ms on 29 KB. The cost is inside ONNX Runtime, a prebuilt native library that
+> is already optimized; compiling *our* Rust harder changes nothing.
 
 <a id="backlog"></a>
 ## Backlog — documented, not scheduled
