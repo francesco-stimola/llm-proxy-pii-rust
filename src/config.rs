@@ -25,6 +25,10 @@ pub struct Config {
     /// Path appended to `upstream_base_url` for chat completions. Per-provider
     /// (M3): OpenAI/Anthropic use `/v1/chat/completions`, Copilot `/chat/completions`.
     pub upstream_chat_path: String,
+    /// Path appended to `upstream_base_url` for the native Anthropic Messages API
+    /// (M6). Only used by the `/v1/messages` route, which is registered **only**
+    /// when `provider == "anthropic"`. Defaults to `/v1/messages`.
+    pub upstream_messages_path: String,
     /// Extra static headers to add to every upstream request (e.g. editor headers
     /// some providers require). Never includes secrets by default.
     pub upstream_extra_headers: Vec<(String, String)>,
@@ -92,6 +96,13 @@ impl Config {
             .filter(|p| !p.is_empty())
             .unwrap_or_else(|| preset.chat_path.to_string());
 
+        // Native Anthropic Messages path (M6) — only the `anthropic`-gated
+        // `/v1/messages` route uses it; overridable for parity with the chat path.
+        let upstream_messages_path = std::env::var("UPSTREAM_MESSAGES_PATH")
+            .ok()
+            .filter(|p| !p.is_empty())
+            .unwrap_or_else(|| "/v1/messages".to_string());
+
         let forward_request_headers = match std::env::var("UPSTREAM_FORWARD_HEADERS") {
             Ok(raw) => parse_header_list(&raw),
             Err(_) => preset
@@ -126,6 +137,7 @@ impl Config {
             max_body_bytes,
             provider,
             upstream_chat_path,
+            upstream_messages_path,
             upstream_extra_headers,
             forward_request_headers,
             pii_locales,
@@ -229,6 +241,7 @@ impl fmt::Debug for Config {
             .field("max_body_bytes", &self.max_body_bytes)
             .field("provider", &self.provider)
             .field("upstream_chat_path", &self.upstream_chat_path)
+            .field("upstream_messages_path", &self.upstream_messages_path)
             // Names only — an extra header value may be a secret (e.g. a token).
             .field(
                 "upstream_extra_headers",

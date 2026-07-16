@@ -58,9 +58,15 @@ changes.
 Requires Rust **1.89+**.
 
 ```sh
-cargo build --release --features onnx
-UPSTREAM_API_KEY=sk-... ./target/release/llm-proxy-pii-rust
+cargo build-onnx --release
+UPSTREAM_API_KEY=sk-... ./target/onnx/release/llm-proxy-pii-rust
 ```
+
+> `build-onnx` is a repo alias for `build --features onnx --target-dir target/onnx`
+> (`.cargo/config.toml`). The hybrid builds into **its own directory** so that a plain
+> `cargo build`/`cargo test` — which writes the same filename under `target/` — can never
+> overwrite it with a structured-only binary. A default build works too, and drops the NER:
+> structured PII only.
 
 Then talk to it exactly like the real provider:
 
@@ -121,10 +127,11 @@ hardware; large fields are chunked so long documents work too.
 
 ### The bar it holds itself to
 
-- **Fail closed.** An unreadable request shape, a required detector that errors, or masking
-  that can't reach a stable fixpoint all **block the request (400)** rather than forward
-  anything of unknown PII status. Only `POST /v1/chat/completions` is proxied — everything
-  else is `404`, never forwarded.
+- **Fail closed.** An unreadable request shape, an unknown content-block type, a required
+  detector that errors, or masking that can't reach a stable fixpoint all **block the request
+  (400)** rather than forward anything of unknown PII status. Only `POST /v1/chat/completions`
+  (and `POST /v1/messages` when `UPSTREAM_PROVIDER=anthropic`) is proxied — everything else is
+  `404`, never forwarded.
 - **Never log raw PII.** Logs carry kinds, counts and placeholders — never values. Enforced
   by a test, not by convention.
 - **Linear under load.** The masking path is provably linear in both field *size* and entity
@@ -132,6 +139,21 @@ hardware; large fields are chunked so long documents work too.
   proxy for everyone. *A proxy that is down protects nothing.*
 - **Deterministic.** The same value always maps to the same placeholder within a request, so
   stateless multi-turn conversations stay coherent.
+
+### Footprint — measured, not claimed
+
+Resident memory, measured 2026-07-16 (Windows, debug build, idle after startup):
+
+| build | private | working set | what dominates |
+|---|---|---|---|
+| **structured only** (default features) | **~10 MB** | ~36 MB | nothing — it's regex |
+| **hybrid** (`--features onnx`, XLM-R int8, `NER_POOL_SIZE=2`) | **~834 MB** | ~862 MB | the NER: **two** ONNX sessions, i.e. the model held twice |
+
+The deterministic layer is essentially free; **the model is the whole cost**, and it is tunable:
+`NER_POOL_SIZE` (default `2`) trades concurrency for memory — `1` roughly halves it. Pick the
+build to match the threat you actually have: structured-only already covers emails, IBANs, cards,
+secrets and 10 national ID schemes, and it is language-independent. The NER buys you names,
+organizations and locations — nothing else.
 
 ---
 
@@ -174,16 +196,17 @@ fast; check each tool's current docs before relying on it.*
 | **pi** (`@earendil-works/pi`) | ✅ | a provider with `"api": "openai-completions"`, `"baseUrl": ".../v1"` |
 | **GitHub Copilot CLI** | ✅ | BYOK: `COPILOT_PROVIDER_BASE_URL=http://127.0.0.1:8080/v1` (model needs tools + streaming) |
 | **GitHub Copilot Chat** (VS Code) | ✅ | BYOK → an "OpenAI Compatible" provider pointed at the proxy (chat only) |
-| **Claude Code** · Anthropic SDK | ❌ not yet | native `/v1/messages` only — no OpenAI-compatible mode → [M6](docs/ROADMAP.md#m6) |
+| **Claude Code** · Anthropic SDK | ✅ new (M6) | point it at the proxy with `UPSTREAM_PROVIDER=anthropic`; the native `/v1/messages` body is masked **in place** (no OpenAI translation). *Live end-to-end verification against real Anthropic is the remaining [`1.0.0` gate](docs/ROADMAP.md#m6).* |
 
 > **The test is the base URL, not the brand.** GitHub Copilot even lands on *both* axes — an
 > *upstream* preset (`UPSTREAM_PROVIDER=copilot`) **and**, via BYOK, a *client* (Copilot CLI / Chat):
 > same brand, two independent settings. (Copilot Chat's custom-endpoint BYOK is chat-only and was
 > still rolling out in VS Code at the time of writing; the CLI's is generally available.)
 
-So **Anthropic works as an *upstream*** (via its OpenAI-compatible endpoint), but a **native client
-like Claude Code does *not* work** — same provider, different question. Native `/v1/messages` support
-is the next milestone.
+So **Anthropic works as an *upstream*** (via its OpenAI-compatible endpoint) **and now as a *native
+client*** — **M6** serves Anthropic's native `/v1/messages` (content blocks, `tool_use`/`tool_result`,
+streaming) so a native client like Claude Code is masked without an OpenAI-compatible mode. The route
+is registered only when `UPSTREAM_PROVIDER=anthropic`; on any other upstream `/v1/messages` still 404s.
 
 ---
 
@@ -196,8 +219,9 @@ Everything is environment-driven.
 | `LISTEN_ADDR` | `127.0.0.1:8080` | Address the proxy listens on |
 | `UPSTREAM_BASE_URL` | `https://api.openai.com` | Upstream provider base URL |
 | `UPSTREAM_API_KEY` | *(unset)* | Injected as `Authorization: Bearer …` **only** when the client sends none of its own |
-| `UPSTREAM_PROVIDER` | `openai` | `openai` / `copilot` / `anthropic` — routing preset |
+| `UPSTREAM_PROVIDER` | `openai` | `openai` / `copilot` / `anthropic` — routing preset (`anthropic` also enables the native `/v1/messages` route, M6) |
 | `UPSTREAM_CHAT_PATH` | *(preset)* | Override the chat-completions path |
+| `UPSTREAM_MESSAGES_PATH` | `/v1/messages` | Override the native Anthropic Messages path (M6; only used when `UPSTREAM_PROVIDER=anthropic`) |
 | `UPSTREAM_FORWARD_HEADERS` | *(preset)* | Comma-separated client headers to pass through |
 | `UPSTREAM_EXTRA_HEADERS` | *(none)* | `Key=Value;Key2=Value2` static headers for every upstream request |
 | `MAX_BODY_BYTES` | `16777216` | Request body limit (16 MiB) |
@@ -249,8 +273,8 @@ Full procedure: [`docs/MANUAL_VERIFICATION.md`](docs/MANUAL_VERIFICATION.md).
 | [Development setup](docs/SETUP.md) | Toolchain (incl. Windows, no admin) |
 
 ```sh
-cargo test                    # structured-only suite
-cargo test --features onnx    # + the NER path
+cargo test         # structured-only suite  (target/)
+cargo test-onnx    # + the NER path         (target/onnx/)
 ```
 
 ---

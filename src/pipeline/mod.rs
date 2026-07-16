@@ -10,17 +10,39 @@ pub mod privacy;
 use crate::pii::anonymizer::Vault;
 use crate::proxy::{ProxyRequest, ProxyResponse};
 
+/// Which wire protocol an inbound request speaks. It selects the schema-specific
+/// masking / demasking walk in [`privacy::PrivacyStage`] (M6) — the request body
+/// is a different shape per schema, so a single walk cannot cover both without a
+/// missed field, and a missed field is a leak.
+///
+/// `OpenAi` is the Chat Completions schema (`/v1/chat/completions`), the default
+/// and the only inbound schema before M6. `Anthropic` is the native Messages
+/// schema (`/v1/messages`) — the Claude Code passthrough. The handler sets the
+/// tag on the [`RequestContext`] before running the stages; the OpenAI path is
+/// therefore entirely undisturbed (it gets the `Default`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum WireSchema {
+    /// OpenAI Chat Completions (`/v1/chat/completions`).
+    #[default]
+    OpenAi,
+    /// Anthropic native Messages (`/v1/messages`).
+    Anthropic,
+}
+
 /// Per-request state carried from the request hooks to the response hooks.
 ///
 /// The proxy creates one of these per incoming request, threads it through every
 /// stage's [`Stage::on_request`], and then through every stage's
-/// [`Stage::on_response`]. Today it only holds the privacy [`Vault`] (built while
-/// masking, consumed while restoring); other per-request state (auth claims,
-/// timing, …) can hang off here as stages are added.
+/// [`Stage::on_response`]. Today it holds the privacy [`Vault`] (built while
+/// masking, consumed while restoring) and the inbound [`WireSchema`]; other
+/// per-request state (auth claims, timing, …) can hang off here as stages are added.
 #[derive(Debug, Default)]
 pub struct RequestContext {
     /// Placeholder ↔ original mapping for the privacy stage.
     pub vault: Vault,
+    /// Which wire schema the request body speaks — selects the privacy stage's
+    /// mask/demask walk (M6). Set by the handler before the stages run.
+    pub schema: WireSchema,
     /// Set by a stage to **fail closed**: the request must be rejected, not
     /// forwarded, because it could otherwise leak PII (e.g. an unrecognized
     /// payload shape a masker can't safely cover). The `String` is a

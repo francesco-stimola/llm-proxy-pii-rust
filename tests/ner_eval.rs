@@ -9,14 +9,14 @@
 //! #     from config.json — how the picked XLM-R int8 was scored:
 //! set NER_MODEL_REPO=jiting/xlm-roberta-base-ner-hrl_onnx
 //! set NER_MODEL_REVISION=478a2a3          # pinned; the default too
-//! cargo test --features onnx --test ner_eval -- --ignored --nocapture
+//! cargo test-onnx --test ner_eval -- --ignored --nocapture
 //!
 //! # (B) Explicit local files:
 //! set NER_MODEL_PATH=…\model.onnx
 //! set NER_TOKENIZER_PATH=…\tokenizer.json
 //! set NER_LABELS=O,B-DATE,I-DATE,B-PER,I-PER,B-ORG,I-ORG,B-LOC,I-LOC   # class-id order
 //! set NER_TOKEN_TYPE_IDS=1                                             # BERT-family only
-//! cargo test --features onnx --test ner_eval -- --ignored --nocapture
+//! cargo test-onnx --test ner_eval -- --ignored --nocapture
 //! ```
 //!
 //! It scores the candidate **through the real hybrid** (structured recognizers +

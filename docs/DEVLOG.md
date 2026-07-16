@@ -3,6 +3,432 @@
 Newest first. One entry per meaningful change — note *what* and *why*, not just
 *what*. This is the running history so context is never lost between sessions.
 
+## 2026-07-16 — The onnx build gets its own target dir (the clobber footgun, closed)
+
+**Infra, no source change.** The default and `onnx` builds both wrote
+`target/debug/llm-proxy-pii-rust.exe`, so *any* default-features command — `cargo test`, `cargo
+clippy --all-targets`, a plain `cargo build` — silently replaced the hybrid binary with a
+structured-only one. Not hypothetical: it is what made the first live M6 run test half the product
+(entry below), and `MANUAL_VERIFICATION.md` had been carrying it as a **warning box** — i.e. as a
+discipline to remember, which is the weakest kind of guard this repo accepts anywhere else.
+
+**Why not just rename the binary** (the first instinct, and the ask): **Cargo cannot name a binary
+per feature.** Features are additive and crate-wide; `required-features` gates *whether* a bin
+builds, never what it is called; and "not onnx" is inexpressible. A second `[[bin]]` with
+`required-features = ["onnx"]` *would* give a distinct name — but `cargo build --features onnx`
+would still also build the ambiguous `llm-proxy-pii-rust.exe` (a wasted link, ~5 min under fat
+LTO), so the trap binary survives next to the safe one and you must now *know which to point at*.
+That relocates the confusion instead of removing it.
+
+**So the split is by directory, not by name** — `.cargo/config.toml` aliases add `--features onnx
+--target-dir target/onnx`:
+
+| Path | Contains |
+|---|---|
+| `target/onnx/debug/llm-proxy-pii-rust.exe` | **the hybrid — always.** Only the aliases write here |
+| `target/debug/llm-proxy-pii-rust.exe` | whatever the last default-features command left; structured-only *by convention* |
+
+**Only the first row is a guarantee** — an explicit `cargo build --features onnx` still writes a
+hybrid to `target/debug/`, and seven milestones of docs trained exactly that habit. The asymmetry
+is fine because it runs in the safe direction: the *dangerous* case (structured-only masquerading
+as the hybrid) is the one `NER_REQUIRED=1` makes fatal. The shipped artifact name is untouched.
+`cargo build-onnx` / `run-onnx` / `test-onnx` / `clippy-onnx`; extra args append
+(`cargo build-onnx --release`). Run them from the repo root — `--target-dir` is cwd-relative, so
+from a subdirectory you get a stray `<subdir>/target/onnx/` that a root `cargo clean` won't find.
+
+**Verified, not assumed** (this box exists because the last one wasn't): both suites run green
+through the aliases — **85 lib tests default, 97 with `cargo test-onnx`**, zero warnings, `fmt`
+clean, `clippy-onnx -- -D warnings` clean, and all five workflow YAMLs parse. `cargo build-onnx`
+then `cargo build` left **both** binaries alive — 54.9 MB (links ONNX Runtime) vs 13.2 MB, the
+default command finishing in 2.1 s without touching the hybrid. `cargo run-onnx` rebuilds and
+launches `target/onnx/debug/`. And the two binaries are genuinely different builds, proved by the
+backstop they each hit under `NER_REQUIRED=1`:
+
+```text
+target\debug\…       Error: NER_REQUIRED is set but this binary was built without the `onnx` feature
+target\onnx\debug\…  Error: NER_REQUIRED is set but the NER is not configured (set NER_MODEL_PATH / …)
+```
+
+**`NER_REQUIRED=1` stays mandatory for the CC battery.** The aliases make the right build
+automatic; the flag makes the wrong one fatal. Two guards, and the cheap one is not a reason to
+drop the other — the flag is what *caught* this in the first place.
+
+**What the split does NOT close — and the review caught me claiming otherwise.** The clobber was
+**loud**: it destroyed the binary, so `NER_REQUIRED` turned it into a fatal error. A binary in its
+own directory is never destroyed — it goes **stale**, and a stale hybrid loads the NER and prints
+both green startup lines. `NER_REQUIRED` sees a *missing feature*, never *old code*. My first draft
+dropped MANUAL_VERIFICATION's old imperative ("always rebuild immediately before starting") on the
+grounds that the trap was now closed by construction — which is the M4-retrospective move exactly:
+*the failure relocated, and the doc stopped warning about it*. Fixed structurally rather than by
+restoring the imperative: the recipe now runs **`cargo run-onnx`**, so cargo rebuilds before
+launching and staleness is impossible.
+
+**Bonus, and not free:** two target dirs are two caches, so flipping between default and `onnx`
+stops invalidating the ort/tokenizers/hf-hub tree each time (that round trip was a ~7.5 min
+recompile). Paid in disk — `target/onnx/` measures 8.9 GiB of a 36.1 GiB `target/`.
+
+**The pipelines were already correct and are unchanged** (checked, since the question was asked):
+`release-build.yml` is `--features onnx` throughout, and its packaged artifact comes from
+`--target <triple>` — its own directory — with the build running *after* the tests, so a
+structured-only binary cannot ship. A comment now says why it doesn't use the aliases (rust-cache
+would stop covering a nested target dir), so nobody "fixes" it later.
+
+**`ci.yml`'s default leg stays — but my recorded reason for it was wrong**, which the reviewer
+rightly called the more dangerous half. I wrote that it guards the native-dep-free invariant
+(DEP-01, M2.5-R1). It does not: `tests/dependency_footprint.rs` shells `cargo tree` with **no
+`--features` flag**, so it asserts the same thing in the onnx leg — DEP-01 needs no default leg at
+all, and a future builder who notices that deletes the leg as redundant *and is being reasonable*.
+What the leg actually guards is what nothing else in CI compiles: the default feature set linking
+and passing green without the native stack, and `src/server.rs`'s `#[cfg(not(feature = "onnx"))]`
+block — the **only** not-onnx path in the tree, and the source of the `NER_REQUIRED` backstop error
+this entire change leans on. That reason now lives in `ci.yml` next to the leg, not only here.
+
+Docs realigned to the onnx variant: both READMEs' quick start, `SETUP.md`,
+`MANUAL_VERIFICATION.md` (the warning box now *describes the split* and its stale-binary limit),
+`TESTING.md` → *Running* (it taught only `cargo test` while the READMEs taught the pair), and the
+`ner_eval` / `ner_perf` header commands.
+
+**Not promoted to ARCHITECTURE/TESTING, deliberately** (the reviewer's call, and it's the right
+one). The durable rule here is *"a live verification must prove which build it ran"* — and
+TESTING.md already carries it, next to the thing it governs: the hybrid-with-`NER_REQUIRED=1` bar
+and CC-02, "the one that catches a half-running product". The build-dir split is the *ergonomic
+implementation* of that rule, with no runtime surface — implementations belong in SETUP, so
+ARCHITECTURE would only be noise.
+
+**Stale workflow comments fixed while verifying the pipeline claims** (in scope, since the entry
+above asserts the pipelines were checked): three files still said per-push CI no longer exists and
+pointed at a `ci.yml.disabled` that isn't there — `ci.yml` was brought back trimmed when Dependabot
+was enabled. The cross-compile really is tag/manual-only; *CI* isn't gone, so the comments now say
+which half is true. `release-build.yml`'s `upload-artifacts` input is also documented honestly: no
+caller passes it, and the caller its rationale cited (the retired per-push `ci.yml`) no longer
+exists.
+
+## 2026-07-16 — M7 implementation plan (design only — not built)
+
+The technical blueprint for M7 (NER latency), to hand to the builder. **No source written.** Scope
+and the measurements that opened it are in ROADMAP → M7 and the entry below.
+
+### S0 — Fix the measurement first, because mine is probably wrong
+
+**Start here, and do not skip it.** The entry below reports **903 ms/KB** and concludes the
+fixpoint's second pass triples the cost. That number came from 29 KB **densely packed with names**
+(`"Il cliente Mario Rossi di Acme SpA a Milano…"` ×450). **A real Claude Code request has the
+opposite shape**: ~30 KB of boilerplate with **almost no PII**, plus a ~100-byte user message that
+has it all.
+
+And `Vault::mask_all` runs **per field**, not over the whole body. So on real traffic:
+
+| field | size | entities | fixpoint passes | cost @ 286 ms/KB |
+|---|---|---|---|---|
+| `system` + tool schemas | ~30 KB | ~0 | **1** (detect → empty → return) | ~8.6 s |
+| the user's message | ~100 B | 2–3 | 2 | negligible |
+
+**Which changes the whole priority order.** A real turn is likely **~9 s, not 27 s**, and **lead 2
+(the fixpoint) is worth almost nothing** — it only doubles fields that *contain* PII, and those are
+tiny. Meanwhile **lead 3 (the cache) gets bigger**: ~8.6 s per turn spent re-scanning byte-identical
+boilerplate, every turn, forever.
+
+> **This is the M5 mistake, one level down, and it is mine.** The entry below scolds PERF-01 for
+> measuring *a repeated synthetic sentence instead of a real payload* — and then measures *a dense
+> synthetic blob instead of a real payload*. The corpus had a shape; the shape was a blind spot.
+> **The fixture is the experiment.** Build it right before trusting a single number, including the
+> ones I wrote down.
+
+**Do:**
+- Add a **realistic** payload fixture: ~30 KB of system prompt + ~10 tool `input_schema`s + a short
+  user message carrying a few PII values. Sparse entities, exactly like real traffic. *(A captured
+  real body is tempting — the trace log has one — but it is **masked**, so its NER pass finds
+  nothing and the measurement lies in the other direction. Synthesize the shape, not the content.)*
+- Re-measure per-field, not per-body: it is the field distribution that decides everything.
+- **Then re-read the leads.** If a real turn is ~9 s and threads buy 3×, it is ~3 s and M7 may be
+  done without touching the fixpoint or adding a cache.
+
+### S1 — Lead 1: use more than one core (`src/pii/onnx.rs`)
+
+`with_intra_threads(1)` + a pool of sessions optimizes **concurrent throughput**; we need
+**single-request latency**. Replace the constant with a **derived, overridable** value:
+
+```rust
+// NER_INTRA_THREADS, else derive. The two knobs MULTIPLY: pool × intra is the thread count,
+// and it must fit the machine — `intra = 12` with `pool = 2` puts 24 threads on 12 cores.
+let intra = env("NER_INTRA_THREADS")
+    .unwrap_or_else(|| max(1, available_parallelism() / pool_size));
+```
+
+**Measure both axes** (this is the trade-off, not a tuning knob):
+- **latency**: one request, wall clock — the Claude Code case (concurrency ≈ 1);
+- **throughput**: N concurrent requests, req/s — the shared-proxy case, which the current design
+  was built for and which must not regress silently.
+
+**Two things to measure rather than assume:** SMT (`available_parallelism()` = 12 logical = 6
+physical × HT; dense math often prefers **6**), and sublinear scaling (expect ~3× from 6 threads,
+less on an **int8** model whose kernels are memory-bandwidth-bound).
+
+#### S1a — …and the derived formula is wrong at concurrency 1, because the pool does nothing there
+
+**Read the code before believing the formula above — I didn't, and it divides by the wrong thing.**
+A single request is sequential at **three nested levels**, and only the innermost is `intra_threads`:
+
+| level | where | today |
+|---|---|---|
+| fields | `privacy.rs:92` — `mask` is a closure holding `&mut vault` | sequential **by construction** |
+| chunks | `onnx.rs:219` — `infer_chunked`'s plain `for` loop | sequential |
+| the model call | `onnx.rs:154` — `with_intra_threads(1)` | 1 thread |
+
+So **one request uses exactly one core, whatever `NER_POOL_SIZE` is.** The pool buys *concurrent*
+capacity: a second session only ever runs when a second request is in flight. `pool × intra` is
+therefore the thread count **under saturated load**, not the count a single request can reach —
+that one is `intra` alone.
+
+Which makes `intra = available_parallelism() / pool_size` a **pessimization in the case M7 exists
+for**: at the default `pool = 2` it yields `12 / 2 = 6`, and the Claude Code case (concurrency ≈ 1)
+then runs 6 threads while **6 cores sit idle** waiting for a second request that never comes. The
+divisor is right for the shared proxy and wrong for the personal one.
+
+**Two ways out — and they are not equivalent:**
+- **Chunk-level parallelism** (`infer_chunked` fans its ~18 *independent* chunks across the pool).
+  Near-linear — chunks are embarrassingly parallel — where intra-op scaling is sublinear (~3×). It
+  is also what makes the divisor honest: `pool = 2 × intra = 6` would then really be 12 threads on
+  one request. **Costs RAM, and this is the trade:** each session holds its own copy of the weights
+  — measured **~834 MB at `pool = 2`** (README), i.e. ~400 MB per session, so `pool = 6` ≈ **2.5 GB**
+  against a *lean-RAM* bar. Latency bought in gigabytes.
+- **`pool = 1, intra = all`** — free, no RAM change, and already the ROADMAP's recommendation for the
+  personal case. It gets the sublinear ~3×, not the ~6×.
+
+> **The boundary that decides which parallelism is even legal: parallelize *detection*, never
+> *minting*.** Chunk fan-out is safe because chunks are read-only w.r.t. the `Vault` — they only
+> detect, and `infer_chunked` already merges by a deterministic `sort` + `dedup`. The **field** walk
+> is not safe to parallelize, and `&mut vault` is not merely why it's hard, it's why it's *wrong*:
+> placeholder **numbering follows encounter order**, so racing two fields makes `[EMAIL_1]` vs
+> `[EMAIL_2]` a coin flip and breaks the determinism M1 Part B pins. Whoever picks this up: the
+> `&mut` is load-bearing, not an obstacle to route around.
+
+**So S1's real question is not "what value for `intra_threads`" — it is "does a single request get
+to use the box at all?"** Measure `pool=1, intra=6` and `pool=1, intra=12` first (free, no RAM),
+and only reach for chunk fan-out if the sublinear ceiling isn't enough — with S2's bar, not to
+exhaustion.
+
+### S2 — The stop criterion, declared *before* the numbers
+
+**If a realistic turn drops below ~3 s, stop.** Ship it, re-run the battery, tag. Do **not** do S3 or
+S4. Adding state to the masking path or removing a detector pass are both real risks, and buying
+them "because we were already in there" is how a privacy tool grows a leak. **Optimize to a bar, not
+to exhaustion.**
+
+### S3 — Lead 3: don't re-scan an unchanged system prompt *(only if S2 says so)*
+
+The boilerplate is byte-identical every turn. A **content-keyed cache** (hash of the field text →
+the `Vec<PiiEntity>` found) makes turn 2+ nearly free; the per-request `Vault` still mints the
+placeholders, so determinism and the per-request round-trip are untouched.
+
+**It needs its own threat argument before it ships**, because it puts **state on the masking path**:
+- what is the key, and can two different texts collide into one entity set? (hash choice is a
+  *security* decision here, not a perf one);
+- bounded size + eviction — an unbounded cache on an **unauthenticated** path is the M4-R19 shape
+  again, in memory instead of CPU;
+- what happens on a cache **miss vs a wrong hit**? A miss costs time; a wrong hit **leaks**. Fail
+  closed: on any doubt, re-scan.
+
+### S4 — Lead 2: the fixpoint's second pass *(probably unnecessary — see S0)*
+
+Only if S0's realistic numbers still show it matters. The idea: passes ≥2 exist to catch masking
+**exposing** PII (a masked phone splits a digit run, revealing a card) — a **deterministic**
+phenomenon. So re-run only the structured layer on later passes and skip the NER.
+
+**The correctness argument must be made and tested first**, on paper and in the corpus: masking
+`John Smith` inside `John Smith-Jones` yields `[PERSON_1]-Jones` — **does the NER then tag `Jones`,
+and do we lose it if pass 2 skips the NER?** Decide it with a test, not an opinion. This is the one
+lead that can **lose detection**; the other two cannot.
+
+### S5 — Rewrite the CC prompts as natural agent tasks *(independent — do it anytime)*
+
+No measurement blocks this. See ROADMAP → M7 for the design question (do **not** fix it with a
+`CLAUDE.md` telling the agent to comply).
+
+### S6 — Re-run the battery, then publish the numbers
+
+CC-01…CC-09 × {OFF, ON} with `NER_REQUIRED=1`, and record per-turn latency next to the RAM figures
+in both READMEs — measured, like the RAM ones, not claimed.
+
+## 2026-07-16 — The live gate closed, then re-opened: the hybrid is unusable with Claude Code
+
+The first real Claude Code session through the proxy **worked** — and then the same afternoon of
+measurement turned the celebration into the most useful set of numbers this project has. Nothing
+here is a leak; all of it is the kind of thing only a real client on a real provider can show.
+
+**What held (measured, 2026-07-16).** A subscription-logged-in Claude Code, pointed at the proxy
+with **no credential configured anywhere**, got **200 on the first request — no 401, no retry**.
+It forwards its own credential; the proxy passed it verbatim while `UPSTREAM_API_KEY` was unset.
+The request left masked (`contatta [EMAIL_1], IBAN [IBAN_1]`), the reply came back with the real
+values restored, and a grep of the whole trace for the raw email and IBAN found **zero** — DBG-02
+on real traffic, not the synthetic case `tests/log_safety.rs` pins.
+
+> **The auth doc was backwards, and only the test could say so.** The previous
+> `MANUAL_VERIFICATION.md` asserted that routing Claude Code through the proxy was impossible on
+> **two** counts: schema *and* auth ("an OAuth token scoped to Claude Code's own flow… not a plain
+> Bearer usable against the raw API"). M6 disproved the schema half by construction. The live run
+> disproved the auth half by observation. Third-party write-ups still claim a custom
+> `ANTHROPIC_BASE_URL` *requires* setting `ANTHROPIC_AUTH_TOKEN`; for 2.1.211 it does not.
+
+**Then: the first run was testing half the product, silently.** No model was configured, so
+`load_onnx_ner` returned `Ok(None)` and the proxy ran **structured-only** — the deliberate
+fail-*open* posture for names. Email and IBAN masked perfectly *because they are deterministic
+recognizers*, so everything looked green while **the NER never ran**; a `Person` would have gone
+upstream in clear. `NER_REQUIRED=1` is now mandatory for the battery: it makes that silent
+downgrade a fatal startup error. It proved itself within minutes — `cargo test` (default features)
+overwrites the onnx binary at the **same path**, with no warning, and the flag caught exactly that.
+
+**And with the NER actually on, the proxy is not usable with Claude Code.** Measured on this box
+(Ryzen 5 PRO 8540U, 6 cores / 12 threads), timing the *masking alone* (a credential-less request
+masks fully, then 401s — so the time to the 401 **is** the masking cost):
+
+| what | 29 KB field | per KB |
+|---|---|---|
+| structured only | **20 ms** | ~0.7 ms |
+| hybrid, debug | 27,728 ms | 956 ms |
+| hybrid, **release** (fat LTO) | 26,863 ms | 926 ms |
+
+- **The masking is linear** — ~0.96 s/KB, constant across 2 / 10 / 29 KB. M4's DoS guards hold;
+  this is not an algorithmic bug.
+- **The NER is ~100% of the cost**: 20 ms vs 27 s on the same 29 KB — a factor of **~1,400×**.
+  The deterministic layer is free, exactly as the README claims.
+- **Release buys 3%.** The cost is inside ONNX Runtime — a prebuilt, already-optimized native
+  library. Compiling *our* Rust faster changes nothing. (Worth knowing before anyone "fixes" this
+  with a profile flag.)
+- **Claude Code sends 20–40 KB every turn** (its system prompt plus every tool's `input_schema`),
+  which we re-scan from scratch each time → **20–40 s per message**.
+
+**Why nobody saw it.** M5's PERF-01 measured the NER on a *repeated synthetic sentence* and
+concluded "linear" — correctly. It never measured a **real client's payload**, which is dominated
+by boilerplate re-sent every turn. "Linear" was true and beside the point: the constant is what
+makes it unusable, and only a live client exposes the constant.
+
+**Three leads, measured not guessed:**
+
+1. **We use 1 core of 12.** `OnnxNerDetector::load` sets `with_intra_threads(1)` deliberately — the
+   design holds a *pool* of single-threaded sessions, which optimizes **concurrent throughput** and
+   is exactly wrong for **single-request latency**: an oversized field's ~18 chunks run one after
+   another, each on one core.
+2. **The fixpoint's second pass costs more than the first.** A 34.7 KB field with **no** PII (one
+   detector pass) masks in **9,923 ms** = 286 ms/KB. A *smaller* 29.4 KB field **with** PII (two
+   passes) takes **26,567 ms** = 903 ms/KB — **2.7× slower while being 15% shorter**. M4-R21
+   accepted that "~2×" when the NER saw small fields; on a 30 KB system prompt it is ~13 s of
+   re-scanning per turn. And the phenomenon the second pass exists for — masking *exposing* PII by
+   splitting a digit run — is a **structured-recognizer** effect. Masking a name to `[PERSON_1]`
+   does not reveal a new name. Re-running only the *deterministic* layer on passes ≥2 is the
+   obvious lead; it needs a real argument about NER recall at the seams before it ships.
+3. **The static prompt is re-scanned every turn.** The system prompt and tool schemas are identical
+   across turns. Nothing exploits that today.
+
+**Two flaws were in the test, not the product.** The battery's prompts said *"reply with exactly
+this sentence: contact jane.doe@example.com, IBAN …"* — and the model **refused**, correctly reading
+it as an injection attempt ("it has nothing to do with this repository"). Claude Code is an *agent
+with a repo context*, not a completion endpoint, and it inherited that context precisely because we
+moved the fixture **inside** the repo. The scenarios must be **natural agent tasks** (read this
+file, format this contact), which is also what real usage looks like. Rewriting them is the next
+step.
+
+**Status: the `1.0.0` tag waits.** Not for a leak — for an honest answer to "is the product we
+advertise actually usable?". Investigating leads 1–3 before tagging.
+
+## 2026-07-16 — M6 review round 1 closed (5/5): the leak was a source *inside* a known block
+
+Independent reviewer pass over the M6 landing (`0cdd251` + `98d9f55`). **Five findings, all closed.** Full
+record: [`reviews/M6.md`](reviews/M6.md). Post-fix: **85** lib tests default / **97** with `--features onnx`,
+**10** e2e; `fmt` + `clippy` clean on both.
+
+**M6-R1 — the one real leak, and it hid one level down from where the guard looks.** The block-type dispatch
+is strict (unknown *block* → 400), but inside the known `document` block the **`source.type`** dispatch was
+fail-*open*: the first cut masked only a `text` source and skipped every other source type. Anthropic has a
+**`content`** document source — `{type:document, source:{type:content, content:[{type:text, text:"…"}]}}` —
+whose blocks carry plaintext PII, and the reviewer reproduced it through the real router: a raw email + IBAN
+reached the mock upstream **in clear**. The fix mirrors the block-level rule one level down —
+`mask_anthropic_document` dispatches `source.type` (`text`→data, `content`→recurse the nested array,
+`base64`/`url`→skip, **unknown→fail closed**) and also masks the `title` / `context` metadata the first cut
+skipped. **The lesson: "unknown → fail closed" has to hold at *every* dispatch, not just the outermost one —
+a fail-open branch inside a known block is exactly as much a leak as an unmodelled block.** R2 is the same
+class one level up (the `system` array skipped a no-`text` object open) — closed the same way.
+
+**M6-R3/R4/R5 — the docs/test-quality trio.** R3: the test counts were wrong (a "96 lib default" that was
+really the onnx count, "14 unit" that was 12) — corrected and restated in the "N default / M onnx" form the
+M4 miscount lesson prescribes. R4: three e2e placeholder-*presence* asserts were satisfiable by the
+augmentation prompt (which literally contains `[EMAIL_1]`/`[IBAN_1]` as examples) — not vacuous (the
+`!contains(raw)` checks are the real guard), but weaker than they read; now they assert the **specific masked
+field** or a token absent from the prompt (`[PHONE_1]` / `[EMAIL_6]`). R5: a "Prepend" comment that appends.
+
+## 2026-07-16 — M6 built: native Anthropic `/v1/messages` (Claude Code passthrough)
+
+Implemented M6 end to end on `feat/m6-anthropic-messages`, following the 7-stage plan below. The proxy now
+accepts a **native** Anthropic Messages body, masks it **in place** (no OpenAI translation), forwards
+native→native, and de-anonymizes both the buffered reply and the SSE stream. The masking engine
+(`Vault::mask_all`, the fixpoint, `spawn_blocking` + fail-closed) carried over untouched — M6 is *only* the
+Anthropic-schema walks plus the native forward/auth. **Green on both feature sets** (after review round 1:
+**85** lib tests default / **97** with `--features onnx`, **10** new e2e; `fmt` + `clippy` clean).
+
+**What landed, per stage:**
+- **T0 — `WireSchema` tag** (`pipeline/mod.rs`): `enum WireSchema { OpenAi, Anthropic }` on `RequestContext`,
+  defaulting to `OpenAi`, so the existing path is untouched. `PrivacyStage` and `SseDemasker` dispatch on it.
+- **T1 — route + handler** (`server.rs`): `/v1/messages` registered **only when `provider == "anthropic"`**.
+  The mask + fail-closed + streaming-detect flow is factored into `run_privacy_stages` / `finish_buffered` /
+  `finish_streaming`, shared by both handlers — the two differ only in the schema tag, the forward, and the
+  SSE schema.
+- **T2 — request mask** (`pipeline/privacy.rs`, `mask_anthropic_request`): `system` (string / text-block
+  array), `messages[].content` blocks dispatched on `type`, `tools[].description` + `input_schema`. Unknown
+  block type → **fail closed, 400**, with a reason that carries **no** client-controlled value.
+- **T3 — augmentation** into the top-level `system` (`inject_augmentation_anthropic`): absent → created;
+  string → appended; block array → pushed as a trailing text block. Only when something was masked.
+- **T4 — buffered demask** (`demask_anthropic_response`): top-level `content[]` — `text` and `tool_use.input`
+  string leaves — mirroring T2.
+- **T5 — SSE demask** (`stream.rs`): `SseDemasker` factored into the shared split-placeholder hold-back core
+  + a per-schema rewriter. Anthropic `content_block_delta` (`text_delta` / `input_json_delta`), held back per
+  block `index`.
+- **T6 — native forward/auth** (`proxy.rs`, `send_messages` / `forward_messages` / `messages_auth`): path
+  `/v1/messages` (`config.upstream_messages_path`, default `/v1/messages`); credential resolution; default
+  `anthropic-version`.
+- **T7 — tests:** 13 unit (`privacy.rs` ×9: mask coverage / document sources / fail-closed / augmentation /
+  demask; `stream.rs` ×4: SSE split / `input_json_delta` / pre-stop flush / pass-through) + 10 e2e
+  (`tests/anthropic_messages_e2e.rs`). *(Counts are post-review-round-1.)*
+
+**Four design calls made while building, recorded honestly:**
+
+- **Auth: client credential wins, proxy key is the fallback — a reconciliation.** The ROADMAP scope says
+  *"inject the proxy's own key as `x-api-key` only when the client sent none"* (client wins); the terser
+  DEVLOG-plan **T6** line wrote it the other way (*"proxy-key → `x-api-key`, else client `Authorization`"*).
+  These conflict. I took the ROADMAP ordering — it matches the existing **chat-path** posture (ARCHITECTURE:
+  *"the client's own `Authorization` wins, else the configured key"*) and the M5 note that the proxy *"forwards
+  a client `Authorization` verbatim in preference to `UPSTREAM_API_KEY`"*, and it is the whole point of the
+  feature (Claude Code's OAuth token must not be overridden by a configured key). Final order:
+  client `Authorization` (verbatim) → client `x-api-key` → proxy key as `x-api-key` → **401**. An OAuth token
+  only ever rides `Authorization`, never `x-api-key` (Anthropic 401).
+- **`thinking` is masked on the way up but never de-masked on the way down.** A thinking block is generated by
+  the model over already-masked input, so it naturally contains only placeholders, and its `signature` signs
+  *that* placeholder text. Leaving the placeholders intact means the bytes never change across a multi-turn
+  replay (re-masking an inert placeholder is a no-op), so the signature stays valid — robustly, even if
+  placeholder *numbering* shifts elsewhere in the conversation. De-masking thinking would either break the
+  signature or make correctness depend on reproducing identical numbering. So the request walk masks `thinking`
+  (safety, in case a client injects fresh PII) and the response walk deliberately skips it. Promoted to
+  ARCHITECTURE → *Native Anthropic Messages*.
+- **A text-source `document` is masked, improving on the plan's "skip document".** The plan said skip `document`
+  as non-text — but an Anthropic `{type:document, source:{type:text, data:"…"}}` carries **plaintext** that can
+  hold PII, so skipping it would leak. The walk masks `source.data` when the source is text and skips the
+  base64 file case. Never-leak beats the simplification.
+- **The SSE demasker holds the `event:` line to fix frame ordering.** Anthropic frames each event as an
+  `event:` line + a `data:` line. A block's held-back tail must flush **before** its `content_block_stop`
+  frame (a `content_block_delta` after the stop is protocol-invalid). But the `event: content_block_stop` line
+  arrives *first*, so flushing while processing the `data:` line would scramble the frame. Fix: the demasker
+  holds each `event:` line until its `data:` line, and at a `content_block_stop` it flushes the block's tail
+  ahead of the held `event:` line. OpenAI streams have no `event:` lines, so the mechanism is inert there. This
+  is exactly the streaming-demask piece the prior proxy left as a TODO.
+
+**One scope boundary:** **server-side result blocks** (`server_tool_use` / `web_search_tool_result`, sent only
+when server-side tools are enabled — not the default Claude Code path) currently **fail closed** rather than
+being modelled. This is safe (no leak) and a conscious future addition; the core client-side flow
+(`text` / `tool_use` / `tool_result` / `thinking`) is covered.
+
+**Still open — the `1.0.0` gate is unchanged:** the opt-in live verification (point a real Claude Code session
+at the proxy, run the M5 dual-run against live Anthropic). It needs a human with Claude Code + credentials and
+is not runnable in this environment. Everything testable without a live provider is done and green.
+
 ## 2026-07-15 — M6 implementation plan (design only — not built)
 
 The technical blueprint for M6 (native Anthropic `/v1/messages`, Claude Code passthrough), to hand to the

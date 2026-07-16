@@ -1,0 +1,47 @@
+# Cargo aliases for the `onnx` (hybrid) build — the shipped product.
+#
+# WHY THIS FILE EXISTS: `cargo build` and `cargo build --features onnx` write the SAME file
+# (`target/debug/llm-proxy-pii-rust.exe`). Features are additive and crate-wide, so Cargo cannot
+# name a binary per feature — `required-features` gates *whether* a bin builds, never what it is
+# called, and there is no way to express "not onnx". The overwrite is therefore not a naming
+# problem to be fixed in the manifest; it is a *build directory* problem.
+#
+# So the hybrid gets its own target dir. `target/onnx/` is written ONLY by these aliases:
+#
+#   target/onnx/debug/llm-proxy-pii-rust.exe   the hybrid — ALWAYS. No default-features command
+#                                              can reach it, so it cannot be clobbered.
+#   target/debug/llm-proxy-pii-rust.exe        whatever the last default-features command left.
+#                                              Structured-only BY CONVENTION — an explicit
+#                                              `cargo build --features onnx` still writes a
+#                                              hybrid here, and seven milestones of docs trained
+#                                              exactly that habit.
+#
+# Only the first line is a guarantee; the second is a habit. The guarantee runs in the safe
+# direction — the dangerous mistake (structured-only masquerading as the hybrid) is the one
+# `NER_REQUIRED=1` makes fatal. This is what killed the footgun in docs/MANUAL_VERIFICATION.md,
+# which silently ran a live verification against half the product (DEVLOG 2026-07-16).
+#
+# NOT closed by this: staleness. The clobber was LOUD — it destroyed the binary. A binary in its
+# own directory just goes stale, and a stale hybrid still loads the NER and looks green;
+# `NER_REQUIRED` sees a missing feature, never old code. Hence `cargo run-onnx` in the manual
+# verification recipe: cargo rebuilds before launching.
+#
+# Bonus: two target dirs are two build caches, so flipping between default and `onnx` stops
+# invalidating the whole dependency tree each time (`onnx` pulls ort + tokenizers + hf-hub — a
+# ~7.5 min recompile). It is bought with disk, and not a little: `target/onnx/` measured 8.9 GiB.
+#
+# `target/onnx/` nests inside `target/`, which .gitignore already covers, and a bare `cargo clean`
+# wipes both — BUT `--target-dir` is relative to the CWD, so both of those hold only when you run
+# from the repo root. From a subdirectory you get a stray `<subdir>/target/onnx/` that a root
+# `cargo clean` will not find. (No clean per-alias fix: `[env]` + `relative = true` would apply to
+# every command, not just these.) Extra args append, so `cargo build-onnx --release` and
+# `cargo clippy-onnx -- -D warnings` work as expected.
+#
+# NOTE: the release pipeline does NOT use these aliases and does not need to — it passes
+# `--target <triple>`, which already gives each leg its own directory, and it builds AFTER it
+# tests. See .github/workflows/release-build.yml.
+[alias]
+build-onnx = "build --features onnx --target-dir target/onnx"
+run-onnx = "run --features onnx --target-dir target/onnx"
+test-onnx = "test --features onnx --target-dir target/onnx"
+clippy-onnx = "clippy --all-targets --features onnx --target-dir target/onnx"

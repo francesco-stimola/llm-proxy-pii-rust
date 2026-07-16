@@ -57,9 +57,15 @@ Fai puntare il tuo client compatibile con OpenAI al proxy. Nient'altro nel tuo s
 Richiede Rust **1.89+**.
 
 ```sh
-cargo build --release --features onnx
-UPSTREAM_API_KEY=sk-... ./target/release/llm-proxy-pii-rust
+cargo build-onnx --release
+UPSTREAM_API_KEY=sk-... ./target/onnx/release/llm-proxy-pii-rust
 ```
+
+> `build-onnx` è un alias del repo per `build --features onnx --target-dir target/onnx`
+> (`.cargo/config.toml`). L'ibrido compila in una **directory propria**, così un semplice
+> `cargo build`/`cargo test` — che scrive lo stesso nome di file sotto `target/` — non può
+> sovrascriverlo con un binario solo-strutturato. Anche la build di default funziona, ma
+> rinuncia alla NER: solo PII strutturata.
 
 Poi parlaci esattamente come faresti col provider reale:
 
@@ -121,10 +127,11 @@ vengono suddivisi in finestre, così funzionano anche i documenti lunghi.
 
 ### Lo standard che si impone
 
-- **Fail closed.** Una forma di richiesta illeggibile, un rilevatore obbligatorio che fallisce, o
-  un mascheramento che non raggiunge un punto fisso stabile **bloccano la richiesta (400)**
-  invece di inoltrare qualcosa dallo stato PII sconosciuto. Solo `POST /v1/chat/completions` è
-  proxato — tutto il resto è `404`, mai inoltrato.
+- **Fail closed.** Una forma di richiesta illeggibile, un tipo di blocco di contenuto
+  sconosciuto, un rilevatore obbligatorio che fallisce, o un mascheramento che non raggiunge un
+  punto fisso stabile **bloccano la richiesta (400)** invece di inoltrare qualcosa dallo stato
+  PII sconosciuto. Solo `POST /v1/chat/completions` (e `POST /v1/messages` quando
+  `UPSTREAM_PROVIDER=anthropic`) è proxato — tutto il resto è `404`, mai inoltrato.
 - **Mai loggare PII in chiaro.** I log riportano categorie, conteggi e segnaposto — mai i valori.
   Garantito da un test, non da una convenzione.
 - **Lineare sotto carico.** Il percorso di mascheramento è dimostrabilmente lineare sia nella
@@ -133,6 +140,21 @@ vengono suddivisi in finestre, così funzionano anche i documenti lunghi.
   protegge nulla.*
 - **Deterministico.** Lo stesso valore ottiene sempre lo stesso segnaposto all'interno di una
   richiesta, così le conversazioni multi-turno stateless restano coerenti.
+
+### Impronta — misurata, non dichiarata
+
+Memoria residente, misurata il 2026-07-16 (Windows, build debug, a riposo dopo l'avvio):
+
+| build | private | working set | cosa domina |
+|---|---|---|---|
+| **solo strutturato** (feature di default) | **~10 MB** | ~36 MB | niente — sono regex |
+| **ibrido** (`--features onnx`, XLM-R int8, `NER_POOL_SIZE=2`) | **~834 MB** | ~862 MB | il NER: **due** sessioni ONNX, cioè il modello tenuto due volte |
+
+Il livello deterministico è sostanzialmente gratis; **il modello è tutto il costo**, ed è
+regolabile: `NER_POOL_SIZE` (default `2`) scambia concorrenza per memoria — `1` la dimezza circa.
+Scegli la build in base alla minaccia che hai davvero: il solo strutturato copre già email, IBAN,
+carte, secret e 10 schemi di identificativo nazionale, ed è indipendente dalla lingua. Il NER ti
+compra nomi, organizzazioni e luoghi — nient'altro.
 
 ---
 
@@ -175,7 +197,7 @@ strumenti cambia in fretta; verifica la doc corrente di ciascuno prima di farci 
 | **pi** (`@earendil-works/pi`) | ✅ | un provider con `"api": "openai-completions"`, `"baseUrl": ".../v1"` |
 | **GitHub Copilot CLI** | ✅ | BYOK: `COPILOT_PROVIDER_BASE_URL=http://127.0.0.1:8080/v1` (il modello deve supportare tool + streaming) |
 | **GitHub Copilot Chat** (VS Code) | ✅ | BYOK → un provider "OpenAI Compatible" puntato al proxy (solo chat) |
-| **Claude Code** · SDK Anthropic | ❌ non ancora | solo nativo `/v1/messages` — nessuna modalità OpenAI-compat → [M6](docs/ROADMAP.md#m6) |
+| **Claude Code** · SDK Anthropic | ✅ novità (M6) | puntalo al proxy con `UPSTREAM_PROVIDER=anthropic`; il body nativo `/v1/messages` è mascherato **in place** (nessuna traduzione OpenAI). *La verifica end-to-end dal vivo contro Anthropic reale è il [gate `1.0.0`](docs/ROADMAP.md#m6) ancora aperto.* |
 
 > **Il discrimine è il base URL, non il brand.** GitHub Copilot compare su *entrambi* gli assi — un
 > preset *upstream* (`UPSTREAM_PROVIDER=copilot`) **e**, via BYOK, un *client* (Copilot CLI / Chat):
@@ -183,9 +205,11 @@ strumenti cambia in fretta; verifica la doc corrente di ciascuno prima di farci 
 > la chat ed era in fase di rilascio in VS Code al momento della scrittura; quello della CLI è già
 > disponibile.)
 
-Quindi **Anthropic funziona come *upstream*** (via il suo endpoint compatibile con OpenAI), ma un
-**client nativo come Claude Code *non* funziona** — stesso provider, domanda diversa. Il supporto
-nativo `/v1/messages` è il prossimo traguardo.
+Quindi **Anthropic funziona come *upstream*** (via il suo endpoint compatibile con OpenAI) **e ora
+anche come *client nativo*** — **M6** serve il `/v1/messages` nativo di Anthropic (blocchi di
+contenuto, `tool_use`/`tool_result`, streaming), così un client nativo come Claude Code è mascherato
+senza una modalità OpenAI-compat. La rotta è registrata solo quando `UPSTREAM_PROVIDER=anthropic`; su
+qualsiasi altro upstream `/v1/messages` restituisce ancora 404.
 
 ---
 
@@ -198,8 +222,9 @@ Tutto è pilotato da variabili d'ambiente.
 | `LISTEN_ADDR` | `127.0.0.1:8080` | Indirizzo di ascolto del proxy |
 | `UPSTREAM_BASE_URL` | `https://api.openai.com` | URL base del provider a monte |
 | `UPSTREAM_API_KEY` | *(non impostata)* | Iniettata come `Authorization: Bearer …` **solo** se il client non ne invia una propria |
-| `UPSTREAM_PROVIDER` | `openai` | `openai` / `copilot` / `anthropic` — preset di instradamento |
+| `UPSTREAM_PROVIDER` | `openai` | `openai` / `copilot` / `anthropic` — preset di instradamento (`anthropic` abilita anche la rotta nativa `/v1/messages`, M6) |
 | `UPSTREAM_CHAT_PATH` | *(preset)* | Sovrascrive il percorso delle chat completions |
+| `UPSTREAM_MESSAGES_PATH` | `/v1/messages` | Sovrascrive il percorso Messages nativo di Anthropic (M6; usato solo con `UPSTREAM_PROVIDER=anthropic`) |
 | `UPSTREAM_FORWARD_HEADERS` | *(preset)* | Header del client da inoltrare, separati da virgola |
 | `UPSTREAM_EXTRA_HEADERS` | *(nessuno)* | `Chiave=Valore;Chiave2=Valore2` header statici per ogni richiesta a monte |
 | `MAX_BODY_BYTES` | `16777216` | Limite del corpo della richiesta (16 MiB) |
@@ -253,8 +278,8 @@ Procedura completa: [`docs/MANUAL_VERIFICATION.md`](docs/MANUAL_VERIFICATION.md)
 | [Setup di sviluppo](docs/SETUP.md) | Toolchain (incl. Windows, senza permessi di admin) |
 
 ```sh
-cargo test                    # suite solo strutturato
-cargo test --features onnx    # + il percorso NER
+cargo test         # suite solo strutturato  (target/)
+cargo test-onnx    # + il percorso NER       (target/onnx/)
 ```
 
 ---

@@ -34,8 +34,9 @@ completion**; findings, counts and closure notes live in each milestone's sectio
 | [M3 — Streaming & multi-provider routing](#m3) | ✅ complete |
 | [M4 — Broad locale & language coverage](#m4) | ✅ complete |
 | [M5 — Integration & performance testing](#m5) | ✅ complete |
-| [**M6 — Native Anthropic `/v1/messages`**](#m6) | 🔨 **active** — Claude Code passthrough; gates `1.0.0` |
-| [First tagged release `1.0.0`](#m6) | ⬜ not started — CI green, gated on M6 |
+| [**M6 — Native Anthropic `/v1/messages`**](#m6) | ✅ **code-complete**, and **verified live**: a real Claude Code session round-trips through the proxy (2026-07-16) |
+| [**M7 — NER latency**](#m7) | 🔨 **active** — the hybrid is ~1 s/KB, i.e. 20–40 s per Claude Code turn. **Now what gates `1.0.0`** |
+| [First tagged release `1.0.0`](#m6) | ⬜ not started — gated on [M7](#m7): the product we advertise must be usable, not just correct |
 
 ---
 
@@ -315,16 +316,18 @@ Prove the whole system holds **end-to-end** and **under load**, then document it
       [M5-R11](reviews/M5.md#m5-r11)'s whole risk class rather than guarding it. **Its status badge is what the
       READMEs now show** — "did the last tag build?".
     - **`manual-build.yml`** (`name: Manual build`) — `workflow_dispatch` only; same `release-build.yml`, keeps
-      binaries as **throwaway artifacts** (30-day). No publish job, so it *cannot* cut a release. With push CI
-      gone, this is **the way to confirm every target still compiles before you tag**.
-    - **`ci.yml` is disabled** (renamed `ci.yml.disabled`) — a deliberate change of approach: nothing runs on
-      push/PR anymore. **`cargo test` moved into `release-build.yml`** (so the suite still runs — on every
+      binaries as **throwaway artifacts** (30-day). No publish job, so it *cannot* cut a release. Since no
+      other job cross-compiles, this is **the way to confirm every target still compiles before you tag**.
+    - **`ci.yml` was disabled** (renamed `ci.yml.disabled`) — a deliberate change of approach: nothing ran on
+      push/PR. **`cargo test` moved into `release-build.yml`** (so the suite still runs — on every
       target's native runner — but at `manual-build` / tag time, not per push; a release that fails its tests
-      never publishes). **`fmt` / `clippy` / `msrv` are now local-only** gates (the CLAUDE.md "green before
-      done" bar), so a lint break surfaces at build time or locally, not on a PR. *(Partly reversed later,
-      when Dependabot was enabled: `security.yml` (cargo-deny) and a **trimmed `ci.yml`** (fmt/clippy/test on
-      push + PR) were added so dependency-bump PRs self-verify. The all-target cross-compile stays tag/manual
-      only. See DEVLOG 2026-07-15 / ARCHITECTURE → Supply-chain.)*
+      never publishes). **`fmt` / `clippy` / `msrv` became local-only** gates (the CLAUDE.md "green before
+      done" bar), so a lint break surfaced at build time or locally, not on a PR. **Since reversed in part,
+      and this is the current state:** when Dependabot was enabled, `security.yml` (cargo-deny) and a
+      **trimmed `ci.yml`** (fmt/clippy/test/msrv on push + PR) came back so dependency-bump PRs self-verify.
+      So **push/PR CI exists today** — it just doesn't cross-compile; the all-target build stays tag/manual
+      only, which is why `manual-build.yml` above is still how you confirm every target before tagging. See
+      DEVLOG 2026-07-15 / ARCHITECTURE → Supply-chain.
     - **Targets: Linux x86_64 + arm64, macOS arm64, Windows x86_64 + arm64.** macOS is arm64-only because
       `ort` ships no prebuilt ONNX Runtime for `x86_64-apple-darwin` at the pinned `rc.12` (Intel Macs are
       legacy). Linux and Windows each ship both arches, built **natively** on their own runner
@@ -425,43 +428,88 @@ route for Claude Code passthrough"*), reused as the blueprint. That project's mu
 adapter is **not** adopted (wrong shape for a native client, and against fail-closed) — it serves only as a
 **field map** for the Anthropic schema.
 
-- [ ] **Inbound `POST /v1/messages`** beside `/v1/chat/completions`, **registered only when
+- [x] **Inbound `POST /v1/messages`** beside `/v1/chat/completions`, **registered only when
   `UPSTREAM_PROVIDER=anthropic`** (decided 2026-07-15 — the only upstream that speaks native `/v1/messages`;
   other providers 404 it, so no mis-route). Unknown/unreadable shapes still **fail closed** (FC-03 unchanged);
   every other path stays 404. A `WireSchema` tag on `RequestContext` routes the privacy stage to the native
   walk without disturbing the OpenAI path.
-- [ ] **Mask the native body in place** — no OpenAI round-trip. Coverage must be exhaustive (a missed field
+- [x] **Mask the native body in place** — no OpenAI round-trip. Coverage must be exhaustive (a missed field
   is a leak — the Option B risk, pinned by tests):
   - the top-level **`system`** field (a string *or* a `{type:text}` block array) — masked **in place** (we
     walk the native schema directly; no inject-as-message trick, unlike the prior proxy);
   - `messages[].content` as a **string** *or* an **array of content blocks**, dispatched on `type`:
     `text` → `text`; `tool_use` → every string leaf of `input` (a JSON *object*, not an encoded string);
     `tool_result` → its `content` (string or nested block array — recursive); `thinking` → `thinking`;
-    `image` / `document` → non-text, skipped;
+    `document` → `title` / `context` + its `source` dispatched on `source.type` (`text` → `data`, `content` →
+    nested block array recursed, `base64` / `url` → skipped, **unknown → fail closed** — M6-R1; the plan's
+    "skip document" would have leaked a text-bearing document); `image` / `redacted_thinking` → non-text, skipped;
   - `tools[].description` + `input_schema` descriptions (reuse the OpenAI `mask_schema_descriptions`).
   - **Unknown block-type → fail closed, 400** (decided 2026-07-15 — strict, per this repo's ethos). The
-    consequence: the **known set must be exhaustive for real Claude Code traffic** (`text` / `image` /
-    `tool_use` / `tool_result` / `document` / `thinking` / `redacted_thinking` / server-side blocks), pinned
-    by a guard test — so a new Anthropic block type is a *conscious* addition, never a silent leak.
-- [ ] **Native→native forward + auth passthrough.** Forward the client's `Authorization: Bearer` (the OAuth
-  `sk-ant-oat01-*` token Claude Code sends), `anthropic-version` and `anthropic-beta` **verbatim**; inject the
-  proxy's own key as `x-api-key` **only** when the client sent none. **Never** place an OAuth token in
-  `x-api-key` (Anthropic 401). *This is why auth is not a blocker — the proxy never needs to hold a key.*
-- [ ] **Response demask (buffered) + native augmentation.** The reply is a top-level `content[]` array
-  (`text` + `tool_use.input`), not `choices[].message` — the buffered demask mirrors the request walk. The
+    consequence: the **known set must be exhaustive for real Claude Code traffic** — pinned by a guard test, so
+    a new Anthropic block type is a *conscious* addition, never a silent leak. **First cut handles the core
+    Claude-Code request blocks** (`text` / `tool_use` / `tool_result` / `thinking` / `image` / `document` /
+    `redacted_thinking`); **server-side result blocks** (`server_tool_use` / `web_search_tool_result`, sent
+    only when server-side tools are enabled) fail closed for now — safe (no leak), a conscious future addition.
+  - **`thinking` is masked but never *de*-masked:** it is generated over already-masked input, so it holds only
+    placeholders; leaving them intact keeps the block's `signature` valid across a multi-turn replay (re-masking
+    an inert placeholder is a no-op). Promoted to ARCHITECTURE.
+- [x] **Native→native forward + auth passthrough.** The client's own credential wins — `Authorization: Bearer`
+  (the OAuth `sk-ant-oat01-*` token Claude Code sends) forwarded **verbatim**, else a client `x-api-key`, else
+  the proxy's configured key injected as `x-api-key`; no credential at all → **401** before forwarding.
+  `anthropic-version` (default `2023-06-01` when the client omits it) + `anthropic-beta` pass through the
+  allowlist. **Never** place an OAuth token in `x-api-key` (Anthropic 401). *This is why auth is not a blocker
+  — the proxy never needs to hold a key.* *(Client-credential-wins matches this scope item and the existing
+  chat-path posture; the terser DEVLOG T6 line had proxy-key first — reconciled toward the ROADMAP + precedent,
+  recorded in DEVLOG 2026-07-16.)*
+- [x] **Response demask (buffered) + native augmentation.** The reply is a top-level `content[]` array
+  (`text` + `tool_use.input` string leaves, restored with the **plain** demask since `input` is a real JSON
+  object serde re-escapes), not `choices[].message` — the buffered demask mirrors the request walk. The
   placeholder-augmentation prompt is injected into the top-level `system` field (string or block array), only
   when something was masked.
-- [ ] **Anthropic SSE demask** — de-anonymize the streamed response: `content_block_delta` with
+- [x] **Anthropic SSE demask** — de-anonymize the streamed response: `content_block_delta` with
   `delta.type:text_delta` (`delta.text`) **and** `input_json_delta` (`delta.partial_json`, JSON-aware), held
-  back per content-block `index`. Factor `SseDemasker` into the shared split-placeholder core
+  back per content-block `index` and flushed at each `content_block_stop` (a delta after the stop is
+  protocol-invalid, so the flush is injected **before** the whole stop frame — the demasker holds the `event:`
+  line to control frame ordering). `SseDemasker` is factored into the shared split-placeholder core
   (`split_demaskable`, the hold-back buffer) + a per-schema delta rewriter (OpenAI vs Anthropic). **The prior
   proxy left this a TODO — its streamed replies were forwarded un-demasked — and closing it is the point: a
   placeholder reaching the client is the exact failure this tool exists to prevent.**
-- [ ] **Verification.** A native-schema coverage / fail-closed suite against a mock upstream, an opt-in real
-  Claude Code smoke, and — the bonus — the **M5 manual dual-run finally executable for real**: point a Claude
-  Code session at the proxy and compare Run A / Run B against live Anthropic.
-- **Out of scope:** Bedrock / Vertex native endpoints, `/v1/messages/count_tokens`, and the broad
-  multi-provider translation registry — all remain Backlog.
+- [x] **Verification — mock.** A native-schema coverage / fail-closed suite against a mock upstream (10 e2e +
+  13 unit) — round-trip, tool defs (incl. a content-source document), fail-closed on an unknown block/document
+  source, 404-when-not-anthropic, the full auth matrix, and the streaming split-placeholder.
+- [x] **Verification — live, and it holds.** Ran 2026-07-16: a **real Claude Code session** round-tripped
+  through the proxy against **real Anthropic**. The native route, the auth passthrough (200 first try with
+  **no credential configured** — it forwards its own, the proxy held no key), the in-place masking
+  (`contatta [EMAIL_1], IBAN [IBAN_1]`), the response de-mask (real values restored on screen) and DBG-02
+  (**zero** raw PII in the trace, on real traffic) all held. This is what closed M6's own gate. Details:
+  DEVLOG 2026-07-16.
+  > **Scope, stated honestly: that run exercised the *route*, not the *hybrid*.** No model was configured,
+  > so it silently ran structured-only — email and IBAN masked because they are *deterministic*
+  > recognizers, while the NER never ran (a `Person` would have gone upstream in clear). The **CC battery**
+  > (CC-01…CC-09 × OFF/ON, `NER_REQUIRED=1`) is what verifies the hybrid, and it is **blocked on
+  > [M7](#m7)** — twice over: its prompts need rewriting, and 9 scenarios × 2 runs is impractical at the
+  > current latency. **`1.0.0` now waits on M7, not on this box.**
+- **Out of scope:** Bedrock / Vertex native endpoints, `/v1/messages/count_tokens`, the broad multi-provider
+  translation registry, and **server-side tool-result blocks** — all remain Backlog.
+
+### Review ledger — M6 → [`reviews/M6.md`](reviews/M6.md)
+**Round 1 (2026-07-16): 5 findings — 1 leak, 1 hardening, 3 docs/test-quality. All closed.** The leak (R1) was
+reproduced through the real router and is now pinned by a unit test + an e2e.
+**Round 2 (2026-07-16): all 5 closures verified sound** (re-measured 85 default / 97 onnx lib, `fmt`/`clippy`
+clean; drove the new document surface through the real router — leak closed at every dispatch, fail-closed on
+every unmodeled shape, no over-reach). **One new cosmetic nit — R6.**
+**Round 3 (2026-07-16): R6 verified closed + final adversarial sweep — nothing new.** Messages caller-neutral
+and value-free for both callers, fail-closed recursion pinned; suite green on both feature sets. **M6 ledger
+clean, 6/6 closed, nothing left to fix.**
+
+| ID | Title | Sev | Status |
+|---|---|---|---|
+| [M6-R1](reviews/M6.md#m6-r1) | A `document` block with a non-text-but-text-bearing source (`source.type:content`) is forwarded **unmasked** → `source.type` dispatch + fail-closed on unknown | **leak** | [x] |
+| [M6-R2](reviews/M6.md#m6-r2) | `mask_anthropic_system`'s array branch fails **open** on an unrecognized object (same class as R1, one level up) | hardening | [x] |
+| [M6-R3](reviews/M6.md#m6-r3) | M6 test counts are wrong: DEVLOG "96 lib tests default" (default is 84) + ROADMAP/DEVLOG "14 unit" (actual 12) | docs | [x] |
+| [M6-R4](reviews/M6.md#m6-r4) | Some e2e placeholder-presence asserts are satisfiable by the augmentation prompt text (non-vacuous via the `!contains(raw)` checks, but weaker than they read) | test-quality | [x] |
+| [M6-R5](reviews/M6.md#m6-r5) | `inject_augmentation_anthropic` doc says "Prepend" but the code appends | docs | [x] |
+| [M6-R6](reviews/M6.md#m6-r6) | A document `content`-source sub-block reuses `mask_tool_result_content`, so its client-facing 400 reason says "tool_result" (no PII; diagnostic-accuracy only) → renamed `mask_content_block_array`, caller-neutral messages | cosmetic | [x] |
 
 **Delivery (decided 2026-07-15):** one feature branch → PR (`feat/m6-anthropic-messages`), **streaming
 included from the start** (Claude Code streams by default, so a buffered-only first cut wouldn't be usable
@@ -470,6 +518,109 @@ plan (files, the 7 stages, the schema walks) lives in DEVLOG 2026-07-15.
 
 **Gate to `1.0.0`.** The first tag ships only once Claude Code works end-to-end through this route, verified
 against real Anthropic — not merely once CI is green.
+
+<a id="m7"></a>
+## M7 — NER latency: make the hybrid usable with a real client
+
+**Opened 2026-07-16 by the M6 live gate, and it now holds `1.0.0`.** M6 proved the chain is
+*correct* against real Anthropic. The same session proved the product is *too slow to use*: with the
+NER on, Claude Code re-sends 20–40 KB of system prompt + tool schemas **every turn**, and we
+re-scan all of it from scratch. Full measurements: DEVLOG 2026-07-16. **The plan is
+DEVLOG 2026-07-16 → *M7 implementation plan*; start at S0.**
+
+> **Start by re-measuring — the headline numbers are suspect, and that is the first finding.** The
+> ~0.96 s/KB figure came from a fixture **densely packed with names**. Real traffic is the opposite
+> shape: ~30 KB of boilerplate with **~zero** PII plus a ~100-byte user message that has it all —
+> and `mask_all` runs **per field**, so the boilerplate takes **one** pass (~286 ms/KB → ~9 s/turn),
+> not two. A realistic turn is likely **~9 s, not 27 s**, which **reorders the leads**: the fixpoint
+> matters far less than written, the cache far more. *The corpus had a shape, and the shape was a
+> blind spot — the exact charge this milestone levels at M5's PERF-01, earned one level down.*
+
+> **This is not a leak and not an algorithmic bug** — the path is linear (M4's DoS guards hold) and
+> the structured layer is free (20 ms for 29 KB, ~1,400× faster than the hybrid). It is a *constant
+> factor*, and **availability is a privacy property here**: a proxy too slow to keep switched on
+> protects nothing, because it gets switched off.
+>
+> **Why M5 missed it.** PERF-01 measured a *repeated synthetic sentence* and concluded "linear" —
+> true, and beside the point. It never measured a **real client's payload**. The lesson is the M4-R13
+> shape again: *a corpus has a shape, and that shape is a blind spot.* A synthetic benchmark's shape
+> is "one field, grown"; a real client's is "the same 30 KB of boilerplate, re-sent forever".
+
+- [ ] **Re-measure first, with a *realistic* fixture — this gates every box below.** The headline
+  numbers came from a blob densely packed with names; real traffic is ~30 KB of near-PII-free
+  boilerplate + a ~100-byte user message, and `mask_all` runs **per field**, so the boilerplate costs
+  **one** pass, not two. Build the sparse fixture, measure per field, then **re-read the leads** —
+  the order below is a hypothesis, not a finding. *(Don't reuse the captured real body from the
+  trace log: it is already **masked**, so its NER pass finds nothing and the number lies.)*
+- [ ] **Declare the bar, and stop at it: a realistic turn under ~3 s ships.** If threads alone get
+  there, do **not** do the fixpoint or the cache — both trade real risk (lost detection; state on
+  the masking path) for speed already banked. **Optimize to a bar, not to exhaustion.**
+- [ ] **Use more than 1 core of 12.** `with_intra_threads(1)` (`src/pii/onnx.rs`) is deliberate — a
+  *pool* of single-threaded sessions optimizes **concurrent throughput** and is exactly wrong for
+  **single-request latency**: ~18 chunks run sequentially, each on one core. Measure the real
+  trade-off (latency vs throughput under concurrent load) rather than picking by intuition — both
+  matter, and the current choice was made when a "field" was a sentence.
+
+  > **The two knobs multiply — that is the trap.** `NER_POOL_SIZE × intra_threads` is the thread
+  > count. Today it is `2 × 1 = 2`. Naively setting `intra = 12` while `pool = 2` gives **24 threads
+  > on 12 cores** — oversubscription, and plausibly *slower* than now. The invariant is that the
+  > **product** fits the box, not that either factor saturates it. So the default should be
+  > **derived**, not fixed: `intra = max(1, available_parallelism() / NER_POOL_SIZE)`, overridable by
+  > env like `NER_POOL_SIZE` already is. A fixed number is wrong on a 2-core VM and on a 64-core
+  > server alike.
+  >
+  > **…but that product is the *saturated-load* count, and the divisor is a pessimization here —
+  > read the code before adopting the formula** (DEVLOG → S1a). A single request is sequential at
+  > **three** nested levels — fields (`&mut vault`), chunks (`infer_chunked`'s `for` loop), then the
+  > model call — so **one request uses exactly one core no matter what `pool` is**; the pool only
+  > wakes for a *second* concurrent request. A single request can reach `intra`, never `pool ×
+  > intra`. At the default `pool = 2` the formula yields `12 / 2 = 6` and leaves **6 cores idle** in
+  > precisely the concurrency ≈ 1 case M7 exists for. Either fan the chunks across the pool
+  > (near-linear, but each session copies the weights: ~400 MB each, so `pool = 6` ≈ **2.5 GB** vs
+  > today's 834 MB) or run `pool = 1, intra = all` (free, sublinear ~3×). **And parallelize
+  > *detection*, never *minting*** — placeholder numbering follows encounter order, so a parallel
+  > field walk makes `[EMAIL_1]` a coin flip; the `&mut` is load-bearing.
+  >
+  > **And the right shape depends on the deployment, which the proxy cannot know.** A personal proxy
+  > in front of Claude Code (the M6 case) has concurrency ≈ 1 → latency is everything → `pool=1,
+  > intra=all`. A shared proxy fronting many clients wants the current shape, scaled. Both are
+  > legitimate; that is precisely why this is config with a sane default, not a constant.
+  >
+  > **Two things to measure, not reason about:** (1) **SMT** — `available_parallelism()` reports
+  > *logical* cores (12 = 6 physical × HT), and for dense math hyperthreading often *hurts*, so 6 may
+  > beat 12; (2) **scaling is sublinear** — expect ~3× from 6 threads, not 6×, and less on an **int8**
+  > model whose kernels are memory-bandwidth-bound rather than ALU-bound. Benchmark both axes before
+  > believing either.
+- [ ] **Stop paying twice for the fixpoint.** A no-PII 34.7 KB field (one pass) masks in 9.9 s
+  = 286 ms/KB; a *smaller* 29.4 KB field with PII (two passes) takes 26.6 s = 903 ms/KB — **2.7×
+  slower while 15% shorter**. M4-R21 accepted that cost when the NER saw sentences. The lead:
+  passes ≥2 exist to catch masking **exposing** PII (a masked phone splits a digit run, revealing a
+  card) — a **deterministic-recognizer** phenomenon. Masking a name to `[PERSON_1]` does not reveal
+  a new name. So re-run only the structured layer on later passes. **Needs a real argument about NER
+  recall at the seams before it ships** — `[PERSON_1]-Jones` is exactly the shape that would decide it.
+- [ ] **Don't re-scan an unchanged system prompt every turn.** It is byte-identical across turns and
+  dominates the payload. Any answer here (content-keyed cache of the *entities*, leaving the
+  per-request vault to mint placeholders as it does now) adds state, and state on the masking path
+  needs its own threat argument — which is why this is listed last, not first.
+- [ ] **Rewrite the CC prompts as natural agent tasks** — a **verification debt from M6**, tracked
+  here because M7 owns the re-run. The battery said *"reply with exactly this sentence: contact
+  jane.doe@example.com, IBAN …"*, and the model **refused it as an injection attempt** — correctly.
+  Claude Code is an *agent with a repo context*, not a completion endpoint, and it inherited that
+  context precisely because the fixture lives **inside** the repo. So CC-01/CC-02/CC-08 never ran.
+  > **The design question underneath, worth answering once:** *how do you test PII masking with a
+  > client that refuses suspicious prompts?* The answer is not to argue the agent out of its
+  > judgement (a `CLAUDE.md` telling it to comply would work and would be the wrong fix — it makes
+  > the test a special case of itself). It is to use prompts that are **plausible work**: read this
+  > file and summarise it, format this contact as JSON, run this query. Which is *also* what real
+  > Claude Code traffic looks like — so the rewrite makes the battery both runnable **and** more
+  > representative. CC-03/04/06/09 are already this shape; the chat-only ones are not.
+- [ ] **Re-run the CC battery** once the prompts are fixed and the numbers move — 9 scenarios × 2
+  runs is not practical at 27 s/turn, which is a second reason the latency gates the verification.
+  Record the per-turn latency as a product figure next to the RAM ones in the READMEs.
+
+> **Do not "fix" this with a build profile.** Measured: `release` (fat LTO, opt-level 3) buys **3%**
+> — 27,728 ms → 26,863 ms on 29 KB. The cost is inside ONNX Runtime, a prebuilt native library that
+> is already optimized; compiling *our* Rust harder changes nothing.
 
 <a id="backlog"></a>
 ## Backlog — documented, not scheduled

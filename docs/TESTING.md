@@ -313,23 +313,134 @@ asserts the value is still masked and round-trips, so a "fix" that buys speed wi
   never-log-raw-PII rule) and that a normally-converging detector still returns `Ok` — so the guard can't
   pass by breaking masking for everyone.
 
-### M5 — integration & performance
-- **E2E-INT-01** — real-provider smoke against **Anthropic** (OpenAI-compat endpoint):
-  `tests/anthropic_smoke.rs::e2e_int01_anthropic_real_provider_roundtrip`. Strictly opt-in
-  (`#[ignore]`d, needs a real `ANTHROPIC_API_KEY`, one real network call, never runs in CI) — a
-  PII round-trip returns the restored value in the client-visible reply while the request left
-  masked. **Not yet run against a live key** as part of this milestone (no credentials in this
-  environment); the test is ready and documented for whoever runs it next.
-- **E2E-INT-02** — the manual **dual-run** procedure (real Anthropic + `RUST_LOG=…=trace`):
-  `docs/MANUAL_VERIFICATION.md`. Deliberately not a `#[test]` — it compares what two separate
-  runs *logged* and returned, which needs a human to read the trace output. Run A
-  (`PII_DEBUG_SKIP_DEMASK=1`) → client gets the placeholders; Run B (normal) → client gets the
-  restored values. Proves the whole chain end-to-end against a real provider; trace logging
-  re-checks DBG-02 (never-log-raw-PII) on **real** data. **Dry-run-validated against a mock
-  upstream through the real binary on 2026-07-15** (Run A → placeholders, Run B → restored
-  values, DBG-02 clean on both; see DEVLOG); the *real-provider* execution is now **opt-in**,
-  not a milestone gate — the permanent guarantee is DBG-01 + DBG-02 in CI, and E2E-INT-01
-  (`tests/anthropic_smoke.rs`) is the ready automated companion.
+### M5 / M6 — live provider verification
+
+Everything above runs against a **mock** upstream. These are the checks that need a **real
+provider**, and they are the only ones that can catch what a mock cannot: a model that
+reformats a placeholder, an auth wiring that only fails against the real endpoint, a client
+that sends a shape we never imagined.
+
+**The prefix tells you who runs it** — `E2E-INT-*` is automated, `CC-*` is a human at the
+keyboard. (An earlier revision filed the manual battery as "E2E-INT-02", which made that
+unreadable; the label is retired.)
+
+**E2E-INT-01 — automated**, real-provider smoke over **both routes**: `tests/anthropic_smoke.rs`.
+Strictly opt-in (`#[ignore]`d, needs a real credential, one network call each, never in CI):
+`cargo test --test anthropic_smoke -- --ignored --nocapture`.
+
+- `e2e_int01_anthropic_real_provider_roundtrip` — the **OpenAI-compat** route
+  (`/v1/chat/completions`). This route still ships (Cline / Continue / opencode / Copilot BYOK),
+  so it keeps its own live check — the CC battery below does **not** cover it.
+- `e2e_int01_anthropic_native_messages_roundtrip` — the **native** route (`/v1/messages`, M6).
+  The automated companion to the manual battery.
+
+<a id="cc-battery"></a>
+#### CC-01…CC-09 — manual: a real Claude Code session through the native route
+
+Run by a human, not by cargo. Procedure: [`MANUAL_VERIFICATION.md`](MANUAL_VERIFICATION.md).
+Workspace + fixtures: [`tools/claude-code-session/`](../tools/claude-code-session/) — open that
+directory and Claude Code routes itself through the proxy. It is manual on purpose: it compares
+what two runs *logged* and *returned* to a real client, which needs eyes on the trace.
+
+**Every scenario runs twice**, and the pair is the point:
+
+| run | `PII_DEBUG_SKIP_DEMASK` | proves |
+|---|---|---|
+| **OFF** (normal) | unset | the client gets the **real** values back — the round-trip restores |
+| **ON** | `1` | the client sees the **placeholders** — i.e. exactly what the provider received |
+
+Neither alone proves the chain; together, on the same input, they show the value that left
+masked is the value that comes back restored. **Both runs also get the DBG-02 grep**: the raw
+values must appear in **neither** log.
+
+The mechanics — starting the proxy as the *hybrid* (`NER_REQUIRED=1`, non-negotiable), flipping
+the flag, where the trace goes, and the traps that make a run lie to you — are all in
+[`MANUAL_VERIFICATION.md`](MANUAL_VERIFICATION.md). This section only says *what* each scenario
+asks and *what* must come back.
+
+**How to read a scenario.** *Ask* is what you type into the session. *Upstream* is what the
+proxy's `forwarding masked request body upstream` trace must show — **identical in both runs**,
+because request-side masking does not depend on the flag; if OFF and ON differ here, that alone
+is a finding. *Client* is the only thing the flag changes. Paths are relative to
+[`tools/claude-code-session/`](../tools/claude-code-session/).
+
+---
+
+**CC-01 — structured PII in a chat prompt**
+- **Ask:** `Rispondi esattamente con questa frase e nient'altro: contatta jane.doe@example.com, IBAN IT60X0542811101000000123456.`
+- **Upstream:** `[EMAIL_1]` + `[IBAN_1]`; neither raw value anywhere.
+- **Client — OFF:** the real email and IBAN. **— ON:** `[EMAIL_1]`, `[IBAN_1]`.
+- **Proves:** the baseline round-trip on real traffic.
+
+**CC-02 — NER entities** *(the one that catches a half-running product)*
+- **Ask:** `Rispondi esattamente con questa frase e nient'altro: Mario Rossi lavora per Acme S.p.A. a Milano.`
+- **Upstream:** `[PERSON_1]`, `[ORG_1]`, `[LOCATION_1]`; no `Mario Rossi` / `Acme` / `Milano`.
+- **Client — OFF:** the real names. **— ON:** the three placeholders.
+- **Proves:** **the hybrid is actually running.** Every other scenario would pass with the NER
+  off — email and IBAN are *deterministic* recognizers. Only this one fails. If `Mario Rossi`
+  appears upstream in clear, that is a **leak**, not a recall nit.
+
+**CC-03 — a file with PII → `tool_result`**
+- **Ask:** `Leggi fixtures/contacts.csv e dimmi quante righe di dati contiene e qual è l'email della prima.`
+- **Upstream:** the `tool_result` block carries `[EMAIL_n]` / `[PHONE_n]` / `[IBAN_n]` /
+  `[SSN_n]` / `[PERSON_n]`; **no** `bob@test.com`, `555-111-2222`, `123-45-6789`, …
+- **Client — OFF:** "3 righe, `bob@test.com`". **— ON:** "3 righe, `[EMAIL_1]`".
+- **Proves:** the core Claude Code workflow — its day is tool calls on files, not chat. The live
+  twin of E2E-02.
+
+**CC-04 — `tool_use.input` carries a PII value back to the client**
+- **Ask:** `Leggi fixtures/contacts.csv e scrivi in scratch/first-contact.txt soltanto l'email della prima riga di dati, senza altro testo.`
+- **Upstream:** the `tool_use.input` the model emits contains `[EMAIL_1]`, never the real value.
+- **Client — OFF:** `scratch/first-contact.txt` ends up containing **`bob@test.com`** — the
+  de-mask restored the tool argument before the client acted on it.
+  **— ON:** the file contains **`[EMAIL_1]`** — literally what the model emitted.
+- **Proves:** the `tool_use.input` de-mask (live twin of INT-03). The ON run is the clearest
+  visual proof in the battery: the placeholder is *on disk*.
+
+**CC-05 — multi-turn determinism**
+- **Ask (turn 1):** `Ricorda questa email, ti servirà dopo: bob@test.com` — then **(turn 2):**
+  `Qual è l'email che ti ho dato? Rispondi solo con l'email.`
+- **Upstream:** turn 2 re-sends the history and must mask `bob@test.com` to **`[EMAIL_1]` again**
+  (same value → same token, in a fresh per-request vault).
+- **Client — OFF:** `bob@test.com`. **— ON:** `[EMAIL_1]`.
+- **Proves:** deterministic assignment across the stateless re-send a real client does every turn.
+
+**CC-06 — a secret in a file**
+- **Ask:** `Leggi fixtures/deploy-config.env e dimmi il valore di APP_SECRET e di OPS_CONTACT.`
+- **Upstream:** `[SECRET_n]` + `[EMAIL_1]`; **no** `sk-ant-api01-…`, no `AKIA…`, no `ops@corp.com`.
+- **Client — OFF:** the real secret and email. **— ON:** `[SECRET_1]`, `[EMAIL_1]`.
+- **Proves:** the SECRET recognizer on real traffic — the category the old proxy's ML model
+  missed, and the reason secrets are deterministic here rather than left to a model.
+
+**CC-07 — thinking blocks survive the replay** *(never yet exercised live)*
+- **Ask:** with extended thinking on — `Pensa passo passo: leggi fixtures/contacts.csv e dimmi
+  quale contatto ha un IBAN tedesco.` Then ask **a follow-up in the same session** (any question)
+  so the thinking block is **replayed** with its signature.
+- **Upstream:** the replayed `thinking` block is byte-identical to what the model produced
+  (re-masking a placeholder is a no-op), so Anthropic accepts its `signature`.
+- **Client:** the follow-up answers normally. **A `signature` / `invalid_request_error` on the
+  second turn is the failure this scenario exists to catch.**
+- **Proves:** M6's `thinking` invariant — masked on the way up, never de-masked on the way down,
+  which is what keeps the signature valid.
+
+**CC-08 — a long streamed answer**
+- **Ask:** `Ripeti esattamente questa riga 30 volte, una per riga, senza numerarle: contatta bob@test.com`
+- **Upstream:** `[EMAIL_1]` (once — it is one prompt).
+- **Client — OFF:** 30 lines each carrying the **intact** `bob@test.com` — none split, mangled,
+  or left as a placeholder. **— ON:** 30 lines of `[EMAIL_1]`.
+- **Proves:** the Anthropic SSE hold-back over many real deltas — a placeholder split across
+  `text_delta`s is reassembled every time, not just once.
+
+**CC-09 — PII through an MCP SQL tool** *(the old proxy's TC-04, on real infrastructure)*
+- **Ask:** `Esegui la query in fixtures/customer-lookup.sql con il tool MCP SQL e mostrami il risultato.`
+- **Upstream:** the `tool_result` carries `[EMAIL_1]`, `[PHONE_1]`, `[SSN_1]`, `[CARD_1]`,
+  `[IBAN_1]`, `[SECRET_1]`; none of the six raw values.
+- **Client — OFF:** the real row. **— ON:** the row of placeholders.
+- **Proves:** PII arriving through an **MCP tool result** — a path the proxy never sees coming and
+  cannot special-case — is masked like any other. `SELECT … FROM DUAL` needs no schema or real
+  data.
+
+---
 - **E2E-02 / E2E-04** — done; see *End-to-end* above.
 - **PERF-01** — system-level load harness, the companion to `tests/complexity.rs` (which pins
   the masking *algorithm's* complexity, no HTTP):
@@ -406,6 +517,94 @@ asserts the value is still masked and round-trips, so a "fix" that buys speed wi
   > to keep honest, buying nothing. So the manifest declares the floor of the *real* product. The default
   > build still happens to compile on 1.86; we simply don't promise it.
 
+### M6 — native Anthropic `/v1/messages` (Claude Code passthrough)
+
+The native schema is a **new shape on the masking path**, so a missed field is a leak. Coverage is pinned at
+three levels: the request/response walk (`src/pipeline/privacy.rs`), the SSE rewriter (`src/stream.rs`), and
+the full HTTP round-trip against a **mock native upstream** (`tests/anthropic_messages_e2e.rs`). The mock
+echoes the received (masked) body under `upstream_received` and the auth headers under `upstream_auth`, both
+outside the `content[]` restore path — so a test inspects exactly what the provider saw. Every round-trip
+e2e first asserts the echo is present, so a `!contains(raw)` check can never pass **vacuously** on a 401/400
+body (the bug that bit the first draft — a credential-less forward 401s, and `null.to_string()` contains no
+PII). Placeholder-**presence** asserts are on the **specific masked field** (or a token like `[PHONE_1]` /
+`[EMAIL_6]` **absent from the augmentation prompt**), not the whole body — the prompt itself contains
+`[EMAIL_1]` / `[IBAN_1]` as examples, so a whole-body `contains` would be weaker than it reads (M6-R4).
+
+**Unit — request/response walk (`src/pipeline/privacy.rs`)**
+- ANT-01 — `anthropic_masks_every_text_bearing_field`: a value in **every** place M6 scans (top-level `system`,
+  a `content` string, `text` / `tool_use.input` object leaves incl. nested / `tool_result` / `thinking` blocks,
+  `tools[].description` + `input_schema` description) is masked; non-text leaves (image `data`, a numeric tool
+  arg, a `thinking.signature`, `redacted_thinking.data`) are untouched. **A miss here is a leak.**
+- ANT-02 — `anthropic_masks_document_text_and_content_sources_title_and_context` (M6-R1): a `document` masks
+  **every** text-bearing part — a `text` source's `data`, a **`content`** source's nested block array, and the
+  `title` / `context` metadata — while a base64 file source and a nested image stay opaque.
+- ANT-09 — `anthropic_unknown_document_source_type_fails_closed` (M6-R1): a `document` `source.type` we don't
+  model → `Err` (→ 400), the same fail-closed rule as an unknown block type, one level down.
+- ANT-03 — `anthropic_masks_nested_tool_result_block_array`: `tool_result.content` as a block array (text /
+  image / bare string) is recursed into.
+- ANT-04 — `anthropic_unknown_block_type_fails_closed_without_echoing_it`: an unknown block type → `Err`
+  (→ 400), and the reason carries **no** client-controlled value (never-log-raw-PII — the type is
+  attacker-influenced).
+- ANT-05 — `anthropic_block_without_type_and_missing_messages_fail_closed`: a typeless block, a missing
+  `messages`, a non-array `messages`, **and a `system` array object with no `text`** (M6-R2) each fail closed.
+- ANT-06 — `anthropic_augmentation_covers_absent_string_and_array_system`: the augmentation is created (absent
+  `system`), appended (string), or pushed as a trailing text block (array).
+- ANT-07 — `anthropic_response_demasks_text_and_tool_use_input_but_not_thinking`: the buffered demask restores
+  `content[].text` and `tool_use.input` leaves, and **leaves `thinking` with placeholders** (keeps its
+  `signature` valid on replay — the M6 invariant).
+- ANT-08 — `anthropic_tool_use_input_demask_stays_valid_json_through_a_quote`: a value with a `"` restored into
+  a `tool_use.input` string leaf survives serialization (serde re-escapes; `input` is a real object, so the
+  **plain** demask is correct — unlike OpenAI's JSON-encoded `arguments`).
+
+**Unit — Anthropic SSE (`src/stream.rs`)**
+- ANT-SSE-01 — `anthropic_text_delta_split_across_events_is_restored`: `[EMAIL_1]` split across two
+  `content_block_delta` `text_delta` events is reassembled and de-masked; no placeholder leaks.
+- ANT-SSE-02 — `anthropic_input_json_delta_split_is_restored_and_valid`: a placeholder split across
+  `input_json_delta.partial_json` fragments is restored and the reassembled JSON parses (JSON-aware demask).
+- ANT-SSE-03 — `anthropic_held_back_tail_is_flushed_before_its_block_stop`: a block ending on a
+  partial-placeholder tail flushes it at `content_block_stop`, and the flushed delta is emitted **before** the
+  stop frame (a delta after the stop is protocol-invalid — the `event:`-line hold-back guards frame ordering).
+- ANT-SSE-04 — `anthropic_non_delta_events_pass_through`: `message_start` (and other non-delta events) pass
+  through untouched.
+
+**End-to-end — mock native upstream (`tests/anthropic_messages_e2e.rs`)**
+- ANT-E2E-01 — `messages_buffered_roundtrip_masks_upstream_and_restores_to_client`: multi-PII round-trip — the
+  upstream saw only placeholders, the augmentation merged into the top-level `system`, and the client got the
+  real values back in `content[].text`.
+- ANT-E2E-02 — `messages_masks_system_content_blocks_and_tool_definitions`: PII in `system` (block array),
+  content blocks (`text` / `tool_use.input` / `tool_result`), and tool defs (`description` + `input_schema`)
+  is all masked upstream.
+- ANT-E2E-10 — `messages_content_source_document_is_masked_upstream` (M6-R1): a `content`-source `document`
+  (a nested text-block array — the shape the first cut forwarded in clear) is masked in place; the assertion
+  is on the document's own text block, so it can't be satisfied by the augmentation prompt (M6-R4).
+- ANT-E2E-03 — `messages_unknown_block_type_fails_closed_400`: an unknown content block → 400
+  (`error.type == "blocked"`), nothing forwarded.
+- ANT-E2E-04 — `messages_route_is_404_when_provider_is_not_anthropic`: with `provider = openai`, a native body
+  to `/v1/messages` → 404 (the route is registered only for `anthropic`).
+- ANT-E2E-05 — `messages_client_bearer_is_forwarded_verbatim_never_as_x_api_key`: a client
+  `Authorization: Bearer` (OAuth) is forwarded verbatim and wins over the configured proxy key, and is **never**
+  copied into `x-api-key`.
+- ANT-E2E-06 — `messages_proxy_key_is_injected_as_x_api_key_when_client_sends_none`: with no client credential,
+  the configured proxy key is injected as `x-api-key`, and a default `anthropic-version: 2023-06-01` is added.
+- ANT-E2E-07 — `messages_no_credential_returns_401_without_forwarding`: no client auth and no proxy key → 401
+  (`error.type == "unauthorized"`), nothing forwarded.
+- ANT-E2E-08 — `messages_client_anthropic_version_is_forwarded_not_overridden`: a client `anthropic-version`
+  passes through unchanged (the default only fills an absent one).
+- ANT-E2E-09 — `messages_streaming_deanonymizes_split_placeholder`: a `stream:true` round-trip through a mock
+  Anthropic SSE upstream that fragments the reply — the client receives the de-masked value with no `[EMAIL_1]`
+  leak, and the upstream saw only the masked body.
+
+> **The live Claude Code smoke has run, and it held** (2026-07-16): a real session round-tripped through the
+> proxy against real Anthropic — native route, auth passthrough, in-place masking, response de-mask and DBG-02
+> (zero raw PII in the trace, on real traffic). That closed M6's own gate. See DEVLOG 2026-07-16.
+>
+> **What it did *not* exercise is the hybrid.** No model was configured, so the run was silently structured-only:
+> email and IBAN masked because they are *deterministic* recognizers, while the NER never ran. Verifying the
+> hybrid is the [CC battery](#cc-battery) (CC-01…CC-09 × Run OFF/ON, `NER_REQUIRED=1` — the flag that makes that
+> silent downgrade fatal), and it is **blocked on M7**: its prompts need rewriting (Claude Code correctly refused
+> them as injection attempts) and 9 scenarios × 2 runs is impractical at the current NER latency. **`1.0.0` now
+> waits on M7, not on this box.** The automated mock coverage above remains the permanent guarantee.
+
 ### Dependency footprint (M2.5-R1)
 - DEP-01 — `tests/dependency_footprint.rs` (`default_build_excludes_the_onnx_and_hf_stack`): `cargo tree` on the **default** features must contain no `hf-hub`/`hf-xet`/`aws-lc`/`ort`/`tokenizers` — the ONNX/HF stack (heavy, native) stays behind the `onnx` feature so the shipped default build is native-dep-free.
 
@@ -434,5 +633,13 @@ asserts the value is still masked and round-trips, so a "fix" that buys speed wi
 
 ## Running
 
-- `cargo test` — unit + property + integration (from M1 onward).
+- `cargo test` — unit + property + integration (from M1 onward), structured-only.
+- `cargo test-onnx` — the same suite **plus** the NER path. A `.cargo/config.toml` alias for
+  `--features onnx --target-dir target/onnx`: the hybrid builds into its **own** directory, so a
+  later plain `cargo test` cannot overwrite the hybrid binary with a structured-only one (they
+  otherwise share `target/debug/llm-proxy-pii-rust.exe` — the footgun that once made a live
+  verification test half the product; see [`MANUAL_VERIFICATION.md`](MANUAL_VERIFICATION.md)).
+  Run it from the repo root: `--target-dir` is relative to the cwd.
+- Live-model tests (EVAL-01, the NER-CHUNK / NER-INERT / perf guards) are `#[ignore]`d and need a
+  configured model — `cargo test-onnx --test ner_perf -- --ignored --nocapture`.
 - End-to-end against a mock provider — harness added in M1.

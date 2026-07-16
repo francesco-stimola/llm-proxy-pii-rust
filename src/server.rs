@@ -1,9 +1,10 @@
 //! HTTP server: axum router and request handlers.
 //!
-//! Scope (fail-closed by default): only `POST /v1/chat/completions` is proxied
-//! and `GET /healthz` is served. Every other path/method returns 404 and is
-//! **never forwarded** — an un-modelled endpoint could leak PII, so we don't
-//! proxy what we don't understand.
+//! Scope (fail-closed by default): `POST /v1/chat/completions` is always proxied
+//! (OpenAI schema); `POST /v1/messages` (the native Anthropic schema, M6) is
+//! proxied **only when `UPSTREAM_PROVIDER=anthropic`**; `GET /healthz` is served.
+//! Every other path/method returns 404 and is **never forwarded** — an un-modelled
+//! endpoint could leak PII, so we don't proxy what we don't understand.
 
 use std::sync::Arc;
 
@@ -27,7 +28,7 @@ use crate::pii::composite::CompositeDetector;
 use crate::pii::recognizers::StructuredRecognizers;
 use crate::pii::PiiDetector;
 use crate::pipeline::privacy::PrivacyStage;
-use crate::pipeline::{RequestContext, Stage};
+use crate::pipeline::{RequestContext, Stage, WireSchema};
 use crate::proxy::{ProxyRequest, ProxyResponse, Upstream};
 use crate::stream::SseDemasker;
 
@@ -41,6 +42,10 @@ pub struct AppState {
     forward_request_headers: Arc<Vec<String>>,
     /// Debug only (M2.6): skip the response de-mask so the client sees placeholders.
     debug_skip_demask: bool,
+    /// Register the native Anthropic `/v1/messages` route (M6) — only when the
+    /// upstream actually speaks it (`provider == "anthropic"`), so other providers
+    /// never mis-route a native body they'd 404 anyway.
+    serve_anthropic_messages: bool,
 }
 
 impl AppState {
@@ -54,6 +59,7 @@ impl AppState {
             config.upstream_base_url.clone(),
             config.upstream_api_key.clone(),
             config.upstream_chat_path.clone(),
+            config.upstream_messages_path.clone(),
             config.upstream_extra_headers.clone(),
         );
         let ner_required = env_flag("NER_REQUIRED");
@@ -73,6 +79,7 @@ impl AppState {
             max_body_bytes: config.max_body_bytes,
             forward_request_headers: Arc::new(config.forward_request_headers.clone()),
             debug_skip_demask: config.debug_skip_demask,
+            serve_anthropic_messages: config.provider == "anthropic",
         })
     }
 }
@@ -212,9 +219,15 @@ fn env_or(key: &str, default: &str) -> String {
 /// port without going through [`run`].
 pub fn build_router(state: AppState) -> Router {
     let max_body_bytes = state.max_body_bytes;
-    Router::new()
+    let mut router = Router::new()
         .route("/healthz", get(|| async { "ok" }))
-        .route("/v1/chat/completions", post(chat_completions))
+        .route("/v1/chat/completions", post(chat_completions));
+    // Native Anthropic Messages (M6) — registered only when the upstream speaks
+    // it; otherwise `/v1/messages` stays a 404 like any un-modelled endpoint.
+    if state.serve_anthropic_messages {
+        router = router.route("/v1/messages", post(messages));
+    }
+    router
         .layer(DefaultBodyLimit::max(max_body_bytes))
         .layer(TraceLayer::new_for_http())
         .fallback(not_proxied)
@@ -241,8 +254,9 @@ async fn not_proxied() -> Response {
         .into_response()
 }
 
-/// `POST /v1/chat/completions`: mask → forward → restore. Handles both buffered
-/// JSON and streaming (SSE) responses; request-side masking is identical for both.
+/// `POST /v1/chat/completions`: mask → forward → restore (OpenAI schema). Handles
+/// both buffered JSON and streaming (SSE) responses; request-side masking is
+/// identical for both.
 async fn chat_completions(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -250,13 +264,116 @@ async fn chat_completions(
 ) -> Response {
     let streaming = body.get("stream").and_then(Value::as_bool) == Some(true);
 
-    // Masking is **CPU-bound** — regex scans over every text field, plus NER inference when
-    // it's on — so it runs on the blocking pool, never inline on a tokio worker (M4-R19).
-    // Inline, a few concurrent large bodies starve the executor and the whole proxy stops
-    // serving, on an unauthenticated path (detection precedes any upstream auth).
+    let (request, mut ctx) = match run_privacy_stages(&state, body, WireSchema::OpenAi).await {
+        Ok(pair) => pair,
+        Err(response) => return response,
+    };
+
+    let client_auth = headers.get(AUTHORIZATION).and_then(|v| v.to_str().ok());
+    let passthrough = collect_passthrough(&headers, &state.forward_request_headers);
+
+    if streaming {
+        let sent = state
+            .upstream
+            .send(&request.body, client_auth, &passthrough)
+            .await;
+        return finish_streaming(&state, sent, &mut ctx, WireSchema::OpenAi).await;
+    }
+
+    // ── Non-streaming (buffered JSON) ────────────────────────────────────────
+    match state
+        .upstream
+        .forward_chat_completions(&request.body, client_auth, &passthrough)
+        .await
+    {
+        Ok((status, upstream_headers, upstream_body)) => {
+            finish_buffered(&state, status, &upstream_headers, upstream_body, &mut ctx)
+        }
+        Err(err) => {
+            tracing::error!(error = %err, "upstream forwarding failed");
+            error_response(StatusCode::BAD_GATEWAY, &err.to_string(), "proxy_error")
+        }
+    }
+}
+
+/// `POST /v1/messages`: mask → forward → restore for the **native Anthropic**
+/// schema (M6, Claude Code passthrough). Registered only when the upstream speaks
+/// it. Same mask + fail-closed + streaming-detect flow as `chat_completions`,
+/// differing only in the schema tag, the native forward, and the SSE demasker.
+async fn messages(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> Response {
+    let streaming = body.get("stream").and_then(Value::as_bool) == Some(true);
+
+    let (request, mut ctx) = match run_privacy_stages(&state, body, WireSchema::Anthropic).await {
+        Ok(pair) => pair,
+        Err(response) => return response,
+    };
+
+    // Native auth (M6): client `Authorization` (OAuth Bearer) wins, then a client
+    // `x-api-key`, then the proxy's configured key — never OAuth in `x-api-key`.
+    // No usable credential → 401 (masking already ran; nothing is forwarded).
+    let client_auth = headers.get(AUTHORIZATION).and_then(|v| v.to_str().ok());
+    let client_api_key = headers.get("x-api-key").and_then(|v| v.to_str().ok());
+    let auth = match state.upstream.messages_auth(client_auth, client_api_key) {
+        Some(auth) => auth,
+        None => {
+            return error_response(
+                StatusCode::UNAUTHORIZED,
+                "no Anthropic credential (send Authorization: Bearer <token> or x-api-key)",
+                "unauthorized",
+            )
+        }
+    };
+    let passthrough = collect_passthrough(&headers, &state.forward_request_headers);
+
+    if streaming {
+        let sent = state
+            .upstream
+            .send_messages(&request.body, &auth, &passthrough)
+            .await;
+        return finish_streaming(&state, sent, &mut ctx, WireSchema::Anthropic).await;
+    }
+
+    // ── Non-streaming (buffered JSON) ────────────────────────────────────────
+    match state
+        .upstream
+        .forward_messages(&request.body, &auth, &passthrough)
+        .await
+    {
+        Ok((status, upstream_headers, upstream_body)) => {
+            finish_buffered(&state, status, &upstream_headers, upstream_body, &mut ctx)
+        }
+        Err(err) => {
+            tracing::error!(error = %err, "upstream forwarding failed (messages)");
+            error_response(StatusCode::BAD_GATEWAY, &err.to_string(), "proxy_error")
+        }
+    }
+}
+
+/// Run the request through every stage's masking hook on the blocking pool, then
+/// apply the fail-closed gates. Shared by both schema handlers (M6); only the
+/// `schema` tag differs, which selects the stage's mask/demask walk.
+///
+/// Masking is **CPU-bound** — regex scans over every text field, plus NER
+/// inference when it's on — so it runs on the blocking pool, never inline on a
+/// tokio worker (M4-R19). Inline, a few concurrent large bodies starve the
+/// executor and the whole proxy stops serving, on an unauthenticated path
+/// (detection precedes any upstream auth).
+///
+/// `Err(Response)` is a ready-to-return failure: a masking-task panic → 500, or a
+/// stage that refused to mask → 400. In both cases nothing is forwarded.
+async fn run_privacy_stages(
+    state: &AppState,
+    body: Value,
+    schema: WireSchema,
+) -> Result<(ProxyRequest, RequestContext), Response> {
     let stages = state.stages.clone();
     let masked = tokio::task::spawn_blocking(move || {
         let mut ctx = RequestContext::new();
+        ctx.schema = schema;
         let mut request = ProxyRequest { body };
         for stage in stages.iter() {
             stage.on_request(&mut request, &mut ctx);
@@ -268,53 +385,43 @@ async fn chat_completions(
     })
     .await;
 
-    // Fail closed: if the masking task itself died (a panic in a stage), we hold a request
-    // whose PII status is unknown — reject it, never forward it.
+    // Fail closed: if the masking task itself died (a panic in a stage), we hold a
+    // request whose PII status is unknown — reject it, never forward it.
     let (request, ctx) = match masked {
         Ok(ok) => ok,
         Err(err) => {
             tracing::error!(error = %err, "masking task failed; blocking the request (fail-closed)");
-            return error_response(
+            return Err(error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "masking failed",
                 "blocked",
-            );
+            ));
         }
     };
-    let mut ctx = ctx;
 
     // Fail closed: a stage refused to mask this request → reject, don't forward.
-    if let Some(reason) = ctx.block {
+    if let Some(reason) = &ctx.block {
         tracing::warn!(reason = %reason, "request blocked (fail-closed)");
-        return error_response(StatusCode::BAD_REQUEST, &reason, "blocked");
+        return Err(error_response(StatusCode::BAD_REQUEST, reason, "blocked"));
     }
 
     // M2.6: the outgoing body is masked here (placeholders only), so it is safe to
     // dump at `trace!` for debugging — opt in with `RUST_LOG=…=trace`. The concise
-    // kind-only audit stays at `debug!`. NEVER log the de-masked response below.
+    // kind-only audit stays at `debug!`. NEVER log the de-masked response.
     tracing::trace!(masked_request = %request.body, "forwarding masked request body upstream");
 
-    let client_auth = headers.get(AUTHORIZATION).and_then(|v| v.to_str().ok());
-    let passthrough = collect_passthrough(&headers, &state.forward_request_headers);
+    Ok((request, ctx))
+}
 
-    if streaming {
-        return stream_chat_completions(&state, &request.body, client_auth, &passthrough, &mut ctx)
-            .await;
-    }
-
-    // ── Non-streaming (buffered JSON) ────────────────────────────────────────
-    let (status, upstream_headers, upstream_body) = match state
-        .upstream
-        .forward_chat_completions(&request.body, client_auth, &passthrough)
-        .await
-    {
-        Ok(ok) => ok,
-        Err(err) => {
-            tracing::error!(error = %err, "upstream forwarding failed");
-            return error_response(StatusCode::BAD_GATEWAY, &err.to_string(), "proxy_error");
-        }
-    };
-
+/// Restore a buffered (non-streaming) upstream JSON reply and turn it into the
+/// client response. Schema-agnostic: `on_response` dispatches on `ctx.schema`.
+fn finish_buffered(
+    state: &AppState,
+    status: u16,
+    upstream_headers: &reqwest::header::HeaderMap,
+    upstream_body: Value,
+    ctx: &mut RequestContext,
+) -> Response {
     let mut response = ProxyResponse {
         body: upstream_body,
     };
@@ -325,26 +432,27 @@ async fn chat_completions(
         tracing::debug!("skipping response de-mask (PII_DEBUG_SKIP_DEMASK)");
     } else {
         for stage in state.stages.iter().rev() {
-            stage.on_response(&mut response, &mut ctx);
+            stage.on_response(&mut response, ctx);
         }
     }
 
     let code = StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY);
-    let forwarded = forwardable_headers(&upstream_headers);
+    let forwarded = forwardable_headers(upstream_headers);
     (code, forwarded, Json(response.body)).into_response()
 }
 
-/// Streaming (SSE) round-trip: forward the masked body, then de-anonymize the
-/// token stream incrementally on the way back (M3). Request-side masking has
-/// already run, so nothing raw ever reaches the provider regardless.
-async fn stream_chat_completions(
+/// Finish a streaming round-trip: if the upstream really answered with SSE,
+/// de-anonymize the token stream incrementally on the way back (M3), else fall
+/// back to the buffered path (M3-R1). Shared by both schemas (M6) — `schema`
+/// selects the per-wire-format SSE rewriter. Request-side masking has already run,
+/// so nothing raw ever reaches the provider regardless.
+async fn finish_streaming(
     state: &AppState,
-    body: &Value,
-    client_auth: Option<&str>,
-    passthrough: &[(reqwest::header::HeaderName, reqwest::header::HeaderValue)],
+    sent: anyhow::Result<reqwest::Response>,
     ctx: &mut RequestContext,
+    schema: WireSchema,
 ) -> Response {
-    let response = match state.upstream.send(body, client_auth, passthrough).await {
+    let response = match sent {
         Ok(r) => r,
         Err(err) => {
             tracing::error!(error = %err, "upstream streaming request failed");
@@ -379,7 +487,7 @@ async fn stream_chat_completions(
         }
         Body::from_stream(upstream)
     } else {
-        demasking_sse_body(upstream, std::mem::take(&mut ctx.vault))
+        demasking_sse_body(upstream, std::mem::take(&mut ctx.vault), schema)
     };
 
     (code, out_headers, body).into_response()
@@ -425,7 +533,11 @@ async fn buffered_fallback(
 /// trip. A mid-stream upstream error is turned into a **terminal SSE `event: error`**
 /// (after flushing any buffered content) and the stream ends cleanly, rather than
 /// aborting the client connection.
-fn demasking_sse_body<S, E>(upstream: S, vault: crate::pii::anonymizer::Vault) -> Body
+fn demasking_sse_body<S, E>(
+    upstream: S,
+    vault: crate::pii::anonymizer::Vault,
+    schema: WireSchema,
+) -> Body
 where
     S: futures_util::Stream<Item = Result<Bytes, E>> + Send + 'static,
     E: std::fmt::Display + Send + 'static,
@@ -438,7 +550,7 @@ where
 
     let state = StreamState {
         inner: Box::pin(upstream),
-        demasker: SseDemasker::new(vault),
+        demasker: SseDemasker::new(vault, schema),
         ended: false,
     };
 
@@ -574,7 +686,7 @@ mod tests {
             Ok::<Bytes, std::io::Error>(chunk),
             Err(std::io::Error::other("boom")),
         ]);
-        let body = demasking_sse_body(upstream, Vault::new());
+        let body = demasking_sse_body(upstream, Vault::new(), crate::pipeline::WireSchema::OpenAi);
         let bytes = axum::body::to_bytes(body, usize::MAX).await.unwrap();
         let text = String::from_utf8(bytes.to_vec()).unwrap();
 

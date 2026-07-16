@@ -5,8 +5,11 @@ name: Release build
 # so they can never drift:
 #   * release-build-publish.yml (on a v*.*.* tag)      → then PUBLISHES the artifacts as a GitHub Release
 #   * manual-build.yml          (on workflow_dispatch) → keeps them as throwaway workflow artifacts
-# (The former per-push `ci.yml` caller, which built all targets as an early-warning check, is
-# disabled — see ci.yml.disabled. There is no per-push CI now; verify with a manual build.)
+# (`ci.yml` used to be a THIRD caller, building all targets per push as an early-warning check.
+# That caller is gone: the cross-compile is now tag/manual only. `ci.yml` itself is very much
+# alive — it was disabled for a while, then brought back TRIMMED (fmt/clippy/test/msrv on push +
+# PR, no cross-compile) when Dependabot needed a gate. So: per-push CI exists, but it does not
+# build the release targets — confirm those with a manual build before you tag.)
 #
 # There is deliberately no publish step here: a caller that only builds therefore *cannot*
 # publish, structurally, rather than by an `if` gate.
@@ -36,9 +39,10 @@ on:
         default: 7
       upload-artifacts:
         description: >-
-          Upload the built binaries as workflow artifacts. Callers that only want a
-          compile check across every target (ci.yml) pass false, so a per-push CI run
-          builds all targets without cluttering storage with throwaway binaries.
+          Upload the built binaries as workflow artifacts. Both current callers want them, so
+          neither passes this — it is vestigial, left from the retired per-push ci.yml caller
+          that built every target as a compile check and passed false to avoid storing throwaway
+          binaries. Kept as a seam for a future build-only caller; delete it if none appears.
         type: boolean
         required: false
         default: true
@@ -87,13 +91,22 @@ jobs:
         with:
           key: release-${{ matrix.target }}
 
-      # With per-push CI gone (ci.yml.disabled), the test suite runs HERE instead — and because
-      # this reusable workflow is called by both release-build-publish.yml (on a tag) and
-      # manual-build.yml, tests run on every entry point. Run on EACH target's native runner, so
-      # every arch is exercised (the old CI only ran tests on x86_64 Linux). Debug profile, to match
+      # The suite also runs HERE, not only in ci.yml — and because this reusable workflow is called
+      # by both release-build-publish.yml (on a tag) and manual-build.yml, tests run on every entry
+      # point. The point is coverage ci.yml cannot give: EACH target's native runner, so every arch
+      # is exercised (ci.yml only runs tests on x86_64 Linux). Debug profile, to match
       # the wall-clock budgets in tests/complexity.rs. Model-dependent NER tests are #[ignore]d, so
       # no model file is needed. A failure stops the leg before the expensive fat-LTO build below —
       # and, at tag time, blocks the release (a release that fails its tests never publishes).
+      #
+      # These steps deliberately do NOT use the `-onnx` aliases (.cargo/config.toml), and do not
+      # need them: that split exists because LOCAL default- and onnx-builds write the same
+      # `target/debug/` path, so a later `cargo test` can clobber a hybrid binary. Here the
+      # packaged artifact comes from `--target <triple>` — already its own directory — and the
+      # build runs AFTER the tests, so nothing can overwrite what ships. Using the aliases would
+      # move the package path AND push the artifacts into a nested target dir that
+      # Swatinem/rust-cache does not manage, so the cache would silently stop covering the build.
+      # Keep the explicit flags.
       - name: Test (--features onnx)
         run: cargo test --features onnx
 
