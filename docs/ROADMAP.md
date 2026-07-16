@@ -472,12 +472,21 @@ adapter is **not** adopted (wrong shape for a native client, and against fail-cl
   (`split_demaskable`, the hold-back buffer) + a per-schema delta rewriter (OpenAI vs Anthropic). **The prior
   proxy left this a TODO — its streamed replies were forwarded un-demasked — and closing it is the point: a
   placeholder reaching the client is the exact failure this tool exists to prevent.**
-- [x] **Verification.** A native-schema coverage / fail-closed suite against a mock upstream (10 e2e +
+- [x] **Verification — mock.** A native-schema coverage / fail-closed suite against a mock upstream (10 e2e +
   13 unit) — round-trip, tool defs (incl. a content-source document), fail-closed on an unknown block/document
-  source, 404-when-not-anthropic, the full auth matrix, and the streaming split-placeholder. **Still open (the
-  `1.0.0` gate):** the opt-in real Claude Code
-  smoke — point a Claude Code session at the proxy and compare the M5 dual-run Run A / Run B against live
-  Anthropic. Needs a human with Claude Code + credentials; not runnable in this environment.
+  source, 404-when-not-anthropic, the full auth matrix, and the streaming split-placeholder.
+- [x] **Verification — live, and it holds.** Ran 2026-07-16: a **real Claude Code session** round-tripped
+  through the proxy against **real Anthropic**. The native route, the auth passthrough (200 first try with
+  **no credential configured** — it forwards its own, the proxy held no key), the in-place masking
+  (`contatta [EMAIL_1], IBAN [IBAN_1]`), the response de-mask (real values restored on screen) and DBG-02
+  (**zero** raw PII in the trace, on real traffic) all held. This is what closed M6's own gate. Details:
+  DEVLOG 2026-07-16.
+  > **Scope, stated honestly: that run exercised the *route*, not the *hybrid*.** No model was configured,
+  > so it silently ran structured-only — email and IBAN masked because they are *deterministic*
+  > recognizers, while the NER never ran (a `Person` would have gone upstream in clear). The **CC battery**
+  > (CC-01…CC-09 × OFF/ON, `NER_REQUIRED=1`) is what verifies the hybrid, and it is **blocked on
+  > [M7](#m7)** — twice over: its prompts need rewriting, and 9 scenarios × 2 runs is impractical at the
+  > current latency. **`1.0.0` now waits on M7, not on this box.**
 - **Out of scope:** Bedrock / Vertex native endpoints, `/v1/messages/count_tokens`, the broad multi-provider
   translation registry, and **server-side tool-result blocks** — all remain Backlog.
 
