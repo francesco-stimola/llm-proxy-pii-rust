@@ -485,7 +485,7 @@ adapter is **not** adopted (wrong shape for a native client, and against fail-cl
 reproduced through the real router and is now pinned by a unit test + an e2e.
 **Round 2 (2026-07-16): all 5 closures verified sound** (re-measured 85 default / 97 onnx lib, `fmt`/`clippy`
 clean; drove the new document surface through the real router — leak closed at every dispatch, fail-closed on
-every unmodeled shape, no over-reach). **One new cosmetic nit — R6.**
+every unmodeled shape, no over-reach). **One new cosmetic nit — R6, now closed.** The M6 ledger is clean, 6/6.
 
 | ID | Title | Sev | Status |
 |---|---|---|---|
@@ -494,7 +494,7 @@ every unmodeled shape, no over-reach). **One new cosmetic nit — R6.**
 | [M6-R3](reviews/M6.md#m6-r3) | M6 test counts are wrong: DEVLOG "96 lib tests default" (default is 84) + ROADMAP/DEVLOG "14 unit" (actual 12) | docs | [x] |
 | [M6-R4](reviews/M6.md#m6-r4) | Some e2e placeholder-presence asserts are satisfiable by the augmentation prompt text (non-vacuous via the `!contains(raw)` checks, but weaker than they read) | test-quality | [x] |
 | [M6-R5](reviews/M6.md#m6-r5) | `inject_augmentation_anthropic` doc says "Prepend" but the code appends | docs | [x] |
-| [M6-R6](reviews/M6.md#m6-r6) | A document `content`-source sub-block reuses `mask_tool_result_content`, so its client-facing 400 reason says "tool_result" (no PII; diagnostic-accuracy only) | cosmetic | [ ] |
+| [M6-R6](reviews/M6.md#m6-r6) | A document `content`-source sub-block reuses `mask_tool_result_content`, so its client-facing 400 reason says "tool_result" (no PII; diagnostic-accuracy only) → renamed `mask_content_block_array`, caller-neutral messages | cosmetic | [x] |
 
 **Delivery (decided 2026-07-15):** one feature branch → PR (`feat/m6-anthropic-messages`), **streaming
 included from the start** (Claude Code streams by default, so a buffered-only first cut wouldn't be usable

@@ -438,7 +438,7 @@ fn mask_anthropic_block(
         }
         Some("tool_result") => {
             if let Some(content) = block.get_mut("content") {
-                mask_tool_result_content(content, f)?;
+                mask_content_block_array(content, f)?;
             }
             Ok(())
         }
@@ -458,9 +458,13 @@ fn mask_anthropic_block(
     }
 }
 
-/// Mask a `tool_result.content`: a string, or an array of `text`/`image` blocks.
-/// Fails closed on an unknown sub-block, matching the top-level dispatch.
-fn mask_tool_result_content(
+/// Mask a nested **content block array**: a string, or an array of `text`/`image`
+/// blocks (with bare strings allowed). Fails closed on an unknown sub-block,
+/// matching the top-level dispatch. Shared by a `tool_result`'s `content` **and**
+/// a `content`-source `document`'s `content` (M6-R1), so its fail-closed messages
+/// are **caller-neutral** — they become a client-facing 400 reason for either, and
+/// naming just one would misreport the other (M6-R6).
+fn mask_content_block_array(
     content: &mut Value,
     f: &mut dyn FnMut(&str) -> String,
 ) -> Result<(), String> {
@@ -476,9 +480,7 @@ fn mask_tool_result_content(
                     continue;
                 }
                 if !block.is_object() {
-                    return Err(
-                        "`tool_result` content array has an unrecognized element".to_string()
-                    );
+                    return Err("nested content array has an unrecognized element".to_string());
                 }
                 match block.get("type").and_then(Value::as_str) {
                     Some("text") => {
@@ -487,18 +489,14 @@ fn mask_tool_result_content(
                         }
                     }
                     Some("image") => {}
-                    Some(_) => {
-                        return Err("unknown Anthropic tool_result content block".to_string())
-                    }
-                    None => {
-                        return Err("Anthropic tool_result content block has no `type`".to_string())
-                    }
+                    Some(_) => return Err("unknown Anthropic nested content block".to_string()),
+                    None => return Err("Anthropic nested content block has no `type`".to_string()),
                 }
             }
             Ok(())
         }
         Value::Null => Ok(()),
-        _ => Err("`tool_result` content has an unrecognized shape".to_string()),
+        _ => Err("nested `content` has an unrecognized shape".to_string()),
     }
 }
 
@@ -536,7 +534,7 @@ fn mask_anthropic_document(
         }
         Some("content") => {
             if let Some(content) = source.get_mut("content") {
-                mask_tool_result_content(content, f)?;
+                mask_content_block_array(content, f)?;
             }
             Ok(())
         }
@@ -825,13 +823,25 @@ mod tests {
     fn anthropic_unknown_document_source_type_fails_closed() {
         // A `document` source type we don't model fails closed — the same rule as
         // an unknown block type, so a new source is a conscious addition (M6-R1).
-        let mut body = json!({
+        let mut f = |t: &str| t.to_string();
+
+        let mut unknown_source = json!({
             "messages": [ { "role": "user", "content": [
                 { "type": "document", "source": { "type": "hologram", "data": "x" } }
             ] } ]
         });
-        let mut f = |t: &str| t.to_string();
-        assert!(mask_anthropic_request(&mut body, &mut f).is_err());
+        assert!(mask_anthropic_request(&mut unknown_source, &mut f).is_err());
+
+        // …and the fail-closed rule holds at the next depth down: a `content`
+        // source with an unrecognized nested sub-block also blocks (M6-R6).
+        let mut unknown_nested = json!({
+            "messages": [ { "role": "user", "content": [
+                { "type": "document", "source": { "type": "content", "content": [
+                    { "type": "telepathy" }
+                ] } }
+            ] } ]
+        });
+        assert!(mask_anthropic_request(&mut unknown_nested, &mut f).is_err());
     }
 
     #[test]
