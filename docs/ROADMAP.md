@@ -316,16 +316,18 @@ Prove the whole system holds **end-to-end** and **under load**, then document it
       [M5-R11](reviews/M5.md#m5-r11)'s whole risk class rather than guarding it. **Its status badge is what the
       READMEs now show** — "did the last tag build?".
     - **`manual-build.yml`** (`name: Manual build`) — `workflow_dispatch` only; same `release-build.yml`, keeps
-      binaries as **throwaway artifacts** (30-day). No publish job, so it *cannot* cut a release. With push CI
-      gone, this is **the way to confirm every target still compiles before you tag**.
-    - **`ci.yml` is disabled** (renamed `ci.yml.disabled`) — a deliberate change of approach: nothing runs on
-      push/PR anymore. **`cargo test` moved into `release-build.yml`** (so the suite still runs — on every
+      binaries as **throwaway artifacts** (30-day). No publish job, so it *cannot* cut a release. Since no
+      other job cross-compiles, this is **the way to confirm every target still compiles before you tag**.
+    - **`ci.yml` was disabled** (renamed `ci.yml.disabled`) — a deliberate change of approach: nothing ran on
+      push/PR. **`cargo test` moved into `release-build.yml`** (so the suite still runs — on every
       target's native runner — but at `manual-build` / tag time, not per push; a release that fails its tests
-      never publishes). **`fmt` / `clippy` / `msrv` are now local-only** gates (the CLAUDE.md "green before
-      done" bar), so a lint break surfaces at build time or locally, not on a PR. *(Partly reversed later,
-      when Dependabot was enabled: `security.yml` (cargo-deny) and a **trimmed `ci.yml`** (fmt/clippy/test on
-      push + PR) were added so dependency-bump PRs self-verify. The all-target cross-compile stays tag/manual
-      only. See DEVLOG 2026-07-15 / ARCHITECTURE → Supply-chain.)*
+      never publishes). **`fmt` / `clippy` / `msrv` became local-only** gates (the CLAUDE.md "green before
+      done" bar), so a lint break surfaced at build time or locally, not on a PR. **Since reversed in part,
+      and this is the current state:** when Dependabot was enabled, `security.yml` (cargo-deny) and a
+      **trimmed `ci.yml`** (fmt/clippy/test/msrv on push + PR) came back so dependency-bump PRs self-verify.
+      So **push/PR CI exists today** — it just doesn't cross-compile; the all-target build stays tag/manual
+      only, which is why `manual-build.yml` above is still how you confirm every target before tagging. See
+      DEVLOG 2026-07-15 / ARCHITECTURE → Supply-chain.
     - **Targets: Linux x86_64 + arm64, macOS arm64, Windows x86_64 + arm64.** macOS is arm64-only because
       `ort` ships no prebuilt ONNX Runtime for `x86_64-apple-darwin` at the pinned `rc.12` (Intel Macs are
       legacy). Linux and Windows each ship both arches, built **natively** on their own runner
