@@ -121,10 +121,11 @@ vengono suddivisi in finestre, così funzionano anche i documenti lunghi.
 
 ### Lo standard che si impone
 
-- **Fail closed.** Una forma di richiesta illeggibile, un rilevatore obbligatorio che fallisce, o
-  un mascheramento che non raggiunge un punto fisso stabile **bloccano la richiesta (400)**
-  invece di inoltrare qualcosa dallo stato PII sconosciuto. Solo `POST /v1/chat/completions` è
-  proxato — tutto il resto è `404`, mai inoltrato.
+- **Fail closed.** Una forma di richiesta illeggibile, un tipo di blocco di contenuto
+  sconosciuto, un rilevatore obbligatorio che fallisce, o un mascheramento che non raggiunge un
+  punto fisso stabile **bloccano la richiesta (400)** invece di inoltrare qualcosa dallo stato
+  PII sconosciuto. Solo `POST /v1/chat/completions` (e `POST /v1/messages` quando
+  `UPSTREAM_PROVIDER=anthropic`) è proxato — tutto il resto è `404`, mai inoltrato.
 - **Mai loggare PII in chiaro.** I log riportano categorie, conteggi e segnaposto — mai i valori.
   Garantito da un test, non da una convenzione.
 - **Lineare sotto carico.** Il percorso di mascheramento è dimostrabilmente lineare sia nella
@@ -133,6 +134,21 @@ vengono suddivisi in finestre, così funzionano anche i documenti lunghi.
   protegge nulla.*
 - **Deterministico.** Lo stesso valore ottiene sempre lo stesso segnaposto all'interno di una
   richiesta, così le conversazioni multi-turno stateless restano coerenti.
+
+### Impronta — misurata, non dichiarata
+
+Memoria residente, misurata il 2026-07-16 (Windows, build debug, a riposo dopo l'avvio):
+
+| build | private | working set | cosa domina |
+|---|---|---|---|
+| **solo strutturato** (feature di default) | **~10 MB** | ~36 MB | niente — sono regex |
+| **ibrido** (`--features onnx`, XLM-R int8, `NER_POOL_SIZE=2`) | **~834 MB** | ~862 MB | il NER: **due** sessioni ONNX, cioè il modello tenuto due volte |
+
+Il livello deterministico è sostanzialmente gratis; **il modello è tutto il costo**, ed è
+regolabile: `NER_POOL_SIZE` (default `2`) scambia concorrenza per memoria — `1` la dimezza circa.
+Scegli la build in base alla minaccia che hai davvero: il solo strutturato copre già email, IBAN,
+carte, secret e 10 schemi di identificativo nazionale, ed è indipendente dalla lingua. Il NER ti
+compra nomi, organizzazioni e luoghi — nient'altro.
 
 ---
 

@@ -313,23 +313,67 @@ asserts the value is still masked and round-trips, so a "fix" that buys speed wi
   never-log-raw-PII rule) and that a normally-converging detector still returns `Ok` — so the guard can't
   pass by breaking masking for everyone.
 
-### M5 — integration & performance
-- **E2E-INT-01** — real-provider smoke against **Anthropic** (OpenAI-compat endpoint):
-  `tests/anthropic_smoke.rs::e2e_int01_anthropic_real_provider_roundtrip`. Strictly opt-in
-  (`#[ignore]`d, needs a real `ANTHROPIC_API_KEY`, one real network call, never runs in CI) — a
-  PII round-trip returns the restored value in the client-visible reply while the request left
-  masked. **Not yet run against a live key** as part of this milestone (no credentials in this
-  environment); the test is ready and documented for whoever runs it next.
-- **E2E-INT-02** — the manual **dual-run** procedure (real Anthropic + `RUST_LOG=…=trace`):
-  `docs/MANUAL_VERIFICATION.md`. Deliberately not a `#[test]` — it compares what two separate
-  runs *logged* and returned, which needs a human to read the trace output. Run A
-  (`PII_DEBUG_SKIP_DEMASK=1`) → client gets the placeholders; Run B (normal) → client gets the
-  restored values. Proves the whole chain end-to-end against a real provider; trace logging
-  re-checks DBG-02 (never-log-raw-PII) on **real** data. **Dry-run-validated against a mock
-  upstream through the real binary on 2026-07-15** (Run A → placeholders, Run B → restored
-  values, DBG-02 clean on both; see DEVLOG); the *real-provider* execution is now **opt-in**,
-  not a milestone gate — the permanent guarantee is DBG-01 + DBG-02 in CI, and E2E-INT-01
-  (`tests/anthropic_smoke.rs`) is the ready automated companion.
+### M5 / M6 — live provider verification
+
+Everything above runs against a **mock** upstream. These are the checks that need a **real
+provider**, and they are the only ones that can catch what a mock cannot: a model that
+reformats a placeholder, an auth wiring that only fails against the real endpoint, a client
+that sends a shape we never imagined.
+
+**The prefix tells you who runs it** — `E2E-INT-*` is automated, `CC-*` is a human at the
+keyboard. (An earlier revision filed the manual battery as "E2E-INT-02", which made that
+unreadable; the label is retired.)
+
+**E2E-INT-01 — automated**, real-provider smoke over **both routes**: `tests/anthropic_smoke.rs`.
+Strictly opt-in (`#[ignore]`d, needs a real credential, one network call each, never in CI):
+`cargo test --test anthropic_smoke -- --ignored --nocapture`.
+
+- `e2e_int01_anthropic_real_provider_roundtrip` — the **OpenAI-compat** route
+  (`/v1/chat/completions`). This route still ships (Cline / Continue / opencode / Copilot BYOK),
+  so it keeps its own live check — the CC battery below does **not** cover it.
+- `e2e_int01_anthropic_native_messages_roundtrip` — the **native** route (`/v1/messages`, M6).
+  The automated companion to the manual battery.
+
+<a id="cc-battery"></a>
+#### CC-01…CC-09 — manual: a real Claude Code session through the native route
+
+Run by a human, not by cargo. Procedure: [`MANUAL_VERIFICATION.md`](MANUAL_VERIFICATION.md).
+Workspace + fixtures: [`tools/claude-code-session/`](../tools/claude-code-session/) — open that
+directory and Claude Code routes itself through the proxy. It is manual on purpose: it compares
+what two runs *logged* and *returned* to a real client, which needs eyes on the trace.
+
+**Every scenario runs twice**, and the pair is the point:
+
+| run | `PII_DEBUG_SKIP_DEMASK` | proves |
+|---|---|---|
+| **OFF** (normal) | unset | the client gets the **real** values back — the round-trip restores |
+| **ON** | `1` | the client sees the **placeholders** — i.e. exactly what the provider received |
+
+Neither alone proves the chain; together, on the same input, they show the value that left
+masked is the value that comes back restored. **Both runs also get the DBG-02 grep** (raw PII
+must appear in **neither** log — `tracing` writes to **stdout**, so a `2>`-only redirect makes
+that grep pass vacuously).
+
+> **Run the ON variant in `scratch/`.** With the de-mask skipped the session receives
+> placeholders, so a tool call **acts on them** — an Edit writes `[EMAIL_1]` into the file.
+> That is a useful thing to see, and never a thing to do to real files.
+
+> **The hybrid must actually be on.** Set **`NER_REQUIRED=1`** for the battery. Without it a
+> missing/unloadable model silently degrades to structured-only (the default is fail-*open* for
+> names), and CC-02 would "pass" while testing nothing — the exact trap the first live run fell
+> into (DEVLOG 2026-07-16). `NER_REQUIRED=1` makes that failure fatal at startup instead.
+
+| ID | Scenario | What it proves (and why a mock can't) |
+|---|---|---|
+| **CC-01** | Chat prompt with **structured** PII (email, IBAN) | The baseline round-trip on real traffic: masked out, restored back. |
+| **CC-02** | Chat prompt with **NER entities** (`Mario Rossi` / `Acme S.p.A.` / `Milano`) | **The only check that the hybrid is really running.** Structured PII would pass with the NER off; a `Person` would not. |
+| **CC-03** | Claude Code **reads a file** with PII (`fixtures/contacts.csv`) → `tool_result` | The core Claude Code workflow — its day is tool calls on files, not chat. The live twin of E2E-02. |
+| **CC-04** | The model proposes an **Edit/Bash** carrying a PII value → `tool_use.input` | The client must receive the **real** value to act on it. Live twin of INT-03. |
+| **CC-05** | **Multi-turn**: PII in turn 1, referenced later | Deterministic placeholders across stateless re-sends, against a real model. |
+| **CC-06** | A **secret** in a file (`fixtures/deploy-config.env`) | The SECRET recognizer on real traffic — the category the old proxy's ML model missed. |
+| **CC-07** | **Thinking blocks** + tool use (extended thinking on) | M6's `thinking` invariant: masked up, never de-masked down, so the block `signature` survives the replay. **Never yet exercised live.** |
+| **CC-08** | A **long streamed** answer repeating a placeholder | The Anthropic SSE hold-back on real deltas: a placeholder split across `text_delta`s. |
+| **CC-09** | **MCP SQL tool** returns PII (`fixtures/customer-lookup.sql`, `SELECT … FROM DUAL`) | The old proxy's **TC-04**, reproduced on real infrastructure: PII arriving through an MCP tool result, masked before it reaches the provider. |
 - **E2E-02 / E2E-04** — done; see *End-to-end* above.
 - **PERF-01** — system-level load harness, the companion to `tests/complexity.rs` (which pins
   the masking *algorithm's* complexity, no HTTP):

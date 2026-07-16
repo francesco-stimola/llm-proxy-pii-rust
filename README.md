@@ -121,10 +121,11 @@ hardware; large fields are chunked so long documents work too.
 
 ### The bar it holds itself to
 
-- **Fail closed.** An unreadable request shape, a required detector that errors, or masking
-  that can't reach a stable fixpoint all **block the request (400)** rather than forward
-  anything of unknown PII status. Only `POST /v1/chat/completions` is proxied — everything
-  else is `404`, never forwarded.
+- **Fail closed.** An unreadable request shape, an unknown content-block type, a required
+  detector that errors, or masking that can't reach a stable fixpoint all **block the request
+  (400)** rather than forward anything of unknown PII status. Only `POST /v1/chat/completions`
+  (and `POST /v1/messages` when `UPSTREAM_PROVIDER=anthropic`) is proxied — everything else is
+  `404`, never forwarded.
 - **Never log raw PII.** Logs carry kinds, counts and placeholders — never values. Enforced
   by a test, not by convention.
 - **Linear under load.** The masking path is provably linear in both field *size* and entity
@@ -132,6 +133,21 @@ hardware; large fields are chunked so long documents work too.
   proxy for everyone. *A proxy that is down protects nothing.*
 - **Deterministic.** The same value always maps to the same placeholder within a request, so
   stateless multi-turn conversations stay coherent.
+
+### Footprint — measured, not claimed
+
+Resident memory, measured 2026-07-16 (Windows, debug build, idle after startup):
+
+| build | private | working set | what dominates |
+|---|---|---|---|
+| **structured only** (default features) | **~10 MB** | ~36 MB | nothing — it's regex |
+| **hybrid** (`--features onnx`, XLM-R int8, `NER_POOL_SIZE=2`) | **~834 MB** | ~862 MB | the NER: **two** ONNX sessions, i.e. the model held twice |
+
+The deterministic layer is essentially free; **the model is the whole cost**, and it is tunable:
+`NER_POOL_SIZE` (default `2`) trades concurrency for memory — `1` roughly halves it. Pick the
+build to match the threat you actually have: structured-only already covers emails, IBANs, cards,
+secrets and 10 national ID schemes, and it is language-independent. The NER buys you names,
+organizations and locations — nothing else.
 
 ---
 

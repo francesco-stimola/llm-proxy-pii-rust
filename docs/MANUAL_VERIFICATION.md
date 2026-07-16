@@ -1,140 +1,147 @@
-# Manual verification — does the whole structure hold end-to-end?
+# Manual verification — a real Claude Code session through the proxy
 
-**E2E-INT-02** in `docs/TESTING.md`. This is deliberately a **manual** procedure, not
-a `#[test]`: it compares what two separate runs *logged* and *returned to the
-client*, against a **real** provider (Anthropic — the only one we hold credentials
-for). No automated harness asserts on human-inspected trace logs; this replaces that
-inspection with a repeatable checklist. For an automated (but still opt-in,
-`#[ignore]`d) real-provider check, see `tests/anthropic_smoke.rs` (E2E-INT-01).
+The runbook for **CC-01…CC-09** in [`TESTING.md`](TESTING.md#cc-battery) — the **manual** half of
+the live verification. It drives a **real Claude Code session** against **real Anthropic**
+through the proxy, and compares what two runs *logged* and *returned to the client*. No automated
+harness asserts on human-inspected trace logs; this replaces that inspection with a repeatable
+checklist.
+
+> **Manual vs automated, by prefix.** `CC-*` (here) is a human at the keyboard. `E2E-INT-01`
+> (`tests/anthropic_smoke.rs`) is the **automated** opt-in real-provider smoke over both routes —
+> `cargo test --test anthropic_smoke -- --ignored --nocapture`. Run both before a release: they
+> check different things, and only this one exercises a real *client*.
+
+The workspace and the fixtures live in [`../tools/claude-code-session/`](../tools/claude-code-session/)
+— open **that directory** and Claude Code routes itself here. The scenario list is in
+[`TESTING.md`](TESTING.md#cc-battery); this file is *how* to run it.
 
 ## What this proves that automated tests can't
 
-The mock-upstream e2e tests (`tests/proxy_e2e.rs`) prove the proxy's own logic is
-correct. They can't prove the **real** provider round-trip holds — a real model may
-reformat a placeholder, refuse to echo it, or the account/auth wiring may be wrong
-in a way a mock can't catch. Running the same prompt twice, once with the response
-de-mask **skipped** and once normal, gives a direct, human-visible before/after: Run
-A shows exactly what left the box and what the provider saw; Run B shows the client
-still gets the real values back.
+The mock-upstream e2e suites (`tests/proxy_e2e.rs`, `tests/anthropic_messages_e2e.rs`) prove the
+proxy's own logic is correct. They cannot prove the **real** round-trip holds: a real model may
+reformat a placeholder or refuse to echo it; a real client sends shapes we never imagined; auth
+wiring can fail in ways only the real endpoint shows. The first live run made that concrete —
+it surfaced three things no mock had:
+
+- Claude Code sends `POST /v1/messages?beta=true` (a query param), a `system` **block array**
+  carrying a billing header, and a `metadata.user_id` we do not scan (Anthropic's own device /
+  account / session ids, going to Anthropic — outside this tool's threat model, but worth
+  knowing it is there).
+- It **never called** `count_tokens` in an ordinary session, so the 404 we return for it (out of
+  M6 scope) did not bite.
+- The auth question below, which the documentation had exactly backwards.
+
+## Auth — the client's own credential, measured (not assumed)
+
+> **Claude Code forwards its already-authenticated credential to a custom `ANTHROPIC_BASE_URL`.**
+> Measured 2026-07-16: a subscription-logged-in session, pointed at this proxy with **no token
+> configured anywhere**, got **200 on the first request, no 401, no retry** — Anthropic accepted
+> the credential the proxy forwarded verbatim, while `UPSTREAM_API_KEY` was **unset**.
+
+That is worth stating loudly because the previous revision of this file asserted the opposite
+("a Claude subscription login is an OAuth token scoped to Claude Code's own flow… not usable"),
+and third-party write-ups still claim a custom base URL *requires* setting
+`ANTHROPIC_AUTH_TOKEN`. Both are wrong for Claude Code 2.1.211. **We only know because we tested
+it instead of believing it** — the same reason the rest of this checklist exists.
+
+So the recommended mode is **the proxy holds no credential at all**. The auth rule
+(`src/proxy.rs`, `messages_auth`) is:
+
+> client `Authorization` (forwarded **verbatim**) → client `x-api-key` → the configured
+> `UPSTREAM_API_KEY` as `x-api-key` → **401**.
+
+An OAuth token is **never** placed in `x-api-key` (Anthropic 401s that). If a session ever does
+401, set `ANTHROPIC_AUTH_TOKEN` (→ `Authorization: Bearer`, from `claude setup-token`) or
+`ANTHROPIC_API_KEY` (→ `x-api-key`) in the session's env — the proxy accepts either.
 
 ## Prerequisites
 
-- A working credential for the provider — see *Two ways to authenticate* below.
-- Build with logging enabled (default; no special feature needed for this check).
+**Run the product, not a subset.** The shipped proxy is the *hybrid* — structured recognizers
+**and** the NER. Verify with anything less and CC-02 tests nothing.
 
-### Two ways to authenticate — the proxy never needs to hold your key
+```powershell
+# from the repo root
+cargo build --features onnx
 
-`UPSTREAM_API_KEY` is **optional**. The proxy's auth rule (`src/proxy.rs`) is:
+$env:LISTEN_ADDR='127.0.0.1:8787'
+$env:UPSTREAM_PROVIDER='anthropic'                       # gates the /v1/messages route
+$env:UPSTREAM_BASE_URL='https://api.anthropic.com'
+$env:RUST_LOG='llm_proxy_pii_rust=trace'                 # the masked-body trace, for DBG-02
+$env:NER_MODEL_REPO='jiting/xlm-roberta-base-ner-hrl_onnx'   # revision-pinned, cached after the first fetch
+$env:NER_REQUIRED='1'                                    # see the box below
+# UPSTREAM_API_KEY deliberately UNSET — the client passes its own credential
+.\target\debug\llm-proxy-pii-rust.exe
+```
 
-> **the client's own `Authorization` header always wins**; the configured
-> `UPSTREAM_API_KEY` is only injected as `Bearer …` when the client sent none.
+Confirm **both** lines before trusting a single result:
 
-So there are two modes, and **the second is usually what you want** — it keeps your
-credential out of the proxy's environment entirely:
+```text
+INFO … ONNX NER detector loaded model="…model_quantized.onnx" pool_size=2
+INFO … listening on http://127.0.0.1:8787
+```
 
-| | how | when |
-|---|---|---|
-| **A — proxy holds the key** | set `UPSTREAM_API_KEY`; clients send no `Authorization` | a shared/deployed proxy fronting many clients |
-| **B — client passes its own token** *(recommended here)* | leave `UPSTREAM_API_KEY` **unset**; send `Authorization: Bearer <your-token>` on the request | a local run, or any token already issued to *your* user/account |
+> **`NER_REQUIRED=1` is not optional here, and this is why.** By default a missing or
+> unloadable NER degrades to structured-only **silently** (the deliberate fail-*open* posture
+> for names). The first live run was done that way by accident: email and IBAN masked fine — they
+> are *deterministic* recognizers — so everything looked green while **the NER was never
+> running**. A `Person` would have gone upstream in clear. `NER_REQUIRED=1` turns that silent
+> downgrade into a fatal startup error, which is the only way "is the hybrid actually on?" stops
+> being a question you can get wrong. (DEVLOG 2026-07-16.)
 
-Mode B works with whatever token your account already uses — an API key, or a token
-issued to your user — because the proxy forwards it **verbatim** and never inspects it.
-
-### Can I route a Claude Code session through the proxy instead? — not yet (Option B)
-
-A natural idea: point a separate Claude Code session at this proxy
-(`ANTHROPIC_BASE_URL=http://127.0.0.1:8080`) so *its* traffic gets masked, using its
-credential instead of a standalone key. **This does not work today**, for two
-independent reasons:
-
-- **Schema.** Claude Code speaks *only* the **native** Anthropic Messages API
-  (`POST /v1/messages`, content blocks, `tool_use`/`tool_result`,
-  `tools[].input_schema`). This proxy proxies *only* the OpenAI-compat
-  `/v1/chat/completions` — everything else 404s, fail-closed (FC-03). A Claude Code
-  session pointed here would just get 404s, with nothing masked.
-- **Auth.** A Claude *subscription* login is an **OAuth token scoped to Claude Code's
-  own flow** (the `anthropic-beta` header carries an OAuth capability the upstream
-  requires); it is **not** a plain `Authorization: Bearer` usable against the raw
-  REST API.
-
-Masking real Claude Code traffic is exactly the value of **Option B** (native
-`/v1/messages` with a schema-aware masker) — see `docs/ROADMAP.md` → Backlog. Until
-then, use a real API key in mode B above.
+> **The footgun that makes the flag earn its keep: `cargo test` silently un-does your onnx
+> build.** `cargo build` and `cargo build --features onnx` write the **same** file
+> (`target/debug/llm-proxy-pii-rust.exe`), so *any* default-features command — `cargo test`,
+> `cargo clippy --all-targets`, a plain `cargo build` — overwrites the hybrid binary with a
+> structured-only one. Nothing warns you. **Always `cargo build --features onnx` immediately
+> before starting the proxy**, and let `NER_REQUIRED=1` be the backstop: it turns the mistake
+> into `Error: NER_REQUIRED is set but this binary was built without the 'onnx' feature` instead
+> of a green-looking run that tests half the product. (This is not hypothetical — it happened
+> while writing this file, minutes after the paragraph above was added. The flag caught it.)
 
 ## Procedure
 
-*(Shown in mode B. For mode A, drop the `Authorization` header from the `curl` and
-`set UPSTREAM_API_KEY=…` before `cargo run` instead.)*
+For **each** scenario CC-01…CC-09 in [`TESTING.md`](TESTING.md#cc-battery):
 
-1. **Start the proxy for Run A** — response de-mask skipped, trace logging on. Note
-   there is no key here at all:
+1. **Run OFF** — proxy started as above (`PII_DEBUG_SKIP_DEMASK` unset).
+   Open [`../tools/claude-code-session/`](../tools/claude-code-session/) as its own VS Code
+   workspace, start Claude Code, run the scenario's prompt.
+   - ✅ The reply you see carries the **real** values.
+   - ✅ The proxy's `forwarding masked request body upstream` trace shows `[EMAIL_1]` /
+     `[PERSON_1]` / … — never the real ones.
 
-   ```text
-   set UPSTREAM_PROVIDER=anthropic
-   set UPSTREAM_BASE_URL=https://api.anthropic.com
-   set PII_DEBUG_SKIP_DEMASK=1
-   set RUST_LOG=llm_proxy_pii_rust=trace
-   cargo run
+2. **Run ON** — restart the proxy with `$env:PII_DEBUG_SKIP_DEMASK='1'`, same everything else,
+   and send the **same** prompt.
+   - ✅ The reply you see carries the **placeholders** — this is literally what the provider got.
+   - ✅ The trace is **identical** to Run OFF's (request-side masking does not depend on the flag).
+   - Work in `scratch/` for tool-writing scenarios: the session will act on placeholders.
+
+3. **DBG-02 grep, on both runs** — search the proxy's **stdout** for every raw value the scenario
+   used. Expected: **zero** hits.
+
+   ```powershell
+   $esc = [char]27
+   $clean = Get-Content <proxy-stdout-log> | ForEach-Object { $_ -replace "$esc\[[0-9;]*m","" }
+   'bob@test.com','IT60X0542811101000000123456' | ForEach-Object {
+     "{0}: {1}" -f $_, ($clean | Select-String -SimpleMatch $_ | Measure-Object).Count
+   }
    ```
-
-2. Send a request carrying real PII, passing **your own** token, forwarding the header
-   Anthropic's compat layer needs, and picking a cheap model:
-
-   ```text
-   curl http://127.0.0.1:8080/v1/chat/completions ^
-     -H "content-type: application/json" ^
-     -H "authorization: Bearer %YOUR_TOKEN%" ^
-     -H "anthropic-version: 2023-06-01" ^
-     -d "{\"model\":\"claude-3-5-haiku-latest\",\"max_tokens\":64,\"messages\":[{\"role\":\"user\",\"content\":\"Reply with exactly this sentence and nothing else: contact jane.doe@example.com for details.\"}]}"
-   ```
-
-   > `anthropic-version` reaches the upstream because the `anthropic` preset
-   > allowlists it (`forward_request_headers`). `Authorization` is always handled.
-
-3. **Check Run A:**
-   - The JSON reply's `choices[0].message.content` contains a placeholder like
-     `[EMAIL_1]`, **not** `jane.doe@example.com` — proof the client-visible path is
-     wired to the masked value (de-mask is off, so this is what the provider itself
-     received and echoed).
-   - The terminal's `trace!` line (`forwarding masked request body upstream`) shows
-     the **same** placeholder in the outgoing body, and grepping the whole terminal
-     output for `jane.doe@example.com` finds **nothing** — the never-log-raw-PII
-     rule (DBG-02) holds on real data, not just the synthetic case
-     `tests/log_safety.rs` pins.
-
-   > **Where the trace goes:** `tracing` writes to **stdout**, not stderr. "Grep the
-   > whole terminal output" already covers it, but if you redirect to a file, capture
-   > **stdout** — a `2>`-only redirect would miss the `forwarding masked request body
-   > upstream` line and make the DBG-02 grep pass vacuously.
-
-4. **Restart for Run B** — same env, but drop `PII_DEBUG_SKIP_DEMASK`:
-
-   ```text
-   set PII_DEBUG_SKIP_DEMASK=
-   cargo run
-   ```
-
-   Send the **same** request again.
-
-5. **Check Run B:** `choices[0].message.content` now contains the real
-   `jane.doe@example.com`, restored — while the trace log line still shows only the
-   masked placeholder (request-side masking is identical in both runs; only the
-   response de-mask differs).
 
 ## What "holds" means
 
-Run A alone proves the request left masked. Run B alone proves the client got a
-sensible reply. Neither alone proves they're the **same** round-trip. Together,
-on the *same* input against the *same* real provider, they show: the value that
-left masked (Run A) is the exact value the client gets restored (Run B) — the
-full chain, not two independently-plausible halves.
+Run OFF alone proves the client got a sensible reply. Run ON alone proves the request left
+masked. Neither alone proves they are the **same** round-trip. Together, on the *same* input
+against the *same* real provider, they show: the value that left masked (ON) is the exact value
+the client gets restored (OFF) — the full chain, not two independently-plausible halves.
 
 ## If it doesn't hold
 
-- Run A shows the raw email in the outgoing body or the trace log → a masking gap;
-  treat as a **leak**, not a perf/quality issue — file it the way any other finding
-  is recorded (`docs/reviews/`), highest severity.
-- Run B doesn't restore the placeholder → check the model actually echoed
-  `[EMAIL_1]` verbatim (some models paraphrase despite the system-prompt
-  instruction; retry with a more literal prompt before concluding the round-trip
-  is broken) and that `PII_DEBUG_SKIP_DEMASK` was really unset.
+- **Raw PII in the outgoing body or the trace** → a masking gap. Treat it as a **leak**, not a
+  quality issue: record it in [`reviews/`](reviews/) at the highest severity, like any other
+  finding.
+- **A placeholder reaches the client on Run OFF** → the response de-mask missed a field (or, on
+  the streamed path, the hold-back). A finding, not a retry.
+- **The model paraphrased instead of echoing** → not necessarily a broken round-trip; some models
+  reword despite the augmentation prompt. Retry with a more literal instruction before concluding
+  anything.
+- **CC-02 finds no `Person`** → check `ONNX NER detector loaded` really appeared. That is the
+  trap this file now warns about twice for a reason.

@@ -1,0 +1,6 @@
+# Whatever the session writes during CC-04 / CC-06 lands here and is disposable.
+# Kept out of git on purpose: with PII_DEBUG_SKIP_DEMASK=1 the session receives
+# placeholders, so a tool call writes `[EMAIL_1]` into a file — useful to look at,
+# never something to commit.
+*
+!.gitignore
