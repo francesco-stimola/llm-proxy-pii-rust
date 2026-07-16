@@ -485,7 +485,10 @@ adapter is **not** adopted (wrong shape for a native client, and against fail-cl
 reproduced through the real router and is now pinned by a unit test + an e2e.
 **Round 2 (2026-07-16): all 5 closures verified sound** (re-measured 85 default / 97 onnx lib, `fmt`/`clippy`
 clean; drove the new document surface through the real router — leak closed at every dispatch, fail-closed on
-every unmodeled shape, no over-reach). **One new cosmetic nit — R6, now closed.** The M6 ledger is clean, 6/6.
+every unmodeled shape, no over-reach). **One new cosmetic nit — R6.**
+**Round 3 (2026-07-16): R6 verified closed + final adversarial sweep — nothing new.** Messages caller-neutral
+and value-free for both callers, fail-closed recursion pinned; suite green on both feature sets. **M6 ledger
+clean, 6/6 closed, nothing left to fix.**
 
 | ID | Title | Sev | Status |
 |---|---|---|---|
