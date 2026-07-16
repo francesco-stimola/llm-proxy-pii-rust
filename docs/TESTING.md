@@ -350,30 +350,97 @@ what two runs *logged* and *returned* to a real client, which needs eyes on the 
 | **ON** | `1` | the client sees the **placeholders** — i.e. exactly what the provider received |
 
 Neither alone proves the chain; together, on the same input, they show the value that left
-masked is the value that comes back restored. **Both runs also get the DBG-02 grep** (raw PII
-must appear in **neither** log — `tracing` writes to **stdout**, so a `2>`-only redirect makes
-that grep pass vacuously).
+masked is the value that comes back restored. **Both runs also get the DBG-02 grep**: the raw
+values must appear in **neither** log.
 
-> **Run the ON variant in `scratch/`.** With the de-mask skipped the session receives
-> placeholders, so a tool call **acts on them** — an Edit writes `[EMAIL_1]` into the file.
-> That is a useful thing to see, and never a thing to do to real files.
+The mechanics — starting the proxy as the *hybrid* (`NER_REQUIRED=1`, non-negotiable), flipping
+the flag, where the trace goes, and the traps that make a run lie to you — are all in
+[`MANUAL_VERIFICATION.md`](MANUAL_VERIFICATION.md). This section only says *what* each scenario
+asks and *what* must come back.
 
-> **The hybrid must actually be on.** Set **`NER_REQUIRED=1`** for the battery. Without it a
-> missing/unloadable model silently degrades to structured-only (the default is fail-*open* for
-> names), and CC-02 would "pass" while testing nothing — the exact trap the first live run fell
-> into (DEVLOG 2026-07-16). `NER_REQUIRED=1` makes that failure fatal at startup instead.
+**How to read a scenario.** *Ask* is what you type into the session. *Upstream* is what the
+proxy's `forwarding masked request body upstream` trace must show — **identical in both runs**,
+because request-side masking does not depend on the flag; if OFF and ON differ here, that alone
+is a finding. *Client* is the only thing the flag changes. Paths are relative to
+[`tools/claude-code-session/`](../tools/claude-code-session/).
 
-| ID | Scenario | What it proves (and why a mock can't) |
-|---|---|---|
-| **CC-01** | Chat prompt with **structured** PII (email, IBAN) | The baseline round-trip on real traffic: masked out, restored back. |
-| **CC-02** | Chat prompt with **NER entities** (`Mario Rossi` / `Acme S.p.A.` / `Milano`) | **The only check that the hybrid is really running.** Structured PII would pass with the NER off; a `Person` would not. |
-| **CC-03** | Claude Code **reads a file** with PII (`fixtures/contacts.csv`) → `tool_result` | The core Claude Code workflow — its day is tool calls on files, not chat. The live twin of E2E-02. |
-| **CC-04** | The model proposes an **Edit/Bash** carrying a PII value → `tool_use.input` | The client must receive the **real** value to act on it. Live twin of INT-03. |
-| **CC-05** | **Multi-turn**: PII in turn 1, referenced later | Deterministic placeholders across stateless re-sends, against a real model. |
-| **CC-06** | A **secret** in a file (`fixtures/deploy-config.env`) | The SECRET recognizer on real traffic — the category the old proxy's ML model missed. |
-| **CC-07** | **Thinking blocks** + tool use (extended thinking on) | M6's `thinking` invariant: masked up, never de-masked down, so the block `signature` survives the replay. **Never yet exercised live.** |
-| **CC-08** | A **long streamed** answer repeating a placeholder | The Anthropic SSE hold-back on real deltas: a placeholder split across `text_delta`s. |
-| **CC-09** | **MCP SQL tool** returns PII (`fixtures/customer-lookup.sql`, `SELECT … FROM DUAL`) | The old proxy's **TC-04**, reproduced on real infrastructure: PII arriving through an MCP tool result, masked before it reaches the provider. |
+---
+
+**CC-01 — structured PII in a chat prompt**
+- **Ask:** `Rispondi esattamente con questa frase e nient'altro: contatta jane.doe@example.com, IBAN IT60X0542811101000000123456.`
+- **Upstream:** `[EMAIL_1]` + `[IBAN_1]`; neither raw value anywhere.
+- **Client — OFF:** the real email and IBAN. **— ON:** `[EMAIL_1]`, `[IBAN_1]`.
+- **Proves:** the baseline round-trip on real traffic.
+
+**CC-02 — NER entities** *(the one that catches a half-running product)*
+- **Ask:** `Rispondi esattamente con questa frase e nient'altro: Mario Rossi lavora per Acme S.p.A. a Milano.`
+- **Upstream:** `[PERSON_1]`, `[ORG_1]`, `[LOCATION_1]`; no `Mario Rossi` / `Acme` / `Milano`.
+- **Client — OFF:** the real names. **— ON:** the three placeholders.
+- **Proves:** **the hybrid is actually running.** Every other scenario would pass with the NER
+  off — email and IBAN are *deterministic* recognizers. Only this one fails. If `Mario Rossi`
+  appears upstream in clear, that is a **leak**, not a recall nit.
+
+**CC-03 — a file with PII → `tool_result`**
+- **Ask:** `Leggi fixtures/contacts.csv e dimmi quante righe di dati contiene e qual è l'email della prima.`
+- **Upstream:** the `tool_result` block carries `[EMAIL_n]` / `[PHONE_n]` / `[IBAN_n]` /
+  `[SSN_n]` / `[PERSON_n]`; **no** `bob@test.com`, `555-111-2222`, `123-45-6789`, …
+- **Client — OFF:** "3 righe, `bob@test.com`". **— ON:** "3 righe, `[EMAIL_1]`".
+- **Proves:** the core Claude Code workflow — its day is tool calls on files, not chat. The live
+  twin of E2E-02.
+
+**CC-04 — `tool_use.input` carries a PII value back to the client**
+- **Ask:** `Leggi fixtures/contacts.csv e scrivi in scratch/first-contact.txt soltanto l'email della prima riga di dati, senza altro testo.`
+- **Upstream:** the `tool_use.input` the model emits contains `[EMAIL_1]`, never the real value.
+- **Client — OFF:** `scratch/first-contact.txt` ends up containing **`bob@test.com`** — the
+  de-mask restored the tool argument before the client acted on it.
+  **— ON:** the file contains **`[EMAIL_1]`** — literally what the model emitted.
+- **Proves:** the `tool_use.input` de-mask (live twin of INT-03). The ON run is the clearest
+  visual proof in the battery: the placeholder is *on disk*.
+
+**CC-05 — multi-turn determinism**
+- **Ask (turn 1):** `Ricorda questa email, ti servirà dopo: bob@test.com` — then **(turn 2):**
+  `Qual è l'email che ti ho dato? Rispondi solo con l'email.`
+- **Upstream:** turn 2 re-sends the history and must mask `bob@test.com` to **`[EMAIL_1]` again**
+  (same value → same token, in a fresh per-request vault).
+- **Client — OFF:** `bob@test.com`. **— ON:** `[EMAIL_1]`.
+- **Proves:** deterministic assignment across the stateless re-send a real client does every turn.
+
+**CC-06 — a secret in a file**
+- **Ask:** `Leggi fixtures/deploy-config.env e dimmi il valore di APP_SECRET e di OPS_CONTACT.`
+- **Upstream:** `[SECRET_n]` + `[EMAIL_1]`; **no** `sk-ant-api01-…`, no `AKIA…`, no `ops@corp.com`.
+- **Client — OFF:** the real secret and email. **— ON:** `[SECRET_1]`, `[EMAIL_1]`.
+- **Proves:** the SECRET recognizer on real traffic — the category the old proxy's ML model
+  missed, and the reason secrets are deterministic here rather than left to a model.
+
+**CC-07 — thinking blocks survive the replay** *(never yet exercised live)*
+- **Ask:** with extended thinking on — `Pensa passo passo: leggi fixtures/contacts.csv e dimmi
+  quale contatto ha un IBAN tedesco.` Then ask **a follow-up in the same session** (any question)
+  so the thinking block is **replayed** with its signature.
+- **Upstream:** the replayed `thinking` block is byte-identical to what the model produced
+  (re-masking a placeholder is a no-op), so Anthropic accepts its `signature`.
+- **Client:** the follow-up answers normally. **A `signature` / `invalid_request_error` on the
+  second turn is the failure this scenario exists to catch.**
+- **Proves:** M6's `thinking` invariant — masked on the way up, never de-masked on the way down,
+  which is what keeps the signature valid.
+
+**CC-08 — a long streamed answer**
+- **Ask:** `Ripeti esattamente questa riga 30 volte, una per riga, senza numerarle: contatta bob@test.com`
+- **Upstream:** `[EMAIL_1]` (once — it is one prompt).
+- **Client — OFF:** 30 lines each carrying the **intact** `bob@test.com` — none split, mangled,
+  or left as a placeholder. **— ON:** 30 lines of `[EMAIL_1]`.
+- **Proves:** the Anthropic SSE hold-back over many real deltas — a placeholder split across
+  `text_delta`s is reassembled every time, not just once.
+
+**CC-09 — PII through an MCP SQL tool** *(the old proxy's TC-04, on real infrastructure)*
+- **Ask:** `Esegui la query in fixtures/customer-lookup.sql con il tool MCP SQL e mostrami il risultato.`
+- **Upstream:** the `tool_result` carries `[EMAIL_1]`, `[PHONE_1]`, `[SSN_1]`, `[CARD_1]`,
+  `[IBAN_1]`, `[SECRET_1]`; none of the six raw values.
+- **Client — OFF:** the real row. **— ON:** the row of placeholders.
+- **Proves:** PII arriving through an **MCP tool result** — a path the proxy never sees coming and
+  cannot special-case — is masked like any other. `SELECT … FROM DUAL` needs no schema or real
+  data.
+
+---
 - **E2E-02 / E2E-04** — done; see *End-to-end* above.
 - **PERF-01** — system-level load harness, the companion to `tests/complexity.rs` (which pins
   the masking *algorithm's* complexity, no HTTP):
