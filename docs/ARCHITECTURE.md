@@ -514,8 +514,19 @@ box**, not that either factor saturates it (`intra = 12` with `pool = 2` puts 24
 cores — oversubscription, plausibly slower than one). So `NER_INTRA_THREADS` **defaults to a
 derived value**, `max(1, available_parallelism() / NER_POOL_SIZE)` (`onnx::default_intra_threads`);
 a fixed constant is wrong on a 2-core VM and a 64-core server alike. An explicit env value wins; a
-`0` is treated as unset, never as ONNX Runtime's "pick for me", which would reintroduce exactly the
-oversubscription the derivation prevents.
+`0` is treated as unset for **both** knobs, never as ONNX Runtime's "pick for me", which would
+reintroduce exactly the oversubscription the derivation prevents. Both resolve in one place
+(`onnx::resolve_pool_and_intra`), which the latency harness calls too — when the harness read its
+own default it silently measured a configuration the server does not ship (M7-R1).
+
+> **State the invariant with its domain, because it is false outside it (M7-R4).** The derivation
+> bounds `pool × intra` by the core count **while `pool ≤ cores`**. Beyond that it *cannot*: `intra`
+> floors at 1 and nothing clamps `NER_POOL_SIZE`, so `NER_POOL_SIZE=8` on a 2-core box is 8 threads
+> on 2 cores and no choice of `intra` fixes it. **That is an operator error the proxy does not
+> defend against** — it hits the ~400 MB-per-session RAM wall long before the thread wall. An
+> invariant asserted unconditionally but true only in one regime is worse than a bounded one: the
+> first version of THREAD-01 wrote the exception into a `cores.max(pool)` term, which green-lit
+> exactly that case under a test name claiming the opposite.
 
 **A single request occupies one session, so the product is the *saturated-load* count — not what a
 lone request gets.** The masking path is sequential at three nested levels: the field walk holds
@@ -535,6 +546,37 @@ measured at **−23% throughput** under concurrent load, because intra-op scalin
 > **field** walk is not, and `&mut Vault` is not merely why it's hard, it's why it's *wrong*:
 > placeholder numbering follows encounter order, so racing two fields makes `[EMAIL_1]` vs
 > `[EMAIL_2]` a coin flip and breaks the determinism M1 Part B pins.
+
+> **`NER_INTRA_THREADS` changes performance only — and that it does not change *detection* is
+> EMPIRICAL, not guaranteed (M7-R3).** Verified on XLM-R int8 + the CPU EP: byte-identical entity
+> sets, spans included, at intra 1…12 (`ner_perf.rs::m7_r3_intra_threads_changes_speed_not_detection`).
+> Nothing in ONNX Runtime promises it. Intra-op parallelism repartitions GEMM and reduction work
+> across threads; floating-point addition is **not associative**, so a different partition can move
+> a logit in its last bits — and the BIO decode is a per-token `argmax`, where a near-tie flips on
+> nothing but thread count. A flipped `B-PER` is lost recall, and here a miss is what makes a leak.
+> **A model swap or an execution-provider swap must re-run that guard** — the Backlog's DirectML/CUDA
+> item is exactly where cross-thread non-determinism stops being theoretical. This is
+> [M5-R4](reviews/M5.md#m5-r4)'s rule about the same layer: *the NER's convenient properties are
+> measured, never proved.*
+
+**The NER over-masks sub-word fragments of organization names — accepted (M7).** Measured: the
+hybrid tags `"An"` — two characters of `"Anthropic's"` — as an `Organization` in ordinary
+instruction prose, so a Claude Code system prompt reaches the model as `"[ORG_1]thropic's"`. It is
+**not a leak** (it fails *toward* masking) and it is the same accepted class as
+[M4-R6](reviews/M4.md#m4-r6): privacy beats precision, and a precision fix needs its own recall
+argument. Two things make it worth writing down rather than filing under M4-R6 and forgetting:
+
+- **The mechanism is different, so the fix is too.** M4-R6 is a *deterministic recognizer*
+  over-matching pure-numeric IDs; this is the *NER* emitting a fragment of a word it half-recognized.
+  M4-R6's path out is context (GLiNER); this one's is span quality — the one of the two a **model**
+  change could actually fix.
+- **It corrupts boilerplate, on every turn, and it has a price we already measured.** The
+  augmentation prompt then tells the model `[ORG_1]` is a real value to use verbatim. And because
+  the field is no longer clean, it costs a **second fixpoint pass** — ~940 ms of a 4.2 s turn, which
+  is the concrete link between this precision bug and the S4 fixpoint lead.
+
+Nobody had seen it until M7 ran the NER over a realistic system prompt — the S0 lesson (*a corpus
+has a shape, and the shape is the blind spot*) one level down.
 
 **NER chunking (M5, PERF-01).** `OnnxNerDetector` tokenizes a field once; if it fits, it runs
 exactly as before (M2). A field that doesn't is split into overlapping token windows

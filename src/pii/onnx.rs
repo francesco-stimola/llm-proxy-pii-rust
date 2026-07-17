@@ -125,9 +125,57 @@ const _: () = assert!(
 /// box, and a lone Claude Code request then leaves 6 cores idle. That is the right trade for a
 /// shared proxy and the wrong one for a personal proxy, which is exactly why it is overridable and
 /// why `NER_POOL_SIZE=1` is the documented personal-proxy shape.
+/// **The bound this derivation actually provides, and its domain (M7-R4).** While `pool ≤ cores` it
+/// holds unconditionally: `intra = floor(cores/pool)`, so `pool × intra ≤ cores`. **Beyond that it
+/// cannot.** `intra` floors at 1 and nothing clamps `NER_POOL_SIZE`, so `pool > cores` oversubscribes
+/// by `pool` alone — `NER_POOL_SIZE=8` on a 2-core box is 8 threads on 2 cores, and no choice of
+/// `intra` fixes it. That is an operator error the proxy does not defend against (it hits the
+/// ~400 MB-per-session RAM wall long before the thread wall). The invariant is stated with its
+/// domain rather than absolutely, because an invariant that is false in a reachable regime is worse
+/// than no invariant.
 pub fn default_intra_threads(pool_size: usize) -> usize {
-    let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
-    derive_intra_threads(pool_size, cores)
+    derive_intra_threads(pool_size, available_cores())
+}
+
+/// Logical cores, or 1 if the platform won't say.
+pub fn available_cores() -> usize {
+    std::thread::available_parallelism().map_or(1, |n| n.get())
+}
+
+/// **The shipped session-pool default.** A `pub const` and not a literal because the M7 latency
+/// harness must measure *what the server runs*: when these were two independent `unwrap_or`s they
+/// silently disagreed (2 vs 1), so M7's executable bar guarded a configuration nobody ships
+/// (M7-R1). One home, and the drift is structurally impossible rather than merely noticed.
+pub const DEFAULT_POOL_SIZE: usize = 2;
+
+/// Resolve `(pool, intra)` from the two env vars' raw values — **the single home of that policy**,
+/// so the server and the latency harness cannot resolve them differently (M7-R1/M7-R5).
+///
+/// Pure in `cores` so it is testable without the host's core count deciding the answer.
+///
+/// **Both knobs treat `0` as unset, and that symmetry is the point (M7-R5).** M7 shipped the guard
+/// on `NER_INTRA_THREADS` only, leaving the older `NER_POOL_SIZE` to parse `0` into a pool of zero.
+/// That was *safe* — `derive_intra_threads` does `.max(1)` and `load` clamps the pool — but safe by
+/// two independent accidents, and the startup log then printed `pool_size=0, intra_threads=12`,
+/// which no arithmetic reconciles. A derived value an operator cannot reproduce from the logged
+/// inputs defeats the reason it is logged.
+pub fn resolve_pool_and_intra(
+    pool_var: Option<&str>,
+    intra_var: Option<&str>,
+    cores: usize,
+) -> (usize, usize) {
+    let pool = pool_var
+        .and_then(|s| s.parse::<usize>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(DEFAULT_POOL_SIZE);
+    // ONNX Runtime reads intra_threads = 0 as "pick for me" — i.e. every session grabbing every
+    // core, which is precisely the oversubscription the derivation exists to prevent. Never let a
+    // `0` through as a value; treat it as absent.
+    let intra = intra_var
+        .and_then(|s| s.parse::<usize>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or_else(|| derive_intra_threads(pool, cores));
+    (pool, intra)
 }
 
 /// The pure core of [`default_intra_threads`], split out so it is testable without depending on
@@ -475,13 +523,50 @@ pub fn chunk_char_ranges(
 
 #[cfg(test)]
 mod thread_tests {
-    use super::derive_intra_threads;
+    use super::{derive_intra_threads, resolve_pool_and_intra, DEFAULT_POOL_SIZE};
 
     #[test]
-    fn the_two_knobs_multiply_to_at_most_the_box() {
-        // The invariant M7 rests on: pool × intra must fit the machine. Anything that lets the
-        // product exceed the core count is the oversubscription this derivation exists to prevent
-        // (12 cores, intra=12, pool=2 → 24 threads, plausibly slower than one).
+    fn both_knobs_treat_zero_and_garbage_as_unset() {
+        // M7-R5. `NER_INTRA_THREADS=0` shipped with a guard; `NER_POOL_SIZE=0` did not, and was
+        // safe only because `derive_intra_threads` and `load` each independently clamp — while the
+        // startup log printed `pool_size=0, intra_threads=12`, which no arithmetic reconciles. A
+        // derived value the operator cannot reproduce from the logged inputs defeats the reason it
+        // is logged, so both knobs must resolve `0` identically to unset.
+        let unset = resolve_pool_and_intra(None, None, 12);
+        assert_eq!(unset, (DEFAULT_POOL_SIZE, 6));
+        assert_eq!(resolve_pool_and_intra(Some("0"), None, 12), unset);
+        assert_eq!(resolve_pool_and_intra(None, Some("0"), 12), unset);
+        assert_eq!(resolve_pool_and_intra(Some("0"), Some("0"), 12), unset);
+        // Unparseable is unset too — a typo must not silently become a different shape.
+        assert_eq!(resolve_pool_and_intra(Some("two"), Some(""), 12), unset);
+    }
+
+    #[test]
+    fn an_explicit_value_wins_over_the_derivation() {
+        // The override is the whole point of the knob: the deployment shape is a question the
+        // proxy cannot answer for itself.
+        assert_eq!(resolve_pool_and_intra(Some("1"), None, 12), (1, 12));
+        assert_eq!(resolve_pool_and_intra(Some("1"), Some("4"), 12), (1, 4));
+        // Deliberate oversubscription stays possible — an operator who says 12 gets 12. We refuse
+        // to *default* into it, not to permit it.
+        assert_eq!(resolve_pool_and_intra(Some("2"), Some("12"), 12), (2, 12));
+    }
+
+    #[test]
+    fn the_harness_and_the_server_cannot_disagree_about_the_default() {
+        // M7-R1. The latency harness resolved its own pool default (1) while the server used 2, so
+        // M7's executable bar measured a configuration nobody ships. Both now route through this
+        // function and this constant, so the drift is impossible rather than merely fixed.
+        assert_eq!(resolve_pool_and_intra(None, None, 12).0, DEFAULT_POOL_SIZE);
+    }
+
+    #[test]
+    fn the_two_knobs_multiply_to_at_most_the_box_while_the_pool_fits_it() {
+        // The invariant M7 rests on, stated with the domain it actually holds in (M7-R4). The
+        // first version asserted `pool * intra <= cores.max(pool)` across both regimes — which
+        // passes for `pool > cores` by *widening the bound to the pool itself*: it reads
+        // `pool <= pool` and green-lights 8 threads on a 2-core box, under a name claiming the
+        // opposite. The regimes are split so the exception is documented, not hidden in a `max`.
         for cores in [1usize, 2, 4, 6, 8, 12, 16, 64] {
             for pool in [1usize, 2, 3, 4, 8] {
                 let intra = derive_intra_threads(pool, cores);
@@ -489,11 +574,25 @@ mod thread_tests {
                     intra >= 1,
                     "cores={cores} pool={pool}: intra must never be 0"
                 );
-                assert!(
-                    pool * intra <= cores.max(pool),
-                    "cores={cores} pool={pool}: derived intra={intra} → {} threads, over the box",
-                    pool * intra
-                );
+
+                if pool <= cores {
+                    // The real invariant, in the regime where the derivation can honour it.
+                    assert!(
+                        pool * intra <= cores,
+                        "cores={cores} pool={pool}: derived intra={intra} → {} threads, over the \
+                         box — the oversubscription this derivation exists to prevent",
+                        pool * intra
+                    );
+                } else {
+                    // Beyond the box the derivation is out of moves: `intra` floors at 1 and
+                    // nothing clamps NER_POOL_SIZE, so `pool` alone oversubscribes and no choice
+                    // of `intra` fixes it. The best available is to add nothing — pin that.
+                    assert_eq!(
+                        intra, 1,
+                        "cores={cores} pool={pool}: an over-large pool already oversubscribes; \
+                         intra must not multiply it further"
+                    );
+                }
             }
         }
     }

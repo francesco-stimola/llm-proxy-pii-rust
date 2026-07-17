@@ -32,7 +32,7 @@ use std::time::Instant;
 
 use llm_proxy_pii_rust::pii::anonymizer::Vault;
 use llm_proxy_pii_rust::pii::composite::CompositeDetector;
-use llm_proxy_pii_rust::pii::onnx::OnnxNerDetector;
+use llm_proxy_pii_rust::pii::onnx::{available_cores, resolve_pool_and_intra, OnnxNerDetector};
 use llm_proxy_pii_rust::pii::recognizers::StructuredRecognizers;
 use llm_proxy_pii_rust::pii::{DetectError, PiiDetector, PiiEntity};
 
@@ -426,21 +426,52 @@ fn build_hybrid_with(pool: usize, intra: usize) -> CompositeDetector {
     CompositeDetector::new(vec![Box::new(StructuredRecognizers::new()), Box::new(ner)])
 }
 
-/// The shape M7 measures against: the **personal proxy** (concurrency ~1), where latency is
-/// everything — one session, the whole box. `NER_POOL_SIZE`/`NER_INTRA_THREADS` override for
-/// sweeping.
+/// **Exactly what `server.rs` runs** — same function, same constant, same env vars (M7-R1).
+///
+/// This used to resolve its own pool default of `1` while the server defaulted to `2`, so M7's
+/// executable bar measured the *personal-proxy* shape and reported the number as the *default's*.
+/// The two shapes differ, so that is a guard with 28% headroom on a config nobody runs and none on
+/// the one they do. The personal shape still gets measured — in `bar_shapes` below, and across the
+/// sweep — but it is now labelled rather than mistaken for the default.
 fn build_hybrid() -> CompositeDetector {
-    let pool = std::env::var("NER_POOL_SIZE")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(1);
-    let intra = std::env::var("NER_INTRA_THREADS")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .filter(|n| *n > 0)
-        .unwrap_or_else(|| llm_proxy_pii_rust::pii::onnx::default_intra_threads(pool));
+    let (pool, intra) = resolve_pool_and_intra(
+        std::env::var("NER_POOL_SIZE").ok().as_deref(),
+        std::env::var("NER_INTRA_THREADS").ok().as_deref(),
+        available_cores(),
+    );
     build_hybrid_with(pool, intra)
 }
+
+/// The shapes M7's bar must hold for, resolved through the **server's own** policy.
+///
+/// Both are shipped configurations — the pooled default an operator gets by setting nothing, and
+/// the `NER_POOL_SIZE=1` shape the READMEs recommend for a single client. The bar is asserted on
+/// each, so the trade is documented in the one place that *fails* when it stops being true.
+fn bar_shapes() -> Vec<(&'static str, usize, usize)> {
+    let cores = available_cores();
+    let (default_pool, default_intra) = resolve_pool_and_intra(None, None, cores);
+    let (personal_pool, personal_intra) = resolve_pool_and_intra(Some("1"), None, cores);
+    vec![
+        ("default (NER_POOL_SIZE unset)", default_pool, default_intra),
+        ("personal (NER_POOL_SIZE=1)", personal_pool, personal_intra),
+    ]
+}
+
+/// Median of a sorted-in-place sample. Reported alongside the **minimum** because on a noisy box
+/// the minimum is the closest thing to the interference-free cost, while the median says whether
+/// the sample is stable enough to conclude anything at all (M7-R2).
+fn min_and_median(mut samples: Vec<f64>) -> (f64, f64) {
+    samples.sort_by(|a, b| a.partial_cmp(b).expect("no NaN timings"));
+    let min = samples[0];
+    let median = samples[samples.len() / 2];
+    (min, median)
+}
+
+/// How many times each configuration is measured. **1 was not enough, and that is a finding
+/// (M7-R2):** at n=1 this harness reported "SMT helps, 12 threads beat 6 by 18%" — a conclusion
+/// that inverts run to run, because the same configuration spans ~39% across repeats. An 18% effect
+/// read off a 39% spread is noise wearing a conclusion's clothes.
+const REPS: usize = 3;
 
 /// Mask the whole turn with one vault, as production does. Returns the wall clock.
 fn mask_a_turn(detector: &dyn PiiDetector, fields: &[Field]) -> std::time::Duration {
@@ -476,8 +507,10 @@ fn m7_s0_a_realistic_claude_code_turn_measured_per_field() {
 
     // ---- The fixture is the experiment: assert its shape, or the numbers mean nothing. ----
     let total: usize = fields.iter().map(|f| f.text.len()).sum();
+    // KiB, and labelled as such: the ms/KB columns below divide by 1024, so quoting the size in
+    // decimal kB made the docs internally inconsistent (M7-R6).
     eprintln!(
-        "\n=== fixture: {} fields, {total} bytes ({:.1} KB) ===",
+        "\n=== fixture: {} fields, {total} bytes ({:.1} KiB) ===",
         fields.len(),
         total as f64 / 1024.0
     );
@@ -583,13 +616,61 @@ fn m7_s0_a_realistic_claude_code_turn_measured_per_field() {
         detector.bytes()
     );
 
-    // The bar M7 declared BEFORE the numbers (ROADMAP → M7, S2): a realistic turn under ~3 s
-    // ships. This assert is the bar made executable — it is EXPECTED TO FAIL until S1 lands, and
-    // that failure is the milestone's definition of done, not a broken test.
-    assert!(
-        turn.as_secs_f64() < 3.0,
-        "a realistic Claude Code turn masks in {turn:?} — over M7's ~3 s bar. This is M7's \
-         reason to exist; it passes when the milestone is done."
+    // No bar assert here, deliberately (M7-R1/M7-R2). This test's job is the per-field
+    // *breakdown*, and it takes ONE sample — which on this harness carries a ~39% run-to-run
+    // spread. The bar has ~5% headroom against the shipped default, so asserting it on a single
+    // sample would be a coin flip dressed as a guard. The bar lives in
+    // `m7_s2_the_bar_holds_for_every_shipped_shape`, over repeats, on every shape we ship.
+    eprintln!(
+        "(reported, not asserted: one sample. The bar is asserted in \
+         m7_s2_the_bar_holds_for_every_shipped_shape, over {REPS} reps × every shipped shape.)\n"
+    );
+}
+
+/// **M7's bar, made executable — on every configuration we actually ship (M7-R1).**
+///
+/// The bar was declared *before* the numbers (ROADMAP → M7, S2): **a realistic turn under ~3 s
+/// ships**, and if threads alone get there, S3 (a cache) and S4 (skipping the NER on later fixpoint
+/// passes) are not built, because both put real risk on the masking path. This is that decision,
+/// pinned — it failed at 4.24 s before S1, and that failure *was* the milestone's definition of
+/// not-done.
+///
+/// **Both shapes, because both ship**: the pooled default an operator gets by setting nothing, and
+/// the `NER_POOL_SIZE=1` shape the READMEs recommend for a single client. Asserting only the latter
+/// (which is what the first cut did) left the *default* — the slower one — unguarded.
+///
+/// **Minimum of `REPS`, not one sample**: the minimum is the closest thing to the interference-free
+/// cost on a noisy box, and the default's ~5% headroom is well inside this harness's spread.
+#[test]
+#[ignore]
+fn m7_s2_the_bar_holds_for_every_shipped_shape() {
+    let fields = realistic_turn();
+    let bytes: usize = fields.iter().map(|f| f.text.len()).sum();
+    eprintln!(
+        "\n=== S2: the ~3 s bar, {REPS} reps per shape, {bytes} B turn ({:.1} KiB) ===",
+        bytes as f64 / 1024.0
+    );
+
+    for (label, pool, intra) in bar_shapes() {
+        let detector = build_hybrid_with(pool, intra);
+        let _ = mask_a_turn(&detector, &fields); // warm the arenas; never measured
+        let samples: Vec<f64> = (0..REPS)
+            .map(|_| mask_a_turn(&detector, &fields).as_secs_f64() * 1000.0)
+            .collect();
+        let (min, median) = min_and_median(samples);
+        eprintln!(
+            "{label:<32} pool={pool} intra={intra:<3} min {min:>7.0} ms   median {median:>7.0} ms"
+        );
+        assert!(
+            min < 3000.0,
+            "{label} (pool={pool}, intra={intra}) masks a realistic turn in {min:.0} ms (best of \
+             {REPS}) — over M7's ~3 s bar. That bar is what decides whether S3/S4 get built; if \
+             this fails, the milestone is not done, or a regression undid it."
+        );
+    }
+    eprintln!(
+        "\nBoth rows are shipped configurations. If they diverge on your box, the READMEs' \
+         two-row latency table is the model — name the shape whenever you quote a number.\n"
     );
 }
 
@@ -608,17 +689,20 @@ fn m7_s0_a_realistic_claude_code_turn_measured_per_field() {
 #[test]
 #[ignore]
 fn m7_s1_how_much_of_the_box_can_one_request_use() {
-    let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
+    let cores = available_cores();
     let fields = realistic_turn();
     let bytes: usize = fields.iter().map(|f| f.text.len()).sum();
-    eprintln!("\n=== S1 thread sweep: {cores} logical cores, {bytes} B turn ===");
     eprintln!(
-        "{:>5} {:>6} {:>9} {:>9} {:>8}",
-        "pool", "intra", "ms", "ms/KB", "vs 2x1"
+        "\n=== S1 thread sweep: {cores} logical cores, {bytes} B turn, {REPS} reps per shape ==="
+    );
+    eprintln!(
+        "{:>5} {:>6} {:>9} {:>9} {:>9} {:>8} {:>8}",
+        "pool", "intra", "min ms", "med ms", "spread", "ms/KiB", "vs 2x1"
     );
 
     let mut baseline: Option<f64> = None;
-    // (pool, intra). `2 x 1` first: it is what ships today, and every other row is read against it.
+    // (pool, intra). `2 x 1` first: it is what shipped before M7, and every other row reads
+    // against it.
     for (pool, intra) in [
         (2, 1),
         (1, 1),
@@ -636,20 +720,34 @@ fn m7_s1_how_much_of_the_box_can_one_request_use() {
         // One warm-up turn: the first inference pays lazy allocator/arena setup, and charging that
         // to whichever row happens to run first would be a measurement artifact, not a finding.
         let _ = mask_a_turn(&detector, &fields);
-        let elapsed = mask_a_turn(&detector, &fields);
-        let ms = elapsed.as_secs_f64() * 1000.0;
-        let base = *baseline.get_or_insert(ms);
+        let samples: Vec<f64> = (0..REPS)
+            .map(|_| mask_a_turn(&detector, &fields).as_secs_f64() * 1000.0)
+            .collect();
+        let worst = samples.iter().cloned().fold(f64::MIN, f64::max);
+        let (min, median) = min_and_median(samples);
+        let base = *baseline.get_or_insert(min);
         eprintln!(
-            "{pool:>5} {intra:>6} {:>9.0} {:>9.0} {:>7.2}x",
-            ms,
-            ms / (bytes as f64 / 1024.0),
-            base / ms
+            "{pool:>5} {intra:>6} {min:>9.0} {median:>9.0} {:>8.0}% {:>8.0} {:>7.2}x",
+            (worst - min) / min * 100.0,
+            min / (bytes as f64 / 1024.0),
+            base / min
         );
     }
     eprintln!(
-        "\nRead the `pool=1` rows for scaling (a lone request occupies ONE session, so pool buys \
-         it nothing); compare `1x6` against `1x12` for the SMT question, and `2x6` against `1x6` \
-         to confirm the pool really is inert at concurrency 1.\n"
+        "\n**Read `spread` before believing any row's delta — and know that it UNDERSTATES the \n\
+         noise.** `spread` is the within-run range; the same configuration also drifts BETWEEN \n\
+         runs (measured on the reference box: `1x12` at 2.1 s / 2.5 s / 3.0 s on different runs, \n\
+         a ~40% band). So this harness resolves *large* effects, not small ones.\n\
+         \n\
+         Believe a row only when a mechanism backs it (M7-R2 — M7's first cut did not, and turned \n\
+         an 18% `1x6` vs `1x12` gap into a stated conclusion, \"SMT helps\", that inverts run to \n\
+         run):\n\
+         - **Sublinear scaling** — 12 threads buy ~2x, never 12x. Large, and it replicates.\n\
+         - **The pool is inert at concurrency 1** (`2x1` ~ `1x1`) — believe this from the CODE, \n\
+           not this table: one request occupies one session (the field walk holds `&mut Vault`, \n\
+           `infer_chunked` loops its windows), so `pool` cannot help it. When these two rows \n\
+           differ here, that is the box, not a mechanism.\n\
+         - **SMT (`1x6` vs `1x12`)** — UNRESOLVED. The sign flips run to run. Do not read it.\n"
     );
 }
 

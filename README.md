@@ -157,24 +157,28 @@ organizations and locations — nothing else.
 
 ### Latency — also measured, on a realistic payload
 
-Masking one **realistic Claude Code turn** (22.8 KB: system prompt + 10 tool schemas + a user
-message), 2026-07-16, same box (6 cores / 12 threads), debug build:
+Masking one **realistic Claude Code turn** (22.3 KiB: system prompt + 10 tool schemas + a user
+message), 2026-07-17, same box (6 cores / 12 threads), debug build, **best of 3**:
 
-| detection | per turn | per KB |
+| detection | per turn | per KiB |
 |---|---|---|
-| **structured only** | **~20 ms** | ~0.7 ms |
-| **hybrid**, default pool (`2`, threads derived → 6) | **~2.85 s** | ~128 ms |
-| **hybrid**, single-client shape (`NER_POOL_SIZE=1` → 12 threads) | **~2.09 s** | ~94 ms |
+| **structured only** | **~20 ms** | ~0.9 ms |
+| **hybrid**, default (`NER_POOL_SIZE` unset → pool 2, threads derived → 6) | **~2.5 s** | ~114 ms |
+| **hybrid**, single-client shape (`NER_POOL_SIZE=1` → 12 threads) | **~2.1 s** | ~95 ms |
 
-**The NER is ~100% of the cost** — the deterministic layer is ~1,400× faster on the same bytes.
-If you front a single client (a coding agent, an IDE), set **`NER_POOL_SIZE=1`**: it is the
-lowest-latency *and* lowest-RAM shape, because a single request only ever occupies one session.
-The pooled default exists for a **shared** proxy, where it is worth ~30% more throughput.
+**The NER is ~100% of the cost** — the deterministic layer is well over 100× faster on the same
+bytes. If you front a single client (a coding agent, an IDE), set **`NER_POOL_SIZE=1`**: it
+**halves the RAM** (one session instead of two — that is arithmetic, not a benchmark), and a single
+request only ever occupies one session anyway, so the pool buys it nothing. The pooled default
+exists for a **shared** proxy, where it is worth ~30% more throughput — a real trade, measured.
 
-> Measure before believing any of this on your box: `cargo test-onnx --test m7_latency --
-> --ignored --nocapture`. The harness prints the per-field breakdown and a thread sweep. These
-> numbers come from a *release* build being irrelevant here (measured: 3%) — the cost is inside
-> ONNX Runtime, a prebuilt native library.
+> **Measure on your own box before believing any of this**, and take the numbers with the noise they
+> carry: `cargo test-onnx --test m7_latency -- --ignored --nocapture`. The harness prints the
+> per-field breakdown, a thread sweep with min/median/**spread**, and the concurrency figures. On our
+> reference box the same configuration drifts ~40% between runs, so small deltas here are noise —
+> the two rows above are separated by less than that, which is why the `NER_POOL_SIZE=1` advice
+> leads with RAM rather than speed. A *release* build is irrelevant (measured: 3%) — the cost is
+> inside ONNX Runtime, a prebuilt native library.
 
 ---
 

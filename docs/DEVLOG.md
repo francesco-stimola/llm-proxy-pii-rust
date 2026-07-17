@@ -110,16 +110,17 @@ exists.
 
 ### S0 — the fixture is the experiment
 
-`tests/m7_latency.rs`: one realistic Claude Code turn — 112 fields, 22.8 KB — as the walk actually
+`tests/m7_latency.rs`: one realistic Claude Code turn — 112 fields, 22,823 B (22.3 KiB) — as the walk actually
 sees it (one big `system`, 10 medium `tools[].description`, 100 tiny `input_schema` descriptions,
 one ~130 B user message holding all the PII). The shape is **asserted**, not hoped for: the first
 draft came out at 13.5 KB because I wrote 350-byte tool descriptions when the real ones are 1–4 KB,
 and the guard rejected it. That guard is the whole point of the file.
 
-**A realistic turn masks in 4.24 s — not 27 s.** The 903 ms/KB headline came from a blob densely
-packed with Italian names; a realistic turn runs at ~186 ms/KB. Per field, before any change:
+**A realistic turn masks in ~4.2–4.7 s — not 27 s.** The 903 ms/KiB headline came from a blob densely
+packed with Italian names; a realistic turn runs at ~190–210 ms/KiB. Per field, before any change
+(one sample — see the S1 note on this harness's noise):
 
-| part | fields | bytes | ms | ms/KB | passes |
+| part | fields | bytes | ms | ms/KiB | passes |
 |---|---|---|---|---|---|
 | `system` | 1 | 6,151 | 1,881 | 313 | **2** |
 | `tools[].description` | 10 | 9,482 | 1,157 | 125 | 10 |
@@ -148,68 +149,98 @@ prompt names Anthropic and GitHub constantly, so this is the **normal** case. Tw
   system prompt. **Logged as a finding for the review, not fixed here** — precision work is not
   M7's scope and would need its own recall argument.
 
-### S1 — measured on both axes, and the numbers refuted the intuition twice
+### S1 — measured on both axes, and the numbers refuted the intuition (once, not twice)
 
-`NER_INTRA_THREADS`, explicit-wins-else-derived (`default_intra_threads` = `max(1,
-available_parallelism() / NER_POOL_SIZE)`). The two knobs multiply, so the **product** must fit the
-box; a `0` is treated as unset rather than ONNX Runtime's "pick for me", which would put
-`pool × all-cores` threads on the machine.
+`NER_INTRA_THREADS`, explicit-wins-else-derived (`max(1, available_parallelism() / NER_POOL_SIZE)`).
+The two knobs multiply, so the **product** must fit the box; `0` is unset for **both** knobs, never
+ONNX Runtime's "pick for me", which would put `pool × all-cores` threads on the machine. Both
+resolve in one place — `onnx::resolve_pool_and_intra`, which the harness calls too, so it cannot
+measure a config the server doesn't ship (M7-R1).
 
-**Latency — one request, 22.8 KB turn, 12 logical cores:**
+**Latency — one request, 22.3 KiB turn, 12 logical cores, best of 3:**
 
-| pool | intra | ms | ms/KB | vs shipped |
+| pool | intra | ms | ms/KiB | vs pre-M7 |
 |---|---|---|---|---|
-| **2** | **1** | **4,582** | 206 | 1.00× ← what shipped |
-| 1 | 1 | 4,481 | 201 | 1.02× |
-| 1 | 2 | 4,112 | 184 | 1.11× |
-| 1 | 4 | 2,922 | 131 | 1.57× |
-| 1 | 6 | 2,462 | 110 | 1.86× |
-| **1** | **12** | **2,092** | 94 | **2.19×** |
-| 2 | 6 | 2,847 | 128 | 1.61× ← the new default here |
-| 4 | 3 | 3,218 | 144 | 1.42× |
+| **2** | **1** | **~4,700** | 213 | 1.00× ← pre-M7 |
+| 1 | 1 | ~4,500–6,000 | — | ~1× |
+| 1 | 2 | 4,111 | 184 | 1.15× |
+| 1 | 4 | 2,845 | 128 | 1.67× |
+| 1 | 6 | 2,651 | 119 | 1.79× |
+| 1 | 12 | 2,966 | 133 | 1.60× |
+| **2** | **6** | **2,547** | 114 | **1.86×** ← the new default |
+| 4 | 3 | 3,192 | 143 | 1.49× |
+
+**Read that table with its noise, which is the whole of [M7-R2](reviews/M7.md#m7-r2).** The same
+configuration drifts **~40% between runs** on this box (`1×12` measured at 2.1 / 2.5 / 3.0 s on
+different days). The sweep now takes 3 reps and prints min/median/spread; the bar (PERF-M7-05) takes
+the **minimum**, which is the closest thing to the interference-free cost. Believe a row only when a
+mechanism backs it.
 
 **Throughput — 4 concurrent turns:**
 
 | pool | intra | turns/s |
 |---|---|---|
-| 2 | 1 | 0.288 ← what shipped |
-| **2** | **6** | **0.609** ← the new default here |
+| 2 | 1 | 0.288 ← pre-M7 |
+| **2** | **6** | **0.609** ← the new default |
 | 1 | 12 | 0.472 |
 | 4 | 3 | **0.731** |
 
-**Three things the measurement settled — two against what was written down:**
+**What the measurement settled — and what it did not:**
 
-1. **The pool is inert at concurrency 1** — `2×1` (4.58 s) ≈ `1×1` (4.48 s). The S1a correction
-   holds: one request occupies one session, so a lone request reaches `intra`, never `pool × intra`.
-2. **`pool=1` is *not* free** — I had written "it is not a trade at all". It is: **−23% throughput**
-   (0.472 vs 0.609). Intra-op scaling is sublinear, so 4 sessions × 3 threads aggregate better than
-   1 × 12. The deployment-shape argument in ROADMAP → M7 stands exactly as written, which is why
-   the default is derived and overridable rather than repointed at the personal case.
-3. **SMT helps here** — 12 logical threads beat 6 (2.09 s vs 2.46 s), against the "6 may beat 12"
-   hypothesis. Both "measure, don't reason" items resolved *against* the intuition.
+1. **`pool=1` is *not* free.** I had written "it is not a trade at all". It is: **−23% throughput**
+   (0.472 vs 0.609; the reviewer independently measured −21%). Intra-op scaling is sublinear, so 4
+   sessions × 3 threads aggregate better than 1 × 12. The deployment-shape argument in ROADMAP → M7
+   stands exactly as written — which is why the default is derived and overridable rather than
+   repointed at the personal case. **This one is real: two independent measurements, and a
+   mechanism.**
+2. **Scaling is sublinear** — ~2×, never 12×. Replicates everywhere.
+3. **The pool is inert at concurrency 1** — true, and believe it from the **code**, not the table:
+   one request occupies one session (the walk holds `&mut Vault`; `infer_chunked` loops its
+   windows), so `pool` cannot help it. `2×1` ≈ `1×1` in most runs and diverges in others — that is
+   the box, not a mechanism.
+4. **SMT — UNRESOLVED, and the first cut claimed otherwise.** I wrote *"12 logical threads beat 6
+   (2.09 vs 2.46 s); hyperthreading helps this int8 model"*, and made it the write-up's high point:
+   *both* "measure, don't reason" items resolved against intuition. **It was one sample.** Re-run,
+   the sign flips (`1×6` by 11%, then `1×12` by 8%, then `1×6` by 3%, then `1×6` by 11%) — an 18%
+   effect read off a 40% band. It is load-bearing, too: `default_intra_threads` divides the
+   **logical** core count, which is right only if SMT helps. That divisor is now an open question the
+   milestone briefly believed it had closed.
 
-**The derived default improves both axes over what shipped** — 4.58 → 2.85 s latency *and*
-0.288 → 0.609 turns/s — so it is not a trade against the shared proxy at all. The personal proxy
-(`NER_POOL_SIZE=1` → intra 12) gets **2.09 s and half the RAM**, since each session holds its own
-copy of the weights.
+**The derived default improves both axes over what shipped** — ~4.7 → ~2.5 s latency *and*
+0.288 → 0.609 turns/s — so it is not a trade against the shared proxy at all. The single-client shape
+(`NER_POOL_SIZE=1` → intra 12) gets **~2.1 s and half the RAM**, since each session holds its own
+copy of the weights. **The RAM half is arithmetic; the latency half is inside the noise on this box** —
+so the READMEs lead that recommendation with RAM.
+
+> **The S1 mistake is the S0 mistake, one level up — and I made it inside the milestone that exists
+> to name it.** S0 says: *a corpus has a shape, and the shape is the blind spot.* S1's blind spot
+> wasn't the corpus, it was the **measurement design**: n=1 on a noisy box. Getting the fixture right
+> does not save you from reading a conclusion off a single sample. That is why the reps and the
+> spread column are now in the harness rather than in a reviewer's head.
 
 ### S2 — the bar, honoured
 
-**2.17 s < 3 s → stop.** `S3` (content-keyed cache) and `S4` (skip the NER on later passes) are
-**not implemented, deliberately**. Both were gated on the bar being missed; both put real risk on
-the masking path — state, and lost detection respectively — and buying that risk for speed already
-banked is how a privacy tool grows a leak. The bar was declared *before* the numbers precisely so
-this decision couldn't be rationalised afterwards.
+**Met on both shipped shapes → stop.** 2.46 s at the **default** (pool 2 × intra 6) and 2.11 s at
+`NER_POOL_SIZE=1` (1 × 12), best of 3. `S3` (content-keyed cache) and `S4` (skip the NER on later
+passes) are **not implemented, deliberately**. Both were gated on the bar being missed; both put real
+risk on the masking path — state, and lost detection respectively — and buying that risk for speed
+already banked is how a privacy tool grows a leak. The bar was declared *before* the numbers
+precisely so this decision couldn't be rationalised afterwards.
 
-**Stated honestly:** the fixture is 22.8 KB and real Claude Code turns run **20–40 KB**. At the top
-of that range the same rates give ~3.7 s (personal shape) — **over the bar**. The bar is met for a
-realistic turn, not for the worst turn. If the re-run battery (S6) lands over it on real traffic,
-S3 is the next lead and its threat argument is already written.
+**The bar now guards both shapes, and that is a fix, not a flourish** (M7-R1). The first cut asserted
+it on `pool=1` only — while `server.rs` defaults to `pool=2`. So the guard had ~28% headroom on a
+configuration nobody runs and **none** on the one they do, and it reported the personal shape's
+number as the default's. Both now resolve through the server's own function.
+
+**Stated honestly:** the fixture is 22.3 KiB and real Claude Code turns run **20–40 KB**. At the top
+of that range the same rates give **~4.4 s at the default** (~3.8 s at `NER_POOL_SIZE=1`) — **over
+the bar**. The bar is met for a realistic turn, not for the worst one. If the re-run battery (S6)
+lands over it on real traffic, S3 is the next lead and its threat argument is already written.
 
 ### An asymmetry worth recording for whoever picks this up
 
-At `intra=12`, the **100 tiny schema descriptions became the single biggest tier** — 909 ms of the
-2.17 s turn, for only 7 KB. They barely improved (1,094 → 909 ms, 1.2×) while the tool descriptions
+At `intra=12`, the **100 tiny schema descriptions became the single biggest tier** — 909 ms of a
+~2.2 s turn, for only 7 KB. They barely improved (1,094 → 909 ms, 1.2×) while the tool descriptions
 improved 2.5×: a ~20-token sequence cannot use 12 threads, so it is nearly all per-call overhead
 (~9 ms × 100). **Threads are done here; batching those calls is the next lead, not more threads.**
 

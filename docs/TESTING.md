@@ -506,38 +506,78 @@ shape is the blind spot** (M4-R13 → PERF-01 → here). So this file's fixture 
 its shape is **asserted**, not assumed.
 
 - **PERF-M7-01** — `m7_s0_a_realistic_claude_code_turn_measured_per_field`. One realistic turn (112
-  fields / 22.8 KB) masked with **one vault, field by field**, as production does: one big `system`,
-  10 medium `tools[].description`, 100 tiny `input_schema` descriptions, one ~130 B user message
-  carrying all the PII. Reports per-field cost and **fixpoint pass counts**, then asserts M7's bar —
-  **a realistic turn under 3 s**. Measured **2.17 s**. *The assert is the bar made executable: it
-  failed at 4.24 s before S1 and that failure was the milestone's definition of not-done.*
+  fields / **22.3 KiB**) masked with **one vault, field by field**, as production does: one big
+  `system`, 10 medium `tools[].description`, 100 tiny `input_schema` descriptions, one ~130 B user
+  message carrying all the PII. Reports per-field cost and **fixpoint pass counts**. It **reports,
+  it does not assert** — one sample, on a harness whose run-to-run spread is ~40%; the bar lives in
+  PERF-M7-05, over repeats (M7-R2).
   - **The fixture's shape guards are load-bearing.** Total size must be 20–50 KB, `system` must be
     exactly one field, and the schema tier must be >50 fields. The first draft tripped the size
-    guard at 13.5 KB (350-byte tool descriptions; real ones are 1–4 KB) — i.e. the guard caught a
+    guard at 13.5 KiB (350-byte tool descriptions; real ones are 1–4 KB) — i.e. the guard caught a
     fixture that would have under-measured the product, which is the entire job.
   - **Do not "improve" it with a captured real body.** The trace log has one, but it is already
     **masked**, so its NER pass finds nothing and the measurement lies *optimistically*. Synthesize
     the shape, not the content.
+- **PERF-M7-05** — `m7_s2_the_bar_holds_for_every_shipped_shape`. **M7's bar, made executable**: a
+  realistic turn under **3 s**, asserted on the **minimum of 3 reps**, for **every shape we ship** —
+  the pooled default (`NER_POOL_SIZE` unset → 2 × 6) *and* the single-client shape
+  (`NER_POOL_SIZE=1` → 1 × 12). Measured 2.46 s / 2.11 s. The bar is what decides whether S3/S4 get
+  built, so it is the one guard that must not be able to lie.
+  - **Why both shapes, and why min-of-N (M7-R1, M7-R2).** The first cut asserted one sample on
+    `pool=1` only — while the *server* defaults to `pool=2`. So the bar had ~28% headroom on a
+    config nobody runs and **none on the one they do**, and a single sample against ~5% headroom is
+    a coin flip, not a guard. Both shapes now resolve through `onnx::resolve_pool_and_intra` — the
+    **server's own** function — so the harness cannot drift from production again.
 - **PERF-M7-02** — `m7_s0_what_the_ner_finds_in_boilerplate_that_has_no_pii`. Prints every entity
   the hybrid finds in text that carries **no PII by construction**. Each hit is a false positive that
   costs its field a **second full NER scan**. Measured: `(Organization, "An")` — a two-character
   fragment of "Anthropic's" — in the system prompt. **This is the test that refuted M7's own premise**
   ("the boilerplate has ~zero PII, so it costs one pass"). Diagnostic: it reports, it does not assert,
   because the *right* number here is a precision question (M4-R6's class), not a latency one.
-- **PERF-M7-03** — `m7_s1_how_much_of_the_box_can_one_request_use`. Sweeps `pool × intra`. Confirms
-  the pool is **inert at concurrency 1** (`2×1` ≈ `1×1`), that scaling is **sublinear** (12 threads →
-  2.19×), and — against the hypothesis that was written down — that **SMT helps** (12 logical beats
-  6 physical). Reports; does not assert, because the numbers are box-specific.
+- **PERF-M7-03** — `m7_s1_how_much_of_the_box_can_one_request_use`. Sweeps `pool × intra`, **3 reps
+  per shape**, printing **min / median / spread**. Reports; does not assert, because the numbers are
+  box-specific. Confirms scaling is **sublinear** (12 threads → ~2×).
+  - **Read the `spread` column, and know it understates the noise (M7-R2).** `spread` is
+    within-run; the same configuration also drifts ~40% *between* runs on the reference box. **This
+    harness resolves large effects, not small ones**, and its footer says which rows a *mechanism*
+    backs. The first cut ran each shape **once** and turned an 18% `1×6`-vs-`1×12` gap into the
+    stated conclusion "SMT helps" — which inverts run to run. **SMT is unresolved**; the reps are
+    the guard that would have prevented the claim.
+  - The pool's inertness at concurrency 1 (`2×1` ≈ `1×1`) is real but should be believed **from the
+    code**, not this table: one request occupies one session, so `pool` cannot help it. When the two
+    rows differ here, that is the box.
 - **PERF-M7-04** — `m7_s1_throughput_under_concurrent_load_must_not_regress`. 4 concurrent turns,
   turns/s per shape. **The guard against optimizing latency by quietly wrecking the shared-proxy
-  case** the pool was built for. It is what measured `pool=1` at **−23% throughput**, refuting "it is
-  not a trade at all" and keeping the default derived rather than repointed.
+  case** the pool was built for. It is what measured `pool=1` at **−23% throughput** (the reviewer
+  independently got −21%), refuting the builder's own "it is not a trade at all" and keeping the
+  default derived rather than repointed at the personal case.
 - **THREAD-01** — `src/pii/onnx.rs::thread_tests` (unit, **no model needed**, runs in plain
-  `cargo test --features onnx`). Pins `derive_intra_threads`: the product `pool × intra` never
-  exceeds the box (the oversubscription invariant), it never returns `0` (which ONNX Runtime reads as
-  "pick for me" — every session grabbing every core, exactly what the derivation prevents), and it
-  derives the documented shapes. **Tested as a pure function of `(pool, cores)`** so the CI runner's
-  core count cannot decide whether it is correct.
+  `cargo test --features onnx`). Pins the two pure functions the threading rests on, as functions of
+  `(pool, cores)` — so the CI runner's core count cannot decide whether they are correct.
+  - `derive_intra_threads`: the oversubscription invariant **with its domain** — `pool × intra ≤
+    cores` while `pool ≤ cores`, and `intra == 1` beyond it, where the derivation is out of moves.
+    **The regimes are split on purpose (M7-R4):** the first version asserted
+    `pool * intra <= cores.max(pool)` across both, which passes for `pool > cores` by widening the
+    bound to the pool itself — green-lighting 8 threads on a 2-core box under a name claiming the
+    opposite. A test may not hide its exception inside a `max`.
+  - `resolve_pool_and_intra`: **both** knobs treat `0` and garbage as unset (M7-R5 — M7 shipped that
+    guard on the new knob only, leaving `NER_POOL_SIZE=0` safe by two independent clamps while the
+    startup log printed `pool_size=0, intra_threads=12`, which no arithmetic reconciles); an explicit
+    value wins; and the default is `DEFAULT_POOL_SIZE`, the same constant `server.rs` uses — which is
+    what makes M7-R1's harness/server drift structurally impossible.
+- **NER-THREAD-01** — `tests/ner_perf.rs::m7_r3_intra_threads_changes_speed_not_detection`
+  (`--features onnx`, `#[ignore]`d, needs a model). **`NER_INTRA_THREADS` must change speed, never
+  detection** — fingerprints `(kind, span.start, span.end)` over prose, a chunked >512-token field,
+  CJK, and the fragment-prone `"Anthropic's"` shape, at intra 1 / 2 / 4 / 6 / all-cores, and asserts
+  every set is **identical**. Measured: 134 entities, identical at every count (and it carries a
+  non-vacuity floor, so a guard that detects nothing cannot pass).
+  - **Why it exists (M7-R3):** every *recall* guard in this repo pins `intra=1` **on purpose** — a
+    score that moves with the runner's core count is worthless — so the one knob M7 changed was the
+    one knob nothing exercised. The property is **empirical**: ORT repartitions reduction work across
+    threads, float addition is not associative, and the BIO decode is a per-token `argmax` where a
+    near-tie flips on nothing but thread count. **This is the guard a DirectML/CUDA EP swap or a
+    GLiNER swap must trip over** — see ARCHITECTURE → *NER threading*, and M5-R4 for the same rule
+    about the same layer.
 
 ### M5 review round 1 — the guards the findings left behind
 
@@ -675,7 +715,8 @@ PII). Placeholder-**presence** asserts are on the **specific masked field** (or 
 >
 > **M7 unblocked it on both counts (2026-07-16), and it is now the last thing before `1.0.0`.** The prompts that
 > Claude Code refused as injection attempts are [rewritten as ordinary work](#cc-prompt-design), and a realistic
-> turn masks in ~2.2 s instead of the claimed 27 s, so 9 scenarios × 2 runs is practical. What remains is
+> turn masks in ~2.5 s at the default (`NER_POOL_SIZE` unset) instead of the claimed 27 s, so 9 scenarios ×
+> 2 runs is practical. What remains is
 > irreducibly manual: a human, a live key, and eyes on two traces. The automated mock coverage above remains the
 > permanent guarantee; the battery is what proves it on real traffic.
 

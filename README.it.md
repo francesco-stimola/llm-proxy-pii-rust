@@ -158,25 +158,31 @@ compra nomi, organizzazioni e luoghi — nient'altro.
 
 ### Latenza — anch'essa misurata, su un payload realistico
 
-Mascheramento di **un turno realistico di Claude Code** (22,8 KB: system prompt + 10 schemi di
-tool + un messaggio utente), 2026-07-16, stessa macchina (6 core / 12 thread), build debug:
+Mascheramento di **un turno realistico di Claude Code** (22,3 KiB: system prompt + 10 schemi di
+tool + un messaggio utente), 2026-07-17, stessa macchina (6 core / 12 thread), build debug,
+**migliore di 3**:
 
-| rilevamento | per turno | per KB |
+| rilevamento | per turno | per KiB |
 |---|---|---|
-| **solo strutturato** | **~20 ms** | ~0,7 ms |
-| **ibrido**, pool di default (`2`, thread derivati → 6) | **~2,85 s** | ~128 ms |
-| **ibrido**, forma a client singolo (`NER_POOL_SIZE=1` → 12 thread) | **~2,09 s** | ~94 ms |
+| **solo strutturato** | **~20 ms** | ~0,9 ms |
+| **ibrido**, default (`NER_POOL_SIZE` non impostata → pool 2, thread derivati → 6) | **~2,5 s** | ~114 ms |
+| **ibrido**, forma a client singolo (`NER_POOL_SIZE=1` → 12 thread) | **~2,1 s** | ~95 ms |
 
-**Il NER è ~100% del costo** — il livello deterministico è ~1.400× più veloce sugli stessi byte.
+**Il NER è ~100% del costo** — il livello deterministico è oltre 100× più veloce sugli stessi byte.
 Se metti il proxy davanti a un singolo client (un agente di coding, un IDE), imposta
-**`NER_POOL_SIZE=1`**: è la forma con la latenza *e* la RAM più basse, perché una singola richiesta
-occupa comunque una sola sessione. Il pool di default esiste per un proxy **condiviso**, dove vale
-circa il 30% di throughput in più.
+**`NER_POOL_SIZE=1`**: **dimezza la RAM** (una sessione invece di due — è aritmetica, non un
+benchmark), e comunque una singola richiesta occupa una sola sessione, quindi il pool non le serve.
+Il pool di default esiste per un proxy **condiviso**, dove vale circa il 30% di throughput in più —
+un trade reale, misurato.
 
-> Misura prima di credere a questi numeri sulla tua macchina: `cargo test-onnx --test m7_latency --
-> --ignored --nocapture`. L'harness stampa il dettaglio per campo e uno sweep sui thread. Questi
-> numeri vengono da una build *debug* perché la release qui è irrilevante (misurato: 3%) — il costo
-> è dentro ONNX Runtime, una libreria nativa precompilata.
+> **Misura sulla tua macchina prima di credere a questi numeri**, e prendili con il rumore che si
+> portano dietro: `cargo test-onnx --test m7_latency -- --ignored --nocapture`. L'harness stampa il
+> dettaglio per campo, uno sweep sui thread con min/mediana/**spread**, e le cifre di concorrenza.
+> Sulla nostra macchina di riferimento la stessa configurazione oscilla del ~40% tra una run e
+> l'altra, quindi differenze piccole qui sono rumore — le due righe sopra distano meno di così, ed è
+> per questo che il consiglio su `NER_POOL_SIZE=1` guida con la RAM e non con la velocità. Una build
+> *release* è irrilevante (misurato: 3%) — il costo è dentro ONNX Runtime, una libreria nativa
+> precompilata.
 
 ---
 

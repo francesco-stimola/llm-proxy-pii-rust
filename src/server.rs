@@ -157,19 +157,16 @@ async fn build_detector(
 async fn load_onnx_ner() -> anyhow::Result<Option<Box<dyn PiiDetector>>> {
     use crate::pii::onnx::OnnxNerDetector;
 
-    let pool_size = std::env::var("NER_POOL_SIZE")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(2);
-    // M7. Explicit `NER_INTRA_THREADS` wins; otherwise derive from the box, because the two knobs
-    // multiply (`pool × intra` threads under load) and a fixed number is wrong on a 2-core VM and a
-    // 64-core server alike. A `0` is treated as unset rather than as ONNX Runtime's "pick for me",
-    // which would put `pool ×` *all cores* threads on the machine.
-    let intra_threads = std::env::var("NER_INTRA_THREADS")
-        .ok()
-        .and_then(|s| s.parse::<usize>().ok())
-        .filter(|n| *n > 0)
-        .unwrap_or_else(|| crate::pii::onnx::default_intra_threads(pool_size));
+    // M7. Both knobs resolve in ONE place (`onnx::resolve_pool_and_intra`), which the latency
+    // harness calls too — when each read its own default they silently disagreed (2 vs 1) and M7's
+    // bar measured a config nobody ships (M7-R1). Explicit wins; otherwise `intra` is derived,
+    // because the two knobs multiply and a fixed number is wrong on a 2-core VM and a 64-core
+    // server alike. `0` is unset for both, never ONNX Runtime's "pick for me" (M7-R5).
+    let (pool_size, intra_threads) = crate::pii::onnx::resolve_pool_and_intra(
+        std::env::var("NER_POOL_SIZE").ok().as_deref(),
+        std::env::var("NER_INTRA_THREADS").ok().as_deref(),
+        crate::pii::onnx::available_cores(),
+    );
     let needs_token_type_ids = env_flag("NER_TOKEN_TYPE_IDS");
     let labels_override = std::env::var("NER_LABELS").ok();
 
@@ -216,7 +213,9 @@ async fn load_onnx_ner() -> anyhow::Result<Option<Box<dyn PiiDetector>>> {
         needs_token_type_ids,
     )?;
     // `intra_threads` is logged because it is *derived* by default: an operator debugging latency
-    // must be able to see what was picked without reproducing the arithmetic.
+    // must be able to see what was picked without reproducing the arithmetic. Both values are the
+    // **effective** ones — resolved once, above, and handed to `load` unchanged — so this line can
+    // never name a pool the process doesn't have (M7-R5).
     tracing::info!(model, pool_size, intra_threads, "ONNX NER detector loaded");
     Ok(Some(Box::new(detector)))
 }

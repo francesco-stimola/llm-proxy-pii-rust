@@ -35,7 +35,7 @@ completion**; findings, counts and closure notes live in each milestone's sectio
 | [M4 — Broad locale & language coverage](#m4) | ✅ complete |
 | [M5 — Integration & performance testing](#m5) | ✅ complete |
 | [**M6 — Native Anthropic `/v1/messages`**](#m6) | ✅ **code-complete**, and **verified live**: a real Claude Code session round-trips through the proxy (2026-07-16) |
-| [**M7 — NER latency**](#m7) | 🔨 **active** — code-complete: a realistic turn masks in **2.17 s** (was 4.24 s measured / 27 s claimed), bar met. **Open: the CC battery re-run** (needs a human + a live key) |
+| [**M7 — NER latency**](#m7) | 🔨 **active** — code-complete: a realistic turn masks in **2.46 s at the shipped default** / 2.11 s at `NER_POOL_SIZE=1` (was ~4.7 s measured / 27 s claimed), bar met on both. **Open: the CC battery re-run** (needs a human + a live key) |
 | [First tagged release `1.0.0`](#m6) | ⬜ not started — gated on [M7](#m7)'s battery re-run: the product we advertise must be usable, not just correct |
 
 ---
@@ -547,19 +547,21 @@ DEVLOG 2026-07-16 → *M7 implementation plan*; start at S0.**
 > is "one field, grown"; a real client's is "the same 30 KB of boilerplate, re-sent forever".
 
 - [x] **Re-measure first, with a *realistic* fixture — this gates every box below.** Done
-  (`tests/m7_latency.rs`, 112 fields / 22.8 KB, shape-asserted). **The headline was 6× pessimistic:
-  a realistic turn masked in 4.24 s, not 27 s** — and not the ~9 s predicted below either. But
-  **the stated mechanism was wrong**, and that is the more useful half: see the box under this list.
-- [x] **Declare the bar, and stop at it: a realistic turn under ~3 s ships.** **Met: 2.17 s** with
-  the derived thread default. So S3 (cache) and S4 (fixpoint) are **not done, on purpose** — both
-  trade real risk (state on the masking path; lost detection) for speed already banked.
-  **Optimized to a bar, not to exhaustion.**
+  (`tests/m7_latency.rs`, 112 fields / **22.3 KiB**, shape-asserted). **The headline was ~6×
+  pessimistic: a realistic turn masked in 4.2–4.7 s, not 27 s** — and not the ~9 s predicted below
+  either. But **the stated mechanism was wrong**, and that is the more useful half: see the box
+  under this list.
+- [x] **Declare the bar, and stop at it: a realistic turn under ~3 s ships.** **Met on both shipped
+  shapes** — **2.46 s** at the default (`NER_POOL_SIZE` unset → pool 2 × intra 6) and **2.11 s** at
+  the single-client shape (`NER_POOL_SIZE=1` → 1 × 12); best of 3, reference box. So S3 (cache) and
+  S4 (fixpoint) are **not done, on purpose** — both trade real risk (state on the masking path;
+  lost detection) for speed already banked. **Optimized to a bar, not to exhaustion.**
 - [x] **Use more than 1 core of 12.** `NER_INTRA_THREADS` (`src/pii/onnx.rs`,
-  `default_intra_threads`) — explicit env wins, else **derived**: `max(1, available_parallelism() /
-  NER_POOL_SIZE)`. Measured on both axes rather than picked by intuition, and the numbers refuted
-  two of the three things this box originally assumed. **The default improves *both* axes over
-  what shipped** — latency 4.58 s → 2.85 s (1.61×) *and* throughput 0.288 → 0.609 turns/s (2.11×),
-  so it is not a trade against the shared-proxy case at all. Full table: DEVLOG 2026-07-16.
+  `resolve_pool_and_intra` / `default_intra_threads`) — explicit env wins, else **derived**:
+  `max(1, available_parallelism() / NER_POOL_SIZE)`. Measured on both axes rather than picked by
+  intuition. **The default improves *both* axes over what shipped** — latency ~4.7 s → ~2.5 s
+  (~1.9×) *and* throughput 0.288 → 0.609 turns/s (2.11×) — so it is not a trade against the
+  shared-proxy case at all. Full tables: DEVLOG 2026-07-16.
 
 > **What the measurement overturned.** Three claims in this milestone's own text did not survive
 > contact with a realistic fixture. Recording them because the *pattern* is the point — this is
@@ -572,16 +574,24 @@ DEVLOG 2026-07-16 → *M7 implementation plan*; start at S0.**
 >    case, not an edge one. **The fixpoint lead (S4) is therefore *more* relevant than the plan
 >    concluded, not less** — though the bar was met without it.
 > 2. **"`pool = 1` is not a trade at all"** (my own words, one level up). Measured: it **regresses
->    throughput 23%** (0.472 vs 0.609 turns/s at concurrency 4). Intra-op scaling is sublinear, so
->    4 sessions × 3 threads beats 1 × 12 in aggregate. The deployment-shape argument below stands
->    exactly as written — which is why the default is derived and overridable, not a constant.
-> 3. **"SMT may hurt; 6 may beat 12."** It does not — 12 logical threads beat 6 (2.09 s vs
->    2.46 s). Hyperthreading helps this int8 model. *Both* of the "measure, don't reason" items
->    resolved against the intuition that was written down.
+>    throughput ~21–23%** (0.472 vs 0.609 turns/s at concurrency 4; the reviewer independently
+>    measured −21%). Intra-op scaling is sublinear, so 4 sessions × 3 threads beats 1 × 12 in
+>    aggregate. The deployment-shape argument below stands exactly as written — which is why the
+>    default is derived and overridable, not a constant.
+> 3. **"SMT may hurt; 6 may beat 12."** **Unresolved — and the first cut claimed otherwise from
+>    n=1** ([M7-R2](reviews/M7.md#m7-r2)). The sign flips run to run (`1×6` wins by 11%, then `1×12`
+>    by 8%, then `1×6` by 3%…), because the same configuration drifts ~40% *between* runs — the
+>    effect is smaller than the noise it was read off. The sweep now repeats each shape and prints
+>    min/median/spread, which is the guard that would have stopped the claim being made.
 >
-> **Confirmed, on the other hand:** a lone request really does occupy **one session**, so the pool
-> is inert at concurrency 1 (`2×1` 4.58 s ≈ `1×1` 4.48 s) — the S1a correction holds. And scaling
-> really is sublinear: 12 threads buy **2.19×**, not 12×.
+> **Confirmed, on the other hand:** scaling really is sublinear — 12 threads buy **~2×**, not 12×.
+> And a lone request really does occupy **one session**, so the pool is inert at concurrency 1 —
+> but believe that from the **code** (the field walk holds `&mut Vault`; `infer_chunked` loops its
+> windows; so `pool` cannot help one request), not from a timing table that cannot resolve it.
+>
+> **The meta-lesson, which is the same one a third time:** the fixture's *shape* was the blind spot
+> at S0, and the measurement's *design* was the blind spot at S1. Getting the corpus right does not
+> save you if you then read a conclusion off a single sample.
 
   > **The two knobs multiply — that is the trap.** `NER_POOL_SIZE × intra_threads` is the thread
   > count. Today it is `2 × 1 = 2`. Naively setting `intra = 12` while `pool = 2` gives **24 threads
@@ -642,7 +652,7 @@ DEVLOG 2026-07-16 → *M7 implementation plan*; start at S0.**
   > Claude Code traffic looks like — so the rewrite makes the battery both runnable **and** more
   > representative. CC-03/04/06/09 are already this shape; the chat-only ones are not.
 - [ ] **Re-run the CC battery** — **now unblocked on both counts** (prompts rewritten; a turn masks
-  in ~2.2 s, so 9 scenarios × 2 runs is a coffee break rather than an afternoon), and **the last
+  in ~2.5 s at the default, so 9 scenarios × 2 runs is a coffee break rather than an afternoon), and **the last
   thing standing between here and `1.0.0`**. It needs a human at the keyboard with a live key and a
   real Claude Code — this environment has neither, so it cannot be automated away. Procedure:
   [`MANUAL_VERIFICATION.md`](MANUAL_VERIFICATION.md); **`NER_REQUIRED=1` is non-negotiable** (it is
@@ -657,21 +667,29 @@ DEVLOG 2026-07-16 → *M7 implementation plan*; start at S0.**
 
 <a id="m7-ledger"></a>
 ### Review ledger — M7 → [`reviews/M7.md`](reviews/M7.md)
-**Round 1 (2026-07-17): 7 findings — no leak, no fail-open, no detection regression.** The S0
-refutation reproduces exactly; `intra_threads` was verified **empirically inert** for detection
-(identical spans at intra 1…12), and the stop-at-the-bar decision holds. The findings are about the
-**measurement and its record** — which, for a milestone whose deliverable *is* a measurement, is
-where the risk lives.
+**Round 1 (2026-07-17): 7 findings — no leak, no fail-open, no detection regression. All closed**
+(`89d2ca9` + the closure commit). The S0 refutation reproduces exactly; `intra_threads` was verified
+**empirically inert** for detection (identical spans at intra 1…12), and the stop-at-the-bar
+decision holds. The findings are about the **measurement and its record** — which, for a milestone
+whose deliverable *is* a measurement, is where the risk lives.
+
+**M7-R1 and M7-R2 are the pair to remember, because together they are this milestone's own lesson
+turned back on it.** M7 exists because M5 measured the wrong *shape*; M7 then measured the right
+shape **in the wrong configuration** (the harness defaulted the pool to 1, the server to 2 — so the
+executable bar guarded a config nobody ships) and read conclusions off **single samples** whose
+noise exceeded the effect. *Getting the corpus right does not save you if the measurement's design
+is the next blind spot.* Both are now structural: `resolve_pool_and_intra` is the one home for the
+default, so the harness cannot drift from the server; the sweep repeats and prints min/median/spread.
 
 | ID | Title | Sev | Status |
 |---|---|---|---|
-| [M7-R1](reviews/M7.md#m7-r1) | The headline "2.17 s" and the executable bar measure `NER_POOL_SIZE=1`, which the server does not default to | measurement | [ ] |
-| [M7-R2](reviews/M7.md#m7-r2) | The sweep draws settled conclusions from n=1 runs; the SMT one does not replicate (sign flips; noise > effect) | measurement | [ ] |
-| [M7-R3](reviews/M7.md#m7-r3) | Nothing pins `intra_threads`' detection-inertness — every recall guard pins `intra=1`; verified true, guarded by nothing | invariant | [ ] |
-| [M7-R4](reviews/M7.md#m7-r4) | THREAD-01's `cores.max(pool)` silently exempts the one regime where the product *does* exceed the box | test-quality | [ ] |
-| [M7-R5](reviews/M7.md#m7-r5) | `NER_POOL_SIZE=0` isn't filtered like `NER_INTRA_THREADS=0`; the startup log then names a pool the process lacks | observ. | [ ] |
-| [M7-R6](reviews/M7.md#m7-r6) | The fixture is 22.3 KiB, not 22.8 KB — and the `ms/KB` columns use the other unit | docs | [ ] |
-| [M7-R7](reviews/M7.md#m7-r7) | The `(Organization, "An")` over-mask — deferring is right; its only durable home is the archive | tradeoff | [ ] |
+| [M7-R1](reviews/M7.md#m7-r1) | The headline "2.17 s" and the executable bar measure `NER_POOL_SIZE=1`, which the server does not default to | measurement | [x] |
+| [M7-R2](reviews/M7.md#m7-r2) | The sweep draws settled conclusions from n=1 runs; the SMT one does not replicate (sign flips; noise > effect) | measurement | [x] |
+| [M7-R3](reviews/M7.md#m7-r3) | Nothing pins `intra_threads`' detection-inertness — every recall guard pins `intra=1`; verified true, guarded by nothing | invariant | [x] |
+| [M7-R4](reviews/M7.md#m7-r4) | THREAD-01's `cores.max(pool)` silently exempts the one regime where the product *does* exceed the box | test-quality | [x] |
+| [M7-R5](reviews/M7.md#m7-r5) | `NER_POOL_SIZE=0` isn't filtered like `NER_INTRA_THREADS=0`; the startup log then names a pool the process lacks | observ. | [x] |
+| [M7-R6](reviews/M7.md#m7-r6) | The fixture is 22.3 KiB, not 22.8 KB — and the `ms/KB` columns use the other unit | docs | [x] |
+| [M7-R7](reviews/M7.md#m7-r7) | The `(Organization, "An")` over-mask — deferring is right; its only durable home is the archive | tradeoff | [x] |
 
 <a id="backlog"></a>
 ## Backlog — documented, not scheduled
@@ -679,7 +697,15 @@ where the risk lives.
 ### Evaluate GLiNER — contextual-PII detector / potential XLM-R successor
 The path for **ambiguous, anchor-less PII** (a bare national phone, a free-form postal address) that the
 deterministic layer can't disambiguate and the current XLM-R (PER/ORG/LOC only) doesn't cover. It is also
-the clean **precision** path for [M4-R6](reviews/M4.md#m4-r6)'s accepted over-mask.
+the clean **precision** path for the two accepted over-masks — and they are *different bugs*, which is why
+both are named here:
+- [M4-R6](reviews/M4.md#m4-r6) — a **deterministic recognizer** over-matching pure-numeric IDs (~18% of
+  9-digit tokens). Its path out is **context**, which is GLiNER's whole premise.
+- **M7's `(Organization, "An")`** — the **NER** emitting a two-character fragment of `"Anthropic's"`, so
+  every Claude Code system prompt reaches the model as `"[ORG_1]thropic's"` ([M7-R7](reviews/M7.md#m7-r7);
+  mechanism in [ARCHITECTURE](ARCHITECTURE.md)). This is a **span-quality** problem, so it is the one of
+  the two that a **model change alone** could fix — and it also costs a second fixpoint pass, which ties
+  this item to M7's S4 lead.
 
 **GLiNER ≠ Piiranha.** Piiranha (a *fixed-label* mDeBERTa token-classifier) was **measured and rejected**
 at M2 (~0 recall on natural sentences). GLiNER is a *zero-shot, **open-label*** span extractor — you pass
