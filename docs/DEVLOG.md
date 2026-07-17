@@ -3,6 +3,63 @@
 Newest first. One entry per meaningful change — note *what* and *why*, not just
 *what*. This is the running history so context is never lost between sessions.
 
+## 2026-07-18 — CC battery live run: 7/9 leak-clean, CC-08 finds a real non-convergence, CC-09 parked
+
+**Manual verification, the M7 → `1.0.0` gate.** Ran a real Claude Code session through the proxy against
+real Anthropic — hybrid, `NER_REQUIRED=1`, at the new **`pool=1` default** (exercised live throughout,
+startup logs `pool_size=1 intra_threads=12`). Each turn verified from the trace: only placeholders
+leave, and a DBG-02 grep of every fixture's raw values returns **0**. Across ~41 forwarded requests,
+DBG-02 stayed 0 for every raw value and every PII pattern.
+
+**Leak-clean (7):**
+- **CC-01** (contacts.csv → JSON) — *both* postures. Run ON: client saw `[EMAIL_2]`/`[PERSON_4]`; Run
+  OFF: the restored real values. (Index ≠ 1 is *correct*, not drift: the NER numbers entities across
+  the whole body in encounter order, and the boilerplate's entities precede the user's — so the user's
+  email is `[EMAIL_2]`, not `_1`. Confirmed by the owner running from a fresh `/clear`.)
+- **CC-02** (release note thanking a Person at an Org in a City) — *both* postures; Mario Rossi / Acme /
+  Milano → `[PERSON]/[ORG]/[LOCATION]`, all NER.
+- **CC-03** (read the whole CSV) — every category masked: `[EMAIL]/[PERSON]/[IBAN]/[PHONE]/[SSN]`.
+- **CC-04** (write the first email to a scratch file) — the file on disk holds **`[EMAIL_2]`**, not the
+  real email: proof the client acted only on the placeholder.
+- **CC-05** (asked point-blank "what's the email?") — the model answered **`[EMAIL_2]`**. It genuinely
+  does not hold the real value; masking is not just in/out, the model itself operates on placeholders.
+- **CC-06** (deploy-config.env) — the SECRET test the old ML-only proxy failed: all three keys
+  (`sk-ant-…`, `sk-…`, `AKIA…`) → `[SECRET_1/2/3]`, plus email/phone. Zero secret-shaped tokens out.
+- **CC-07** ("which IBAN is German?") — the model **cannot tell**, because the `DE` prefix was masked
+  before it arrived: the privacy/utility trade working as designed. Also showed vault consistency — the
+  Italian IBAN repeated in two rows got the **same** `[IBAN_1]` both times.
+
+**CC-08 — a real finding (availability, not privacy).** The long-reminder-list scenario returned
+**HTTP 400 "vault detector failed: masking did not reach a fixpoint in 4 passes"**. This is the
+**fail-closed guard firing correctly** — the request was **blocked before forwarding** (no `forwarding`
+trace line, zero leak), exactly the posture a privacy proxy must have when it cannot confirm a field is
+clean (`anonymizer.rs::mask_all`, `MAX_MASK_PASSES=4`, M4-R20). But masking that *cannot converge* on an
+ordinary task is a real defect: the code itself flagged this as a **latent path** ("no input has ever
+been shown to need more than 2 passes"), and CC-08 is the first input to trigger it. Prime suspect
+(`anonymizer.rs:75-80`): the NER tagging a placeholder as an entity in the pathological
+repeated-placeholder context, so each pass re-masks it and the text never shrinks.
+- **Not yet reproduced.** The failing content isn't logged (fail-closed blocks *before* the forward-log,
+  and we never log raw PII). Three synthetic reproductions — the placeholder reminder-list, the raw CSV,
+  and the CSV×3 — all **converged** (reached upstream). So the trigger is more specific than "repeated
+  placeholders"; pinning it needs instrumentation.
+- **Next:** add a *value-free* per-pass kind/count log to `mask_all` (kinds only, never values), re-run
+  CC-08 to capture what stays detectable on pass 4, then fix (likely: protect existing placeholders from
+  re-detection) + a regression test. Tracked in ROADMAP.
+
+**CC-09 — the fixture masks itself; parked pending a synthetic DB.** `customer-lookup.sql` carries the
+PII as **literals in the query text** (`SELECT 'bob@test.com'… FROM DUAL`). To run it, the agent reads
+the file → the proxy masks the literals **on read** → the agent runs a query that already says
+`[EMAIL_1]` → the result has nothing new to mask. So the fixture never exercises the `tool_result` path
+it exists for. Fix: a synthetic table + a **PII-free query** (`SELECT * FROM …`) so the PII rides in the
+*result*, not the *text*. The available SQL MCP servers (oracle-sqlcl, python-sql) point **only at real
+corporate Oracle DBs** — no synthetic one — so we do **not** query real tables (real-PII risk); the
+owner is configuring a throwaway DB and CC-09 resumes then. (Table-free alternative: run the `.sql`
+**by path** via SQLcl `@`, so the query text never reaches the LLM.)
+
+**Bottom line for `1.0.0`:** the privacy property held on every turn that ran, including the fail-closed
+block. Two items remain before the battery closes: **fix CC-08's non-convergence**, and **run CC-09**
+against a synthetic table.
+
 ## 2026-07-17 — `NER_POOL_SIZE` default flips 2 → 1 (the personal shape becomes the default)
 
 **Source + docs.** `DEFAULT_POOL_SIZE` is now **1**. The dominant deployment is a personal proxy in

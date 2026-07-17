@@ -165,3 +165,13 @@ the client gets restored (OFF) — the full chain, not two independently-plausib
   anything.
 - **CC-02 finds no `Person`** → check `ONNX NER detector loaded` really appeared. That is the
   trap this file now warns about twice for a reason.
+- **A `400 "masking did not reach a fixpoint in 4 passes"`** → the **fail-closed guard**, *not* a leak:
+  the request was **blocked, never forwarded** (`anonymizer.rs::mask_all`, `MAX_MASK_PASSES`, M4-R20).
+  Confirm there is **no** `forwarding masked request body` line for that turn. But masking that cannot
+  converge on an ordinary input is a real *availability* defect — capture the scenario and diagnose
+  (CC-08 hit this on 2026-07-18; see DEVLOG and ROADMAP → *Re-run the CC battery*).
+- **CC-09 note — the fixture masks itself.** `customer-lookup.sql` carries the PII as **literals in the
+  query text**, so *reading* the file masks them before the query ever runs, and the `tool_result` path
+  the scenario exists for is never exercised. Run the `.sql` **by path** (SQLcl `@`, so the text never
+  reaches the LLM) **or** query a **synthetic table** with a PII-free `SELECT * FROM …` (PII in the
+  *result*, not the *text*). Never point this at a real table — synthetic data only.

@@ -695,13 +695,27 @@ DEVLOG 2026-07-16 → *M7 implementation plan*; start at S0.**
   > file and summarise it, format this contact as JSON, run this query. Which is *also* what real
   > Claude Code traffic looks like — so the rewrite makes the battery both runnable **and** more
   > representative. CC-03/04/06/09 are already this shape; the chat-only ones are not.
-- [ ] **Re-run the CC battery** — **now unblocked on both counts** (prompts rewritten; a turn masks
-  in ~2.5 s at the default, so 9 scenarios × 2 runs is a coffee break rather than an afternoon), and **the last
-  thing standing between here and `1.0.0`**. It needs a human at the keyboard with a live key and a
-  real Claude Code — this environment has neither, so it cannot be automated away. Procedure:
-  [`MANUAL_VERIFICATION.md`](MANUAL_VERIFICATION.md); **`NER_REQUIRED=1` is non-negotiable** (it is
-  what makes a silently structured-only run fatal — the trap that made the first M6 live run test
-  half the product).
+- [ ] **Re-run the CC battery** — **live run 2026-07-18 (DEVLOG): 7/9 leak-clean at the `pool=1`
+  default** (CC-01…CC-07; ~41 forwarded requests, DBG-02 = 0 throughout, incl. all 3 secrets in CC-06).
+  **Two items remain before it closes — the last things between here and `1.0.0`:**
+  - [ ] **Fix CC-08's non-convergence.** The long-reminder-list turn hit a **fail-closed 400** ("masking
+    did not reach a fixpoint in 4 passes"). The guard fired **correctly** — blocked before forwarding,
+    zero leak (`anonymizer.rs::mask_all`, `MAX_MASK_PASSES=4`, M4-R20) — but masking that *can't
+    converge* on an ordinary task is a real availability defect, and the **latent path** the code itself
+    documents ("no input has needed > 2 passes"). Suspect: the NER tagging a placeholder in the repeated-
+    placeholder context (`anonymizer.rs:75-80`). **Not yet reproduced** — three synthetic tries converged,
+    and the failing content isn't logged (by design). Plan: a *value-free* per-pass kind/count log in
+    `mask_all` → re-run CC-08 → pin the culprit kind → fix (likely protect placeholders from re-detection)
+    + regression test.
+  - [ ] **Run CC-09 against a synthetic table.** `customer-lookup.sql` carries PII as **literals in the
+    query text**, so reading it masks them *before* execution — the `tool_result` path it exists for never
+    runs. Fix: a synthetic table + PII-free `SELECT * FROM …` (PII in the *result*, not the *text*). The
+    SQL MCP servers point only at real corporate Oracle DBs (no synthetic one; we do **not** query real
+    tables); the owner is configuring a throwaway DB. Table-free alt: run the `.sql` by path via SQLcl `@`.
+  It needs a human at the keyboard with a live key and a real Claude Code — this environment has neither,
+  so it cannot be automated away. Procedure: [`MANUAL_VERIFICATION.md`](MANUAL_VERIFICATION.md);
+  **`NER_REQUIRED=1` is non-negotiable** (it is what makes a silently structured-only run fatal — the
+  trap that made the first M6 live run test half the product).
   - [x] Per-turn latency recorded as a product figure next to the RAM ones in both READMEs —
     measured on the realistic fixture, not claimed.
 
