@@ -819,6 +819,23 @@ pattern a fifth time** — a correction that stops one instance short.
 | [M7-R17](reviews/M7.md#m7-r17) | 2aad0cc's AC/battery correction reached the four doc headlines but not TESTING:533 or the harness source, which still cite "battery beat three AC runs" as distinct regimes | docs | [x] |
 | [M7-R18](reviews/M7.md#m7-r18) | The advertised "~1.8–2.3× / 1.81–2.26× across every regime" default speedup is undercut by a clean isolated run (default 1.71–1.75×); the `1.5×` guard floor is unaffected | measurement | [x] |
 
+**Round 5 (2026-07-17) — closure verification + convergence call: both round-4 findings hold; the
+engineering is done.** Re-verified the suite (85 default / **104** onnx lib, `fmt`/`clippy` clean on
+both feature sets); `ner_perf` and `m7_s2` green **isolated**. `e4a8163`'s source diff is
+**comment/string only** — every constant, assert and derivation is byte-identical to round 3, so all
+guards hold as verified. **M7-R17 holds** (the AC/battery framing now survives only in the ledger rows
+and the dated review record, both allowed) and **M7-R18 holds and reproduced under me** — my box is
+*fast* (pre-M7 4,461 ms vs the reference 10,100 ms → 0.44×) and the default ratio compressed to
+**1.77×**, exactly R18's "a faster box pulls the ratio toward the floor". **The call: close M7 once
+[M7-R19](reviews/M7.md#m7-r19) — a one-word docs fix — lands.** No leak, no fail-open, no regression,
+no engineering gap; R19 is the single thing actually wrong (a stale `8 s` where the guard asserts
+`15 s`), and everything else is correct, dated history that self-corrects, or hedged colour around the
+`≥1.5×` floor. Not holding the milestone open for prose.
+
+| ID | Title | Sev | Status |
+|---|---|---|---|
+| [M7-R19](reviews/M7.md#m7-r19) | TESTING's PERF-M7-05 summary still calls the sanity ceiling "8 s"; the guard asserts 15 s (M7-R14 raised it in round 3), and the same entry says so 25 lines down | docs | [ ] |
+
 <a id="backlog"></a>
 ## Backlog — documented, not scheduled
 
