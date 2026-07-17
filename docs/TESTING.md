@@ -521,7 +521,7 @@ its shape is **asserted**, not assumed.
 - **PERF-M7-05** — `m7_s2_the_bar_holds_for_every_shipped_shape`. **M7's deliverable, guarded as a
   RATIO**: it measures the **pre-M7 shape (`2×1`) as an in-run calibration leg** and asserts every
   shipped shape is **≥1.5×** it — the pooled default (`NER_POOL_SIZE` unset → 2 × 6) *and* the
-  single-client shape (`NER_POOL_SIZE=1` → 1 × 12), min of 3 reps each. Plus a **loose 8 s** absolute
+  single-client shape (`NER_POOL_SIZE=1` → 1 × 12), min of 3 reps each. Plus a **loose 15 s** absolute
   ceiling for order-of-magnitude regressions only.
   - **Run it isolated: `--test-threads=1` (M7-R12).** Cargo runs tests concurrently, so the old
     documented command had these benchmarks **measuring each other** — worth **1.50×** on the

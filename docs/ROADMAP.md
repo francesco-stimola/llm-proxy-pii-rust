@@ -35,7 +35,7 @@ completion**; findings, counts and closure notes live in each milestone's sectio
 | [M4 — Broad locale & language coverage](#m4) | ✅ complete |
 | [M5 — Integration & performance testing](#m5) | ✅ complete |
 | [**M6 — Native Anthropic `/v1/messages`**](#m6) | ✅ **code-complete**, and **verified live**: a real Claude Code session round-trips through the proxy (2026-07-16) |
-| [**M7 — NER latency**](#m7) | 🔨 **active** — code-complete: **≥1.5× faster than pre-M7** (asserted floor; typically ~1.7–2.2×, scales with the box, **zero below 4 cores**). A realistic turn masks in **~4.7 s** at the shipped default on the reference box — **the ~3 s bar was missed; we stopped anyway** ([M7-R12](reviews/M7.md#m7-r12)). **Open: the CC battery re-run** (needs a human + a live key) |
+| [**M7 — NER latency**](#m7) | 🔨 **code-complete, review ledger closed** (19 findings / 5 rounds, all closed; code byte-stable since round 3): **≥1.5× faster than pre-M7** (asserted floor; typically ~1.7–2.3×, scales with the box, **zero below 4 cores**). A realistic turn masks in **~4.7 s** at the shipped default on the reference box — **the ~3 s bar was missed; we stopped anyway** ([M7-R12](reviews/M7.md#m7-r12)). **One box left, and it needs a human: the CC battery re-run** (a live key + a real Claude Code) |
 | [First tagged release `1.0.0`](#m6) | ⬜ not started — gated on [M7](#m7)'s battery re-run: the product we advertise must be usable, not just correct |
 
 ---
@@ -834,7 +834,18 @@ no engineering gap; R19 is the single thing actually wrong (a stale `8 s` where 
 
 | ID | Title | Sev | Status |
 |---|---|---|---|
-| [M7-R19](reviews/M7.md#m7-r19) | TESTING's PERF-M7-05 summary still calls the sanity ceiling "8 s"; the guard asserts 15 s (M7-R14 raised it in round 3), and the same entry says so 25 lines down | docs | [ ] |
+| [M7-R19](reviews/M7.md#m7-r19) | TESTING's PERF-M7-05 summary still calls the sanity ceiling "8 s"; the guard asserts 15 s (M7-R14 raised it in round 3), and the same entry says so 25 lines down | docs | [x] |
+
+**M7 review ledger closed — 19 findings across 5 rounds, all closed.** Round 5 was the convergence
+round the workflow exists to reach: a single one-word docs fix, then nothing left that is *wrong*.
+The two residual-cosmetic items the reviewer logged were dealt with — the `~1.7–2.2×`/`~1.7–2.3×`
+typical-band split is unified to **~1.7–2.3×** (the widest observed, 2.26×), and the round-2 ROADMAP
+narrative that "reads retired framing before its own correction" is **kept by deliberate choice**: it
+is a problem→resolution passage whose two halves are adjacent paragraphs, and the tension carries the
+milestone's own lesson (*I invented an explanation; the box's owner retired it in one line*). Flatten
+it and the lesson goes with it. **The code has been byte-stable since round 3** (rounds 4–5 touched
+only comments, strings and docs); no leak, no fail-open, no detection regression was ever found. What
+remains open below is **not** a review finding — it is the one scope item that needs a human.
 
 <a id="backlog"></a>
 ## Backlog — documented, not scheduled

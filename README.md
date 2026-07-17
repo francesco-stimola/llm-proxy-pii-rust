@@ -186,7 +186,7 @@ thing as the truth.
 
 **What is stable is the *improvement*, and that is the part that is about the code:** the shipped
 default is **at least 1.5× faster** than the pre-threading version — the floor the test actually
-asserts — and **typically ~1.7–2.2×** depending on the box. (We quote the floor, not the best
+asserts — and **typically ~1.7–2.3×** depending on the box. (We quote the floor, not the best
 number seen: the speedup cancels the box's power state but not its raw speed, so a faster machine
 compresses the ratio *toward* the floor rather than away from it — which is why every tighter band
 we published kept being undercut by the next clean run.) If you want to check this repo's claim on

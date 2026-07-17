@@ -500,7 +500,7 @@ const REFERENCE_PRE_M7_MS: f64 = 10_100.0;
 
 /// **M7's deliverable, stated regime-invariantly.** The absolute wall clock is a property of the
 /// box; the *speedup over the pre-M7 shape* is a property of the change. What that speedup cancels
-/// is the box's **power/scheduling state** — verified: it held at ~1.7–2.2× while the pre-M7
+/// is the box's **power/scheduling state** — verified: it held at ~1.7–2.3× while the pre-M7
 /// absolute swung from ~4,400 ms to ~9,000 ms across occasions (isolated vs contended, one run vs
 /// another — *not* AC vs battery, which on the reference box are the same energy-efficiency plan;
 /// M7-R17). It does **not** fully cancel box *speed* at fixed cores, so a faster box compresses the
