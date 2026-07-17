@@ -736,6 +736,30 @@ three regimes, sat at **1.85× / 2.26× / 2.10×**.
 | [M7-R9](reviews/M7.md#m7-r9) | The bar's assert is decided by the box's power regime, which min-of-3 cannot see — 3.9 s on the reviewer's box; the headline never names the variable | measurement | [x] |
 | [M7-R10](reviews/M7.md#m7-r10) | M7-R6's unit fix reached one number too far — `903 ms/K(i)B` now appears in both units in the same file | docs | [x] |
 
+**Round 3 (2026-07-17) — closure verification: all 3 hold, and the ratio is the right instrument.**
+Re-verified the battery (85 default / 103 onnx lib, `fmt`/`clippy` clean on both feature sets); drove
+M7-R8's fix against the **real tokenizer** (`repeat(60)` = **662 tokens**, 2 windows — genuinely
+chunked, and NER-THREAD-01 reproduced at **194 entities, identical at intra 1…12**, its third
+independent confirmation and the first to cover the chunked path). **M7-R9's ratio survived a regime
+nobody had tried**: the absolute moved **1.50×** between the harness's documented invocation and an
+isolated run — same box, same AC state, 40 minutes apart — while the ratio held at **1.81× / 2.12×**.
+
+**But that experiment is also [M7-R12](reviews/M7.md#m7-r12), and it is the round's finding.** R1
+named the number's *shape*; R9 named its *power regime*; **the power regime does not order the
+milestone's own data** — battery (3,943 ms) is **faster** than three of the four AC measurements
+(4,757 / 4,841 / 4,933), and "throttled AC" was assigned post hoc from the number itself. *A variable
+that cannot sort your observations is not the variable.* **The stop decision still stands — but on
+the ratio, not on the bar**: across six measurements by two people the ~3 s bar was met **once**.
+
+| ID | Title | Sev | Status |
+|---|---|---|---|
+| [M7-R11](reviews/M7.md#m7-r11) | The READMEs dropped the two-shape latency table as unsupportable; ROADMAP and DEVLOG still advertise it | docs | [ ] |
+| [M7-R12](reviews/M7.md#m7-r12) | "Power regime, nothing else" doesn't order its own data — battery beats 3 of 4 AC runs; the ~2.5 s claim is the best of six | measurement | [ ] |
+| [M7-R13](reviews/M7.md#m7-r13) | The ratio guard is vacuous at ≤2 cores, where the shipped default *is* `PRE_M7_SHAPE` — and it reports that as a regression | guard | [ ] |
+| [M7-R14](reviews/M7.md#m7-r14) | Both of the bar's constants are uncalibrated: the 8 s ceiling nearly fires on the documented command; the 1.5 floor keeps the 20% blindness | guard | [ ] |
+| [M7-R15](reviews/M7.md#m7-r15) | M7-R8's closure credits the chunked path with 60 entities that are 20 extra sentences | docs | [ ] |
+| [M7-R16](reviews/M7.md#m7-r16) | The byte-proxy assert M7-R8 killed is still alive 90 lines down, guarding the same property | guard | [ ] |
+
 <a id="backlog"></a>
 ## Backlog — documented, not scheduled
 
