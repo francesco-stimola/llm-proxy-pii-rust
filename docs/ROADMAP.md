@@ -691,6 +691,28 @@ default, so the harness cannot drift from the server; the sweep repeats and prin
 | [M7-R6](reviews/M7.md#m7-r6) | The fixture is 22.3 KiB, not 22.8 KB — and the `ms/KB` columns use the other unit | docs | [x] |
 | [M7-R7](reviews/M7.md#m7-r7) | The `(Organization, "An")` over-mask — deferring is right; its only durable home is the archive | tradeoff | [x] |
 
+**Round 2 (2026-07-17) — closure verification: all 7 hold; 2 of them left a crack, and 3 findings
+came out of it.** Re-verified the whole battery (85 default / **103** onnx lib, `fmt`/`clippy` clean
+on both feature sets), proved `resolve_pool_and_intra` is genuinely the only place either knob is
+resolved, and worked M7-R4's split grid by hand — **it is exactly equivalent to the 40-pair original,
+so nothing was lost.** `intra_threads`' detection-inertness reproduced a second time (134 entities,
+identical at intra 1…12).
+
+**M7-R8 and M7-R9 are round 1's own findings arriving one level down, which is the thing to notice.**
+R1 taught the milestone to name a number's **shape**; R9 is the number's *other* un-named variable —
+the box's **power regime**, worth 1.6× where the shapes were worth 1.17×, so the bar fails at 3.9 s on
+an idle reviewer box while a real 20% regression still ships green. R2 taught it to **repeat** a
+measurement; the guard then used min-of-3, which by construction cannot see the between-run drift R2
+diagnosed. And R3 asked for a chunked-path guard; R8 is that guard asserting **bytes** for a property
+the code branches on in **tokens** — [M5-R10](reviews/M5.md#m5-r10)'s shape, and the M4 retrospective's
+lesson 6 (*a quantity a test never varies is a quantity the test cannot see*), a third time.
+
+| ID | Title | Sev | Status |
+|---|---|---|---|
+| [M7-R8](reviews/M7.md#m7-r8) | NER-THREAD-01's ">512-token chunked field" is 442 tokens and never chunks; its assert counts bytes for a token property | guard | [ ] |
+| [M7-R9](reviews/M7.md#m7-r9) | The bar's assert is decided by the box's power regime, which min-of-3 cannot see — 3.9 s on the reviewer's box; the headline never names the variable | measurement | [ ] |
+| [M7-R10](reviews/M7.md#m7-r10) | M7-R6's unit fix reached one number too far — `903 ms/K(i)B` now appears in both units in the same file | docs | [ ] |
+
 <a id="backlog"></a>
 ## Backlog — documented, not scheduled
 
