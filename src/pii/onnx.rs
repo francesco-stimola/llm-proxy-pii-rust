@@ -133,6 +133,11 @@ const _: () = assert!(
 /// ~400 MB-per-session RAM wall long before the thread wall). The invariant is stated with its
 /// domain rather than absolutely, because an invariant that is false in a reachable regime is worse
 /// than no invariant.
+///
+/// **Prefer [`resolve_pool_and_intra`], which is the entry point the server and the latency harness
+/// both use.** This wrapper is kept for callers that have already resolved a pool and only need the
+/// derivation — it takes `pool` as an argument, so it cannot reintroduce a second *default* (the
+/// M7-R1 failure); the default itself has exactly one home, [`DEFAULT_POOL_SIZE`].
 pub fn default_intra_threads(pool_size: usize) -> usize {
     derive_intra_threads(pool_size, available_cores())
 }

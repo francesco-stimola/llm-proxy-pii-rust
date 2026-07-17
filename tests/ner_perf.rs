@@ -232,13 +232,28 @@ fn m7_r3_intra_threads_changes_speed_not_detection() {
     let id2label: Vec<String> = labels.split(',').map(str::to_string).collect();
 
     // Inputs chosen for where a partition difference could actually surface: prose with the
-    // entities we care about, a >512-token field (the CHUNKED path — a window-boundary decision is
-    // the most likely place for two thread counts to disagree), and the fragment-prone shape that
+    // entities we care about, a field past the chunking window (a window-boundary decision is the
+    // most likely place for two thread counts to disagree), and the fragment-prone shape that
     // produces M7's `("An", Organization)` over-mask, which is a near-tie by construction.
-    let long_field = SENTENCE.repeat(40);
+    //
+    // **Assert the property the code branches on, in the unit it branches on (M7-R8).** The first
+    // version asserted `long_field.len() > 2_000` — BYTES — for a decision `infer_chunked` makes on
+    // TOKENS (`> MAX_WINDOW_TOKENS`). `SENTENCE.repeat(40)` is 2,360 bytes and clears that assert by
+    // 18%, while being **442 tokens** — 38 short of the trigger. So the guard's most important input
+    // ran as a single pass and it covered **zero** chunked inputs, under an assert claiming the
+    // opposite. A byte count is a proxy; the tokenizer is the thing. (Third time this repo asserted
+    // a proxy for what it meant — see M5-R10.)
+    let long_field = SENTENCE.repeat(60);
+    let long_tokens = load_tokenizer()
+        .encode(long_field.as_str(), true)
+        .expect("encode")
+        .get_ids()
+        .len();
     assert!(
-        long_field.len() > 2_000,
-        "must exercise the chunked path, or this guard misses the likeliest divergence"
+        long_tokens > MAX_WINDOW_TOKENS,
+        "the long input is {long_tokens} tokens, not over the {MAX_WINDOW_TOKENS}-token window — so \
+         this guard never reaches `infer_chunked`, the likeliest place for two thread counts to \
+         disagree, and it is exactly as vacuous as M7-R8 found it (M7-R8)"
     );
     let inputs: Vec<&str> = vec![
         SENTENCE,

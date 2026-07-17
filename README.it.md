@@ -159,30 +159,39 @@ compra nomi, organizzazioni e luoghi — nient'altro.
 ### Latenza — anch'essa misurata, su un payload realistico
 
 Mascheramento di **un turno realistico di Claude Code** (22,3 KiB: system prompt + 10 schemi di
-tool + un messaggio utente), 2026-07-17, stessa macchina (6 core / 12 thread), build debug,
-**migliore di 3**:
+tool + un messaggio utente), 2026-07-17, macchina di riferimento (Ryzen 5 PRO 8540U, 6 core / 12
+thread), **alimentata a rete**, build debug, migliore di 3:
 
 | rilevamento | per turno | per KiB |
 |---|---|---|
 | **solo strutturato** | **~20 ms** | ~0,9 ms |
-| **ibrido**, default (`NER_POOL_SIZE` non impostata → pool 2, thread derivati → 6) | **~2,5 s** | ~114 ms |
-| **ibrido**, forma a client singolo (`NER_POOL_SIZE=1` → 12 thread) | **~2,1 s** | ~95 ms |
+| **ibrido** (entrambe le forme — vedi sotto) | **~2,5 s** | ~110 ms |
 
 **Il NER è ~100% del costo** — il livello deterministico è oltre 100× più veloce sugli stessi byte.
-Se metti il proxy davanti a un singolo client (un agente di coding, un IDE), imposta
-**`NER_POOL_SIZE=1`**: **dimezza la RAM** (una sessione invece di due — è aritmetica, non un
-benchmark), e comunque una singola richiesta occupa una sola sessione, quindi il pool non le serve.
-Il pool di default esiste per un proxy **condiviso**, dove vale circa il 30% di throughput in più —
-un trade reale, misurato.
 
-> **Misura sulla tua macchina prima di credere a questi numeri**, e prendili con il rumore che si
-> portano dietro: `cargo test-onnx --test m7_latency -- --ignored --nocapture`. L'harness stampa il
-> dettaglio per campo, uno sweep sui thread con min/mediana/**spread**, e le cifre di concorrenza.
-> Sulla nostra macchina di riferimento la stessa configurazione oscilla del ~40% tra una run e
-> l'altra, quindi differenze piccole qui sono rumore — le due righe sopra distano meno di così, ed è
-> per questo che il consiglio su `NER_POOL_SIZE=1` guida con la RAM e non con la velocità. Una build
-> *release* è irrilevante (misurato: 3%) — il costo è dentro ONNX Runtime, una libreria nativa
-> precompilata.
+**"Alimentata a rete" non è una nota a piè di pagina: vale più di qualsiasi messa a punto qui
+sotto.** Lo *stesso* codice, la stessa fixture e la stessa macchina hanno mascherato questo turno in
+**2,5 s, 3,9 s e 4,9 s** in tre occasioni diverse, cambiando solo il regime di alimentazione e
+temperatura. Quindi leggi il numero sopra come *quello che fa questo portatile quando gli è concesso
+di correre*, e aspettati circa **2× peggio quando è limitato**. Ciò che resta stabile è il
+*miglioramento*: il default spedito è costantemente **~1,9–2,3×** più veloce della versione
+pre-threading — ed è quella la parte che riguarda il codice e non la macchina.
+
+**Quale forma usare?** Se metti il proxy davanti a un singolo client (un agente di coding, un IDE),
+imposta **`NER_POOL_SIZE=1`**: **dimezza la RAM** — una sessione ONNX invece di due, che è
+aritmetica e non un benchmark — e non ti costa nulla, perché una singola richiesta occupa comunque
+una sola sessione. **Sulla latenza le due forme si equivalgono** (abbiamo misurato ciascuna vincere
+di ~15% in run diverse: la differenza è dentro il rumore di questa macchina). Il pool di default
+esiste per un proxy **condiviso**, dove vale circa il 30% di throughput in più — e *quello* è un
+trade reale, misurato.
+
+> **Misura sulla tua macchina prima di credere a questi numeri:** `cargo test-onnx --test
+> m7_latency -- --ignored --nocapture`. L'harness stampa il dettaglio per campo, uno sweep sui
+> thread con min/mediana/**spread**, le cifre di concorrenza e — dato che i millisecondi assoluti
+> non sono confrontabili tra macchine o stati di alimentazione — **un rapporto di accelerazione
+> contro una gamba di calibrazione misurata nella stessa run**, che invece lo è. Una build *release*
+> è irrilevante (misurato: 3%): il costo è dentro ONNX Runtime, una libreria nativa precompilata,
+> quindi compilare meglio il *nostro* Rust non cambia niente.
 
 ---
 

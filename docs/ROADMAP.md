@@ -35,7 +35,7 @@ completion**; findings, counts and closure notes live in each milestone's sectio
 | [M4 — Broad locale & language coverage](#m4) | ✅ complete |
 | [M5 — Integration & performance testing](#m5) | ✅ complete |
 | [**M6 — Native Anthropic `/v1/messages`**](#m6) | ✅ **code-complete**, and **verified live**: a real Claude Code session round-trips through the proxy (2026-07-16) |
-| [**M7 — NER latency**](#m7) | 🔨 **active** — code-complete: a realistic turn masks in **2.46 s at the shipped default** / 2.11 s at `NER_POOL_SIZE=1` (was ~4.7 s measured / 27 s claimed), bar met on both. **Open: the CC battery re-run** (needs a human + a live key) |
+| [**M7 — NER latency**](#m7) | 🔨 **active** — code-complete: **~1.9–2.3× faster than pre-M7**, regime-invariant; a realistic turn masks in **2.46 s** at the shipped default on the reference box **at full power** (was ~4.7 s / 27 s claimed) — ~2× worse throttled ([M7-R9](reviews/M7.md#m7-r9)). **Open: the CC battery re-run** (needs a human + a live key) |
 | [First tagged release `1.0.0`](#m6) | ⬜ not started — gated on [M7](#m7)'s battery re-run: the product we advertise must be usable, not just correct |
 
 ---
@@ -553,9 +553,25 @@ DEVLOG 2026-07-16 → *M7 implementation plan*; start at S0.**
   under this list.
 - [x] **Declare the bar, and stop at it: a realistic turn under ~3 s ships.** **Met on both shipped
   shapes** — **2.46 s** at the default (`NER_POOL_SIZE` unset → pool 2 × intra 6) and **2.11 s** at
-  the single-client shape (`NER_POOL_SIZE=1` → 1 × 12); best of 3, reference box. So S3 (cache) and
-  S4 (fixpoint) are **not done, on purpose** — both trade real risk (state on the masking path;
-  lost detection) for speed already banked. **Optimized to a bar, not to exhaustion.**
+  the single-client shape (`NER_POOL_SIZE=1` → 1 × 12); best of 3, reference box, **on AC**. So S3
+  (cache) and S4 (fixpoint) are **not done, on purpose** — both trade real risk (state on the
+  masking path; lost detection) for speed already banked. **Optimized to a bar, not to exhaustion.**
+
+  > **"On AC" is load-bearing, and the bar is now asserted as a *ratio* because of it**
+  > ([M7-R9](reviews/M7.md#m7-r9)). Same code, same fixture, same box: **2.46 / 3.94 / 4.93 s**,
+  > differing only in power/thermal regime — each with a within-run spread under 7%, so min-of-3 was
+  > *precise and wrong*. The guard therefore measures the **pre-M7 shape as an in-run calibration
+  > leg** and asserts a **≥1.5× speedup**, which held at 1.85× / 2.26× / 2.10× while the absolute
+  > moved 2×. The ~3 s figure survives as a **reported product claim** (the READMEs), not an assert:
+  > a wall-clock assert on an uncontrolled box goes red when a laptop is unplugged and stays green
+  > through a real 20% regression.
+  >
+  > **What that costs the claim, stated plainly:** the bar is met *for a realistic turn on a box at
+  > full speed*. Throttled it is ~4.9 s, and at the top of the 20–40 KB range ~4.4 s. M7 exists for
+  > a proxy in front of Claude Code — i.e. a **laptop**, whose normal state is the throttled one. The
+  > stop decision stands (the ~2× is banked and regime-invariant; the rest is a power governor, not
+  > the code), but **S3 is the named lead for both open cases** — the boilerplate is byte-identical
+  > every turn, so a content-keyed cache makes turn 2+ nearly free *regardless of regime*.
 - [x] **Use more than 1 core of 12.** `NER_INTRA_THREADS` (`src/pii/onnx.rs`,
   `resolve_pool_and_intra` / `default_intra_threads`) — explicit env wins, else **derived**:
   `max(1, available_parallelism() / NER_POOL_SIZE)`. Measured on both axes rather than picked by
@@ -696,7 +712,8 @@ came out of it.** Re-verified the whole battery (85 default / **103** onnx lib, 
 on both feature sets), proved `resolve_pool_and_intra` is genuinely the only place either knob is
 resolved, and worked M7-R4's split grid by hand — **it is exactly equivalent to the 40-pair original,
 so nothing was lost.** `intra_threads`' detection-inertness reproduced a second time (134 entities,
-identical at intra 1…12).
+identical at intra 1…12 — **194** once [M7-R8](reviews/M7.md#m7-r8)'s fix made the guard actually reach
+the chunked path, still identical).
 
 **M7-R8 and M7-R9 are round 1's own findings arriving one level down, which is the thing to notice.**
 R1 taught the milestone to name a number's **shape**; R9 is the number's *other* un-named variable —
@@ -707,11 +724,17 @@ diagnosed. And R3 asked for a chunked-path guard; R8 is that guard asserting **b
 the code branches on in **tokens** — [M5-R10](reviews/M5.md#m5-r10)'s shape, and the M4 retrospective's
 lesson 6 (*a quantity a test never varies is a quantity the test cannot see*), a third time.
 
+**All 3 closed** (the round-2 closure commit). **M7-R9 confirmed itself while being fixed**, which is
+the detail worth keeping: re-measured on **AC** at the user's prompting, the shipped default came back
+at **4,933 ms** — worse than the reviewer's *battery* number, and 2× my own AC figure from hours
+earlier. The absolute is simply not a property of the code on this box. The ratio, measured across all
+three regimes, sat at **1.85× / 2.26× / 2.10×**.
+
 | ID | Title | Sev | Status |
 |---|---|---|---|
-| [M7-R8](reviews/M7.md#m7-r8) | NER-THREAD-01's ">512-token chunked field" is 442 tokens and never chunks; its assert counts bytes for a token property | guard | [ ] |
-| [M7-R9](reviews/M7.md#m7-r9) | The bar's assert is decided by the box's power regime, which min-of-3 cannot see — 3.9 s on the reviewer's box; the headline never names the variable | measurement | [ ] |
-| [M7-R10](reviews/M7.md#m7-r10) | M7-R6's unit fix reached one number too far — `903 ms/K(i)B` now appears in both units in the same file | docs | [ ] |
+| [M7-R8](reviews/M7.md#m7-r8) | NER-THREAD-01's ">512-token chunked field" is 442 tokens and never chunks; its assert counts bytes for a token property | guard | [x] |
+| [M7-R9](reviews/M7.md#m7-r9) | The bar's assert is decided by the box's power regime, which min-of-3 cannot see — 3.9 s on the reviewer's box; the headline never names the variable | measurement | [x] |
+| [M7-R10](reviews/M7.md#m7-r10) | M7-R6's unit fix reached one number too far — `903 ms/K(i)B` now appears in both units in the same file | docs | [x] |
 
 <a id="backlog"></a>
 ## Backlog — documented, not scheduled

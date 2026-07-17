@@ -113,12 +113,15 @@ exists.
 `tests/m7_latency.rs`: one realistic Claude Code turn — 112 fields, 22,823 B (22.3 KiB) — as the walk actually
 sees it (one big `system`, 10 medium `tools[].description`, 100 tiny `input_schema` descriptions,
 one ~130 B user message holding all the PII). The shape is **asserted**, not hoped for: the first
-draft came out at 13.5 KB because I wrote 350-byte tool descriptions when the real ones are 1–4 KB,
+draft came out at 13.5 KiB because I wrote 350-byte tool descriptions when the real ones are 1–4 KB,
 and the guard rejected it. That guard is the whole point of the file.
 
-**A realistic turn masks in ~4.2–4.7 s — not 27 s.** The 903 ms/KiB headline came from a blob densely
-packed with Italian names; a realistic turn runs at ~190–210 ms/KiB. Per field, before any change
-(one sample — see the S1 note on this harness's noise):
+**A realistic turn masks in ~4.2–4.7 s — not 27 s.** The 903 ms/KB headline came from a blob densely
+packed with Italian names; a realistic turn runs at ~190–210 ms/KiB. *(The `ms/KB` there is the
+pre-M7 entry's own unit, hand-computed from a live trace, and nothing records whether its `29.4 KB`
+was ÷1024 or ÷1000 — so it stays as written. The M7 fixture's figures are KiB because the harness
+divides by 1024 and prints it. Relabelling the old number would be asserting a unit nobody measured
+— M7-R10.)* Per field, before any change (one sample — see the S1 note on this harness's noise):
 
 | part | fields | bytes | ms | ms/KiB | passes |
 |---|---|---|---|---|---|
@@ -218,24 +221,54 @@ so the READMEs lead that recommendation with RAM.
 > does not save you from reading a conclusion off a single sample. That is why the reps and the
 > spread column are now in the harness rather than in a reviewer's head.
 
-### S2 — the bar, honoured
+### S2 — the bar, honoured — and then re-learned as a *ratio* (M7-R9)
 
-**Met on both shipped shapes → stop.** 2.46 s at the **default** (pool 2 × intra 6) and 2.11 s at
-`NER_POOL_SIZE=1` (1 × 12), best of 3. `S3` (content-keyed cache) and `S4` (skip the NER on later
-passes) are **not implemented, deliberately**. Both were gated on the bar being missed; both put real
-risk on the masking path — state, and lost detection respectively — and buying that risk for speed
-already banked is how a privacy tool grows a leak. The bar was declared *before* the numbers
-precisely so this decision couldn't be rationalised afterwards.
+**Met on both shipped shapes → stop.** **2.46 s** at the default (pool 2 × intra 6) and **2.11 s** at
+`NER_POOL_SIZE=1` (1 × 12), best of 3, **on AC**. `S3` (content-keyed cache) and `S4` (skip the NER on
+later passes) are **not implemented, deliberately**. Both were gated on the bar being missed; both put
+real risk on the masking path — state, and lost detection respectively — and buying that risk for speed
+already banked is how a privacy tool grows a leak. The bar was declared *before* the numbers precisely
+so this decision couldn't be rationalised afterwards.
 
-**The bar now guards both shapes, and that is a fix, not a flourish** (M7-R1). The first cut asserted
-it on `pool=1` only — while `server.rs` defaults to `pool=2`. So the guard had ~28% headroom on a
-configuration nobody runs and **none** on the one they do, and it reported the personal shape's
-number as the default's. Both now resolve through the server's own function.
+**The bar guards both shapes** (M7-R1). The first cut asserted it on `pool=1` only — while `server.rs`
+defaults to `pool=2` — so it had ~28% headroom on a configuration nobody runs and **none** on the one
+they do. Both now resolve through the server's own function.
 
-**Stated honestly:** the fixture is 22.3 KiB and real Claude Code turns run **20–40 KB**. At the top
-of that range the same rates give **~4.4 s at the default** (~3.8 s at `NER_POOL_SIZE=1`) — **over
-the bar**. The bar is met for a realistic turn, not for the worst one. If the re-run battery (S6)
-lands over it on real traffic, S3 is the next lead and its threat argument is already written.
+> **"On AC" is doing more work in that first sentence than every knob in S1, and I did not know it
+> until the review (M7-R9).** The *same* code, fixture and box: **2,462 / 3,943 / 4,933 ms**, three
+> occasions, each with a within-run spread under 7%. Power and thermal regime, nothing else. So
+> min-of-3 — my own fix for M7-R2's noise — was **precise and wrong**: it removes jitter, and a regime
+> shift is not jitter. All three reps sit *inside* the regime and agree tightly on the wrong number.
+> My harness footer had already said the drift was *between* runs; I then built the guard on the
+> statistic that only sees *within* them.
+>
+> **M7-R1 taught this milestone to name a number's shape. The number had a second, larger un-named
+> variable** — worth ~2×, where the shapes were worth ~1.17×. *Naming one variable does not make a
+> measurement reproducible; it makes the un-named ones harder to notice.*
+>
+> **So the assert is now a ratio, and the ~3 s figure is a reported claim, not a guard.** The bar test
+> measures the **pre-M7 shape** (`2×1`) as a calibration leg *in the same run*, seconds from the
+> shapes under test, and asserts `pre_m7 / shape > 1.5`. The regime divides out: measured **1.85×**
+> (AC), **2.26×** (battery), **2.10×** (a throttled AC run) while the absolute moved 2×. A ratio
+> catches a real regression in any regime and cannot go red because a laptop is unplugged — which the
+> 3 s assert did, while staying blind to a genuine 20% regression (2,462 → 2,954 still shipped green).
+> A loose 8 s ceiling remains, to catch the order-of-magnitude case only, and its message says *check
+> your power state first*.
+
+**Stated honestly, twice over.**
+- **Field size:** the fixture is 22.3 KiB; real Claude Code turns run **20–40 KB**. At the top of that
+  range the same rates give **~4.4 s at the default** — over the bar.
+- **Regime:** on this box **throttled**, a turn is ~4.9 s — also over the bar. And M7 exists for the
+  personal proxy in front of Claude Code, i.e. **a laptop**, whose normal state is the throttled one.
+
+So the bar is met **for a realistic turn on a box running at full speed**, which is a narrower claim
+than "M7 is done" and is the one the evidence supports. The stop decision still stands: the ~2× is
+banked and regime-invariant, and the remaining variance is a power governor, not the code — chasing it
+with a cache would be optimizing against a laptop's thermal policy. **But S3 is now the named lead for
+both open cases** (the 40 KB turn and the throttled box), and it is the right one: the boilerplate is
+byte-identical every turn, so a content-keyed cache makes turn 2+ nearly free *regardless of regime*.
+If the CC battery re-run (S6) says the latency still bites in practice, that is where to go, and its
+threat argument is already written.
 
 ### An asymmetry worth recording for whoever picks this up
 

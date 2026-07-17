@@ -518,16 +518,31 @@ its shape is **asserted**, not assumed.
   - **Do not "improve" it with a captured real body.** The trace log has one, but it is already
     **masked**, so its NER pass finds nothing and the measurement lies *optimistically*. Synthesize
     the shape, not the content.
-- **PERF-M7-05** — `m7_s2_the_bar_holds_for_every_shipped_shape`. **M7's bar, made executable**: a
-  realistic turn under **3 s**, asserted on the **minimum of 3 reps**, for **every shape we ship** —
-  the pooled default (`NER_POOL_SIZE` unset → 2 × 6) *and* the single-client shape
-  (`NER_POOL_SIZE=1` → 1 × 12). Measured 2.46 s / 2.11 s. The bar is what decides whether S3/S4 get
-  built, so it is the one guard that must not be able to lie.
-  - **Why both shapes, and why min-of-N (M7-R1, M7-R2).** The first cut asserted one sample on
-    `pool=1` only — while the *server* defaults to `pool=2`. So the bar had ~28% headroom on a
-    config nobody runs and **none on the one they do**, and a single sample against ~5% headroom is
-    a coin flip, not a guard. Both shapes now resolve through `onnx::resolve_pool_and_intra` — the
-    **server's own** function — so the harness cannot drift from production again.
+- **PERF-M7-05** — `m7_s2_the_bar_holds_for_every_shipped_shape`. **M7's deliverable, guarded as a
+  RATIO**: it measures the **pre-M7 shape (`2×1`) as an in-run calibration leg** and asserts every
+  shipped shape is **≥1.5×** it — the pooled default (`NER_POOL_SIZE` unset → 2 × 6) *and* the
+  single-client shape (`NER_POOL_SIZE=1` → 1 × 12), min of 3 reps each. Plus a **loose 8 s** absolute
+  ceiling for order-of-magnitude regressions only.
+  - **Why a ratio and not the ~3 s bar (M7-R9) — the most useful thing in this catalog entry.** Same
+    code, same fixture, same box: **2,462 / 3,943 / 4,933 ms**, three occasions, each with a
+    within-run spread under 7%. The variable was the machine's **power and thermal regime**. So a
+    wall-clock assert is a **box-state detector**: red because a laptop is unplugged, green through a
+    genuine 20% regression (2,462 → 2,954). The ratio is the part that is about the code, and it held
+    at **1.85× / 2.26× / 2.10×** across all three regimes. **The ~3 s figure lives on as a reported
+    product claim in the READMEs** — with its box *and its power state* named — which is the honest
+    home for a statement about user-perceived latency.
+  - **Min-of-N was the wrong fix, and knowing why matters more than the fix.** It answers M7-R2's
+    *jitter*, and a regime shift is not jitter: all N reps sit inside the regime and agree tightly on
+    the wrong number. **Precise, and wrong.** The harness's own footer had already said the drift was
+    *between* runs.
+  - **Why both shapes (M7-R1).** The first cut asserted `pool=1` only, while the *server* defaults to
+    `pool=2` — ~28% headroom on a config nobody runs, none on the one they do. Both now resolve
+    through `onnx::resolve_pool_and_intra`, the **server's own** function, so the harness cannot drift
+    from production again.
+  - **It measures and prints every row before asserting any**, because the first cut asserted inside
+    the loop: a failure on the default meant the personal shape never ran and never printed, on a test
+    whose entire purpose is the two-row comparison. **A guard must not destroy the evidence needed to
+    interpret it.**
 - **PERF-M7-02** — `m7_s0_what_the_ner_finds_in_boilerplate_that_has_no_pii`. Prints every entity
   the hybrid finds in text that carries **no PII by construction**. Each hit is a false positive that
   costs its field a **second full NER scan**. Measured: `(Organization, "An")` — a two-character
@@ -567,10 +582,19 @@ its shape is **asserted**, not assumed.
     what makes M7-R1's harness/server drift structurally impossible.
 - **NER-THREAD-01** — `tests/ner_perf.rs::m7_r3_intra_threads_changes_speed_not_detection`
   (`--features onnx`, `#[ignore]`d, needs a model). **`NER_INTRA_THREADS` must change speed, never
-  detection** — fingerprints `(kind, span.start, span.end)` over prose, a chunked >512-token field,
-  CJK, and the fragment-prone `"Anthropic's"` shape, at intra 1 / 2 / 4 / 6 / all-cores, and asserts
-  every set is **identical**. Measured: 134 entities, identical at every count (and it carries a
-  non-vacuity floor, so a guard that detects nothing cannot pass).
+  detection** — fingerprints `(kind, span.start, span.end)` over prose, **a field past the
+  `MAX_WINDOW_TOKENS` chunking window** (~660 tokens), CJK, and the fragment-prone `"Anthropic's"`
+  shape, at intra 1 / 2 / 4 / 6 / all-cores, and asserts every set is **identical**. Measured: **194
+  entities**, identical at every count, with a non-vacuity floor so a guard that detects nothing cannot
+  pass.
+  - **Its chunked input is asserted in *tokens*, through the real tokenizer (M7-R8).** The first cut
+    asserted `long_field.len() > 2_000` — **bytes** — for a branch `infer_chunked` takes on **tokens**
+    (`> MAX_WINDOW_TOKENS` = 480). The input was 2,360 bytes and cleared it by 18% while being **442
+    tokens**: 38 short of the trigger, so the guard covered **zero** chunked inputs — the one case
+    M7-R3 named as the whole reason to have it. This is [M5-R10](reviews/M5.md#m5-r10)'s shape a file
+    over (*the assert pins a proxy in the wrong unit, not the property the code depends on*), and the
+    M4 retrospective's lesson 6: **a quantity a test never varies is a quantity the test cannot see.**
+    Third time in this repo. The constant is imported, never hand-copied ([M5-R9](reviews/M5.md#m5-r9)).
   - **Why it exists (M7-R3):** every *recall* guard in this repo pins `intra=1` **on purpose** — a
     score that moves with the runner's core count is worthless — so the one knob M7 changed was the
     one knob nothing exercised. The property is **empirical**: ORT repartitions reduction work across

@@ -158,27 +158,37 @@ organizations and locations — nothing else.
 ### Latency — also measured, on a realistic payload
 
 Masking one **realistic Claude Code turn** (22.3 KiB: system prompt + 10 tool schemas + a user
-message), 2026-07-17, same box (6 cores / 12 threads), debug build, **best of 3**:
+message), 2026-07-17, reference box (Ryzen 5 PRO 8540U, 6 cores / 12 threads), **on AC power**,
+debug build, best of 3:
 
 | detection | per turn | per KiB |
 |---|---|---|
 | **structured only** | **~20 ms** | ~0.9 ms |
-| **hybrid**, default (`NER_POOL_SIZE` unset → pool 2, threads derived → 6) | **~2.5 s** | ~114 ms |
-| **hybrid**, single-client shape (`NER_POOL_SIZE=1` → 12 threads) | **~2.1 s** | ~95 ms |
+| **hybrid** (either shape — see below) | **~2.5 s** | ~110 ms |
 
 **The NER is ~100% of the cost** — the deterministic layer is well over 100× faster on the same
-bytes. If you front a single client (a coding agent, an IDE), set **`NER_POOL_SIZE=1`**: it
-**halves the RAM** (one session instead of two — that is arithmetic, not a benchmark), and a single
-request only ever occupies one session anyway, so the pool buys it nothing. The pooled default
-exists for a **shared** proxy, where it is worth ~30% more throughput — a real trade, measured.
+bytes.
 
-> **Measure on your own box before believing any of this**, and take the numbers with the noise they
-> carry: `cargo test-onnx --test m7_latency -- --ignored --nocapture`. The harness prints the
-> per-field breakdown, a thread sweep with min/median/**spread**, and the concurrency figures. On our
-> reference box the same configuration drifts ~40% between runs, so small deltas here are noise —
-> the two rows above are separated by less than that, which is why the `NER_POOL_SIZE=1` advice
-> leads with RAM rather than speed. A *release* build is irrelevant (measured: 3%) — the cost is
-> inside ONNX Runtime, a prebuilt native library.
+**"On AC" is not a footnote — it is worth more than any tuning below.** The *same* code, fixture and
+box masked this turn in **2.5 s, 3.9 s and 4.9 s** on three occasions, differing only in the
+machine's power and thermal regime. So read the number above as *what this laptop does when it is
+allowed to run*, and expect roughly **2× worse when throttled**. What is stable across all of that is
+the *improvement*: the shipped default is consistently **~1.9–2.3×** faster than the pre-threading
+version, which is the part that is about the code rather than the box.
+
+**Which shape should you run?** If you front a single client (a coding agent, an IDE), set
+**`NER_POOL_SIZE=1`**: it **halves the RAM** — one ONNX session instead of two, which is arithmetic
+rather than a benchmark — and costs you nothing, because a single request only ever occupies one
+session anyway. **Latency between the two shapes is a wash** (we have measured each winning by ~15%
+on different runs; the difference is inside this box's noise). The pooled default exists for a
+**shared** proxy, where it is worth ~30% more throughput — that one *is* a real, measured trade.
+
+> **Measure on your own box before believing any of this:** `cargo test-onnx --test m7_latency --
+> --ignored --nocapture`. The harness prints the per-field breakdown, a thread sweep with
+> min/median/**spread**, the concurrency figures, and — because absolute milliseconds are not
+> comparable across machines or power states — **a speedup ratio against an in-run calibration leg**,
+> which is. A *release* build is irrelevant (measured: 3%): the cost is inside ONNX Runtime, a
+> prebuilt native library, so compiling our Rust harder changes nothing.
 
 ---
 
