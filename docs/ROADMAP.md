@@ -799,6 +799,22 @@ across every regime), which is the part that is about the code.
 | [M7-R15](reviews/M7.md#m7-r15) | M7-R8's closure credits the chunked path with 60 entities that are 20 extra sentences | docs | [x] |
 | [M7-R16](reviews/M7.md#m7-r16) | The byte-proxy assert M7-R8 killed is still alive 90 lines down, guarding the same property | guard | [x] |
 
+**Round 4 (2026-07-17) — closure verification + the AC/battery correction (`2aad0cc`, docs-only): all
+16 round-1–3 findings hold; the new framing is supported and independently corroborated.** Re-verified
+the suite (85 default / **104** onnx lib, `fmt`/`clippy` clean on both feature sets); `m7_s2` green on
+three isolated runs. `2aad0cc` claims only that the owner's statement *removes* the AC/battery
+explanation — not that it explains the 2.5–7.1 s spread — and the READMEs, ROADMAP, DEVLOG and R12's
+addendum all hold that line (the remaining spread is stated unaccounted-for except the measured 1.50×
+test-concurrency factor). **Corroborated from the box the docs could not read:** its AC power overlay is
+literally Windows' *"Best power efficiency"*, so "AC" and "battery-efficiency" are the same plan on this
+machine, as the owner said. **Two new low-severity findings, both [M7-R11](reviews/M7.md#m7-r11)'s
+pattern a fifth time** — a correction that stops one instance short.
+
+| ID | Title | Sev | Status |
+|---|---|---|---|
+| [M7-R17](reviews/M7.md#m7-r17) | 2aad0cc's AC/battery correction reached the four doc headlines but not TESTING:533 or the harness source, which still cite "battery beat three AC runs" as distinct regimes | docs | [ ] |
+| [M7-R18](reviews/M7.md#m7-r18) | The advertised "~1.8–2.3× / 1.81–2.26× across every regime" default speedup is undercut by a clean isolated run (default 1.71–1.75×); the `1.5×` guard floor is unaffected | measurement | [ ] |
+
 <a id="backlog"></a>
 ## Backlog — documented, not scheduled
 
