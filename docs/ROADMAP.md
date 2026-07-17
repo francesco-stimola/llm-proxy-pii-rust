@@ -655,6 +655,24 @@ DEVLOG 2026-07-16 → *M7 implementation plan*; start at S0.**
 > — 27,728 ms → 26,863 ms on 29 KB. The cost is inside ONNX Runtime, a prebuilt native library that
 > is already optimized; compiling *our* Rust harder changes nothing.
 
+<a id="m7-ledger"></a>
+### Review ledger — M7 → [`reviews/M7.md`](reviews/M7.md)
+**Round 1 (2026-07-17): 7 findings — no leak, no fail-open, no detection regression.** The S0
+refutation reproduces exactly; `intra_threads` was verified **empirically inert** for detection
+(identical spans at intra 1…12), and the stop-at-the-bar decision holds. The findings are about the
+**measurement and its record** — which, for a milestone whose deliverable *is* a measurement, is
+where the risk lives.
+
+| ID | Title | Sev | Status |
+|---|---|---|---|
+| [M7-R1](reviews/M7.md#m7-r1) | The headline "2.17 s" and the executable bar measure `NER_POOL_SIZE=1`, which the server does not default to | measurement | [ ] |
+| [M7-R2](reviews/M7.md#m7-r2) | The sweep draws settled conclusions from n=1 runs; the SMT one does not replicate (sign flips; noise > effect) | measurement | [ ] |
+| [M7-R3](reviews/M7.md#m7-r3) | Nothing pins `intra_threads`' detection-inertness — every recall guard pins `intra=1`; verified true, guarded by nothing | invariant | [ ] |
+| [M7-R4](reviews/M7.md#m7-r4) | THREAD-01's `cores.max(pool)` silently exempts the one regime where the product *does* exceed the box | test-quality | [ ] |
+| [M7-R5](reviews/M7.md#m7-r5) | `NER_POOL_SIZE=0` isn't filtered like `NER_INTRA_THREADS=0`; the startup log then names a pool the process lacks | observ. | [ ] |
+| [M7-R6](reviews/M7.md#m7-r6) | The fixture is 22.3 KiB, not 22.8 KB — and the `ms/KB` columns use the other unit | docs | [ ] |
+| [M7-R7](reviews/M7.md#m7-r7) | The `(Organization, "An")` over-mask — deferring is right; its only durable home is the archive | tradeoff | [ ] |
+
 <a id="backlog"></a>
 ## Backlog — documented, not scheduled
 
