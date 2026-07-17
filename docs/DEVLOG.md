@@ -3,6 +3,68 @@
 Newest first. One entry per meaningful change — note *what* and *why*, not just
 *what*. This is the running history so context is never lost between sessions.
 
+## 2026-07-17 — `NER_POOL_SIZE` default flips 2 → 1 (the personal shape becomes the default)
+
+**Source + docs.** `DEFAULT_POOL_SIZE` is now **1**. The dominant deployment is a personal proxy in
+front of a single client (Claude Code, concurrency ≈ 1), and a single request only ever occupies one
+session (S1a — the field walk holds `&mut Vault`, `infer_chunked` loops its windows, only then does
+the session run), so a second pooled session buys a lone request **nothing** while holding a second
+copy of the model. So the lean default is one session: the whole box for the in-flight request, and
+**less RAM** (how much — measured — is its own paragraph below; the earlier "half" was arithmetic and
+wrong). That is `CLAUDE.md`'s *low-RAM* bar applied to the case almost everyone runs. M7 had already
+identified `(1, 12)` as the personal shape and documented it — it just left the
+*default* on the pooled `(2, 6)`; this flips which of the two documented shapes an operator gets by
+setting nothing.
+
+**What it is NOT: a latency win.** `intra = cores` vs `cores/2` is inside this box's noise — the SMT
+question (`1×6` vs `1×12`) is UNRESOLVED (M7-R2/S1), its sign flips run to run. Latency between the
+two shapes is a wash. Anyone reading this flip as "~2× faster single request" is re-reading the noise
+M7 spent three rounds learning not to.
+
+**The cost, named (not papered over).** `pool=1` measured **−23% throughput** under concurrent load
+— two independent measurements plus a mechanism: intra-op scaling is sublinear, so N sessions ×
+cores/N threads aggregate better than one × cores (2026-07-16 entry below, PERF-M7-04). The flip is
+scoped around exactly that: it targets the **personal** case, which has no concurrency to lose the
+23% on, while the RAM it saves is real. A **centralizing** operator serving concurrent clients sets
+`NER_POOL_SIZE=N` to reclaim the throughput — which is why the pool stays an override rather than the
+default's job.
+
+**RAM, measured — and the "half" was wrong.** The pre-flip docs said `pool=1` "halves the RAM",
+reasoning `834 MB / 2 sessions ≈ 400 MB each`. Measured properly (idle resident, same debug build,
+2026-07-17): **`pool=1` = 563 MB private (585 MB working set), `pool=2` = 834 MB** — and the `pool=2`
+figure reproduces the README's prior 834 MB exactly, so the method matches. So it is **~290 MB of
+shared base + ~270 MB per session** (`pool=N` ≈ 290 + N×270 MB) — *not* a clean doubling, because the
+ONNX runtime and the first session's arenas don't duplicate. Dropping the second session saves
+~270 MB (**about a third**, not half); `pool=6` is ~1.9 GB, not the ~2.5 GB the `834/2` split
+projected. That `834/2 ≈ 400-per-session` arithmetic assumed **zero base** — the same class of error
+this milestone keeps naming, a number never checked against what the product does. README /
+ARCHITECTURE / the config knobs now carry the measured scaling; this is the number to quote.
+
+**Semantics that moved with it (M7-R13 / M7.1).** Under `pool=2`, `intra` floored at 1 below 4 cores,
+so the derived default *was* `PRE_M7_SHAPE (2,1)` and M7's ratio was 1.0 by construction — nothing to
+deliver on a small box. Under `pool=1` the derivation is `intra = cores`, so that identity now holds
+**only at 1 core**; from two cores up the default already adds threads a lone request can use. The
+latency harness still skips its ratio guard below 4 cores, but for a **different** reason now — the
+few-thread shapes there are too thread-poor to clear the 1.5× floor reliably (untested on a small
+box), not because the ratio is 1.0 by construction. The unit test pinning the derivation is renamed
+`the_default_gives_one_session_the_whole_box`; `bar_shapes` in `m7_latency.rs` now guards the default
+`(1,12)` **and** the centralized `(2,6)`.
+
+**Exercised live the same day, leak-clean in both postures.** The hybrid ran a real Claude Code
+session through the proxy against real Anthropic. **Run OFF** (old default `pool=2`) on a
+name/org/location turn: the client saw the **restored real values**, the outbound trace carried only
+`[PERSON_1]/[ORG_1]/[LOCATION_1]`, and a DBG-02 grep for the three raw values returned **0 hits**.
+**Run ON** (`PII_DEBUG_SKIP_DEMASK=1`, new default `pool=1` → `intra=12`) on a JSON-extraction turn:
+the client saw the **placeholders** (`[PERSON_4]/[EMAIL_2]/[IBAN_1]`), the outbound body carried only
+placeholders, and a pattern scan found **no** real email or IBAN. Both postures held independently.
+The one thing still open for a *formal* CC-battery closure is the strict **same-prompt** OFF/ON
+pairing (the runbook's "same round-trip, two halves" proof) — here the two runs used different
+prompts.
+
+Files: `src/pii/onnx.rs` (default + `thread_tests`), `tests/m7_latency.rs` (`bar_shapes`,
+`MIN_CORES_FOR_A_MEANINGFUL_RATIO` rationale, S1 docs), `docs/ARCHITECTURE.md`, `docs/TESTING.md`,
+`docs/MANUAL_VERIFICATION.md`, `README.md` + `README.it.md`.
+
 ## 2026-07-16 — The onnx build gets its own target dir (the clobber footgun, closed)
 
 **Infra, no source change.** The default and `onnx` builds both wrote

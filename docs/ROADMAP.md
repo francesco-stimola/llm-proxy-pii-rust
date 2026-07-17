@@ -35,7 +35,7 @@ completion**; findings, counts and closure notes live in each milestone's sectio
 | [M4 — Broad locale & language coverage](#m4) | ✅ complete |
 | [M5 — Integration & performance testing](#m5) | ✅ complete |
 | [**M6 — Native Anthropic `/v1/messages`**](#m6) | ✅ **code-complete**, and **verified live**: a real Claude Code session round-trips through the proxy (2026-07-16) |
-| [**M7 — NER latency**](#m7) | 🔨 **code-complete, review ledger closed** (19 findings / 5 rounds, all closed; code byte-stable since round 3): **≥1.5× faster than pre-M7** (asserted floor; typically ~1.7–2.3×, scales with the box, **zero below 4 cores**). A realistic turn masks in **~4.7 s** at the shipped default on the reference box — **the ~3 s bar was missed; we stopped anyway** ([M7-R12](reviews/M7.md#m7-r12)). **One box left, and it needs a human: the CC battery re-run** (a live key + a real Claude Code) |
+| [**M7 — NER latency**](#m7) | 🔨 **code-complete, review ledger closed** (20 findings / 7 rounds, all closed; code byte-stable since round 3): **≥1.5× faster than pre-M7** (asserted floor; typically ~1.7–2.3×, scales with the box, **not asserted below 4 cores** — a strict no-op only at 1 core since the 2026-07-17 `NER_POOL_SIZE` default flip to `pool=1`). A realistic turn masks in **~4.7 s** at the shipped default on the reference box — **the ~3 s bar was missed; we stopped anyway** ([M7-R12](reviews/M7.md#m7-r12)). **One box left, and it needs a human: the CC battery re-run** (a live key + a real Claude Code) |
 | [First tagged release `1.0.0`](#m6) | ⬜ not started — gated on [M7](#m7)'s battery re-run: the product we advertise must be usable, not just correct |
 
 ---
@@ -601,9 +601,11 @@ DEVLOG 2026-07-16 → *M7 implementation plan*; start at S0.**
 - [x] **Use more than 1 core of 12.** `NER_INTRA_THREADS` (`src/pii/onnx.rs`,
   `resolve_pool_and_intra` / `default_intra_threads`) — explicit env wins, else **derived**:
   `max(1, available_parallelism() / NER_POOL_SIZE)`. Measured on both axes rather than picked by
-  intuition. **The default improves *both* axes over what shipped** — latency ~4.7 s → ~2.5 s
-  (~1.9×) *and* throughput 0.288 → 0.609 turns/s (2.11×) — so it is not a trade against the
-  shared-proxy case at all. Full tables: DEVLOG 2026-07-16.
+  intuition. **The intra-derivation improved *both* axes over the pre-M7 shape** — at the `2×6` M7
+  shipped as its default, latency ~4.7 s → ~2.5 s (~1.9×) *and* throughput 0.288 → 0.609 turns/s
+  (2.11×). The **shipped default is now `pool=1` since the 2026-07-17 flip** — a ~−23% throughput
+  trade *vs that pooled shape*, taken for the personal case's half-RAM (a centralizing operator sets
+  `NER_POOL_SIZE=N`); see DEVLOG 2026-07-17. Full tables: DEVLOG 2026-07-16.
 
 > **What the measurement overturned.** Three claims in this milestone's own text did not survive
 > contact with a realistic fixture. Recording them because the *pattern* is the point — this is
@@ -852,6 +854,20 @@ adds no finding: M7-R19's fix and the band unification both hold and are self-co
 live surface, `6f27f05`'s source diff is a single one-word comment edit, and the isolated guards re-ran
 green (85 default / 104 onnx lib; `m7_s2` 1.75×/2.01× ≥ the 1.5× floor; NER-THREAD-01 194 entities
 identical at intra 1…12). The findings trended 3→3→2→1→**0**. **The ledger is closed and stays closed.**
+
+**Round 7 ([2026-07-17](reviews/M7.md#review-7)) — the `NER_POOL_SIZE` default flip (2 → 1), a delta on
+the closed milestone.** Verified independently (104 onnx / 85 default lib green, `clippy-onnx` clean); the
+flip driven through the real model — an operator setting nothing now resolves to `pool=1 intra=12` (the
+whole box for a lone request, half the RAM), `NER_POOL_SIZE=2` gives the pooled `2×6`, both clearing the
+`≥1.5×` floor. No detection code changed; no leak, fail-open, over-mask or determinism impact — pool is a
+concurrency/RAM knob only. The −23% throughput cost of `pool=1` is named honestly everywhere the trade is
+discussed (ARCHITECTURE / TESTING / DEVLOG / both READMEs). **One docs finding:** the delta updated every
+doc *except this file*, so the M7 body still advertises the retired `pool=2` default in two current-state
+claims.
+
+| ID | Title | Sev | Status |
+|---|---|---|---|
+| [M7-R20](reviews/M7.md#m7-r20) | The ROADMAP M7 body still advertises the pre-flip `pool=2` default — "not a trade against the shared-proxy case at all" and "zero below 4 cores" now misdescribe the shipped `pool=1` | docs | [x] |
 
 <a id="backlog"></a>
 ## Backlog — documented, not scheduled

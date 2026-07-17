@@ -523,7 +523,7 @@ own default it silently measured a configuration the server does not ship (M7-R1
 > bounds `pool × intra` by the core count **while `pool ≤ cores`**. Beyond that it *cannot*: `intra`
 > floors at 1 and nothing clamps `NER_POOL_SIZE`, so `NER_POOL_SIZE=8` on a 2-core box is 8 threads
 > on 2 cores and no choice of `intra` fixes it. **That is an operator error the proxy does not
-> defend against** — it hits the ~400 MB-per-session RAM wall long before the thread wall. An
+> defend against** — it hits the ~270 MB-per-session RAM wall long before the thread wall. An
 > invariant asserted unconditionally but true only in one regime is worse than a bounded one: the
 > first version of THREAD-01 wrote the exception into a `cores.max(pool)` term, which green-lit
 > exactly that case under a test name claiming the opposite.
@@ -532,14 +532,19 @@ own default it silently measured a configuration the server does not ship (M7-R1
 lone request gets.** The masking path is sequential at three nested levels: the field walk holds
 `&mut Vault`, `infer_chunked` loops its windows, and only then does the session run. A lone request
 therefore reaches `intra`, never `pool × intra`, and the pool is **inert at concurrency 1**
-(measured: `2×1` ≈ `1×1`). This is why the right shape is a **deployment** question the proxy
-cannot answer for itself: a personal proxy in front of Claude Code (concurrency ≈ 1) wants
-`NER_POOL_SIZE=1` → all cores on the one request, and half the RAM since each session holds its own
-copy of the weights; a shared proxy wants the pooled shape. **Both are legitimate, which is why
-this is config with a derived default rather than a constant.** Neither is free: `pool=1` was
-measured at **−23% throughput** under concurrent load, because intra-op scaling is sublinear
-(12 threads buy ~2.2×, not 12×) and independent sessions aggregate better. Numbers: DEVLOG
-2026-07-16.
+(measured: `2×1` ≈ `1×1`). The right shape is a **deployment** question the proxy cannot answer for
+itself — but it *can* default to the case almost everyone runs. **The shipped default is
+`NER_POOL_SIZE=1` (flipped from 2 on 2026-07-17):** a personal proxy in front of Claude Code
+(concurrency ≈ 1) gets all cores on its one request and ~270 MB less RAM, since each session holds
+its own copy of the weights — **measured: 563 MB at `pool=1` vs 834 MB at `pool=2`** (a ~290 MB
+shared base plus ~270 MB per session, so `pool=N` ≈ 290 + N×270 MB — not a clean doubling). A
+**centralizing** operator serving concurrent clients sets `NER_POOL_SIZE=N` for the pooled shape. **The flip is not free, and the cost is named:** `pool=1`
+measured **−23% throughput** under concurrent load — intra-op scaling is sublinear (12 threads buy
+~2.2×, not 12×), so independent sessions aggregate better — but that cost lands only on concurrency
+the default's target does not have, while the RAM it saves is certain. This is the `low-RAM` bar in
+`CLAUDE.md` applied to the dominant deployment; a constant would be wrong on a 2-core VM and a
+64-core server alike, which is why it stays overridable. Numbers: DEVLOG 2026-07-16; the flip: DEVLOG
+2026-07-17.
 
 > **Parallelize *detection*, never *minting*.** Chunk-level fan-out would be safe — windows are
 > read-only w.r.t. the `Vault` and `infer_chunked` already merges them deterministically. The

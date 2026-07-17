@@ -142,18 +142,23 @@ hardware; large fields are chunked so long documents work too.
 
 ### Footprint — measured, not claimed
 
-Resident memory, measured 2026-07-16 (Windows, debug build, idle after startup):
+Resident memory (Windows, debug build, idle after startup; structured-only measured 2026-07-16, the
+hybrid pool rows 2026-07-17):
 
 | build | private | working set | what dominates |
 |---|---|---|---|
 | **structured only** (default features) | **~10 MB** | ~36 MB | nothing — it's regex |
-| **hybrid** (`--features onnx`, XLM-R int8, `NER_POOL_SIZE=2`) | **~834 MB** | ~862 MB | the NER: **two** ONNX sessions, i.e. the model held twice |
+| **hybrid**, default `NER_POOL_SIZE=1` (`--features onnx`, XLM-R int8) | **~563 MB** | ~585 MB | the NER: **one** ONNX session |
+| **hybrid**, `NER_POOL_SIZE=2` | ~834 MB | ~856 MB | **two** sessions — the model held twice; each session adds **~270 MB** |
 
-The deterministic layer is essentially free; **the model is the whole cost**, and it is tunable:
-`NER_POOL_SIZE` (default `2`) trades concurrency for memory — `1` roughly halves it. Pick the
-build to match the threat you actually have: structured-only already covers emails, IBANs, cards,
-secrets and 10 national ID schemes, and it is language-independent. The NER buys you names,
-organizations and locations — nothing else.
+The deterministic layer is essentially free; **the model is the whole cost**, and it scales with the
+pool: **~290 MB of shared base plus ~270 MB per session** (measured — 563 MB at `pool=1`, 834 MB at
+`pool=2`, so `pool=N` ≈ 290 + N×270 MB — *not* a clean doubling, because the runtime and the first
+session's arenas are shared). `NER_POOL_SIZE` (**default `1` since 2026-07-17**) is one session — the
+lean single-client shape; a **centralizing** proxy raises it to `N` for concurrent throughput at that
+RAM. Pick the build to match the threat you actually have: structured-only already covers emails,
+IBANs, cards, secrets and 10 national ID schemes, and it is language-independent. The NER buys you
+names, organizations and locations — nothing else.
 
 ### Latency — also measured, on a realistic payload
 
@@ -193,12 +198,16 @@ we published kept being undercut by the next clean run.) If you want to check th
 your own box, that ratio is what to check — the harness prints it, computed against a calibration
 leg measured seconds away in the same run.
 
-**Which shape should you run?** If you front a single client (a coding agent, an IDE), set
-**`NER_POOL_SIZE=1`**: it **halves the RAM** — one ONNX session instead of two, which is arithmetic
-rather than a benchmark — and costs you nothing, because a single request only ever occupies one
-session anyway. **Latency between the two shapes is a wash** (we have measured each winning by
-10–15% on different runs; the difference is inside this box's noise). The pooled default exists for a
-**shared** proxy, where it is worth ~30% more throughput — that one *is* a real, measured trade.
+**Which shape should you run?** The default — **`NER_POOL_SIZE=1`** (since 2026-07-17) — is the
+single-client shape (a coding agent, an IDE): it holds **one** ONNX session, so it uses **~270 MB
+less RAM** than the pooled shape (**measured**: 563 MB vs 834 MB — dropping the second session frees
+its ~270 MB copy of the weights, about a third off the total) and gives your one in-flight request
+the whole box. It costs the personal case **nothing**, because a single request only ever occupies
+one session anyway, and **latency between the two shapes is a wash** (we have measured each winning by
+10–15% on different runs; the difference is inside this box's noise). If instead you run a
+**shared / centralizing** proxy fronting concurrent clients, set **`NER_POOL_SIZE=N`**: the pool is
+worth **~30% more throughput** (equivalently, `pool=1` is ~−23% under concurrent load) — that one
+*is* a real, measured trade, bought at `N×` the model RAM.
 
 > **Measure on your own box before believing any of this:** `cargo test-onnx --test m7_latency --
 > --ignored --nocapture --test-threads=1`. **The `--test-threads=1` is load-bearing** — without it
@@ -292,7 +301,7 @@ Everything is environment-driven.
 | `NER_MODEL_PATH` + `NER_TOKENIZER_PATH` + `NER_LABELS` | *(unset)* | Explicit local model files — **zero outbound calls**, always wins if set |
 | `NER_MODEL_REPO` | *(unset)* | Opt-in auto-download (`owner/name`) of a revision-pinned model into the standard HuggingFace cache. The only outbound call in the whole tool, made once at startup, and it fetches **model artifacts, not user data** |
 | `NER_MODEL_REVISION` | `478a2a3` | Pinned revision for auto-download |
-| `NER_POOL_SIZE` | `2` | Concurrent ONNX session pool size. **`1` roughly halves RAM and is the shape to use in front of a single client** (see the latency note above) |
+| `NER_POOL_SIZE` | `1` | Concurrent ONNX session pool size. **Default `1`** = one session — the single-client shape (~563 MB, whole box per request). Raise to **`N`** for a centralizing proxy: ~30% more throughput at ~270 MB more RAM per session (see the latency note above) |
 | `NER_INTRA_THREADS` | *derived* | Threads **per session**. Defaults to `max(1, cores / NER_POOL_SIZE)` — the two knobs **multiply**, and the product must fit the box. Set it only if you know why |
 | `NER_REQUIRED` | off | **Fail closed for names**: a missing or failing NER blocks the request (400) instead of silently degrading to structured-only |
 

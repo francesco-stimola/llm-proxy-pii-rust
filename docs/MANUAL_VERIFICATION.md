@@ -74,9 +74,12 @@ cargo run-onnx     # rebuilds, THEN runs target\onnx\debug\ — see the box belo
 Confirm **both** lines before trusting a single result:
 
 ```text
-INFO … ONNX NER detector loaded model="…model_quantized.onnx" pool_size=2
+INFO … ONNX NER detector loaded model="…model_quantized.onnx" pool_size=1 intra_threads=…
 INFO … listening on http://127.0.0.1:8787
 ```
+
+(`pool_size=1` is the default since 2026-07-17 — one session, the whole box; `intra_threads` is the
+derived per-session count. A centralizing operator who set `NER_POOL_SIZE=2` would see that here.)
 
 > **`NER_REQUIRED=1` is not optional here, and this is why.** By default a missing or
 > unloadable NER degrades to structured-only **silently** (the deliberate fail-*open* posture

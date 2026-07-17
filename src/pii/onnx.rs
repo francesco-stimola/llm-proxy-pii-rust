@@ -121,16 +121,18 @@ const _: () = assert!(
 /// *saturated-load* count. A **single** request is sequential at three nested levels — the field
 /// walk holds `&mut Vault`, [`infer_chunked`](OnnxNerDetector::infer_chunked) loops its windows,
 /// and only then does the session run — so one request can reach `intra`, never `pool × intra`; the
-/// pool only wakes for a *second* concurrent request. At `pool = 2` this returns 6 on a 12-thread
-/// box, and a lone Claude Code request then leaves 6 cores idle. That is the right trade for a
-/// shared proxy and the wrong one for a personal proxy, which is exactly why it is overridable and
-/// why `NER_POOL_SIZE=1` is the documented personal-proxy shape.
+/// pool only wakes for a *second* concurrent request. At the shipped default `pool = 1` this returns
+/// the whole box (12 on a 12-thread box), so a lone Claude Code request gets every core — the
+/// personal-proxy shape, which is why it is the default. An operator *centralizing* for concurrent
+/// clients sets `NER_POOL_SIZE=N`: at `pool = 2` this returns 6 and a lone request then leaves 6
+/// cores idle — the right trade when a *second* request is there to use them, the wrong one when it
+/// never comes.
 /// **The bound this derivation actually provides, and its domain (M7-R4).** While `pool ≤ cores` it
 /// holds unconditionally: `intra = floor(cores/pool)`, so `pool × intra ≤ cores`. **Beyond that it
 /// cannot.** `intra` floors at 1 and nothing clamps `NER_POOL_SIZE`, so `pool > cores` oversubscribes
 /// by `pool` alone — `NER_POOL_SIZE=8` on a 2-core box is 8 threads on 2 cores, and no choice of
 /// `intra` fixes it. That is an operator error the proxy does not defend against (it hits the
-/// ~400 MB-per-session RAM wall long before the thread wall). The invariant is stated with its
+/// ~270 MB-per-session RAM wall long before the thread wall). The invariant is stated with its
 /// domain rather than absolutely, because an invariant that is false in a reachable regime is worse
 /// than no invariant.
 ///
@@ -147,11 +149,27 @@ pub fn available_cores() -> usize {
     std::thread::available_parallelism().map_or(1, |n| n.get())
 }
 
-/// **The shipped session-pool default.** A `pub const` and not a literal because the M7 latency
-/// harness must measure *what the server runs*: when these were two independent `unwrap_or`s they
-/// silently disagreed (2 vs 1), so M7's executable bar guarded a configuration nobody ships
-/// (M7-R1). One home, and the drift is structurally impossible rather than merely noticed.
-pub const DEFAULT_POOL_SIZE: usize = 2;
+/// **The shipped session-pool default — one session (was 2 through M7; flipped 2026-07-17).** The
+/// dominant deployment is a *personal* proxy in front of a single client (Claude Code, concurrency
+/// ≈ 1), and a single request only ever occupies one session (S1a), so a second pooled session buys
+/// a lone request nothing while adding a second ~270 MB copy of the model. So the lean default is one
+/// session: the whole box for the one in-flight request, and less RAM — measured **563 MB at
+/// `pool=1` vs 834 MB at `pool=2`** (a ~290 MB shared base + ~270 MB per session). This is the
+/// `low-RAM` bar in `CLAUDE.md` applied to the case almost everyone runs — and it is **not** a
+/// latency claim (`intra = cores` vs `cores/2` is inside this box's noise, M7-R2/S1). The trade it
+/// *does* make is throughput: under **concurrent** load `pool=1` measured **~−23%** turns/s versus
+/// the pooled shape (two independent measurements + a mechanism — intra-op scaling is sublinear, so
+/// N sessions × cores/N threads aggregate better than one × cores; DEVLOG 2026-07-16). The personal
+/// case has no concurrency to lose, so it pays nothing for the RAM it saves; an operator
+/// *centralizing* the proxy for concurrent clients sets `NER_POOL_SIZE=N` to reclaim that
+/// throughput. The flip and its measurement live in `ARCHITECTURE.md` → *NER threading* and DEVLOG
+/// 2026-07-17.
+///
+/// A `pub const` and not a literal because the M7 latency harness must measure *what the server
+/// runs*: when these were two independent `unwrap_or`s they silently disagreed, so M7's executable
+/// bar guarded a configuration nobody ships (M7-R1). One home, and the drift is structurally
+/// impossible rather than merely noticed.
+pub const DEFAULT_POOL_SIZE: usize = 1;
 
 /// Resolve `(pool, intra)` from the two env vars' raw values — **the single home of that policy**,
 /// so the server and the latency harness cannot resolve them differently (M7-R1/M7-R5).
@@ -538,7 +556,8 @@ mod thread_tests {
         // derived value the operator cannot reproduce from the logged inputs defeats the reason it
         // is logged, so both knobs must resolve `0` identically to unset.
         let unset = resolve_pool_and_intra(None, None, 12);
-        assert_eq!(unset, (DEFAULT_POOL_SIZE, 6));
+        // Default pool is 1, so an unset box derives intra = all cores (M7.1 flip).
+        assert_eq!(unset, (DEFAULT_POOL_SIZE, 12));
         assert_eq!(resolve_pool_and_intra(Some("0"), None, 12), unset);
         assert_eq!(resolve_pool_and_intra(None, Some("0"), 12), unset);
         assert_eq!(resolve_pool_and_intra(Some("0"), Some("0"), 12), unset);
@@ -558,37 +577,23 @@ mod thread_tests {
     }
 
     #[test]
-    fn the_derivation_is_a_no_op_on_a_small_box() {
-        // M7-R13. Below 4 cores the derived default IS the pre-M7 shape `(2, 1)` — `intra` floors
-        // at 1 and the pool default is 2 — so **M7 delivers nothing here**, and its speedup claim
-        // is undefined rather than merely smaller. That is a real property of the derivation and
-        // belongs in the code as a fact, not in a comment: `tests/m7_latency.rs` skips its ratio
-        // guard below this point precisely because the calibration leg and the shape under test
-        // would be the same configuration.
-        assert_eq!(
-            resolve_pool_and_intra(None, None, 1),
-            (DEFAULT_POOL_SIZE, 1)
-        );
-        assert_eq!(
-            resolve_pool_and_intra(None, None, 2),
-            (DEFAULT_POOL_SIZE, 1)
-        );
-        assert_eq!(
-            resolve_pool_and_intra(None, None, 3),
-            (DEFAULT_POOL_SIZE, 1)
-        );
-        // At 4 cores the derivation finally has something to say — and this is exactly where the
-        // ratio guard starts being meaningful.
-        assert_eq!(
-            resolve_pool_and_intra(None, None, 4),
-            (DEFAULT_POOL_SIZE, 2)
-        );
-        // The corollary worth pinning: the speedup **scales with the box**, so a claim like
-        // "~2x faster" is a claim about a 12-thread machine, not a universal one.
-        assert_eq!(
-            resolve_pool_and_intra(None, None, 12),
-            (DEFAULT_POOL_SIZE, 6)
-        );
+    fn the_default_gives_one_session_the_whole_box() {
+        // M7-R13, after the 2026-07-17 default flip (pool 2 -> 1). The default is now `pool=1`, so
+        // the derivation is `intra = cores`: one session, the whole box. The pre-M7 shape is
+        // `(2, 1)` (intra=1), and a single request only ever reaches `intra` (the pool is inert at
+        // concurrency 1), so the default matches the pre-M7 *thread count* — the case where M7
+        // delivers nothing — **only on a single-core box**. From two cores up it already adds
+        // threads a lone request can use.
+        assert_eq!(resolve_pool_and_intra(None, None, 1), (DEFAULT_POOL_SIZE, 1)); // the only no-op
+        assert_eq!(resolve_pool_and_intra(None, None, 2), (DEFAULT_POOL_SIZE, 2));
+        assert_eq!(resolve_pool_and_intra(None, None, 3), (DEFAULT_POOL_SIZE, 3));
+        assert_eq!(resolve_pool_and_intra(None, None, 4), (DEFAULT_POOL_SIZE, 4));
+        // The corollary worth pinning: the thread count — and so the speedup — **scales with the
+        // box**, so a claim like "~2x faster" is a claim about a 12-thread machine, not a universal
+        // one. `tests/m7_latency.rs` still skips its ratio guard below 4 cores, but for a *different*
+        // reason now (M7.1): not "ratio 1.0 by construction" (true only at 1 core here), but that
+        // the few-thread shapes below that are too thread-poor to clear the 1.5x floor reliably.
+        assert_eq!(resolve_pool_and_intra(None, None, 12), (DEFAULT_POOL_SIZE, 12));
     }
 
     #[test]
@@ -638,12 +643,13 @@ mod thread_tests {
 
     #[test]
     fn derives_the_documented_shapes() {
-        // The personal proxy (Claude Code, concurrency ~1): one session, the whole box. This is
-        // the shape that matters for M7's latency bar.
+        // The shipped default (M7.1): the personal proxy (Claude Code, concurrency ~1) — one
+        // session, the whole box. This is the shape that matters for M7's latency bar.
         assert_eq!(derive_intra_threads(1, 12), 12);
-        // The default pool on this 12-thread box: 6 each. Note what this means and why it is
-        // documented rather than hidden — a LONE request reaches 6, not 12, because one request
-        // only ever occupies one session (M7/S1a).
+        // The centralized shape an operator sets with `NER_POOL_SIZE=2` on this 12-thread box: 6
+        // each. Note what this means and why it is documented rather than hidden — a LONE request
+        // reaches 6, not 12, because one request only ever occupies one session (M7/S1a); the other
+        // 6 threads are there for a *second* concurrent request.
         assert_eq!(derive_intra_threads(2, 12), 6);
         assert_eq!(derive_intra_threads(4, 12), 3);
     }

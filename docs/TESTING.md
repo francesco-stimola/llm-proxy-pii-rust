@@ -520,9 +520,10 @@ its shape is **asserted**, not assumed.
     the shape, not the content.
 - **PERF-M7-05** — `m7_s2_the_bar_holds_for_every_shipped_shape`. **M7's deliverable, guarded as a
   RATIO**: it measures the **pre-M7 shape (`2×1`) as an in-run calibration leg** and asserts every
-  shipped shape is **≥1.5×** it — the pooled default (`NER_POOL_SIZE` unset → 2 × 6) *and* the
-  single-client shape (`NER_POOL_SIZE=1` → 1 × 12), min of 3 reps each. Plus a **loose 15 s** absolute
-  ceiling for order-of-magnitude regressions only.
+  shipped shape is **≥1.5×** it — the single-session default (`NER_POOL_SIZE` unset → 1 × 12, the
+  personal shape since the 2026-07-17 flip) *and* the pooled centralized shape (`NER_POOL_SIZE=2` →
+  2 × 6), min of 3 reps each. Plus a **loose 15 s** absolute ceiling for order-of-magnitude
+  regressions only.
   - **Run it isolated: `--test-threads=1` (M7-R12).** Cargo runs tests concurrently, so the old
     documented command had these benchmarks **measuring each other** — worth **1.50×** on the
     absolute at constant power (4,757 ms isolated → 7,142 ms contended). Three review rounds blamed
@@ -549,15 +550,19 @@ its shape is **asserted**, not assumed.
     the honest move is to state the limit rather than to imply it away. The **15 s** ceiling is
     order-of-magnitude only — it was 8 s, which fired on the harness's own documented command
     (median 10,391 ms) and blamed the power state for test concurrency.
-  - **Its domain (M7-R13).** Below **4 cores** the derived default *is* `PRE_M7_SHAPE`, so both legs
-    are the same configuration and the ratio is 1.0 by construction. The guard **skips and says so**
-    — the first cut asserted anyway and reported "a real regression in the thread work" on a box
-    where M7 has nothing to deliver. Pinned in `onnx::thread_tests::the_derivation_is_a_no_op_on_a_small_box`:
-    **the speedup scales with the box and is zero below 4 cores.**
-  - **Why both shapes (M7-R1).** The first cut asserted `pool=1` only, while the *server* defaults to
-    `pool=2` — ~28% headroom on a config nobody runs, none on the one they do. Both now resolve
-    through `onnx::resolve_pool_and_intra`, the **server's own** function, so the harness cannot drift
-    from production again.
+  - **Its domain (M7-R13 / M7.1).** The guard still **skips below 4 cores and says so**, but the
+    2026-07-17 default flip (`pool 2 → 1`) changed *why*. Under the old `pool=2` default `intra`
+    floored at 1 there, so the derived default *was* `PRE_M7_SHAPE` and the ratio was 1.0 by
+    construction. Under `pool=1` the derivation is `intra = cores`, so that identity holds **only at
+    1 core**; between 2 and 3 the derived shapes add threads but too few to clear the 1.5× floor
+    reliably, so 4 stays the conservative line. Pinned in
+    `onnx::thread_tests::the_default_gives_one_session_the_whole_box`: **the speedup scales with the
+    box, and this guard has nothing dependable to say below 4 cores.**
+  - **Why both shapes (M7-R1).** The first cut asserted `pool=1` only, while the *server* then
+    defaulted to `pool=2` — ~28% headroom on a config nobody ran, none on the one they did. Both now
+    resolve through `onnx::resolve_pool_and_intra`, the **server's own** function, so the harness
+    cannot drift from production. (Since the flip the default *is* `pool=1`, so PERF-M7-05 now guards
+    that default **and** the pooled `NER_POOL_SIZE=2` shape a centralizing operator sets.)
   - **It measures and prints every row before asserting any**, because the first cut asserted inside
     the loop: a failure on the default meant the personal shape never ran and never printed, on a test
     whose entire purpose is the two-row comparison. **A guard must not destroy the evidence needed to
@@ -583,8 +588,10 @@ its shape is **asserted**, not assumed.
 - **PERF-M7-04** — `m7_s1_throughput_under_concurrent_load_must_not_regress`. 4 concurrent turns,
   turns/s per shape. **The guard against optimizing latency by quietly wrecking the shared-proxy
   case** the pool was built for. It is what measured `pool=1` at **−23% throughput** (the reviewer
-  independently got −21%), refuting the builder's own "it is not a trade at all" and keeping the
-  default derived rather than repointed at the personal case.
+  independently got −21%), refuting the builder's own "it is not a trade at all". That −23% is
+  exactly why the 2026-07-17 default flip to `pool=1` is scoped the way it is: the flip targets the
+  **personal** proxy, which has no concurrency to lose that on, and a centralizing operator reclaims
+  it with `NER_POOL_SIZE=N` — this test is the reason that stays an override, not the default.
 - **THREAD-01** — `src/pii/onnx.rs::thread_tests` (unit, **no model needed**, runs in plain
   `cargo test --features onnx`). Pins the two pure functions the threading rests on, as functions of
   `(pool, cores)` — so the CI runner's core count cannot decide whether they are correct.

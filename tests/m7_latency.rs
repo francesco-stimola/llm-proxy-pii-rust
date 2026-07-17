@@ -437,9 +437,11 @@ fn build_hybrid_with(pool: usize, intra: usize) -> CompositeDetector {
 ///
 /// This used to resolve its own pool default of `1` while the server defaulted to `2`, so M7's
 /// executable bar measured the *personal-proxy* shape and reported the number as the *default's*.
-/// The two shapes differ, so that is a guard with 28% headroom on a config nobody runs and none on
-/// the one they do. The personal shape still gets measured — in `bar_shapes` below, and across the
-/// sweep — but it is now labelled rather than mistaken for the default.
+/// The two shapes differed, so that was a guard with 28% headroom on a config nobody ran and none on
+/// the one they did. Both now route through this function and the server's `DEFAULT_POOL_SIZE`.
+/// (Since the 2026-07-17 flip that default *is* `pool=1`, so the personal shape and the default have
+/// converged — but they are still resolved here, not assumed, and `bar_shapes` also guards the
+/// pooled `NER_POOL_SIZE=2` shape a centralizing operator sets.)
 fn build_hybrid() -> CompositeDetector {
     let (pool, intra) = resolve_pool_and_intra(
         std::env::var("NER_POOL_SIZE").ok().as_deref(),
@@ -451,16 +453,18 @@ fn build_hybrid() -> CompositeDetector {
 
 /// The shapes M7's bar must hold for, resolved through the **server's own** policy.
 ///
-/// Both are shipped configurations — the pooled default an operator gets by setting nothing, and
-/// the `NER_POOL_SIZE=1` shape the READMEs recommend for a single client. The bar is asserted on
-/// each, so the trade is documented in the one place that *fails* when it stops being true.
+/// Both are shipped configurations — the single-session default an operator gets by setting nothing
+/// (the personal shape, since the 2026-07-17 flip; `pool=1` → the whole box), and the pooled
+/// `NER_POOL_SIZE=2` shape a *centralizing* operator sets for concurrent clients. The bar is
+/// asserted on each, so the trade is documented in the one place that *fails* when it stops being
+/// true.
 fn bar_shapes() -> Vec<(&'static str, usize, usize)> {
     let cores = available_cores();
     let (default_pool, default_intra) = resolve_pool_and_intra(None, None, cores);
-    let (personal_pool, personal_intra) = resolve_pool_and_intra(Some("1"), None, cores);
+    let (shared_pool, shared_intra) = resolve_pool_and_intra(Some("2"), None, cores);
     vec![
-        ("default (NER_POOL_SIZE unset)", default_pool, default_intra),
-        ("personal (NER_POOL_SIZE=1)", personal_pool, personal_intra),
+        ("default / personal (NER_POOL_SIZE unset)", default_pool, default_intra),
+        ("centralized (NER_POOL_SIZE=2)", shared_pool, shared_intra),
     ]
 }
 
@@ -526,12 +530,19 @@ const MIN_SPEEDUP_VS_PRE_M7: f64 = 1.5;
 /// no ceiling; the win being guarded is 27 s → ~5 s, so 15 s still catches it with room.
 const ABSOLUTE_SANITY_CEILING_MS: f64 = 15_000.0;
 
-/// Below this many cores the derived default **is** [`PRE_M7_SHAPE`], so the calibration leg and the
-/// shape under test are the same configuration and the ratio is 1.0 **by construction** (M7-R13).
+/// Below this many cores the S2 ratio guard is skipped. **The reason changed with the 2026-07-17
+/// default flip (M7.1), while the number did not.** Under the old `pool=2` default `intra` floored at
+/// 1 below 4 cores, so the derived default *was* [`PRE_M7_SHAPE`] and the ratio was 1.0 **by
+/// construction** — nothing to measure (M7-R13). Under `pool=1` the derivation is `intra = cores`, so
+/// the default equals the pre-M7 *thread count* (ratio 1.0 by construction) **only at 1 core**;
+/// between 2 and 3 it does add threads, but too few to clear the [`MIN_SPEEDUP_VS_PRE_M7`] floor
+/// reliably. Measured only on the ≥12-core reference box, **4 is the conservative line** below which
+/// the few-thread shapes are untested against the floor and would false-fire. Either way the
+/// takeaway is unchanged: *M7's speedup scales with the core count, and this guard has nothing
+/// dependable to say below 4 cores.*
 ///
-/// `resolve_pool_and_intra(None, None, 2)` → `(2, 1)` — pinned in `onnx::thread_tests`. That is not
-/// a regression; it is M7 having **nothing to deliver on a small box**, which is worth saying out
-/// loud: *the speedup scales with the core count and is zero below 4 cores.*
+/// `resolve_pool_and_intra(None, None, 1)` → `(1, 1)` — intra = the pre-M7 shape's — pinned in
+/// `onnx::thread_tests::the_default_gives_one_session_the_whole_box`.
 const MIN_CORES_FOR_A_MEANINGFUL_RATIO: usize = 4;
 
 /// Measure one shape: warm the arenas, then the best of [`REPS`] turns.
@@ -720,8 +731,9 @@ fn m7_s0_a_realistic_claude_code_turn_measured_per_field() {
 /// tight band published got undercut by the next clean run. The ~3 s figure lives on where it
 /// belongs: a **reported product claim** in the READMEs, with its box and conditions named.
 ///
-/// **Both shapes, because both ship** (M7-R1): the pooled default an operator gets by setting
-/// nothing, and the `NER_POOL_SIZE=1` shape the READMEs recommend for a single client.
+/// **Both shapes, because both ship** (M7-R1): the single-session default an operator gets by
+/// setting nothing (the personal shape since the 2026-07-17 flip), and the pooled `NER_POOL_SIZE=2`
+/// shape a centralizing operator sets for concurrent clients.
 ///
 /// **What this guard does NOT see, stated because an honest guard states its blind spot (M7-R14).**
 /// The floor is 1.5 against a worst *observed* ~1.7, so it tolerates a **~13% regression** —
@@ -737,16 +749,19 @@ fn m7_s0_a_realistic_claude_code_turn_measured_per_field() {
 #[ignore]
 fn m7_s2_the_bar_holds_for_every_shipped_shape() {
     let cores = available_cores();
-    // M7-R13. Below 4 cores the derived default IS `PRE_M7_SHAPE`, so both legs are the same
-    // configuration and the ratio is 1.0 by construction. The old version asserted anyway and told
-    // the reader it had found "a real regression in the thread work, not a slow box" — a conclusion
-    // it had not earned, on a box where M7 simply has nothing to deliver. Say that instead.
+    // M7-R13 / M7.1. Below 4 cores the derived shapes are too thread-poor to clear the floor
+    // reliably (and at 1 core the default's intra=1 IS `PRE_M7_SHAPE`'s, ratio 1.0 by construction).
+    // The old version asserted anyway and told the reader it had found "a real regression in the
+    // thread work, not a slow box" — a conclusion it had not earned, on a box where M7 simply has
+    // nothing to deliver. Say that instead.
     if cores < MIN_CORES_FOR_A_MEANINGFUL_RATIO {
         eprintln!(
-            "\nSKIPPED: {cores} cores. The derived default here IS the pre-M7 shape \
-             ({:?}), so this guard's ratio is 1.0 by construction and can say nothing. M7's \
-             speedup scales with the box and is zero below {MIN_CORES_FOR_A_MEANINGFUL_RATIO} \
-             cores — that is a real property of the derivation, not a failure (M7-R13).",
+            "\nSKIPPED: {cores} cores. Under the pool=1 default the derived shapes here are too \
+             thread-poor to clear the {MIN_SPEEDUP_VS_PRE_M7}x floor reliably (and at 1 core the \
+             default intra=1 IS the pre-M7 shape {:?}'s thread count — ratio 1.0 by construction). \
+             M7's speedup scales with the box and this guard has nothing dependable to say below \
+             {MIN_CORES_FOR_A_MEANINGFUL_RATIO} cores — a real property of the derivation, not a \
+             failure (M7-R13 / M7.1).",
             PRE_M7_SHAPE
         );
         return;
@@ -849,7 +864,8 @@ fn m7_s2_the_bar_holds_for_every_shipped_shape() {
 ///
 /// It also measures the claim that reordered this milestone (S1a): a single request occupies **one
 /// session**, so growing the *pool* buys a lone request nothing, while growing *intra* does.
-/// `pool=2, intra=1` is today's shipped default.
+/// `pool=2, intra=1` is the pre-M7 baseline every row reads against; the shipped default is now
+/// `pool=1` → `intra=cores` (the `1×12` row on this box), one session over the whole machine.
 #[test]
 #[ignore]
 fn m7_s1_how_much_of_the_box_can_one_request_use() {
@@ -921,11 +937,18 @@ fn m7_s1_how_much_of_the_box_can_one_request_use() {
 /// latency**. Those are different goals, and the ROADMAP is explicit that throughput "must not
 /// regress silently" — so it gets measured, not argued.
 ///
-/// The question that decides the default: `pool=1, intra=all` serializes concurrent requests at
-/// the one session's mutex, but each of them then uses the whole box. `pool=N, intra=cores/N` runs
-/// them side by side, each on a slice. **The box is the box** — so total work per second should be
-/// roughly the same, and if it is, `pool=1` wins on every other axis (latency, and half the RAM,
-/// since each session holds its own copy of the weights).
+/// The question that **decided** the default (flipped to `pool=1` on 2026-07-17): `pool=1,
+/// intra=all` serializes concurrent requests at the one session's mutex, but each of them then uses
+/// the whole box. `pool=N, intra=cores/N` runs them side by side, each on a slice. **The box is the
+/// box, but intra-op scaling is sublinear** — so N sessions × cores/N threads aggregate *more*
+/// turns/s than one × cores, and this is not free: `pool=1` measured **~−23%** turns/s under
+/// concurrency (two independent measurements; DEVLOG 2026-07-16). So `pool=1` is **not** a
+/// throughput win — it wins on RAM (~270 MB less per removed session: measured 563 MB at `pool=1` vs
+/// 834 MB at `pool=2`, since each session holds its own copy of the weights) and gives the lone
+/// request the whole box (single-request latency a wash). The default targets the
+/// personal proxy, which has **no** concurrency to lose that −23% on; a *centralizing* operator
+/// serving concurrent clients sets `NER_POOL_SIZE=N` to reclaim it — which is why this is an
+/// override, not the default's job.
 #[test]
 #[ignore]
 fn m7_s1_throughput_under_concurrent_load_must_not_regress() {
@@ -964,8 +987,11 @@ fn m7_s1_throughput_under_concurrent_load_must_not_regress() {
         );
     }
     eprintln!(
-        "\nIf `1x12` holds turns/s against `2x6`, then pool=1 costs the shared proxy nothing and \
-         buys the personal one 2x latency and half the RAM — i.e. it is not a trade at all.\n"
+        "\n`1x12` does NOT hold turns/s against `2x6` — it measured ~-23% (sublinear intra scaling; \
+         DEVLOG 2026-07-16). So pool=1 (the shipped default since 2026-07-17) is a throughput trade a \
+         centralizing operator reclaims with `NER_POOL_SIZE=N`; the personal case it defaults to has \
+         no concurrency to lose, and keeps the whole box per request plus ~270 MB less RAM (563 vs \
+         834 MB). See DEVLOG 2026-07-17.\n"
     );
 }
 
