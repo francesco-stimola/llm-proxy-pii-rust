@@ -847,6 +847,12 @@ it and the lesson goes with it. **The code has been byte-stable since round 3** 
 only comments, strings and docs); no leak, no fail-open, no detection regression was ever found. What
 remains open below is **not** a review finding — it is the one scope item that needs a human.
 
+[**Review 6**](reviews/M7.md#review-6) **(2026-07-17) confirmed the ledger is at a fixed point** and
+adds no finding: M7-R19's fix and the band unification both hold and are self-consistent across every
+live surface, `6f27f05`'s source diff is a single one-word comment edit, and the isolated guards re-ran
+green (85 default / 104 onnx lib; `m7_s2` 1.75×/2.01× ≥ the 1.5× floor; NER-THREAD-01 194 entities
+identical at intra 1…12). The findings trended 3→3→2→1→**0**. **The ledger is closed and stays closed.**
+
 <a id="backlog"></a>
 ## Backlog — documented, not scheduled
 
