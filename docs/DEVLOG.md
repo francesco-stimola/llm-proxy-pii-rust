@@ -277,13 +277,17 @@ they do. Both now resolve through the server's own function.
 >
 > **So the assert is a ratio, and the ~3 s figure is a reported claim, not a guard.** The bar test
 > measures the **pre-M7 shape** (`2×1`) as a calibration leg *in the same run*, seconds from the
-> shapes under test, and asserts `pre_m7 / shape > 1.5`. Whatever the box is doing divides out:
-> **1.81 – 2.26×** across every one of the seven runs above, while the absolute moved **2.9×**. A
+> shapes under test, and asserts `pre_m7 / shape > 1.5`. The box's power state divides out:
+> **~1.7 – 2.3×** across every one of the seven runs above, while the absolute moved **2.9×**. A
 > ratio catches a real regression on any box and cannot go red because the box is slow — which the
-> 3 s assert did on five of seven runs, while staying blind to a genuine 20% regression.
+> 3 s assert did on five of seven runs, while staying blind to a genuine 20% regression. *(The band
+> is quoted loosely and the docs lead with the asserted **≥1.5× floor**, not a tight range: the ratio
+> cancels power but not raw box speed, so a faster box compresses it toward the floor — 2.19×
+> reference, 1.74× a quicker box — and every tight band we published got undercut by the next clean
+> run; M7-R18.)*
 >
 > **What the ratio does NOT buy, said plainly because an honest guard states its blind spot
-> (M7-R14):** at a 1.5 floor against a 1.81 worst case, it tolerates a **~17% regression** — the same
+> (M7-R14):** at a 1.5 floor against a ~1.7 worst case, it tolerates a **~13% regression** — the same
 > blindness the wall-clock bar had. It answers the **false positive**, not the false negative, and
 > the floor cannot be tightened without false-firing against the observed spread.
 >

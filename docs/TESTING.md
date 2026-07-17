@@ -530,18 +530,22 @@ its shape is **asserted**, not assumed.
   - **Why a ratio and not the ~3 s bar (M7-R9/M7-R12) — the most useful thing in this catalog entry.**
     Same code, same fixture, same box, two people: **2,462 / 3,943 / 4,724 / 4,757 / 4,841 / 4,933 /
     7,142 ms**, each run internally tight (spread < 7%). **The ordering variable is still not
-    identified** — a *battery* run beat three *AC* runs, so it is not power, whatever the first two
-    versions of this file said. A wall-clock assert on that is a **box-state detector**: red on five
-    of seven runs, and green through a genuine 20% regression. The ratio is the part that is about
-    the code: **1.81–2.26×** across all seven, while the absolute moved 2.9×.
+    identified** — and it is *not* power: the runs once labelled "battery" and "AC" turned out to be
+    the same energy-efficiency plan (charger attached or not; M7-R17), so that label ordered nothing,
+    which is exactly why a "battery" run could beat three "AC" ones. A wall-clock assert on that is a
+    **box-state detector**: red on five of seven runs, and green through a genuine 20% regression. The
+    ratio is the part that is about the code: it held ~**1.7–2.3×** across all seven while the absolute
+    moved 2.9×. (Quote the guard's **≥1.5× floor**, not a tight band — a faster box compresses the
+    ratio toward the floor, so any band keeps being undercut; M7-R18.)
   - **Min-of-N was the wrong fix, and knowing why matters more than the fix.** It answers M7-R2's
     *jitter*, and this is not jitter: all N reps sit inside the regime and agree tightly on the wrong
     number. **Precise, and wrong.** The harness's own footer had already said the drift was *between*
     runs.
-  - **What it cannot see, because an honest guard says so (M7-R14).** The 1.5 floor against a 1.81
-    worst case tolerates a **~17% regression** — materially the blindness the wall-clock bar had. The
-    ratio buys **regime-independence, not sensitivity**; it answers the false *positive*, not the
-    false *negative*. The floor cannot be tightened (1.7 leaves 6% margin and would false-fire), so
+  - **What it cannot see, because an honest guard says so (M7-R14).** The 1.5 floor against a worst
+    *observed* ~1.7 tolerates a **~13% regression** — materially the blindness the wall-clock bar had.
+    The ratio buys **regime-independence, not sensitivity**; it answers the false *positive*, not the
+    false *negative*. The floor cannot be tightened toward the worst observation (a fast box
+    legitimately compresses the ratio toward it — M7-R18 — so a tighter floor would false-fire), so
     the honest move is to state the limit rather than to imply it away. The **15 s** ceiling is
     order-of-magnitude only — it was 8 s, which fired on the harness's own documented command
     (median 10,391 ms) and blamed the power state for test concurrency.

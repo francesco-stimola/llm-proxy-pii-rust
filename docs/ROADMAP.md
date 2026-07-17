@@ -35,7 +35,7 @@ completion**; findings, counts and closure notes live in each milestone's sectio
 | [M4 — Broad locale & language coverage](#m4) | ✅ complete |
 | [M5 — Integration & performance testing](#m5) | ✅ complete |
 | [**M6 — Native Anthropic `/v1/messages`**](#m6) | ✅ **code-complete**, and **verified live**: a real Claude Code session round-trips through the proxy (2026-07-16) |
-| [**M7 — NER latency**](#m7) | 🔨 **active** — code-complete: **~1.8–2.3× faster than pre-M7** (reproducible; scales with the box, **zero below 4 cores**). A realistic turn masks in **~4.7 s** at the shipped default on the reference box — **the ~3 s bar was missed; we stopped anyway** ([M7-R12](reviews/M7.md#m7-r12)). **Open: the CC battery re-run** (needs a human + a live key) |
+| [**M7 — NER latency**](#m7) | 🔨 **active** — code-complete: **≥1.5× faster than pre-M7** (asserted floor; typically ~1.7–2.2×, scales with the box, **zero below 4 cores**). A realistic turn masks in **~4.7 s** at the shipped default on the reference box — **the ~3 s bar was missed; we stopped anyway** ([M7-R12](reviews/M7.md#m7-r12)). **Open: the CC battery re-run** (needs a human + a live key) |
 | [First tagged release `1.0.0`](#m6) | ⬜ not started — gated on [M7](#m7)'s battery re-run: the product we advertise must be usable, not just correct |
 
 ---
@@ -582,14 +582,18 @@ DEVLOG 2026-07-16 → *M7 implementation plan*; start at S0.**
   > four other copies of itself. `--test-threads=1` is now part of the contract.
   >
   > **So the bar is not the guard, and never could have been.** The assert is a **ratio** against an
-  > in-run calibration leg ([M7-R9](reviews/M7.md#m7-r9)): it held at **1.81–2.26×** across every
-  > regime above, while the absolute moved 2.9×. That is the milestone's real, checkable claim.
+  > in-run calibration leg ([M7-R9](reviews/M7.md#m7-r9)): it held ~**1.7–2.3×** across every regime
+  > above, while the absolute moved 2.9×. The **asserted** floor is **≥1.5×** — and that floor, not a
+  > tighter band, is the claim to quote, because the ratio cancels the box's power state but not its
+  > raw speed, so a faster box compresses the speedup *toward* the floor (2.19× reference box, 1.74×
+  > a faster one — [M7-R18](reviews/M7.md#m7-r18)). Every tighter band published has been undercut by
+  > the next clean run; the floor has not.
   >
   > **Its domain, stated because an invariant without one is worse than none**
   > ([M7-R13](reviews/M7.md#m7-r13)): the speedup **scales with the core count and is zero below 4
   > cores**, where the derived default *is* the pre-M7 shape. And the ratio buys
-  > regime-independence, **not sensitivity** — at a 1.5 floor against a 1.81 worst case it still
-  > tolerates a ~17% regression ([M7-R14](reviews/M7.md#m7-r14)).
+  > regime-independence, **not sensitivity** — at a 1.5 floor against a ~1.7 worst case it still
+  > tolerates a ~13% regression ([M7-R14](reviews/M7.md#m7-r14)).
   >
   > **S3 is the named lead** for the two open cases (the ~4.7 s turn, and ~40 KB traffic): the
   > boilerplate is byte-identical every turn, so a content-keyed cache makes turn 2+ nearly free —
@@ -778,8 +782,8 @@ prescription** — isolated (`--test-threads=1`), on verified AC, with the new c
 the box at **1.02× the reference**, i.e. demonstrably not slow: the shipped default came back at
 **4,724 ms**, reproducing the reviewer's 4,757 independently. So **~4.7 s is the honest figure, the
 `2.46 s` headline was the fastest of seven observations and has never reproduced, and the bar is
-missed.** The READMEs, this file and DEVLOG now say so; the stop rests on the **ratio** (1.81–2.26×
-across every regime), which is the part that is about the code.
+missed.** The READMEs, this file and DEVLOG now say so; the stop rests on the **ratio** (~1.7–2.3×
+across every regime, floor asserted at ≥1.5×), which is the part that is about the code.
 
 > **The pattern this milestone kept re-learning, four rounds deep, and it is the thing worth carrying
 > out of M7.** R1: name the number's **shape**. R2: **repeat** the measurement. R9: name its **power
@@ -812,8 +816,8 @@ pattern a fifth time** — a correction that stops one instance short.
 
 | ID | Title | Sev | Status |
 |---|---|---|---|
-| [M7-R17](reviews/M7.md#m7-r17) | 2aad0cc's AC/battery correction reached the four doc headlines but not TESTING:533 or the harness source, which still cite "battery beat three AC runs" as distinct regimes | docs | [ ] |
-| [M7-R18](reviews/M7.md#m7-r18) | The advertised "~1.8–2.3× / 1.81–2.26× across every regime" default speedup is undercut by a clean isolated run (default 1.71–1.75×); the `1.5×` guard floor is unaffected | measurement | [ ] |
+| [M7-R17](reviews/M7.md#m7-r17) | 2aad0cc's AC/battery correction reached the four doc headlines but not TESTING:533 or the harness source, which still cite "battery beat three AC runs" as distinct regimes | docs | [x] |
+| [M7-R18](reviews/M7.md#m7-r18) | The advertised "~1.8–2.3× / 1.81–2.26× across every regime" default speedup is undercut by a clean isolated run (default 1.71–1.75×); the `1.5×` guard floor is unaffected | measurement | [x] |
 
 <a id="backlog"></a>
 ## Backlog — documented, not scheduled

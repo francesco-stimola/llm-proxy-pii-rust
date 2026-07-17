@@ -187,10 +187,14 @@ migliore di un insieme rumoroso — che non è la stessa cosa della verità.
 > non un caso migliore che avremmo potuto allestire.
 
 **Ciò che resta stabile è il *miglioramento*, ed è la parte che riguarda il codice:** il default
-spedito è **~1,8–2,3× più veloce** della versione pre-threading, misurato in tutti quei regimi. Se
-vuoi verificare l'affermazione di questo repo sulla tua macchina, è quel rapporto da guardare —
-l'harness lo stampa, calcolato contro una gamba di calibrazione misurata pochi secondi prima nella
-stessa run.
+spedito è **almeno 1,5× più veloce** della versione pre-threading — il floor che il test asserisce
+davvero — e **tipicamente ~1,7–2,2×** a seconda della macchina. (Citiamo il floor, non il numero
+migliore visto: l'accelerazione annulla lo stato di alimentazione della macchina ma non la sua
+velocità grezza, quindi una macchina più veloce comprime il rapporto *verso* il floor invece che
+lontano — ed è per questo che ogni banda più stretta che pubblicavamo veniva puntualmente smentita
+dalla run pulita successiva.) Se vuoi verificare l'affermazione di questo repo sulla tua macchina, è
+quel rapporto da guardare — l'harness lo stampa, calcolato contro una gamba di calibrazione misurata
+pochi secondi prima nella stessa run.
 
 **Quale forma usare?** Se metti il proxy davanti a un singolo client (un agente di coding, un IDE),
 imposta **`NER_POOL_SIZE=1`**: **dimezza la RAM** — una sessione ONNX invece di due, che è

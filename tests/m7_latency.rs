@@ -491,18 +491,23 @@ const REPS: usize = 3;
 /// whatever state it is in, so that state **cancels out of the ratio** (M7-R9).
 const PRE_M7_SHAPE: (usize, usize) = (2, 1);
 
-/// What [`PRE_M7_SHAPE`] measured on the reference box, isolated (`--test-threads=1`), on AC:
-/// **~10,100 ms**. Not a bar and never asserted — a **yardstick**, so the harness can tell you how
-/// far your box is from the one the READMEs quote *before* you go hunting for the difference in the
-/// code (M7-R12: *a calibration leg you print but never compare to anything is half a
-/// calibration*).
+/// What [`PRE_M7_SHAPE`] measured on the reference box, isolated (`--test-threads=1`), on its
+/// energy-efficiency plan: **~10,100 ms**. Not a bar and never asserted — a **yardstick**, so the
+/// harness can tell you how far your box is from the one the READMEs quote *before* you go hunting
+/// for the difference in the code (M7-R12: *a calibration leg you print but never compare to
+/// anything is half a calibration*).
 const REFERENCE_PRE_M7_MS: f64 = 10_100.0;
 
 /// **M7's deliverable, stated regime-invariantly.** The absolute wall clock is a property of the
-/// box; the *speedup over the pre-M7 shape* is a property of the change. Measured across wildly
-/// different regimes it holds: **1.85×** on AC (4,700 → 2,547) and **2.26×** on battery
-/// (9,038 → 3,994). The floor is set below both so it catches a real regression without firing on a
-/// laptop's power state.
+/// box; the *speedup over the pre-M7 shape* is a property of the change. What that speedup cancels
+/// is the box's **power/scheduling state** — verified: it held at ~1.7–2.2× while the pre-M7
+/// absolute swung from ~4,400 ms to ~9,000 ms across occasions (isolated vs contended, one run vs
+/// another — *not* AC vs battery, which on the reference box are the same energy-efficiency plan;
+/// M7-R17). It does **not** fully cancel box *speed* at fixed cores, so a faster box compresses the
+/// ratio toward the floor (M7-R18: 2.19× on the reference box, 1.74× on a faster one). Hence the
+/// durable claim is **this floor**, not any single observed band — the floor is what the guard
+/// enforces and what the docs should quote, precisely because the band keeps being undercut by the
+/// next clean run.
 const MIN_SPEEDUP_VS_PRE_M7: f64 = 1.5;
 
 /// A **loose** absolute ceiling — deliberately far above the ~3 s product bar (M7-R9).
@@ -701,27 +706,29 @@ fn m7_s0_a_realistic_claude_code_turn_measured_per_field() {
 ///
 /// **So why doesn't this assert 3 s?** Because that assert cannot tell the two failures apart. This
 /// fixture, this code, this box, three occasions: **2,462 / 3,943 / 4,933 ms** — each with a
-/// within-run spread under 7%, differing only in the machine's power and thermal regime. A hard 3 s
-/// assert on that box is a **box-state detector**: it goes red because a laptop is unplugged, while
-/// a genuine 20% regression (2,462 → 2,954) ships green. It fires on what doesn't matter and is
-/// blind to what does.
+/// within-run spread under 7%, differing in the box's scheduling/power state (*not* AC vs battery,
+/// which on the reference box are the same energy-efficiency plan; M7-R17). A hard 3 s assert on
+/// that box is a **box-state detector**: it goes red because the box is in a slow state, while a
+/// genuine 20% regression (2,462 → 2,954) ships green. It fires on what doesn't matter and is blind
+/// to what does.
 ///
 /// **The ratio is the part that is about the code.** [`PRE_M7_SHAPE`] is measured as a calibration
 /// leg *in this same run*, seconds away from the shapes under test, so whatever the box is doing
-/// divides out. Measured across four regimes it held at **1.81–2.26×** while the absolute moved
-/// ~2×. That is the milestone's real claim — *the derived default is ~2× the shape that shipped
-/// before it*. The ~3 s figure lives on where it belongs: a **reported product claim** in the
-/// READMEs, with its box and conditions named.
+/// divides out. It held ~**1.7–2.3×** across every regime while the absolute moved ~2×. **The claim
+/// to quote is the asserted floor ([`MIN_SPEEDUP_VS_PRE_M7`]), not a band** — the ratio cancels
+/// power but not raw box speed, so a faster box compresses it toward the floor (M7-R18), and every
+/// tight band published got undercut by the next clean run. The ~3 s figure lives on where it
+/// belongs: a **reported product claim** in the READMEs, with its box and conditions named.
 ///
 /// **Both shapes, because both ship** (M7-R1): the pooled default an operator gets by setting
 /// nothing, and the `NER_POOL_SIZE=1` shape the READMEs recommend for a single client.
 ///
 /// **What this guard does NOT see, stated because an honest guard states its blind spot (M7-R14).**
-/// The floor is 1.5 against an observed 1.81–2.26 spread, so it tolerates a **~17% regression** —
+/// The floor is 1.5 against a worst *observed* ~1.7, so it tolerates a **~13% regression** —
 /// materially the same blindness the wall-clock bar had. **The ratio buys regime-independence, not
 /// sensitivity**; it answers R9's false *positive* (a red bar because the box is slow) and not the
-/// false *negative*. The floor cannot simply be tightened: at 1.7 it would leave 6% margin against
-/// the observed spread and start false-firing, which is the failure it was built to end.
+/// false *negative*. The floor cannot simply be tightened: nearer 1.7 it would start false-firing on
+/// a fast box that legitimately compresses the ratio, which is the failure it was built to end.
 ///
 /// **Run it isolated — `--test-threads=1` (M7-R12).** The module doc's command lets cargo run all
 /// five perf tests concurrently; measured at **1.50×** on the absolute, at constant power. The
@@ -794,14 +801,17 @@ fn m7_s2_the_bar_holds_for_every_shipped_shape() {
     eprintln!(
         "\nThe ms columns are this box, right now, and are NOT comparable across runs: the same \
          default has measured 2,462 / 3,943 / 4,724 / 4,757 / 4,841 / 4,933 / 7,142 ms here. The \
-         `x vs pre-M7` column IS comparable — both legs ran in this run, so whatever the box is \
-         doing divides out (it held at 1.81-2.26x across every one of those).\n\
+         `x vs pre-M7` column is FAR more stable — both legs ran in this run, so whatever the box is \
+         doing (power state, background load) divides out. It has held ~1.7-2.3x across every one of \
+         those. The floor the guard enforces is >=1.5x; a faster box compresses the ratio toward it \
+         (M7-R18), so quote the floor, not the day's number.\n\
          \n\
          **Do not reach for a power-state explanation first — this file has been wrong about that \
-         twice (M7-R12).** A battery run once beat three AC runs, so power does not order these \
-         numbers. The variables that ARE measured: test concurrency (1.50x — run with \
-         `--test-threads=1`), and the calibration line above, which tells you how this box compares \
-         to the one the READMEs quote *before* you go looking in the code.\n"
+         twice (M7-R12/R17).** The runs once labelled 'battery' and 'AC' were the SAME \
+         energy-efficiency plan (charger attached or not), so that label ordered nothing. The \
+         variables that ARE measured: test concurrency (1.50x — run with `--test-threads=1`), and \
+         the calibration line above, which tells you how this box compares to the one the READMEs \
+         quote *before* you go looking in the code.\n"
     );
 
     for (label, pool, intra, min, _) in &measured {

@@ -185,9 +185,13 @@ thing as the truth.
 > stage.
 
 **What is stable is the *improvement*, and that is the part that is about the code:** the shipped
-default is **~1.8–2.3× faster** than the pre-threading version, measured across every one of those
-regimes. If you want to check this repo's claim on your own box, that ratio is what to check — the
-harness prints it, computed against a calibration leg measured seconds away in the same run.
+default is **at least 1.5× faster** than the pre-threading version — the floor the test actually
+asserts — and **typically ~1.7–2.2×** depending on the box. (We quote the floor, not the best
+number seen: the speedup cancels the box's power state but not its raw speed, so a faster machine
+compresses the ratio *toward* the floor rather than away from it — which is why every tighter band
+we published kept being undercut by the next clean run.) If you want to check this repo's claim on
+your own box, that ratio is what to check — the harness prints it, computed against a calibration
+leg measured seconds away in the same run.
 
 **Which shape should you run?** If you front a single client (a coding agent, an IDE), set
 **`NER_POOL_SIZE=1`**: it **halves the RAM** — one ONNX session instead of two, which is arithmetic
