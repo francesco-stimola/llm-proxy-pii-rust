@@ -523,18 +523,33 @@ its shape is **asserted**, not assumed.
   shipped shape is **≥1.5×** it — the pooled default (`NER_POOL_SIZE` unset → 2 × 6) *and* the
   single-client shape (`NER_POOL_SIZE=1` → 1 × 12), min of 3 reps each. Plus a **loose 8 s** absolute
   ceiling for order-of-magnitude regressions only.
-  - **Why a ratio and not the ~3 s bar (M7-R9) — the most useful thing in this catalog entry.** Same
-    code, same fixture, same box: **2,462 / 3,943 / 4,933 ms**, three occasions, each with a
-    within-run spread under 7%. The variable was the machine's **power and thermal regime**. So a
-    wall-clock assert is a **box-state detector**: red because a laptop is unplugged, green through a
-    genuine 20% regression (2,462 → 2,954). The ratio is the part that is about the code, and it held
-    at **1.85× / 2.26× / 2.10×** across all three regimes. **The ~3 s figure lives on as a reported
-    product claim in the READMEs** — with its box *and its power state* named — which is the honest
-    home for a statement about user-perceived latency.
+  - **Run it isolated: `--test-threads=1` (M7-R12).** Cargo runs tests concurrently, so the old
+    documented command had these benchmarks **measuring each other** — worth **1.50×** on the
+    absolute at constant power (4,757 ms isolated → 7,142 ms contended). Three review rounds blamed
+    that class of gap on power management before anyone measured the harness itself.
+  - **Why a ratio and not the ~3 s bar (M7-R9/M7-R12) — the most useful thing in this catalog entry.**
+    Same code, same fixture, same box, two people: **2,462 / 3,943 / 4,724 / 4,757 / 4,841 / 4,933 /
+    7,142 ms**, each run internally tight (spread < 7%). **The ordering variable is still not
+    identified** — a *battery* run beat three *AC* runs, so it is not power, whatever the first two
+    versions of this file said. A wall-clock assert on that is a **box-state detector**: red on five
+    of seven runs, and green through a genuine 20% regression. The ratio is the part that is about
+    the code: **1.81–2.26×** across all seven, while the absolute moved 2.9×.
   - **Min-of-N was the wrong fix, and knowing why matters more than the fix.** It answers M7-R2's
-    *jitter*, and a regime shift is not jitter: all N reps sit inside the regime and agree tightly on
-    the wrong number. **Precise, and wrong.** The harness's own footer had already said the drift was
-    *between* runs.
+    *jitter*, and this is not jitter: all N reps sit inside the regime and agree tightly on the wrong
+    number. **Precise, and wrong.** The harness's own footer had already said the drift was *between*
+    runs.
+  - **What it cannot see, because an honest guard says so (M7-R14).** The 1.5 floor against a 1.81
+    worst case tolerates a **~17% regression** — materially the blindness the wall-clock bar had. The
+    ratio buys **regime-independence, not sensitivity**; it answers the false *positive*, not the
+    false *negative*. The floor cannot be tightened (1.7 leaves 6% margin and would false-fire), so
+    the honest move is to state the limit rather than to imply it away. The **15 s** ceiling is
+    order-of-magnitude only — it was 8 s, which fired on the harness's own documented command
+    (median 10,391 ms) and blamed the power state for test concurrency.
+  - **Its domain (M7-R13).** Below **4 cores** the derived default *is* `PRE_M7_SHAPE`, so both legs
+    are the same configuration and the ratio is 1.0 by construction. The guard **skips and says so**
+    — the first cut asserted anyway and reported "a real regression in the thread work" on a box
+    where M7 has nothing to deliver. Pinned in `onnx::thread_tests::the_derivation_is_a_no_op_on_a_small_box`:
+    **the speedup scales with the box and is zero below 4 cores.**
   - **Why both shapes (M7-R1).** The first cut asserted `pool=1` only, while the *server* defaults to
     `pool=2` — ~28% headroom on a config nobody runs, none on the one they do. Both now resolve
     through `onnx::resolve_pool_and_intra`, the **server's own** function, so the harness cannot drift
@@ -780,5 +795,9 @@ PII). Placeholder-**presence** asserts are on the **specific masked field** (or 
   verification test half the product; see [`MANUAL_VERIFICATION.md`](MANUAL_VERIFICATION.md)).
   Run it from the repo root: `--target-dir` is relative to the cwd.
 - Live-model tests (EVAL-01, the NER-CHUNK / NER-INERT / perf guards) are `#[ignore]`d and need a
-  configured model — `cargo test-onnx --test ner_perf -- --ignored --nocapture`.
+  configured model — `cargo test-onnx --test ner_perf -- --ignored --nocapture --test-threads=1`.
+  **`--test-threads=1` is part of the recipe for anything that measures time (M7-R12):** cargo runs
+  tests concurrently by default, so without it the benchmarks measure the product *against other
+  copies of themselves* — 1.50× on the reference box, at constant power. Recall guards don't care;
+  latency guards do, and M7 spent three review rounds blaming power management for it.
 - End-to-end against a mock provider — harness added in M1.

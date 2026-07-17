@@ -221,54 +221,84 @@ so the READMEs lead that recommendation with RAM.
 > does not save you from reading a conclusion off a single sample. That is why the reps and the
 > spread column are now in the harness rather than in a reviewer's head.
 
-### S2 — the bar, honoured — and then re-learned as a *ratio* (M7-R9)
+### S2 — the bar was MISSED, and we stopped anyway (which is the stronger sentence)
 
-**Met on both shipped shapes → stop.** **2.46 s** at the default (pool 2 × intra 6) and **2.11 s** at
-`NER_POOL_SIZE=1` (1 × 12), best of 3, **on AC**. `S3` (content-keyed cache) and `S4` (skip the NER on
-later passes) are **not implemented, deliberately**. Both were gated on the bar being missed; both put
-real risk on the masking path — state, and lost detection respectively — and buying that risk for speed
-already banked is how a privacy tool grows a leak. The bar was declared *before* the numbers precisely
-so this decision couldn't be rationalised afterwards.
+**~4.7 s at the shipped default** — reproduced independently at **4,724** and **4,757 ms**, isolated,
+on AC. That is **~60% over the ~3 s bar**. The `2.46 s` this entry once led with was the fastest of
+seven observations and has never reproduced; it should not have been the headline, and the READMEs no
+longer carry it.
+
+**`S3` (content-keyed cache) and `S4` (skip the NER on later passes) are still not implemented, and the
+reason changed.** It is no longer "the bar was met". It is: **what M7 could deliver, it delivered** — a
+reproducible **~2×**, checkable on any box — and the rest of the gap is the machine, not the code. Both
+leads put real risk on the masking path (state; lost detection), and that risk should be bought
+deliberately when something demands it, not spent because we were already in here. The bar was declared
+*before* the numbers so this decision couldn't be rationalised afterwards — and the discipline held in
+the direction that actually costs something: **the bar came back missed, and the honest move was to say
+so rather than to re-describe the number until it fit.**
 
 **The bar guards both shapes** (M7-R1). The first cut asserted it on `pool=1` only — while `server.rs`
 defaults to `pool=2` — so it had ~28% headroom on a configuration nobody runs and **none** on the one
 they do. Both now resolve through the server's own function.
 
-> **"On AC" is doing more work in that first sentence than every knob in S1, and I did not know it
-> until the review (M7-R9).** The *same* code, fixture and box: **2,462 / 3,943 / 4,933 ms**, three
-> occasions, each with a within-run spread under 7%. Power and thermal regime, nothing else. So
-> min-of-3 — my own fix for M7-R2's noise — was **precise and wrong**: it removes jitter, and a regime
-> shift is not jitter. All three reps sit *inside* the regime and agree tightly on the wrong number.
-> My harness footer had already said the drift was *between* runs; I then built the guard on the
-> statistic that only sees *within* them.
+> **The absolute number here has an un-named variable bigger than every knob in S1 — and I named it
+> wrong twice (M7-R9, then M7-R12).** The *same* code, fixture and box, across two people:
+> **2,462 / 3,943 / 4,724 / 4,757 / 4,841 / 4,933 / 7,142 ms** — each run internally tight (spread
+> under 7%). So min-of-3, my own fix for M7-R2's noise, was **precise and wrong**: it removes jitter,
+> and this is not jitter. All reps sit inside the regime and agree confidently on the wrong number.
 >
-> **M7-R1 taught this milestone to name a number's shape. The number had a second, larger un-named
-> variable** — worth ~2×, where the shapes were worth ~1.17×. *Naming one variable does not make a
-> measurement reproducible; it makes the un-named ones harder to notice.*
+> **Then I explained the regime, and the explanation was fiction.** I wrote *"power and thermal
+> regime, nothing else"*. The data refute it: a **battery** run (3,943) beat **three AC** runs
+> (4,757 / 4,841 / 4,933). No power model orders that. And "throttled AC" — the third category I
+> introduced — was assigned **post hoc from the number itself**; I never measured a thermal state.
+> *A run was called slow because it was slow, then cited as evidence that slowness was throttling.*
+> **That is the exact move this milestone exists to name**, committed in the entry naming it.
 >
-> **So the assert is now a ratio, and the ~3 s figure is a reported claim, not a guard.** The bar test
+> **The variable that is actually measured:** test **concurrency**. Cargo runs the perf tests in
+> parallel, so the documented command measured the product **against four other copies of itself** —
+> **1.50×** at constant power (4,757 isolated → 7,142 contended). `--test-threads=1` is now part of
+> the contract, in the harness doc and in TESTING's recipe.
+>
+> **M7-R1 taught this milestone to name a number's shape; R9 named its power state; R12 showed the
+> power state cannot order the data.** Four rounds, the same shape each time. *Naming one variable
+> does not make a measurement reproducible — it makes the un-named ones harder to notice, because
+> the number now looks qualified.*
+>
+> **So the assert is a ratio, and the ~3 s figure is a reported claim, not a guard.** The bar test
 > measures the **pre-M7 shape** (`2×1`) as a calibration leg *in the same run*, seconds from the
-> shapes under test, and asserts `pre_m7 / shape > 1.5`. The regime divides out: measured **1.85×**
-> (AC), **2.26×** (battery), **2.10×** (a throttled AC run) while the absolute moved 2×. A ratio
-> catches a real regression in any regime and cannot go red because a laptop is unplugged — which the
-> 3 s assert did, while staying blind to a genuine 20% regression (2,462 → 2,954 still shipped green).
-> A loose 8 s ceiling remains, to catch the order-of-magnitude case only, and its message says *check
-> your power state first*.
+> shapes under test, and asserts `pre_m7 / shape > 1.5`. Whatever the box is doing divides out:
+> **1.81 – 2.26×** across every one of the seven runs above, while the absolute moved **2.9×**. A
+> ratio catches a real regression on any box and cannot go red because the box is slow — which the
+> 3 s assert did on five of seven runs, while staying blind to a genuine 20% regression.
+>
+> **What the ratio does NOT buy, said plainly because an honest guard states its blind spot
+> (M7-R14):** at a 1.5 floor against a 1.81 worst case, it tolerates a **~17% regression** — the same
+> blindness the wall-clock bar had. It answers the **false positive**, not the false negative, and
+> the floor cannot be tightened without false-firing against the observed spread.
+>
+> **And it has a domain (M7-R13):** below **4 cores** the derived default *is* `PRE_M7_SHAPE`, so the
+> ratio is 1.0 by construction — the guard skips and says so, rather than reporting "a regression in
+> the thread work" on a box where M7 simply has nothing to deliver. *The speedup scales with the box.*
+>
+> A **15 s** sanity ceiling remains for the order-of-magnitude case. It was 8 s and that was not loose
+> at all: the reviewer's documented-command run hit a **median of 10,391 ms**, so the ceiling fired on
+> the harness's own recipe — and blamed the power state for what was test concurrency.
 
-**Stated honestly, twice over.**
-- **Field size:** the fixture is 22.3 KiB; real Claude Code turns run **20–40 KB**. At the top of that
-  range the same rates give **~4.4 s at the default** — over the bar.
-- **Regime:** on this box **throttled**, a turn is ~4.9 s — also over the bar. And M7 exists for the
-  personal proxy in front of Claude Code, i.e. **a laptop**, whose normal state is the throttled one.
+**Where that leaves the milestone, stated without the flattering framing.**
+- **The bar is missed.** ~4.7 s at the shipped default, ~60% over. It is missed at the *fixture's*
+  22.3 KiB; real Claude Code turns run **20–40 KB**, so the top of the range is worse again (~8 s).
+- **The ~2× is real**, reproducible on any box, and it is what M7 set out to buy: `with_intra_threads(1)`
+  was leaving 11 of 12 cores idle on every request. That part is done and guarded.
+- **The remaining gap is not a threads problem.** No arrangement of `pool × intra` closes a 4.7 s turn
+  to 3 s on this hardware — the sweep's whole surface tops out around 2×, because intra-op scaling is
+  sublinear and one request occupies one session.
 
-So the bar is met **for a realistic turn on a box running at full speed**, which is a narrower claim
-than "M7 is done" and is the one the evidence supports. The stop decision still stands: the ~2× is
-banked and regime-invariant, and the remaining variance is a power governor, not the code — chasing it
-with a cache would be optimizing against a laptop's thermal policy. **But S3 is now the named lead for
-both open cases** (the 40 KB turn and the throttled box), and it is the right one: the boilerplate is
-byte-identical every turn, so a content-keyed cache makes turn 2+ nearly free *regardless of regime*.
-If the CC battery re-run (S6) says the latency still bites in practice, that is where to go, and its
-threat argument is already written.
+So: **we missed the bar and stopped anyway**, because the next move is not more of this one. **S3 is
+the named lead**, and the reason it is the right one is that it does not fight the box at all: the
+boilerplate is byte-identical every turn, so a content-keyed cache makes turn 2+ nearly free
+regardless of the machine, the power state, or the core count. It carries a real risk — **state on the
+masking path** — and its threat argument is already written (S3, above). If the CC battery re-run (S6)
+says the latency still bites in practice, that is where to go, and it should be bought on purpose.
 
 ### An asymmetry worth recording for whoever picks this up
 

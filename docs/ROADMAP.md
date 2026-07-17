@@ -35,7 +35,7 @@ completion**; findings, counts and closure notes live in each milestone's sectio
 | [M4 — Broad locale & language coverage](#m4) | ✅ complete |
 | [M5 — Integration & performance testing](#m5) | ✅ complete |
 | [**M6 — Native Anthropic `/v1/messages`**](#m6) | ✅ **code-complete**, and **verified live**: a real Claude Code session round-trips through the proxy (2026-07-16) |
-| [**M7 — NER latency**](#m7) | 🔨 **active** — code-complete: **~1.9–2.3× faster than pre-M7**, regime-invariant; a realistic turn masks in **2.46 s** at the shipped default on the reference box **at full power** (was ~4.7 s / 27 s claimed) — ~2× worse throttled ([M7-R9](reviews/M7.md#m7-r9)). **Open: the CC battery re-run** (needs a human + a live key) |
+| [**M7 — NER latency**](#m7) | 🔨 **active** — code-complete: **~1.8–2.3× faster than pre-M7** (reproducible; scales with the box, **zero below 4 cores**). A realistic turn masks in **~4.7 s** at the shipped default on the reference box — **the ~3 s bar was missed; we stopped anyway** ([M7-R12](reviews/M7.md#m7-r12)). **Open: the CC battery re-run** (needs a human + a live key) |
 | [First tagged release `1.0.0`](#m6) | ⬜ not started — gated on [M7](#m7)'s battery re-run: the product we advertise must be usable, not just correct |
 
 ---
@@ -551,27 +551,39 @@ DEVLOG 2026-07-16 → *M7 implementation plan*; start at S0.**
   pessimistic: a realistic turn masked in 4.2–4.7 s, not 27 s** — and not the ~9 s predicted below
   either. But **the stated mechanism was wrong**, and that is the more useful half: see the box
   under this list.
-- [x] **Declare the bar, and stop at it: a realistic turn under ~3 s ships.** **Met on both shipped
-  shapes** — **2.46 s** at the default (`NER_POOL_SIZE` unset → pool 2 × intra 6) and **2.11 s** at
-  the single-client shape (`NER_POOL_SIZE=1` → 1 × 12); best of 3, reference box, **on AC**. So S3
-  (cache) and S4 (fixpoint) are **not done, on purpose** — both trade real risk (state on the
-  masking path; lost detection) for speed already banked. **Optimized to a bar, not to exhaustion.**
+- [x] **Declare the bar, then decide against it: the bar was MISSED — we stopped anyway, and that is
+  the honest sentence.** A realistic turn masks in **~4.7 s** at the shipped default on the reference
+  box (isolated, on AC; reproduced independently at 4,724 and 4,757 ms) — **~60% over the ~3 s bar**.
+  S3 (cache) and S4 (fixpoint) are still **not done, on purpose**, but *not* because the bar was met:
+  because **what M7 could deliver, it delivered** — a reproducible **~2×** — and the remaining gap is
+  the machine, not the code. Both leads trade real risk (state on the masking path; lost detection)
+  and they should be bought deliberately, not because we were already in here.
 
-  > **"On AC" is load-bearing, and the bar is now asserted as a *ratio* because of it**
-  > ([M7-R9](reviews/M7.md#m7-r9)). Same code, same fixture, same box: **2.46 / 3.94 / 4.93 s**,
-  > differing only in power/thermal regime — each with a within-run spread under 7%, so min-of-3 was
-  > *precise and wrong*. The guard therefore measures the **pre-M7 shape as an in-run calibration
-  > leg** and asserts a **≥1.5× speedup**, which held at 1.85× / 2.26× / 2.10× while the absolute
-  > moved 2×. The ~3 s figure survives as a **reported product claim** (the READMEs), not an assert:
-  > a wall-clock assert on an uncontrolled box goes red when a laptop is unplugged and stays green
-  > through a real 20% regression.
+  > **This box said "2.46 s" once, and that number went in the READMEs. It was the fastest of seven
+  > observations and it has never reproduced** ([M7-R12](reviews/M7.md#m7-r12)). The honest figure is
+  > ~4.7 s. Worse, the *explanation* was invented: DEVLOG called the spread "power and thermal
+  > regime, nothing else", and the data refute it — a **battery** run (3.94 s) beat **three AC** runs
+  > (4.76 / 4.84 / 4.93 s). No power model orders that. "Throttled AC" was a label assigned *post hoc
+  > from the number itself*; no thermal state was ever measured. **A run was called slow because it
+  > was slow, and then cited as evidence of throttling.**
   >
-  > **What that costs the claim, stated plainly:** the bar is met *for a realistic turn on a box at
-  > full speed*. Throttled it is ~4.9 s, and at the top of the 20–40 KB range ~4.4 s. M7 exists for
-  > a proxy in front of Claude Code — i.e. a **laptop**, whose normal state is the throttled one. The
-  > stop decision stands (the ~2× is banked and regime-invariant; the rest is a power governor, not
-  > the code), but **S3 is the named lead for both open cases** — the boilerplate is byte-identical
-  > every turn, so a content-keyed cache makes turn 2+ nearly free *regardless of regime*.
+  > **The variable that *is* measured:** test **concurrency** — cargo runs the perf tests in
+  > parallel, worth **1.50×** at constant power. The documented command measured the product against
+  > four other copies of itself. `--test-threads=1` is now part of the contract.
+  >
+  > **So the bar is not the guard, and never could have been.** The assert is a **ratio** against an
+  > in-run calibration leg ([M7-R9](reviews/M7.md#m7-r9)): it held at **1.81–2.26×** across every
+  > regime above, while the absolute moved 2.9×. That is the milestone's real, checkable claim.
+  >
+  > **Its domain, stated because an invariant without one is worse than none**
+  > ([M7-R13](reviews/M7.md#m7-r13)): the speedup **scales with the core count and is zero below 4
+  > cores**, where the derived default *is* the pre-M7 shape. And the ratio buys
+  > regime-independence, **not sensitivity** — at a 1.5 floor against a 1.81 worst case it still
+  > tolerates a ~17% regression ([M7-R14](reviews/M7.md#m7-r14)).
+  >
+  > **S3 is the named lead** for the two open cases (the ~4.7 s turn, and ~40 KB traffic): the
+  > boilerplate is byte-identical every turn, so a content-keyed cache makes turn 2+ nearly free —
+  > and unlike threads, it is *indifferent to the box*.
 - [x] **Use more than 1 core of 12.** `NER_INTRA_THREADS` (`src/pii/onnx.rs`,
   `resolve_pool_and_intra` / `default_intra_threads`) — explicit env wins, else **derived**:
   `max(1, available_parallelism() / NER_POOL_SIZE)`. Measured on both axes rather than picked by
@@ -751,14 +763,31 @@ milestone's own data** — battery (3,943 ms) is **faster** than three of the fo
 that cannot sort your observations is not the variable.* **The stop decision still stands — but on
 the ratio, not on the bar**: across six measurements by two people the ~3 s bar was met **once**.
 
+**All 6 closed** (the round-3 closure commit). **M7-R12 was decided by re-measuring under its own
+prescription** — isolated (`--test-threads=1`), on verified AC, with the new calibration leg reporting
+the box at **1.02× the reference**, i.e. demonstrably not slow: the shipped default came back at
+**4,724 ms**, reproducing the reviewer's 4,757 independently. So **~4.7 s is the honest figure, the
+`2.46 s` headline was the fastest of seven observations and has never reproduced, and the bar is
+missed.** The READMEs, this file and DEVLOG now say so; the stop rests on the **ratio** (1.81–2.26×
+across every regime), which is the part that is about the code.
+
+> **The pattern this milestone kept re-learning, four rounds deep, and it is the thing worth carrying
+> out of M7.** R1: name the number's **shape**. R2: **repeat** the measurement. R9: name its **power
+> state**. R12: *the power state doesn't order the data either* — and the variable that does is the
+> harness running five benchmarks against each other. Each fix named one more variable and left the
+> next one hidden **behind the qualification it had just added**. The escape was not a better label
+> but a different instrument: a **ratio against an in-run calibration leg**, which needs no label
+> because it cancels whatever the box is doing. *When you cannot enumerate the variables, stop
+> naming them and measure against something that moves with them.*
+
 | ID | Title | Sev | Status |
 |---|---|---|---|
-| [M7-R11](reviews/M7.md#m7-r11) | The READMEs dropped the two-shape latency table as unsupportable; ROADMAP and DEVLOG still advertise it | docs | [ ] |
-| [M7-R12](reviews/M7.md#m7-r12) | "Power regime, nothing else" doesn't order its own data — battery beats 3 of 4 AC runs; the ~2.5 s claim is the best of six | measurement | [ ] |
-| [M7-R13](reviews/M7.md#m7-r13) | The ratio guard is vacuous at ≤2 cores, where the shipped default *is* `PRE_M7_SHAPE` — and it reports that as a regression | guard | [ ] |
-| [M7-R14](reviews/M7.md#m7-r14) | Both of the bar's constants are uncalibrated: the 8 s ceiling nearly fires on the documented command; the 1.5 floor keeps the 20% blindness | guard | [ ] |
-| [M7-R15](reviews/M7.md#m7-r15) | M7-R8's closure credits the chunked path with 60 entities that are 20 extra sentences | docs | [ ] |
-| [M7-R16](reviews/M7.md#m7-r16) | The byte-proxy assert M7-R8 killed is still alive 90 lines down, guarding the same property | guard | [ ] |
+| [M7-R11](reviews/M7.md#m7-r11) | The READMEs dropped the two-shape latency table as unsupportable; ROADMAP and DEVLOG still advertise it | docs | [x] |
+| [M7-R12](reviews/M7.md#m7-r12) | "Power regime, nothing else" doesn't order its own data — battery beats 3 of 4 AC runs; the ~2.5 s claim is the best of six | measurement | [x] |
+| [M7-R13](reviews/M7.md#m7-r13) | The ratio guard is vacuous at ≤2 cores, where the shipped default *is* `PRE_M7_SHAPE` — and it reports that as a regression | guard | [x] |
+| [M7-R14](reviews/M7.md#m7-r14) | Both of the bar's constants are uncalibrated: the 8 s ceiling nearly fires on the documented command; the 1.5 floor keeps the 20% blindness | guard | [x] |
+| [M7-R15](reviews/M7.md#m7-r15) | M7-R8's closure credits the chunked path with 60 entities that are 20 extra sentences | docs | [x] |
+| [M7-R16](reviews/M7.md#m7-r16) | The byte-proxy assert M7-R8 killed is still alive 90 lines down, guarding the same property | guard | [x] |
 
 <a id="backlog"></a>
 ## Backlog — documented, not scheduled

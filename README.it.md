@@ -160,38 +160,46 @@ compra nomi, organizzazioni e luoghi — nient'altro.
 
 Mascheramento di **un turno realistico di Claude Code** (22,3 KiB: system prompt + 10 schemi di
 tool + un messaggio utente), 2026-07-17, macchina di riferimento (Ryzen 5 PRO 8540U, 6 core / 12
-thread), **alimentata a rete**, build debug, migliore di 3:
+thread), alimentata a rete, build debug, eseguito in isolamento, migliore di 3:
 
 | rilevamento | per turno | per KiB |
 |---|---|---|
 | **solo strutturato** | **~20 ms** | ~0,9 ms |
-| **ibrido** (entrambe le forme — vedi sotto) | **~2,5 s** | ~110 ms |
+| **ibrido** (entrambe le forme — vedi sotto) | **~4,7 s** | ~210 ms |
 
 **Il NER è ~100% del costo** — il livello deterministico è oltre 100× più veloce sugli stessi byte.
 
-**"Alimentata a rete" non è una nota a piè di pagina: vale più di qualsiasi messa a punto qui
-sotto.** Lo *stesso* codice, la stessa fixture e la stessa macchina hanno mascherato questo turno in
-**2,5 s, 3,9 s e 4,9 s** in tre occasioni diverse, cambiando solo il regime di alimentazione e
-temperatura. Quindi leggi il numero sopra come *quello che fa questo portatile quando gli è concesso
-di correre*, e aspettati circa **2× peggio quando è limitato**. Ciò che resta stabile è il
-*miglioramento*: il default spedito è costantemente **~1,9–2,3×** più veloce della versione
-pre-threading — ed è quella la parte che riguarda il codice e non la macchina.
+**Considera quel numero come proprio di questa macchina, non del prodotto.** Su sette misurazioni
+fatte da due persone, lo stesso codice e la stessa fixture hanno dato **da 2,5 a 7,1 s**, e non siamo
+riusciti a identificare la variabile che li ordina: una run a batteria ha battuto tre run a rete, il
+che nessun modello di alimentazione spiega. Quello che *abbiamo* misurato è che eseguire il benchmark
+insieme ad altri test costa **1,5×**. Quindi `~4,7 s` è la cifra che si è riprodotta due volte, in
+modo indipendente, in isolamento; i numeri più veloci che avevamo pubblicato erano il migliore di un
+insieme rumoroso — che non è la stessa cosa della verità.
+
+**Ciò che resta stabile è il *miglioramento*, ed è la parte che riguarda il codice:** il default
+spedito è **~1,8–2,3× più veloce** della versione pre-threading, misurato in tutti quei regimi. Se
+vuoi verificare l'affermazione di questo repo sulla tua macchina, è quel rapporto da guardare —
+l'harness lo stampa, calcolato contro una gamba di calibrazione misurata pochi secondi prima nella
+stessa run.
 
 **Quale forma usare?** Se metti il proxy davanti a un singolo client (un agente di coding, un IDE),
 imposta **`NER_POOL_SIZE=1`**: **dimezza la RAM** — una sessione ONNX invece di due, che è
 aritmetica e non un benchmark — e non ti costa nulla, perché una singola richiesta occupa comunque
 una sola sessione. **Sulla latenza le due forme si equivalgono** (abbiamo misurato ciascuna vincere
-di ~15% in run diverse: la differenza è dentro il rumore di questa macchina). Il pool di default
+del 10–15% in run diverse: la differenza è dentro il rumore di questa macchina). Il pool di default
 esiste per un proxy **condiviso**, dove vale circa il 30% di throughput in più — e *quello* è un
 trade reale, misurato.
 
 > **Misura sulla tua macchina prima di credere a questi numeri:** `cargo test-onnx --test
-> m7_latency -- --ignored --nocapture`. L'harness stampa il dettaglio per campo, uno sweep sui
-> thread con min/mediana/**spread**, le cifre di concorrenza e — dato che i millisecondi assoluti
-> non sono confrontabili tra macchine o stati di alimentazione — **un rapporto di accelerazione
-> contro una gamba di calibrazione misurata nella stessa run**, che invece lo è. Una build *release*
-> è irrilevante (misurato: 3%): il costo è dentro ONNX Runtime, una libreria nativa precompilata,
-> quindi compilare meglio il *nostro* Rust non cambia niente.
+> m7_latency -- --ignored --nocapture --test-threads=1`. **Il `--test-threads=1` è essenziale**:
+> senza, cargo esegue i benchmark in parallelo e si misurano a vicenda (1,5×). L'harness stampa il
+> dettaglio per campo, uno sweep sui thread con min/mediana/**spread**, le cifre di concorrenza e —
+> dato che i millisecondi assoluti non sono confrontabili tra macchine — **un rapporto di
+> accelerazione contro una gamba di calibrazione misurata nella stessa run**, più quanto la tua
+> macchina disti da quella citata qui. Una build *release* è irrilevante (misurato: 3%): il costo è
+> dentro ONNX Runtime, una libreria nativa precompilata, quindi compilare meglio il *nostro* Rust
+> non cambia niente.
 
 ---
 

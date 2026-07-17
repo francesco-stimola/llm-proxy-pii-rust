@@ -22,8 +22,15 @@
 //! set NER_MODEL_PATH=…\onnx\model_quantized.onnx
 //! set NER_TOKENIZER_PATH=…\tokenizer.json
 //! set NER_LABELS=O,B-DATE,I-DATE,B-PER,I-PER,B-ORG,I-ORG,B-LOC,I-LOC
-//! cargo test-onnx --test m7_latency -- --ignored --nocapture
+//! cargo test-onnx --test m7_latency -- --ignored --nocapture --test-threads=1
 //! ```
+//!
+//! **`--test-threads=1` is not optional here, and leaving it off is a measurement bug (M7-R12).**
+//! Cargo's harness runs tests concurrently by default, so without it these benchmarks measure the
+//! product **against four other copies of itself**. Measured on the reference box at constant power:
+//! **1.50×** on the absolute (default 4,757 ms isolated → 7,142 ms contended). This file spent three
+//! review rounds attributing that kind of gap to power management. The ratio each test prints
+//! survives it — that is the point of the calibration leg — but the millisecond columns do not.
 #![cfg(feature = "onnx")]
 
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -481,8 +488,15 @@ const REPS: usize = 3;
 
 /// **The pre-M7 shape** — `pool=2, intra=1`, i.e. what shipped before this milestone. Used as an
 /// in-run **calibration leg**: measured seconds away from the shapes under test, on the same box in
-/// the same power/thermal regime, so the regime **cancels out of the ratio** (M7-R9).
+/// whatever state it is in, so that state **cancels out of the ratio** (M7-R9).
 const PRE_M7_SHAPE: (usize, usize) = (2, 1);
+
+/// What [`PRE_M7_SHAPE`] measured on the reference box, isolated (`--test-threads=1`), on AC:
+/// **~10,100 ms**. Not a bar and never asserted — a **yardstick**, so the harness can tell you how
+/// far your box is from the one the READMEs quote *before* you go hunting for the difference in the
+/// code (M7-R12: *a calibration leg you print but never compare to anything is half a
+/// calibration*).
+const REFERENCE_PRE_M7_MS: f64 = 10_100.0;
 
 /// **M7's deliverable, stated regime-invariantly.** The absolute wall clock is a property of the
 /// box; the *speedup over the pre-M7 shape* is a property of the change. Measured across wildly
@@ -496,10 +510,24 @@ const MIN_SPEEDUP_VS_PRE_M7: f64 = 1.5;
 /// A hard 3 s assert on an uncontrolled box is a box-state detector, not a regression detector: it
 /// goes red because a laptop is unplugged, while a genuine 20% regression (2,462 → 2,954) still
 /// ships green. This catches the failure that actually matters — an order-of-magnitude one, the
-/// 27 s → 2.5 s win being undone — and stays quiet through a 2× regime shift. **The ~3 s bar lives
-/// on as a *reported product claim* (the READMEs), which is the honest home for a statement about
+/// 27 s → ~5 s win being undone — and stays quiet through a regime shift. **The ~3 s bar lives on as
+/// a *reported product claim* (the READMEs), which is the honest home for a statement about
 /// user-perceived latency on a reference box.**
-const ABSOLUTE_SANITY_CEILING_MS: f64 = 8_000.0;
+///
+/// **15 s, not the 8 s this shipped as (M7-R14).** 8 s was calibrated against uncontended runs and
+/// was not loose at all: the reviewer's *documented-command* run measured a **median of 10,391 ms**
+/// — the ceiling fired on the harness's own recipe, pointing the reader at their power state for
+/// something that was really test concurrency. A ceiling that fires on a correct build is worse than
+/// no ceiling; the win being guarded is 27 s → ~5 s, so 15 s still catches it with room.
+const ABSOLUTE_SANITY_CEILING_MS: f64 = 15_000.0;
+
+/// Below this many cores the derived default **is** [`PRE_M7_SHAPE`], so the calibration leg and the
+/// shape under test are the same configuration and the ratio is 1.0 **by construction** (M7-R13).
+///
+/// `resolve_pool_and_intra(None, None, 2)` → `(2, 1)` — pinned in `onnx::thread_tests`. That is not
+/// a regression; it is M7 having **nothing to deliver on a small box**, which is worth saying out
+/// loud: *the speedup scales with the core count and is zero below 4 cores.*
+const MIN_CORES_FOR_A_MEANINGFUL_RATIO: usize = 4;
 
 /// Measure one shape: warm the arenas, then the best of [`REPS`] turns.
 fn measure_shape(pool: usize, intra: usize, fields: &[Field]) -> (f64, f64) {
@@ -679,22 +707,49 @@ fn m7_s0_a_realistic_claude_code_turn_measured_per_field() {
 /// blind to what does.
 ///
 /// **The ratio is the part that is about the code.** [`PRE_M7_SHAPE`] is measured as a calibration
-/// leg *in this same run*, seconds away from the shapes under test, so the regime divides out. It
-/// held at **1.85×** on AC and **2.26×** on battery where the absolute moved 1.9×. That is the
-/// milestone's real claim — *the derived default is ~1.9× the shape that shipped before it* — and it
-/// is checkable anywhere. The ~3 s figure lives on where it belongs: a **reported product claim** in
-/// the READMEs, with its box and regime named.
+/// leg *in this same run*, seconds away from the shapes under test, so whatever the box is doing
+/// divides out. Measured across four regimes it held at **1.81–2.26×** while the absolute moved
+/// ~2×. That is the milestone's real claim — *the derived default is ~2× the shape that shipped
+/// before it*. The ~3 s figure lives on where it belongs: a **reported product claim** in the
+/// READMEs, with its box and conditions named.
 ///
 /// **Both shapes, because both ship** (M7-R1): the pooled default an operator gets by setting
 /// nothing, and the `NER_POOL_SIZE=1` shape the READMEs recommend for a single client.
+///
+/// **What this guard does NOT see, stated because an honest guard states its blind spot (M7-R14).**
+/// The floor is 1.5 against an observed 1.81–2.26 spread, so it tolerates a **~17% regression** —
+/// materially the same blindness the wall-clock bar had. **The ratio buys regime-independence, not
+/// sensitivity**; it answers R9's false *positive* (a red bar because the box is slow) and not the
+/// false *negative*. The floor cannot simply be tightened: at 1.7 it would leave 6% margin against
+/// the observed spread and start false-firing, which is the failure it was built to end.
+///
+/// **Run it isolated — `--test-threads=1` (M7-R12).** The module doc's command lets cargo run all
+/// five perf tests concurrently; measured at **1.50×** on the absolute, at constant power. The
+/// ratio survives that (it is what proved the design), but the ms columns do not.
 #[test]
 #[ignore]
 fn m7_s2_the_bar_holds_for_every_shipped_shape() {
+    let cores = available_cores();
+    // M7-R13. Below 4 cores the derived default IS `PRE_M7_SHAPE`, so both legs are the same
+    // configuration and the ratio is 1.0 by construction. The old version asserted anyway and told
+    // the reader it had found "a real regression in the thread work, not a slow box" — a conclusion
+    // it had not earned, on a box where M7 simply has nothing to deliver. Say that instead.
+    if cores < MIN_CORES_FOR_A_MEANINGFUL_RATIO {
+        eprintln!(
+            "\nSKIPPED: {cores} cores. The derived default here IS the pre-M7 shape \
+             ({:?}), so this guard's ratio is 1.0 by construction and can say nothing. M7's \
+             speedup scales with the box and is zero below {MIN_CORES_FOR_A_MEANINGFUL_RATIO} \
+             cores — that is a real property of the derivation, not a failure (M7-R13).",
+            PRE_M7_SHAPE
+        );
+        return;
+    }
+
     let fields = realistic_turn();
     let bytes: usize = fields.iter().map(|f| f.text.len()).sum();
     eprintln!(
         "\n=== S2: the bar, as a ratio vs the pre-M7 shape. {REPS} reps each, {bytes} B turn \
-         ({:.1} KiB) ===",
+         ({:.1} KiB), {cores} cores ===",
         bytes as f64 / 1024.0
     );
 
@@ -705,6 +760,16 @@ fn m7_s2_the_bar_holds_for_every_shipped_shape() {
         "{:<32} pool={} intra={:<3} min {base_min:>7.0} ms   median {base_median:>7.0} ms   \
          <- calibration leg (pre-M7)",
         "pre-M7 (what shipped before)", PRE_M7_SHAPE.0, PRE_M7_SHAPE.1
+    );
+    // **Compare the calibration leg to something, or it is half a calibration (M7-R12).** Printing
+    // it told a reader nothing they could act on; measured against the reference box it says, in
+    // the harness's own voice, how much of any surprise below is *this box* before they go looking
+    // for it in the code. It is a report, never an assert — a slow box is not a defect.
+    let drift = base_min / REFERENCE_PRE_M7_MS;
+    eprintln!(
+        "   ^ the reference box measured {REFERENCE_PRE_M7_MS:.0} ms here, so this box is running \
+         **{drift:.2}x** that. Read every ms below through that factor; the `x vs pre-M7` column \
+         already has it divided out."
     );
 
     // **Measure and print every row BEFORE asserting any (M7-R9).** The first cut asserted inside
@@ -727,10 +792,16 @@ fn m7_s2_the_bar_holds_for_every_shipped_shape() {
         );
     }
     eprintln!(
-        "\nThe ms columns are this box in its CURRENT power/thermal regime and are NOT comparable \
-         across runs (M7-R9: measured 2,462 / 3,943 / 4,933 ms for the same default). The `x vs \
-         pre-M7` column IS — it is measured in this run and the regime divides out. If the ms look \
-         nothing like the READMEs', check whether you are on battery before suspecting the code.\n"
+        "\nThe ms columns are this box, right now, and are NOT comparable across runs: the same \
+         default has measured 2,462 / 3,943 / 4,724 / 4,757 / 4,841 / 4,933 / 7,142 ms here. The \
+         `x vs pre-M7` column IS comparable — both legs ran in this run, so whatever the box is \
+         doing divides out (it held at 1.81-2.26x across every one of those).\n\
+         \n\
+         **Do not reach for a power-state explanation first — this file has been wrong about that \
+         twice (M7-R12).** A battery run once beat three AC runs, so power does not order these \
+         numbers. The variables that ARE measured: test concurrency (1.50x — run with \
+         `--test-threads=1`), and the calibration line above, which tells you how this box compares \
+         to the one the READMEs quote *before* you go looking in the code.\n"
     );
 
     for (label, pool, intra, min, _) in &measured {
@@ -739,16 +810,20 @@ fn m7_s2_the_bar_holds_for_every_shipped_shape() {
             speedup > MIN_SPEEDUP_VS_PRE_M7,
             "{label} (pool={pool}, intra={intra}) is only {speedup:.2}x the pre-M7 shape \
              ({base_min:.0} ms -> {min:.0} ms), under the {MIN_SPEEDUP_VS_PRE_M7}x floor. Both legs \
-             ran in THIS run, so the box's power regime cancels — this is a real regression in the \
-             thread work, not a slow box."
+             ran in THIS run, so how fast the box is running cancels out — a slow box cannot cause \
+             this. A SMALL box can: the speedup scales with the core count (this one reports \
+             {cores}), which is why the guard skips below {MIN_CORES_FOR_A_MEANINGFUL_RATIO} \
+             cores. Otherwise, suspect the thread work (M7-R13)."
         );
         assert!(
             *min < ABSOLUTE_SANITY_CEILING_MS,
             "{label} (pool={pool}, intra={intra}) masks a realistic turn in {min:.0} ms, over the \
-             {ABSOLUTE_SANITY_CEILING_MS:.0} ms sanity ceiling. **Check your box's power state \
-             first** — this ceiling is deliberately loose and exists only to catch an \
-             order-of-magnitude regression (M7 took this from ~27 s to ~2.5 s). The ~3 s product \
-             claim is not asserted here; see the READMEs and M7-R9."
+             {ABSOLUTE_SANITY_CEILING_MS:.0} ms sanity ceiling. **Before suspecting the code, check \
+             (a) that you ran this isolated — `--test-threads=1`; the documented command lets cargo \
+             run all five perf tests CONCURRENTLY, measured at 1.5x on the absolute — and (b) your \
+             box's power state.** This ceiling is deliberately order-of-magnitude and exists only to \
+             catch the 27 s -> ~5 s win being undone. The ~3 s product claim is NOT asserted here; \
+             see the READMEs and M7-R9/M7-R12/M7-R14."
         );
     }
 }

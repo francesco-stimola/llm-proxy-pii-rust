@@ -158,37 +158,44 @@ organizations and locations — nothing else.
 ### Latency — also measured, on a realistic payload
 
 Masking one **realistic Claude Code turn** (22.3 KiB: system prompt + 10 tool schemas + a user
-message), 2026-07-17, reference box (Ryzen 5 PRO 8540U, 6 cores / 12 threads), **on AC power**,
-debug build, best of 3:
+message), 2026-07-17, reference box (Ryzen 5 PRO 8540U, 6 cores / 12 threads), on AC, debug build,
+run in isolation, best of 3:
 
 | detection | per turn | per KiB |
 |---|---|---|
 | **structured only** | **~20 ms** | ~0.9 ms |
-| **hybrid** (either shape — see below) | **~2.5 s** | ~110 ms |
+| **hybrid** (either shape — see below) | **~4.7 s** | ~210 ms |
 
 **The NER is ~100% of the cost** — the deterministic layer is well over 100× faster on the same
 bytes.
 
-**"On AC" is not a footnote — it is worth more than any tuning below.** The *same* code, fixture and
-box masked this turn in **2.5 s, 3.9 s and 4.9 s** on three occasions, differing only in the
-machine's power and thermal regime. So read the number above as *what this laptop does when it is
-allowed to run*, and expect roughly **2× worse when throttled**. What is stable across all of that is
-the *improvement*: the shipped default is consistently **~1.9–2.3×** faster than the pre-threading
-version, which is the part that is about the code rather than the box.
+**Treat that number as this box's, not as the product's.** Across seven measurements by two people
+the same code and fixture ranged **2.5–7.1 s**, and we could not identify the variable that orders
+them — a battery run beat three AC runs, which no power model explains. What we *did* measure is that
+running the benchmark alongside other tests costs **1.5×**. So `~4.7 s` is the figure that reproduced
+twice, independently, run in isolation; the faster numbers we once published were the best of a noisy
+set, which is not the same thing as the truth.
+
+**What is stable is the *improvement*, and that is the part that is about the code:** the shipped
+default is **~1.8–2.3× faster** than the pre-threading version, measured across every one of those
+regimes. If you want to check this repo's claim on your own box, that ratio is what to check — the
+harness prints it, computed against a calibration leg measured seconds away in the same run.
 
 **Which shape should you run?** If you front a single client (a coding agent, an IDE), set
 **`NER_POOL_SIZE=1`**: it **halves the RAM** — one ONNX session instead of two, which is arithmetic
 rather than a benchmark — and costs you nothing, because a single request only ever occupies one
-session anyway. **Latency between the two shapes is a wash** (we have measured each winning by ~15%
-on different runs; the difference is inside this box's noise). The pooled default exists for a
+session anyway. **Latency between the two shapes is a wash** (we have measured each winning by
+10–15% on different runs; the difference is inside this box's noise). The pooled default exists for a
 **shared** proxy, where it is worth ~30% more throughput — that one *is* a real, measured trade.
 
 > **Measure on your own box before believing any of this:** `cargo test-onnx --test m7_latency --
-> --ignored --nocapture`. The harness prints the per-field breakdown, a thread sweep with
-> min/median/**spread**, the concurrency figures, and — because absolute milliseconds are not
-> comparable across machines or power states — **a speedup ratio against an in-run calibration leg**,
-> which is. A *release* build is irrelevant (measured: 3%): the cost is inside ONNX Runtime, a
-> prebuilt native library, so compiling our Rust harder changes nothing.
+> --ignored --nocapture --test-threads=1`. **The `--test-threads=1` is load-bearing** — without it
+> cargo runs the benchmarks concurrently and they measure each other (1.5×). The harness prints the
+> per-field breakdown, a thread sweep with min/median/**spread**, the concurrency figures, and —
+> because absolute milliseconds are not comparable across machines — **a speedup ratio against an
+> in-run calibration leg**, plus how far your box is from the one quoted here. A *release* build is
+> irrelevant (measured: 3%): the cost is inside ONNX Runtime, a prebuilt native library, so
+> compiling our Rust harder changes nothing.
 
 ---
 

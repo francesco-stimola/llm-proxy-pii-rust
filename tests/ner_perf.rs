@@ -19,8 +19,12 @@
 //! set NER_MODEL_PATH=…\model_quantized.onnx
 //! set NER_TOKENIZER_PATH=…\tokenizer.json
 //! set NER_LABELS=O,B-DATE,I-DATE,B-PER,I-PER,B-ORG,I-ORG,B-LOC,I-LOC
-//! cargo test-onnx --test ner_perf -- --ignored --nocapture
+//! cargo test-onnx --test ner_perf -- --ignored --nocapture --test-threads=1
 //! ```
+//!
+//! **`--test-threads=1` matters for the timing guards (M7-R12).** Cargo runs tests concurrently by
+//! default, so without it these measure the NER against other copies of themselves — measured at
+//! 1.5x on a sibling harness. The recall guards here are unaffected; the latency ones are not.
 #![cfg(feature = "onnx")]
 
 use std::time::Instant;
@@ -333,9 +337,25 @@ fn m5_r4_the_ner_treats_placeholders_as_inert() {
     // field this size never reached the model at all).
     let placeholders =
         "Contact [PERSON_1] at [ORG_1] in [LOCATION_1] about [EMAIL_1] and [PHONE_1]. ".repeat(40);
+    // Tokens, not bytes (M7-R16 — the twin of M7-R8, in this same file). This assert used to read
+    // `placeholders.len() > 2_000` and claim it "exercises the chunked path", for a branch
+    // `infer_chunked` takes on `> MAX_WINDOW_TOKENS`. It happened to be true — 1,162 tokens, ~2.4x
+    // the window — but only because placeholder-dense text tokenizes ~2.7x denser per byte than
+    // prose (`[`, `PERSON`, `_`, `1`, `]` each cost a token), so the byte proxy over-shot into
+    // correctness. That is a property of this string's *character*, not of the assert: reword it,
+    // lower the repeat, or swap the tokenizer's vocabulary, and the assert keeps passing while the
+    // field silently stops chunking — and placeholder inertness (M5-R4), the property a MODEL SWAP
+    // must re-check, would go unchecked on the chunked path.
+    let placeholder_tokens = load_tokenizer()
+        .encode(placeholders.as_str(), true)
+        .expect("encode")
+        .get_ids()
+        .len();
     assert!(
-        placeholders.len() > 2_000,
-        "must be large enough to exercise the chunked path"
+        placeholder_tokens > MAX_WINDOW_TOKENS,
+        "the placeholder field is {placeholder_tokens} tokens, not over the {MAX_WINDOW_TOKENS}-token \
+         window — so this guard never reaches `infer_chunked` and placeholder inertness goes \
+         unchecked on the chunked path (M7-R16)"
     );
 
     let entities = detector

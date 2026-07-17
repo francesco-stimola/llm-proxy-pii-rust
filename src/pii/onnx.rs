@@ -558,6 +558,40 @@ mod thread_tests {
     }
 
     #[test]
+    fn the_derivation_is_a_no_op_on_a_small_box() {
+        // M7-R13. Below 4 cores the derived default IS the pre-M7 shape `(2, 1)` — `intra` floors
+        // at 1 and the pool default is 2 — so **M7 delivers nothing here**, and its speedup claim
+        // is undefined rather than merely smaller. That is a real property of the derivation and
+        // belongs in the code as a fact, not in a comment: `tests/m7_latency.rs` skips its ratio
+        // guard below this point precisely because the calibration leg and the shape under test
+        // would be the same configuration.
+        assert_eq!(
+            resolve_pool_and_intra(None, None, 1),
+            (DEFAULT_POOL_SIZE, 1)
+        );
+        assert_eq!(
+            resolve_pool_and_intra(None, None, 2),
+            (DEFAULT_POOL_SIZE, 1)
+        );
+        assert_eq!(
+            resolve_pool_and_intra(None, None, 3),
+            (DEFAULT_POOL_SIZE, 1)
+        );
+        // At 4 cores the derivation finally has something to say — and this is exactly where the
+        // ratio guard starts being meaningful.
+        assert_eq!(
+            resolve_pool_and_intra(None, None, 4),
+            (DEFAULT_POOL_SIZE, 2)
+        );
+        // The corollary worth pinning: the speedup **scales with the box**, so a claim like
+        // "~2x faster" is a claim about a 12-thread machine, not a universal one.
+        assert_eq!(
+            resolve_pool_and_intra(None, None, 12),
+            (DEFAULT_POOL_SIZE, 6)
+        );
+    }
+
+    #[test]
     fn the_harness_and_the_server_cannot_disagree_about_the_default() {
         // M7-R1. The latency harness resolved its own pool default (1) while the server used 2, so
         // M7's executable bar measured a configuration nobody ships. Both now route through this
