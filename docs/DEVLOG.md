@@ -224,7 +224,8 @@ so the READMEs lead that recommendation with RAM.
 ### S2 — the bar was MISSED, and we stopped anyway (which is the stronger sentence)
 
 **~4.7 s at the shipped default** — reproduced independently at **4,724** and **4,757 ms**, isolated,
-on AC. That is **~60% over the ~3 s bar**. The `2.46 s` this entry once led with was the fastest of
+on its balanced/energy-efficiency power plan. That is **~60% over the ~3 s bar**. The `2.46 s` this
+entry once led with was the fastest of
 seven observations and has never reproduced; it should not have been the headline, and the READMEs no
 longer carry it.
 
@@ -254,15 +255,25 @@ they do. Both now resolve through the server's own function.
 > *A run was called slow because it was slow, then cited as evidence that slowness was throttling.*
 > **That is the exact move this milestone exists to name**, committed in the entry naming it.
 >
+> **Then the machine's owner ended the argument in one sentence: the runs I called "AC" were on the
+> *same energy-efficiency plan* as the ones I called "battery".** The charger was plugged in; the
+> power profile never changed. So the variable was not mis-modelled — **it did not vary.** Every
+> theory I built on it was theorising about a constant, which is why no amount of re-measuring could
+> have rescued it, and why the "battery beat AC" contradiction was an artefact of the label rather
+> than a fact about the box. **The person who owned the hardware knew in one line what four rounds of
+> benchmarking could not tell me.** *When a variable you never controlled is doing the explaining, ask
+> whoever controls it before you write the mechanism down.* What a **performance** plan does here
+> remains unmeasured, and the published figure is the ordinary-laptop case deliberately.
+>
 > **The variable that is actually measured:** test **concurrency**. Cargo runs the perf tests in
 > parallel, so the documented command measured the product **against four other copies of itself** —
 > **1.50×** at constant power (4,757 isolated → 7,142 contended). `--test-threads=1` is now part of
 > the contract, in the harness doc and in TESTING's recipe.
 >
 > **M7-R1 taught this milestone to name a number's shape; R9 named its power state; R12 showed the
-> power state cannot order the data.** Four rounds, the same shape each time. *Naming one variable
-> does not make a measurement reproducible — it makes the un-named ones harder to notice, because
-> the number now looks qualified.*
+> power state cannot order the data — and the box's owner showed it was never a state at all.** Four
+> rounds, the same shape each time. *Naming one variable does not make a measurement reproducible —
+> it makes the un-named ones harder to notice, because the number now looks qualified.*
 >
 > **So the assert is a ratio, and the ~3 s figure is a reported claim, not a guard.** The bar test
 > measures the **pre-M7 shape** (`2×1`) as a calibration leg *in the same run*, seconds from the

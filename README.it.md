@@ -160,7 +160,9 @@ compra nomi, organizzazioni e luoghi — nient'altro.
 
 Mascheramento di **un turno realistico di Claude Code** (22,3 KiB: system prompt + 10 schemi di
 tool + un messaggio utente), 2026-07-17, macchina di riferimento (Ryzen 5 PRO 8540U, 6 core / 12
-thread), alimentata a rete, build debug, eseguito in isolamento, migliore di 3:
+thread) con il suo **piano di alimentazione bilanciato / a risparmio energetico** — un portatile
+normale nel suo stato normale, che è il caso per cui questo proxy esiste — build debug, eseguito in
+isolamento, migliore di 3:
 
 | rilevamento | per turno | per KiB |
 |---|---|---|
@@ -170,12 +172,19 @@ thread), alimentata a rete, build debug, eseguito in isolamento, migliore di 3:
 **Il NER è ~100% del costo** — il livello deterministico è oltre 100× più veloce sugli stessi byte.
 
 **Considera quel numero come proprio di questa macchina, non del prodotto.** Su sette misurazioni
-fatte da due persone, lo stesso codice e la stessa fixture hanno dato **da 2,5 a 7,1 s**, e non siamo
-riusciti a identificare la variabile che li ordina: una run a batteria ha battuto tre run a rete, il
-che nessun modello di alimentazione spiega. Quello che *abbiamo* misurato è che eseguire il benchmark
-insieme ad altri test costa **1,5×**. Quindi `~4,7 s` è la cifra che si è riprodotta due volte, in
-modo indipendente, in isolamento; i numeri più veloci che avevamo pubblicato erano il migliore di un
-insieme rumoroso — che non è la stessa cosa della verità.
+fatte da due persone, lo stesso codice e la stessa fixture hanno dato **da 2,5 a 7,1 s**. Due
+variabili sono note: eseguire il benchmark insieme ad altri test costa **1,5×** (misurato), e il resto
+non sappiamo spiegarlo. Quello che possiamo dire è cosa *non* è: abbiamo attribuito a lungo la
+dispersione a "rete contro batteria", finché il proprietario della macchina non ha fatto notare che
+entrambi i gruppi di run giravano sullo **stesso profilo di risparmio energetico** — l'alimentatore
+era attaccato, il piano non è mai cambiato. Quell'etichetta non separava nulla, ed è per questo che
+una run "a batteria" ha battuto tre run "a rete". Quindi `~4,7 s` è la cifra che si è riprodotta due
+volte, in modo indipendente, in isolamento; i numeri più veloci che avevamo pubblicato erano il
+migliore di un insieme rumoroso — che non è la stessa cosa della verità.
+
+> Una macchina su un piano di alimentazione **prestazionale** dovrebbe fare meglio di così, e non ne
+> abbiamo misurata una. La cifra sopra è deliberatamente il caso pessimistico del portatile ordinario,
+> non un caso migliore che avremmo potuto allestire.
 
 **Ciò che resta stabile è il *miglioramento*, ed è la parte che riguarda il codice:** il default
 spedito è **~1,8–2,3× più veloce** della versione pre-threading, misurato in tutti quei regimi. Se

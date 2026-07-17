@@ -553,7 +553,8 @@ DEVLOG 2026-07-16 → *M7 implementation plan*; start at S0.**
   under this list.
 - [x] **Declare the bar, then decide against it: the bar was MISSED — we stopped anyway, and that is
   the honest sentence.** A realistic turn masks in **~4.7 s** at the shipped default on the reference
-  box (isolated, on AC; reproduced independently at 4,724 and 4,757 ms) — **~60% over the ~3 s bar**.
+  box (isolated, balanced/energy-efficiency power plan; reproduced independently at 4,724 and
+  4,757 ms) — **~60% over the ~3 s bar**.
   S3 (cache) and S4 (fixpoint) are still **not done, on purpose**, but *not* because the bar was met:
   because **what M7 could deliver, it delivered** — a reproducible **~2×** — and the remaining gap is
   the machine, not the code. Both leads trade real risk (state on the masking path; lost detection)
@@ -566,6 +567,15 @@ DEVLOG 2026-07-16 → *M7 implementation plan*; start at S0.**
   > (4.76 / 4.84 / 4.93 s). No power model orders that. "Throttled AC" was a label assigned *post hoc
   > from the number itself*; no thermal state was ever measured. **A run was called slow because it
   > was slow, and then cited as evidence of throttling.**
+  >
+  > **And then the machine's owner explained why no power model could ever have ordered it: there was
+  > no power difference.** Both sets of runs were on the **same balanced/energy-efficiency plan** —
+  > "AC" meant only that the charger was attached, and the profile never changed. So the variable was
+  > not merely mis-modelled; **it did not vary.** The label separated nothing, and the mystery it was
+  > invented to explain was an artefact of the label. *One question to the person who owns the box
+  > would have retired the whole story — and no amount of re-measuring could have, because we were
+  > measuring a constant and theorising about its effect.* Whatever a **performance** plan does here is
+  > simply unmeasured; the published figure is the ordinary-laptop case on purpose.
   >
   > **The variable that *is* measured:** test **concurrency** — cargo runs the perf tests in
   > parallel, worth **1.50×** at constant power. The documented command measured the product against

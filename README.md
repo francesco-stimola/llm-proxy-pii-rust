@@ -158,8 +158,9 @@ organizations and locations — nothing else.
 ### Latency — also measured, on a realistic payload
 
 Masking one **realistic Claude Code turn** (22.3 KiB: system prompt + 10 tool schemas + a user
-message), 2026-07-17, reference box (Ryzen 5 PRO 8540U, 6 cores / 12 threads), on AC, debug build,
-run in isolation, best of 3:
+message), 2026-07-17, reference box (Ryzen 5 PRO 8540U, 6 cores / 12 threads) on its **balanced /
+energy-efficiency power plan** — a normal laptop in its normal state, which is the case this proxy
+exists for — debug build, run in isolation, best of 3:
 
 | detection | per turn | per KiB |
 |---|---|---|
@@ -170,11 +171,18 @@ run in isolation, best of 3:
 bytes.
 
 **Treat that number as this box's, not as the product's.** Across seven measurements by two people
-the same code and fixture ranged **2.5–7.1 s**, and we could not identify the variable that orders
-them — a battery run beat three AC runs, which no power model explains. What we *did* measure is that
-running the benchmark alongside other tests costs **1.5×**. So `~4.7 s` is the figure that reproduced
-twice, independently, run in isolation; the faster numbers we once published were the best of a noisy
-set, which is not the same thing as the truth.
+the same code and fixture ranged **2.5–7.1 s**. Two variables are known: running the benchmark
+alongside other tests costs **1.5×** (measured), and the rest we cannot account for. What we can say
+is what it is *not*: we spent a while attributing the spread to "AC versus battery" until the machine's
+owner pointed out that both sets of runs were on the **same energy-efficiency profile** — the charger
+was plugged in, the power plan never changed. That label had been separating nothing, which is why a
+"battery" run beat three "AC" ones. So `~4.7 s` is the figure that reproduced twice, independently, in
+isolation; the faster numbers we once published were the best of a noisy set, which is not the same
+thing as the truth.
+
+> A box on a **performance** power plan should do better than this, and we have not measured one. The
+> figure above is deliberately the pessimistic, ordinary-laptop case rather than a best case we could
+> stage.
 
 **What is stable is the *improvement*, and that is the part that is about the code:** the shipped
 default is **~1.8–2.3× faster** than the pre-threading version, measured across every one of those
