@@ -384,3 +384,30 @@ fn m5_r4_the_ner_treats_placeholders_as_inert() {
         .mask_all(&placeholders, &composite)
         .expect("masking placeholder-dense text must reach a fixpoint, not exhaust its passes");
 }
+
+/// S4 (CC-05/CC-08), live. A field dense with product/org names makes the NER emit **sub-word
+/// fragments** (`"Slack"` → `"lack"`, `"Anthropic"` → `"An"`); before S4 those chained past
+/// `MAX_MASK_PASSES` on every pass and the request **400'd** — reproduced live on a real Claude
+/// Code system prompt. With S4 the NER runs only on pass 0 ([`PiiDetector::redetect`] returns
+/// nothing after), so `mask_all` converges. A model swap must keep this true; if a new NER
+/// fragments *and* S4 regresses, this is the guard that catches it before a user does.
+#[test]
+#[ignore]
+fn m7_s4_dense_org_names_converge_instead_of_400() {
+    let composite = llm_proxy_pii_rust::pii::composite::CompositeDetector::new(vec![
+        Box::new(llm_proxy_pii_rust::pii::recognizers::StructuredRecognizers::with_locales(
+            &["it".to_string(), "us".to_string()],
+        )),
+        Box::new(load_detector()),
+    ]);
+    // The exact shape the live 400s came from: dense product/org names, scaled well past the
+    // ~5 KB where PLAIN (NER every pass) already needed 6 passes and grew from there.
+    let dense = "You are Claude Code, Anthropic's official CLI for Claude. Claude Code integrates \
+with Slack, GitHub, and the Claude API. The Claude Desktop app and Claude Code both talk to \
+Anthropic. Use GitHub for issues, Slack for chat, and the Anthropic Console for billing. "
+        .repeat(60);
+    let mut vault = Vault::new();
+    vault
+        .mask_all(&dense, &composite)
+        .expect("S4: a dense system prompt must converge in one NER pass, not 400");
+}

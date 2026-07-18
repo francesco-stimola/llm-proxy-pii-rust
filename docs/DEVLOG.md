@@ -37,6 +37,14 @@ now conditionally gates `1.0.0`: fail-closed never leaks, but a proxy that 400s 
 not "usable". Investigation harness was throwaway (`tests/cc05_investigate.rs`, deleted); the numbers live
 here and the regression tests ship with S4.
 
+**Implemented the same day.** A `redetect` method on `PiiDetector` (default `try_detect`; `OnnxNerDetector`
+overrides it to return nothing — idempotent after pass 0; `CompositeDetector`/`FailOpen` delegate).
+`Vault::mask_all` runs the whole detector on pass 0 and `redetect` on every later pass *and the fixpoint
+confirm*, so the NER's fragments can't chain. Verified live: `ner_perf.rs::
+m7_s4_dense_org_names_converge_instead_of_400` — dense system-prompt text that 400'd now converges — plus
+deterministic `Fragmenter` unit tests (FC-09, bug→fix). 111 onnx lib tests green, `clippy` clean. Invariant
+in `ARCHITECTURE.md` (*Masking must run to a fixpoint*); S4 closed in M7.1. S3 (the cache) is next.
+
 ## 2026-07-18 — CC-08 resolved: placeholder inertness *by construction* + a value-free block diagnostic
 
 **The finding, recapped.** CC-08 (a long reminder-list turn) returned a fail-closed **400** — masking

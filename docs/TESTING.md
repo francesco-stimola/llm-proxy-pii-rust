@@ -327,6 +327,15 @@ asserts the value is still masked and round-trips, so a "fix" that buys speed wi
   suppression run emits nothing. Together they pin that a filter-leaning model is visible in ordinary
   operation (not only when it 400s), value-free — the runtime half of the model-swap canary whose
   compile-time half is NER-INERT-01.
+- FC-09 — **S4: the NER runs only on pass 0** (`src/pii/anonymizer.rs`, CC-05/CC-08). A `Fragmenter` fake
+  models the sub-word fragmentation the real NER does (tags the first alphabetic char → masking exposes the
+  next, forever). `s4_a_re_running_fragmenter_exhausts_the_bound` (idempotent=false → the default
+  `redetect` re-runs) must **400** — the bug; `s4_an_idempotent_ner_lets_masking_converge` (idempotent=true
+  → `redetect` empty, the NER after pass 0) must **converge** (`"Slack"` → `"[ORG_1]lack"`, masked once) —
+  the fix. Deterministic, no model needed. The live counterpart is `ner_perf.rs::
+  m7_s4_dense_org_names_converge_instead_of_400` *(`--features onnx`, `#[ignore]`d)* — real XLM-R, dense
+  system-prompt text converges instead of 400-ing — a **model-swap checkpoint**, since S4's no-recall-loss
+  rests on the NER not exposing new names when a neighbour is masked.
 
 ### M5 / M6 — live provider verification
 

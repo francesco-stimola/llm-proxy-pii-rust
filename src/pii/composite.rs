@@ -40,6 +40,18 @@ impl PiiDetector for CompositeDetector {
         }
         Ok(resolve_overlaps(input, all))
     }
+
+    /// Re-detect on a later fixpoint pass by asking each sub-detector for **its** `redetect` — so
+    /// the NER (idempotent after pass 0) contributes nothing while the structured recognizers
+    /// rescan for PII the last mask may have exposed. Overlaps are resolved exactly as in
+    /// [`try_detect`](Self::try_detect); the two differ only in which detectors speak.
+    fn redetect(&self, input: &str) -> Result<Vec<PiiEntity>, DetectError> {
+        let mut all = Vec::new();
+        for detector in &self.detectors {
+            all.extend(detector.redetect(input)?);
+        }
+        Ok(resolve_overlaps(input, all))
+    }
 }
 
 /// Wraps a detector so its errors are **swallowed** (logged, treated as "no
@@ -55,6 +67,19 @@ impl PiiDetector for FailOpen {
     fn try_detect(&self, input: &str) -> Result<Vec<PiiEntity>, DetectError> {
         Ok(self.0.try_detect(input).unwrap_or_else(|err| {
             // Log the detector label only — never the input.
+            tracing::warn!(
+                detector = err.detector,
+                "detector failed; continuing without it"
+            );
+            Vec::new()
+        }))
+    }
+
+    /// Same fail-open contract as [`try_detect`](Self::try_detect), delegating to the inner
+    /// detector's [`redetect`](PiiDetector::redetect) — so a fail-open-wrapped NER stays
+    /// idempotent after pass 0 (it returns nothing) rather than re-running via the default.
+    fn redetect(&self, input: &str) -> Result<Vec<PiiEntity>, DetectError> {
+        Ok(self.0.redetect(input).unwrap_or_else(|err| {
             tracing::warn!(
                 detector = err.detector,
                 "detector failed; continuing without it"

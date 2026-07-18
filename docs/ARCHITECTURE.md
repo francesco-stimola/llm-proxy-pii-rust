@@ -127,7 +127,24 @@ placeholder is **inert** (no recognizer can match `[KIND_N]` or span across it),
 shrinks the un-masked text. The round-trip stays exact — every pass records raw value → placeholder, and
 `demask` restores them all in one tolerant pass.
 
-> **…and the NER inside it can no longer break that, because `mask_all` won't let it (M5-R4 / CC-08).**
+> **The NER runs only on pass 0 — later passes are structured-only (S4, CC-05/CC-08).** Masking
+> *exposes* PII only by splitting a token, which is a **structured-recognizer** phenomenon (the card
+> above). Masking a name to `[PERSON_1]` never reveals a *new* name, so re-running the NER buys no recall
+> — measured **0** losses across the labelled corpus — while it *does* re-tag the **sub-word fragments**
+> the model emits (`"lack"` of `"Slack"`, `"An"` of `"Anthropic"`; the [M7-R7](reviews/M7.md#m7-r7)
+> over-mask). On a real Claude Code **system prompt**, dense with such names, those fragments chained
+> **past `MAX_MASK_PASSES` and fail-closed 400'd live** (CC-05/CC-08) — offline the pass count grew
+> 6 → 11 → 13 as the field grew, unbounded. So `mask_all` runs the whole detector on pass 0 and only
+> `redetect` — the detectors masking can expose (the structured recognizers), never the NER — on later
+> passes *and the fixpoint confirm*. The pass count is then **O(1) on a fragment-dense field**, and it is
+> the latency win M4-R21 priced (the field's second full NER scan). M7-R7 called this "a latency cost, not
+> a correctness one"; past four passes it was a fail-closed **availability** defect, and this is its fix. A
+> **word-boundary snap** of the fragments was measured and **rejected** — it makes convergence *worse*.
+> The no-recall-loss claim is a model-swap checkpoint:
+> `tests/ner_perf.rs::m7_s4_dense_org_names_converge_instead_of_400`.
+
+> **…and the NER inside it can no longer break that in the *other* way, either, because `mask_all` won't
+> let it (M5-R4 / CC-08).**
 > "A placeholder is inert" is proved **by construction** for the deterministic layer: `[KIND_N]` has no
 > `@`, no `sk-`, nowhere near enough digits, and `[` / `]` sit outside every pattern's character classes.
 > But `mask_all` runs the **`CompositeDetector`**, and the ML NER inside it is under no such constraint —

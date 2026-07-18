@@ -487,6 +487,17 @@ impl PiiDetector for OnnxNerDetector {
             message: err.to_string(),
         })
     }
+
+    /// The NER runs **once**, on the fixpoint's pass 0 (S4). Masking a name to `[PERSON_1]` never
+    /// reveals a *new* name, so re-running here buys no recall — measured: **0** losses across the
+    /// labelled corpus (DEVLOG 2026-07-18). It would only re-tag the sub-word fragments it emits
+    /// (`"lack"` of `"Slack"`), the mechanism that pushed masking past `MAX_MASK_PASSES` and 400'd
+    /// real Claude Code system prompts (CC-05/CC-08). So it is idempotent after pass 0 — and this
+    /// is also the latency win M4-R21 priced (the field's second full NER scan). See
+    /// [`redetect`](PiiDetector::redetect) for the invariant this rests on.
+    fn redetect(&self, _input: &str) -> Result<Vec<PiiEntity>, DetectError> {
+        Ok(Vec::new())
+    }
 }
 
 /// Compute the byte ranges of the overlapping windows that cover a tokenized `input`, from its

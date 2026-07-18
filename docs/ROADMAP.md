@@ -933,8 +933,12 @@ lands before `1.0.0`; if the battery closes anyway, S4 can follow.
   masking path*, which needs its own threat argument (a stale cache entry must never mask *less* than a
   fresh scan — fail-closed means the cache may only ever be a superset, or be dropped). That is why it is
   listed with a guard, not just a TODO.
-- [ ] **S4 — NER on pass 0 only; structured recognizers on later passes. Now the *fix* for the CC-05/CC-08
-  non-convergence, not just a latency lead.** *(Investigated 2026-07-18; DEVLOG.)* Passes ≥2 of the fixpoint
+- [x] **S4 — NER on pass 0 only; structured recognizers on later passes. Now the *fix* for the CC-05/CC-08
+  non-convergence, not just a latency lead.** **Done 2026-07-18** — a `redetect` method on `PiiDetector`
+  (default `try_detect`, the NER overrides it to return nothing), `mask_all` calls it on every pass after
+  the first *and* the fixpoint confirm; the real model now converges on dense system-prompt text that
+  400'd before (`ner_perf.rs::m7_s4_dense_org_names_converge_instead_of_400`), plus deterministic
+  `Fragmenter` unit tests (FC-09). *(Investigated 2026-07-18; DEVLOG.)* Passes ≥2 of the fixpoint
   exist to catch masking **exposing** PII (a masked phone splits a digit run → a card) — a
   **deterministic-recognizer** phenomenon. Masking a name to `[PERSON_1]` never reveals a new name, so the
   NER buys nothing after pass 0 — **but it is exactly what keeps the loop from converging.** The NER tags

@@ -65,23 +65,25 @@ impl Vault {
     ///                                   Luhn-valid card — and it would go upstream in clear
     /// ```
     ///
-    /// So we re-detect on the masked text until it yields nothing. Masking only ever *adds*
-    /// placeholders, so this converges: a placeholder is **inert** — no recognizer can match
-    /// one or span across it (`[KIND_N]` has no `@`, no `sk-`, and nowhere near enough
-    /// digits; `[` / `]` are outside every pattern's character classes), so each pass
-    /// strictly shrinks the un-masked text.
+    /// So we re-detect on the masked text until it yields nothing. Two things bound that loop:
     ///
-    /// **That inertness is enforced by construction for *every* engine (M5-R4, CC-08).** The
-    /// recognizers can't match a placeholder (proved above); an ML model is under no such
-    /// constraint — nothing structurally stops one from tagging `[PERSON_1]` as a `Person`, and if
-    /// a pass re-masked it the text would never shrink and the loop would 400. So this loop no
-    /// longer trusts the model here: [`detect_maskable`] **drops any detection that is exactly one
-    /// of our own `[KIND_N]` tokens** before masking, which a real value can never be. Every
-    /// surviving detection is genuine PII, and masking genuine PII strictly shrinks the raw text,
-    /// so the fixpoint converges *regardless* of the NER. The shipped model doesn't even try —
-    /// `tests/ner_perf.rs::m5_r4_the_ner_treats_placeholders_as_inert` still pins that, now as
-    /// belt-and-braces rather than the sole guarantee (see `ARCHITECTURE.md` → *Masking must run
-    /// to a fixpoint*).
+    /// **The NER runs only on pass 0 (S4, CC-05/CC-08).** Masking *exposes* PII only by splitting a
+    /// token — a **structured-recognizer** phenomenon (the card above). Masking a name to
+    /// `[PERSON_1]` never reveals a *new* name, so re-running the NER buys no recall (measured: **0**
+    /// losses across the labelled corpus) — while it *does* re-tag the sub-word fragments it emits
+    /// (`"lack"` of `"Slack"`), which on a dense system prompt drove masking past the pass bound into
+    /// a fail-closed 400. So later passes call [`redetect`](PiiDetector::redetect), which runs only
+    /// the detectors masking can expose (the structured recognizers), never the NER. That makes the
+    /// pass count **O(1) on a fragment-dense field** instead of growing with it.
+    ///
+    /// **Placeholders are inert by construction (M5-R4, CC-08).** A recognizer can't match a
+    /// `[KIND_N]` token (no `@`, no `sk-`, nowhere near enough digits; `[` / `]` are outside every
+    /// pattern's character classes), and even if a future NER tagged one, this loop no longer trusts
+    /// it: [`keep_maskable`] **drops any detection that is exactly one of our own tokens** before
+    /// masking, which a real value can never be. So every surviving detection is genuine PII, masking
+    /// it strictly shrinks the raw text, and the fixpoint converges. The shipped model doesn't even
+    /// try — `tests/ner_perf.rs::m5_r4_the_ner_treats_placeholders_as_inert` still pins that, now
+    /// belt-and-braces (see `ARCHITECTURE.md` → *Masking must run to a fixpoint*).
     ///
     /// **Exhausting [`MAX_MASK_PASSES`] fails *closed* (M4-R20).** The bound is a safety
     /// net, not a proof: "each pass strictly shrinks the un-masked text" buys *eventual*
@@ -89,12 +91,13 @@ impl Vault {
     /// fixpoint instead of assuming it — if anything is still detectable when the passes run
     /// out, this returns `Err` and [`PrivacyStage`](crate::pipeline::privacy::PrivacyStage)
     /// blocks the request. Forwarding a "probably clean" text is exactly the failure mode a
-    /// privacy proxy must not have. (No input has ever been shown to need more than **2**
-    /// passes — this is a latent path, and it stays fail-closed anyway.)
+    /// privacy proxy must not have. (With the NER out after pass 0, later passes are
+    /// structured-only and converge fast — no realistic input approaches the bound; *before* S4, a
+    /// dense system prompt's NER fragments needed >4 passes and 400'd. It stays fail-closed regardless.)
     ///
     /// On that branch it also logs a **value-free** diagnostic — the per-pass kind tally, the
     /// residue's kinds, and `placeholder_tags_suppressed`, a count of any placeholder tokens the
-    /// detector tried to re-tag ([`detect_maskable`] now absorbs them). Kinds and counts only,
+    /// detector tried to re-tag ([`keep_maskable`] now absorbs them). Kinds and counts only,
     /// never the offending text; it is the only signal there is, since fail-closed blocks *before*
     /// the forward-trace that would otherwise show what didn't settle. The **converging** path
     /// carries the same canary at `debug` via [`note_suppressed_placeholders`] (M7-R21), so a
@@ -112,12 +115,21 @@ impl Vault {
         // non-convergence on the fail-closed branch below. Value-free: kinds and counts, never
         // the text — the granularity `Config`/`Confidence` already log at.
         let mut per_pass: Vec<Vec<(&'static str, usize)>> = Vec::new();
-        // Model-behaviour canary: how many detections `detect_maskable` dropped as our own
+        // Model-behaviour canary: how many detections `keep_maskable` dropped as our own
         // placeholder tokens. Zero for the shipped NER; a non-zero value after a model swap is
         // the tell that inertness has started leaning on the filter rather than the model.
         let mut placeholder_tags_suppressed = 0usize;
-        for _ in 0..MAX_MASK_PASSES {
-            let entities = detect_maskable(detector, &current, &mut placeholder_tags_suppressed)?;
+        for pass in 0..MAX_MASK_PASSES {
+            // Pass 0 runs the whole detector; later passes run only `redetect` — the detectors
+            // masking can *expose* (the structured recognizers, where a split digit run reveals a
+            // card), never the NER, which is idempotent after pass 0 (S4). That is what bounds the
+            // pass count on a fragment-dense field instead of letting the NER re-tag forever.
+            let raw = if pass == 0 {
+                detector.try_detect(&current)?
+            } else {
+                detector.redetect(&current)?
+            };
+            let entities = keep_maskable(raw, &mut placeholder_tags_suppressed);
             if entities.is_empty() {
                 note_suppressed_placeholders(placeholder_tags_suppressed);
                 return Ok(current);
@@ -126,17 +138,17 @@ impl Vault {
             current = self.mask(&current, &entities);
         }
         // The passes ran out having masked real PII on every one of them, so we do NOT know
-        // `current` is clean. Confirm it (M4-R20) — and block if it isn't.
-        let remaining = detect_maskable(detector, &current, &mut placeholder_tags_suppressed)?;
+        // `current` is clean. Confirm it with `redetect` (M4-R20) — and block if it isn't.
+        let remaining = keep_maskable(detector.redetect(&current)?, &mut placeholder_tags_suppressed);
         if remaining.is_empty() {
             note_suppressed_placeholders(placeholder_tags_suppressed);
             return Ok(current);
         }
-        // Non-convergence, diagnosed without ever logging a value (M4-R20). Placeholders are
-        // inert by construction now (`detect_maskable` drops them), so a residue here is *real*
-        // PII that masking keeps re-exposing: the per-pass tally shows whether its count is
-        // shrinking (a deep structured nest that would clear with more passes) or stalled, and
-        // `placeholder_tags_suppressed` flags a model that has started tagging our own output.
+        // Non-convergence, diagnosed without ever logging a value (M4-R20). Placeholders are inert
+        // by construction (`keep_maskable` drops them) and the NER is out after pass 0 (S4), so a
+        // residue here is *real structured* PII that masking keeps re-exposing: the per-pass tally
+        // shows whether its count is shrinking (a deep nest that would clear with more passes) or
+        // stalled, and `placeholder_tags_suppressed` flags a model that tagged our own output.
         let remaining_kinds = kind_histogram(&remaining);
         tracing::warn!(
             passes = MAX_MASK_PASSES,
@@ -295,7 +307,7 @@ fn char_boundary_at_or_after(s: &str, i: usize) -> usize {
 /// two tokens in a row all return `false`.
 ///
 /// This is the key to placeholder inertness *by construction* (M5-R4): a real PII value can
-/// never take this shape, so [`detect_maskable`] can drop such a detection with no risk of
+/// never take this shape, so [`keep_maskable`] can drop such a detection with no risk of
 /// dropping real PII — see [`Vault::mask_all`].
 fn is_placeholder_token(text: &str) -> bool {
     let trimmed = text.trim();
@@ -307,26 +319,24 @@ fn is_placeholder_token(text: &str) -> bool {
     })
 }
 
-/// Detect PII in `text`, then **drop any detection that is one of our own placeholders**
+/// From a detection pass's `entities`, **drop any that is one of our own placeholders**
 /// (see [`is_placeholder_token`]), tallying how many were dropped into `suppressed`.
 ///
 /// The recognizers cannot match a placeholder, but an ML NER is under no such constraint, and
 /// one that re-tagged `[PERSON_1]` would keep [`Vault::mask_all`] from ever reaching a fixpoint.
-/// Filtering here makes convergence a property of the algorithm, not of the model.
-fn detect_maskable(
-    detector: &dyn PiiDetector,
-    text: &str,
-    suppressed: &mut usize,
-) -> Result<Vec<PiiEntity>, DetectError> {
-    let mut maskable = Vec::new();
-    for entity in detector.try_detect(text)? {
+/// Filtering here makes convergence a property of the algorithm, not of the model — and it takes
+/// the already-detected list (not the detector) so `mask_all` can feed it either `try_detect`
+/// (pass 0) or `redetect` (later passes, the NER dropped) results (S4).
+fn keep_maskable(entities: Vec<PiiEntity>, suppressed: &mut usize) -> Vec<PiiEntity> {
+    let mut maskable = Vec::with_capacity(entities.len());
+    for entity in entities {
         if is_placeholder_token(&entity.text) {
             *suppressed += 1;
         } else {
             maskable.push(entity);
         }
     }
-    Ok(maskable)
+    maskable
 }
 
 /// The **runtime half** of the placeholder-inertness model-swap canary (M7-R21). When masking
@@ -378,7 +388,7 @@ mod tests {
     use super::*;
     use crate::pii::composite::CompositeDetector;
     use crate::pii::recognizers::StructuredRecognizers;
-    use crate::pii::{Confidence, PiiDetector, PiiEntity, PiiKind};
+    use crate::pii::{Confidence, DetectError, PiiDetector, PiiEntity, PiiKind};
 
     /// Capture this crate's `debug`-and-up logs emitted while `f` runs, as one string. A
     /// **scoped** subscriber (`with_default`, thread-local) so it never fights the process-global
@@ -598,6 +608,70 @@ mod tests {
         assert!(!is_placeholder_token("[TODO_1]"));
         assert!(!is_placeholder_token("see [EMAIL_1] here"));
         assert!(!is_placeholder_token("[EMAIL_1] and [EMAIL_2]"));
+    }
+
+    /// A fake NER that tags the **first ASCII-alphabetic character** as an Organization — so
+    /// masking it exposes the next character, which the next detection tags, ad infinitum. It
+    /// models the sub-word fragmentation the real NER does on dense system prompts (`"Slack"` →
+    /// `"lack"` → …), the mechanism that pushed masking past `MAX_MASK_PASSES` and 400'd
+    /// (CC-05/CC-08). `idempotent` mirrors S4: an idempotent detector (the NER after pass 0)
+    /// contributes nothing to `redetect`, so masking converges; one that re-runs every pass never
+    /// does.
+    struct Fragmenter {
+        idempotent: bool,
+    }
+
+    impl PiiDetector for Fragmenter {
+        fn detect(&self, input: &str) -> Vec<PiiEntity> {
+            for (i, c) in input.char_indices() {
+                if c.is_ascii_alphabetic() {
+                    return vec![PiiEntity {
+                        kind: PiiKind::Organization,
+                        span: i..i + c.len_utf8(),
+                        text: c.to_string(),
+                        confidence: Confidence::Structural,
+                    }];
+                }
+            }
+            Vec::new()
+        }
+
+        fn redetect(&self, input: &str) -> Result<Vec<PiiEntity>, DetectError> {
+            if self.idempotent {
+                Ok(Vec::new())
+            } else {
+                self.try_detect(input)
+            }
+        }
+    }
+
+    #[test]
+    fn s4_a_re_running_fragmenter_exhausts_the_bound() {
+        // The bug S4 fixes: a detector that keeps tagging a fresh fragment on every pass (the NER
+        // on a dense system prompt) never lets the fixpoint settle → fail-closed 400. This holds
+        // when the detector re-runs on later passes (idempotent=false, the default `redetect`).
+        let composite = CompositeDetector::new(vec![Box::new(Fragmenter { idempotent: false })]);
+        let mut vault = Vault::new();
+        let err = vault
+            .mask_all("Slack", &composite)
+            .expect_err("a detector that re-fragments every pass must exhaust the bound");
+        assert!(
+            !err.to_string().contains("Slack"),
+            "the block reason must not leak the input"
+        );
+    }
+
+    #[test]
+    fn s4_an_idempotent_ner_lets_masking_converge() {
+        // The fix: the same fragmenter, idempotent under `redetect` like the real NER after pass 0.
+        // It tags once on pass 0; later passes call `redetect` (empty), so masking converges — only
+        // the pass-0 hit is masked, the fragment chain never forms.
+        let composite = CompositeDetector::new(vec![Box::new(Fragmenter { idempotent: true })]);
+        let mut vault = Vault::new();
+        let masked = vault
+            .mask_all("Slack", &composite)
+            .expect("an idempotent NER must let masking converge");
+        assert_eq!(masked, "[ORG_1]lack");
     }
 
     #[test]
