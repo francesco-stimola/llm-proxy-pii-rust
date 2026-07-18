@@ -74,9 +74,12 @@ cargo run-onnx     # rebuilds, THEN runs target\onnx\debug\ — see the box belo
 Confirm **both** lines before trusting a single result:
 
 ```text
-INFO … ONNX NER detector loaded model="…model_quantized.onnx" pool_size=2
+INFO … ONNX NER detector loaded model="…model_quantized.onnx" pool_size=1 intra_threads=…
 INFO … listening on http://127.0.0.1:8787
 ```
+
+(`pool_size=1` is the default since 2026-07-17 — one session, the whole box; `intra_threads` is the
+derived per-session count. A centralizing operator who set `NER_POOL_SIZE=2` would see that here.)
 
 > **`NER_REQUIRED=1` is not optional here, and this is why.** By default a missing or
 > unloadable NER degrades to structured-only **silently** (the deliberate fail-*open* posture
@@ -162,3 +165,16 @@ the client gets restored (OFF) — the full chain, not two independently-plausib
   anything.
 - **CC-02 finds no `Person`** → check `ONNX NER detector loaded` really appeared. That is the
   trap this file now warns about twice for a reason.
+- **A `400 "masking did not reach a fixpoint in 4 passes"`** → the **fail-closed guard**, *not* a leak:
+  the request was **blocked, never forwarded** (`anonymizer.rs::mask_all`, `MAX_MASK_PASSES`, M4-R20).
+  Confirm there is **no** `forwarding masked request body` line for that turn. But masking that cannot
+  converge on an ordinary input is a real *availability* defect — capture the scenario and diagnose
+  (CC-08 hit this on 2026-07-18; see DEVLOG and ROADMAP → *Re-run the CC battery*).
+- **CC-09 — the query text must be PII-free.** The original `SELECT '…' FROM DUAL` carried the values as
+  **literals in the query text**, so *reading* the `.sql` masked them before the query ran and the
+  `tool_result` path was never exercised. **Fixed 2026-07-18:** run `fixtures/cc09-setup.sql` once,
+  **out-of-band** (a local SQLite file is enough — the `python-sql` MCP server takes an absolute-path
+  `sqlite` connection), to create a synthetic `cc09_customers`; then the agent runs the PII-free
+  `SELECT * FROM cc09_customers` (that is now `customer-lookup.sql`). The PII rides in the **result**,
+  not the **text**. Never point this at a real table — synthetic data only. Verified leak-clean
+  2026-07-18 (DBG-02 = 0 on all six values).

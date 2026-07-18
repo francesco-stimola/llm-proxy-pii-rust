@@ -6,6 +6,7 @@
 //! so the pipeline never depends on a concrete engine.
 
 pub mod anonymizer;
+pub mod cache;
 pub mod composite;
 pub mod ner_decode;
 pub mod overlap;
@@ -193,5 +194,24 @@ pub trait PiiDetector: Send + Sync {
     /// this so a *required* detector can fail the request **closed**.
     fn try_detect(&self, input: &str) -> Result<Vec<PiiEntity>, DetectError> {
         Ok(self.detect(input))
+    }
+
+    /// Detection for a **fixpoint pass after the first** ([`Vault::mask_all`](crate::pii::anonymizer::Vault::mask_all), S4).
+    ///
+    /// Masking rewrites the bytes around what it replaced and can *expose* PII that was hidden
+    /// before — but only for detectors whose matches are **revealed by splitting a token**: the
+    /// structured recognizers, where a masked phone splits a digit run into a Luhn-valid card.
+    /// The NER's matches — names, orgs, locations — are never *revealed* by masking a neighbour;
+    /// re-running it only re-tags the **sub-word fragments it emitted** (`"lack"` of `"Slack"`),
+    /// which on a dense system prompt drove masking past [`MAX_MASK_PASSES`](crate::pii::anonymizer)
+    /// into a fail-closed 400 (CC-05/CC-08). So a detector that is **idempotent once the text is
+    /// masked** overrides this to return nothing, and the fixpoint converges in O(1) NER passes.
+    ///
+    /// The default **rescans** (`try_detect`) — the safe direction: a new detector re-runs on
+    /// every pass unless it explicitly declares itself masking-idempotent. Skipping a detector
+    /// here must be justified by "masking a neighbour cannot reveal one of its matches", and the
+    /// no-recall-loss claim that rests on it is measured, not assumed (S4; DEVLOG 2026-07-18).
+    fn redetect(&self, input: &str) -> Result<Vec<PiiEntity>, DetectError> {
+        self.try_detect(input)
     }
 }

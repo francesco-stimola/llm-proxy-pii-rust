@@ -85,6 +85,7 @@ fn anthropic_config(upstream: SocketAddr, api_key: Option<String>) -> Config {
         ],
         pii_locales: vec!["it".to_string(), "us".to_string()],
         debug_skip_demask: false,
+        pii_cache_entries: 0,
     }
 }
 

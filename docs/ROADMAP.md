@@ -35,8 +35,9 @@ completion**; findings, counts and closure notes live in each milestone's sectio
 | [M4 — Broad locale & language coverage](#m4) | ✅ complete |
 | [M5 — Integration & performance testing](#m5) | ✅ complete |
 | [**M6 — Native Anthropic `/v1/messages`**](#m6) | ✅ **code-complete**, and **verified live**: a real Claude Code session round-trips through the proxy (2026-07-16) |
-| [**M7 — NER latency**](#m7) | 🔨 **active** — the hybrid is ~1 s/KB, i.e. 20–40 s per Claude Code turn. **Now what gates `1.0.0`** |
-| [First tagged release `1.0.0`](#m6) | ⬜ not started — gated on [M7](#m7): the product we advertise must be usable, not just correct |
+| [**M7 — NER latency**](#m7) | 🔨 **code-complete, review ledger closed** (21 findings / 8 rounds, all closed): **≥1.5× faster than pre-M7** (asserted floor; typically ~1.7–2.3×, scales with the box, **not asserted below 4 cores** — a strict no-op only at 1 core since the 2026-07-17 `NER_POOL_SIZE` default flip to `pool=1`). A realistic turn masks in **~4.7 s** at the shipped default on the reference box — **the ~3 s bar was missed; we stopped anyway** ([M7-R12](reviews/M7.md#m7-r12)). **CC battery — CLOSED (2026-07-18):** both postures, DBG-02 = 0 throughout; the fail-closed non-convergence 400 (CC-08/CC-05/CC-09, NER **sub-word fragmentation** on the dense system prompt) fixed by **[S4](#m71)** — re-run on the S4 binary, all three converge, **zero fixpoint 400** |
+| [**M7.1 — system-prompt cache + fixpoint NER fix**](#m71) | ✅ **complete (2026-07-18)** — **S4** (NER on pass 0 only) fixes the CC-05/CC-08 fail-closed 400, recall-validated (0 losses); **S3** (`CachingDetector`, exact-byte-keyed, can't mask less) memoizes the byte-identical system prompt's detection. 116 onnx lib tests, clippy clean, review-clean (round 9) |
+| [First tagged release `1.0.0`](#m6) | 🟢 **unblocked (2026-07-18)** — every gate is met: M6 route + M7 latency + M7.1 (S3/S4), the **CC battery is closed** (both postures, zero leak, zero fixpoint 400 on the S4 binary). Left is purely mechanical: a manual PR (`feat/m7-ner-latency` → `main`) → merge → tag |
 
 ---
 
@@ -546,20 +547,96 @@ DEVLOG 2026-07-16 → *M7 implementation plan*; start at S0.**
 > shape again: *a corpus has a shape, and that shape is a blind spot.* A synthetic benchmark's shape
 > is "one field, grown"; a real client's is "the same 30 KB of boilerplate, re-sent forever".
 
-- [ ] **Re-measure first, with a *realistic* fixture — this gates every box below.** The headline
-  numbers came from a blob densely packed with names; real traffic is ~30 KB of near-PII-free
-  boilerplate + a ~100-byte user message, and `mask_all` runs **per field**, so the boilerplate costs
-  **one** pass, not two. Build the sparse fixture, measure per field, then **re-read the leads** —
-  the order below is a hypothesis, not a finding. *(Don't reuse the captured real body from the
-  trace log: it is already **masked**, so its NER pass finds nothing and the number lies.)*
-- [ ] **Declare the bar, and stop at it: a realistic turn under ~3 s ships.** If threads alone get
-  there, do **not** do the fixpoint or the cache — both trade real risk (lost detection; state on
-  the masking path) for speed already banked. **Optimize to a bar, not to exhaustion.**
-- [ ] **Use more than 1 core of 12.** `with_intra_threads(1)` (`src/pii/onnx.rs`) is deliberate — a
-  *pool* of single-threaded sessions optimizes **concurrent throughput** and is exactly wrong for
-  **single-request latency**: ~18 chunks run sequentially, each on one core. Measure the real
-  trade-off (latency vs throughput under concurrent load) rather than picking by intuition — both
-  matter, and the current choice was made when a "field" was a sentence.
+- [x] **Re-measure first, with a *realistic* fixture — this gates every box below.** Done
+  (`tests/m7_latency.rs`, 112 fields / **22.3 KiB**, shape-asserted). **The headline was ~6×
+  pessimistic: a realistic turn masked in 4.2–4.7 s, not 27 s** — and not the ~9 s predicted below
+  either. But **the stated mechanism was wrong**, and that is the more useful half: see the box
+  under this list.
+- [x] **Declare the bar, then decide against it: the bar was MISSED — we stopped anyway, and that is
+  the honest sentence.** A realistic turn masks in **~4.7 s** at the shipped default on the reference
+  box (isolated, balanced/energy-efficiency power plan; reproduced independently at 4,724 and
+  4,757 ms) — **~60% over the ~3 s bar**.
+  S3 (cache) and S4 (fixpoint) are still **not done, on purpose**, but *not* because the bar was met:
+  because **what M7 could deliver, it delivered** — a reproducible **~2×** — and the remaining gap is
+  the machine, not the code. Both leads trade real risk (state on the masking path; lost detection)
+  and they should be bought deliberately, not because we were already in here.
+
+  > **This box said "2.46 s" once, and that number went in the READMEs. It was the fastest of seven
+  > observations and it has never reproduced** ([M7-R12](reviews/M7.md#m7-r12)). The honest figure is
+  > ~4.7 s. Worse, the *explanation* was invented: DEVLOG called the spread "power and thermal
+  > regime, nothing else", and the data refute it — a **battery** run (3.94 s) beat **three AC** runs
+  > (4.76 / 4.84 / 4.93 s). No power model orders that. "Throttled AC" was a label assigned *post hoc
+  > from the number itself*; no thermal state was ever measured. **A run was called slow because it
+  > was slow, and then cited as evidence of throttling.**
+  >
+  > **And then the machine's owner explained why no power model could ever have ordered it: there was
+  > no power difference.** Both sets of runs were on the **same balanced/energy-efficiency plan** —
+  > "AC" meant only that the charger was attached, and the profile never changed. So the variable was
+  > not merely mis-modelled; **it did not vary.** The label separated nothing, and the mystery it was
+  > invented to explain was an artefact of the label. *One question to the person who owns the box
+  > would have retired the whole story — and no amount of re-measuring could have, because we were
+  > measuring a constant and theorising about its effect.* Whatever a **performance** plan does here is
+  > simply unmeasured; the published figure is the ordinary-laptop case on purpose.
+  >
+  > **The variable that *is* measured:** test **concurrency** — cargo runs the perf tests in
+  > parallel, worth **1.50×** at constant power. The documented command measured the product against
+  > four other copies of itself. `--test-threads=1` is now part of the contract.
+  >
+  > **So the bar is not the guard, and never could have been.** The assert is a **ratio** against an
+  > in-run calibration leg ([M7-R9](reviews/M7.md#m7-r9)): it held ~**1.7–2.3×** across every regime
+  > above, while the absolute moved 2.9×. The **asserted** floor is **≥1.5×** — and that floor, not a
+  > tighter band, is the claim to quote, because the ratio cancels the box's power state but not its
+  > raw speed, so a faster box compresses the speedup *toward* the floor (2.19× reference box, 1.74×
+  > a faster one — [M7-R18](reviews/M7.md#m7-r18)). Every tighter band published has been undercut by
+  > the next clean run; the floor has not.
+  >
+  > **Its domain, stated because an invariant without one is worse than none**
+  > ([M7-R13](reviews/M7.md#m7-r13)): the speedup **scales with the core count and is zero below 4
+  > cores**, where the derived default *is* the pre-M7 shape. And the ratio buys
+  > regime-independence, **not sensitivity** — at a 1.5 floor against a ~1.7 worst case it still
+  > tolerates a ~13% regression ([M7-R14](reviews/M7.md#m7-r14)).
+  >
+  > **S3 is the named lead** for the two open cases (the ~4.7 s turn, and ~40 KB traffic): the
+  > boilerplate is byte-identical every turn, so a content-keyed cache makes turn 2+ nearly free —
+  > and unlike threads, it is *indifferent to the box*.
+- [x] **Use more than 1 core of 12.** `NER_INTRA_THREADS` (`src/pii/onnx.rs`,
+  `resolve_pool_and_intra` / `default_intra_threads`) — explicit env wins, else **derived**:
+  `max(1, available_parallelism() / NER_POOL_SIZE)`. Measured on both axes rather than picked by
+  intuition. **The intra-derivation improved *both* axes over the pre-M7 shape** — at the `2×6` M7
+  shipped as its default, latency ~4.7 s → ~2.5 s (~1.9×) *and* throughput 0.288 → 0.609 turns/s
+  (2.11×). The **shipped default is now `pool=1` since the 2026-07-17 flip** — a ~−23% throughput
+  trade *vs that pooled shape*, taken for the personal case's half-RAM (a centralizing operator sets
+  `NER_POOL_SIZE=N`); see DEVLOG 2026-07-17. Full tables: DEVLOG 2026-07-16.
+
+> **What the measurement overturned.** Three claims in this milestone's own text did not survive
+> contact with a realistic fixture. Recording them because the *pattern* is the point — this is
+> the third time in this repo a shape has been mistaken for a finding (M4-R13, M5's PERF-01, now).
+>
+> 1. **"The boilerplate has ~zero PII, so it costs one pass."** It does not. The hybrid tags
+>    `(Organization, "An")` — a **two-character fragment of "Anthropic's"** — in PII-free
+>    instruction prose, so the biggest field in the turn pays a **second** full NER scan. A real
+>    Claude Code system prompt says "Anthropic" and "GitHub" constantly, so this is the normal
+>    case, not an edge one. **The fixpoint lead (S4) is therefore *more* relevant than the plan
+>    concluded, not less** — though the bar was met without it.
+> 2. **"`pool = 1` is not a trade at all"** (my own words, one level up). Measured: it **regresses
+>    throughput ~21–23%** (0.472 vs 0.609 turns/s at concurrency 4; the reviewer independently
+>    measured −21%). Intra-op scaling is sublinear, so 4 sessions × 3 threads beats 1 × 12 in
+>    aggregate. The deployment-shape argument below stands exactly as written — which is why the
+>    default is derived and overridable, not a constant.
+> 3. **"SMT may hurt; 6 may beat 12."** **Unresolved — and the first cut claimed otherwise from
+>    n=1** ([M7-R2](reviews/M7.md#m7-r2)). The sign flips run to run (`1×6` wins by 11%, then `1×12`
+>    by 8%, then `1×6` by 3%…), because the same configuration drifts ~40% *between* runs — the
+>    effect is smaller than the noise it was read off. The sweep now repeats each shape and prints
+>    min/median/spread, which is the guard that would have stopped the claim being made.
+>
+> **Confirmed, on the other hand:** scaling really is sublinear — 12 threads buy **~2×**, not 12×.
+> And a lone request really does occupy **one session**, so the pool is inert at concurrency 1 —
+> but believe that from the **code** (the field walk holds `&mut Vault`; `infer_chunked` loops its
+> windows; so `pool` cannot help one request), not from a timing table that cannot resolve it.
+>
+> **The meta-lesson, which is the same one a third time:** the fixture's *shape* was the blind spot
+> at S0, and the measurement's *design* was the blind spot at S1. Getting the corpus right does not
+> save you if you then read a conclusion off a single sample.
 
   > **The two knobs multiply — that is the trap.** `NER_POOL_SIZE × intra_threads` is the thread
   > count. Today it is `2 × 1 = 2`. Naively setting `intra = 12` while `pool = 2` gives **24 threads
@@ -591,22 +668,21 @@ DEVLOG 2026-07-16 → *M7 implementation plan*; start at S0.**
   > beat 12; (2) **scaling is sublinear** — expect ~3× from 6 threads, not 6×, and less on an **int8**
   > model whose kernels are memory-bandwidth-bound rather than ALU-bound. Benchmark both axes before
   > believing either.
-- [ ] **Stop paying twice for the fixpoint.** A no-PII 34.7 KB field (one pass) masks in 9.9 s
-  = 286 ms/KB; a *smaller* 29.4 KB field with PII (two passes) takes 26.6 s = 903 ms/KB — **2.7×
-  slower while 15% shorter**. M4-R21 accepted that cost when the NER saw sentences. The lead:
-  passes ≥2 exist to catch masking **exposing** PII (a masked phone splits a digit run, revealing a
-  card) — a **deterministic-recognizer** phenomenon. Masking a name to `[PERSON_1]` does not reveal
-  a new name. So re-run only the structured layer on later passes. **Needs a real argument about NER
-  recall at the seams before it ships** — `[PERSON_1]-Jones` is exactly the shape that would decide it.
-- [ ] **Don't re-scan an unchanged system prompt every turn.** It is byte-identical across turns and
-  dominates the payload. Any answer here (content-keyed cache of the *entities*, leaving the
-  per-request vault to mint placeholders as it does now) adds state, and state on the masking path
-  needs its own threat argument — which is why this is listed last, not first.
-- [ ] **Rewrite the CC prompts as natural agent tasks** — a **verification debt from M6**, tracked
+- **S3 (system-prompt entity cache) and S4 (skip the NER on the fixpoint's later passes)** — the two
+  latency leads M7 named but **deliberately did not buy** (M7 delivered its reproducible ~2×; each of
+  these trades real risk — state on the masking path; lost NER recall at the seams — and should be bought
+  on purpose, not because we were already in here). **Deferred to [M7.1](#m71)**, where the mechanism and
+  the risk each must answer are written out in full.
+- [x] **Rewrite the CC prompts as natural agent tasks** — a **verification debt from M6**, tracked
   here because M7 owns the re-run. The battery said *"reply with exactly this sentence: contact
   jane.doe@example.com, IBAN …"*, and the model **refused it as an injection attempt** — correctly.
   Claude Code is an *agent with a repo context*, not a completion endpoint, and it inherited that
   context precisely because the fixture lives **inside** the repo. So CC-01/CC-02/CC-08 never ran.
+  **Done:** CC-01 formats a contact as JSON, CC-02 writes a release note thanking a person at an org
+  in a city (so it *must* carry Person/Org/Location), CC-08 generates a reminder list from the CSV
+  (so it must restore the same placeholders across ~30 streamed lines). The rationale is promoted to
+  [TESTING.md → the prompt-design box](TESTING.md#cc-prompt-design) — it governs every future
+  scenario, not just these three.
   > **The design question underneath, worth answering once:** *how do you test PII masking with a
   > client that refuses suspicious prompts?* The answer is not to argue the agent out of its
   > judgement (a `CLAUDE.md` telling it to comply would work and would be the wrong fix — it makes
@@ -614,13 +690,298 @@ DEVLOG 2026-07-16 → *M7 implementation plan*; start at S0.**
   > file and summarise it, format this contact as JSON, run this query. Which is *also* what real
   > Claude Code traffic looks like — so the rewrite makes the battery both runnable **and** more
   > representative. CC-03/04/06/09 are already this shape; the chat-only ones are not.
-- [ ] **Re-run the CC battery** once the prompts are fixed and the numbers move — 9 scenarios × 2
-  runs is not practical at 27 s/turn, which is a second reason the latency gates the verification.
-  Record the per-turn latency as a product figure next to the RAM ones in the READMEs.
+- [x] **Re-run the CC battery — CLOSED (2026-07-18).** Live run against real Anthropic through the proxy:
+  masking (Run ON) leak-clean and de-mask (Run OFF) proven, both postures, DBG-02 = 0 throughout (incl. all
+  3 secrets in CC-06 and the MCP tool-result in CC-09). The fail-closed non-convergence 400 (CC-08, then
+  CC-05 and CC-09) was root-caused live via the instrumented diagnostic to NER sub-word fragmentation and
+  fixed by **[S4](#m71)**; re-run on the S4 binary, **all three now converge** — **zero fixpoint 400 across
+  the whole run.** The privacy property held on every turn, including the fail-closed blocks. Sub-items:
+  - [x] **CC-08's non-convergence — resolved (2026-07-18).** The long-reminder-list turn hit a
+    **fail-closed 400** ("masking did not reach a fixpoint in 4 passes"): the guard fired **correctly**
+    (blocked before forwarding, zero leak), but a 400 on ordinary work is a real availability defect.
+    **The suspected cause (NER re-tagging a placeholder) was disproven** — a live re-run converged, and
+    ~10 offline reconstructions against the production composite (placeholder-dense fields, the raw CSV,
+    the chunked path) all converge in ≤1 pass; the trigger is content-specific to that one session and
+    stays unpinned **by choice**. Resolution (owner's call): **placeholder inertness now enforced *by
+    construction*** — `mask_all`'s `keep_maskable` drops any detection that is one of our own `[KIND_N]`
+    tokens, so the fixpoint converges regardless of the NER (M5-R4 upgraded from empirical to algorithmic;
+    the `m5_r4` test stays as a model-swap canary) — **plus a value-free non-convergence diagnostic**
+    (per-pass kind tally + residue kinds + `placeholder_tags_suppressed`) so any recurrence names its own
+    cause. Tests FC-07 + unit; docs in `ARCHITECTURE.md` (fixpoint), `TESTING.md`, `DEVLOG.md`.
+  - [x] **CC-09 — done, leak-clean (2026-07-18).** The `tool_result` masking test. The original
+    `customer-lookup.sql` carried PII as **literals in the query text**, so reading it masked them before
+    execution — the path it exists for never ran. Fixed: `fixtures/cc09-setup.sql` creates a synthetic
+    `cc09_customers` (out-of-band, throwaway SQLite via the `python-sql` MCP server), and the agent runs
+    the PII-free `SELECT * FROM cc09_customers` (`customer-lookup.sql` is now that). Verified: client saw
+    `[EMAIL_2]/[PHONE_1]/[SSN_1]/[CARD_1]/[IBAN_1]/[SECRET_1]`, DBG-02 = 0 on all six raw values. TESTING /
+    MANUAL_VERIFICATION / the two fixtures updated to match.
+  - [x] **The Run OFF half — done (2026-07-18).** Each scenario needs **both** postures: ON shows the
+    request left masked, OFF shows the client got it restored — only together do they prove the *same*
+    round-trip. **OFF pre-S4:** CC-03 ✅, CC-04 ✅, CC-06 ✅, CC-07 ✅ (DBG-02 = 0); **CC-05 and CC-09 hit the
+    fail-closed non-convergence 400** — the fragmentation bug, both pinned by the instrumented diagnostic
+    (real `ORG`/`PER` fragments, `placeholder_tags_suppressed=0`), fixed by **[S4](#m71)**. **Re-run on the
+    S4 binary (cache on), with the user:** CC-05 ✅, CC-09 ✅ — both now **converge** where they 400'd; CC-08
+    ✅ both postures (OFF → real emails restored across 30 lines, ON → `[EMAIL_2/3/4]`). **Zero fixpoint 400
+    across the whole S4 run; DBG-02 = 0 on every value.** CC-03/04/06/07 were leak-clean pre-S4 and S4 only
+    ever masks *more* (full NER on pass 0 unchanged; it drops the NER only on later passes), so their OFF
+    de-mask (unchanged code) carries. CC-01 / CC-02: already OFF+ON. **The battery is closed.**
+  It needs a human at the keyboard with a live key and a real Claude Code — this environment has neither,
+  so it cannot be automated away. Procedure: [`MANUAL_VERIFICATION.md`](MANUAL_VERIFICATION.md);
+  **`NER_REQUIRED=1` is non-negotiable** (it is what makes a silently structured-only run fatal — the
+  trap that made the first M6 live run test half the product).
+  - [x] Per-turn latency recorded as a product figure next to the RAM ones in both READMEs —
+    measured on the realistic fixture, not claimed.
 
 > **Do not "fix" this with a build profile.** Measured: `release` (fat LTO, opt-level 3) buys **3%**
 > — 27,728 ms → 26,863 ms on 29 KB. The cost is inside ONNX Runtime, a prebuilt native library that
 > is already optimized; compiling *our* Rust harder changes nothing.
+
+<a id="m7-ledger"></a>
+### Review ledger — M7 → [`reviews/M7.md`](reviews/M7.md)
+**Round 1 (2026-07-17): 7 findings — no leak, no fail-open, no detection regression. All closed**
+(`89d2ca9` + the closure commit). The S0 refutation reproduces exactly; `intra_threads` was verified
+**empirically inert** for detection (identical spans at intra 1…12), and the stop-at-the-bar
+decision holds. The findings are about the **measurement and its record** — which, for a milestone
+whose deliverable *is* a measurement, is where the risk lives.
+
+**M7-R1 and M7-R2 are the pair to remember, because together they are this milestone's own lesson
+turned back on it.** M7 exists because M5 measured the wrong *shape*; M7 then measured the right
+shape **in the wrong configuration** (the harness defaulted the pool to 1, the server to 2 — so the
+executable bar guarded a config nobody ships) and read conclusions off **single samples** whose
+noise exceeded the effect. *Getting the corpus right does not save you if the measurement's design
+is the next blind spot.* Both are now structural: `resolve_pool_and_intra` is the one home for the
+default, so the harness cannot drift from the server; the sweep repeats and prints min/median/spread.
+
+| ID | Title | Sev | Status |
+|---|---|---|---|
+| [M7-R1](reviews/M7.md#m7-r1) | The headline "2.17 s" and the executable bar measure `NER_POOL_SIZE=1`, which the server does not default to | measurement | [x] |
+| [M7-R2](reviews/M7.md#m7-r2) | The sweep draws settled conclusions from n=1 runs; the SMT one does not replicate (sign flips; noise > effect) | measurement | [x] |
+| [M7-R3](reviews/M7.md#m7-r3) | Nothing pins `intra_threads`' detection-inertness — every recall guard pins `intra=1`; verified true, guarded by nothing | invariant | [x] |
+| [M7-R4](reviews/M7.md#m7-r4) | THREAD-01's `cores.max(pool)` silently exempts the one regime where the product *does* exceed the box | test-quality | [x] |
+| [M7-R5](reviews/M7.md#m7-r5) | `NER_POOL_SIZE=0` isn't filtered like `NER_INTRA_THREADS=0`; the startup log then names a pool the process lacks | observ. | [x] |
+| [M7-R6](reviews/M7.md#m7-r6) | The fixture is 22.3 KiB, not 22.8 KB — and the `ms/KB` columns use the other unit | docs | [x] |
+| [M7-R7](reviews/M7.md#m7-r7) | The `(Organization, "An")` over-mask — deferring is right; its only durable home is the archive | tradeoff | [x] |
+
+**Round 2 (2026-07-17) — closure verification: all 7 hold; 2 of them left a crack, and 3 findings
+came out of it.** Re-verified the whole battery (85 default / **103** onnx lib, `fmt`/`clippy` clean
+on both feature sets), proved `resolve_pool_and_intra` is genuinely the only place either knob is
+resolved, and worked M7-R4's split grid by hand — **it is exactly equivalent to the 40-pair original,
+so nothing was lost.** `intra_threads`' detection-inertness reproduced a second time (134 entities,
+identical at intra 1…12 — **194** once [M7-R8](reviews/M7.md#m7-r8)'s fix made the guard actually reach
+the chunked path, still identical).
+
+**M7-R8 and M7-R9 are round 1's own findings arriving one level down, which is the thing to notice.**
+R1 taught the milestone to name a number's **shape**; R9 is the number's *other* un-named variable —
+the box's **power regime**, worth 1.6× where the shapes were worth 1.17×, so the bar fails at 3.9 s on
+an idle reviewer box while a real 20% regression still ships green. R2 taught it to **repeat** a
+measurement; the guard then used min-of-3, which by construction cannot see the between-run drift R2
+diagnosed. And R3 asked for a chunked-path guard; R8 is that guard asserting **bytes** for a property
+the code branches on in **tokens** — [M5-R10](reviews/M5.md#m5-r10)'s shape, and the M4 retrospective's
+lesson 6 (*a quantity a test never varies is a quantity the test cannot see*), a third time.
+
+**All 3 closed** (the round-2 closure commit). **M7-R9 confirmed itself while being fixed**, which is
+the detail worth keeping: re-measured on **AC** at the user's prompting, the shipped default came back
+at **4,933 ms** — worse than the reviewer's *battery* number, and 2× my own AC figure from hours
+earlier. The absolute is simply not a property of the code on this box. The ratio, measured across all
+three regimes, sat at **1.85× / 2.26× / 2.10×**.
+
+| ID | Title | Sev | Status |
+|---|---|---|---|
+| [M7-R8](reviews/M7.md#m7-r8) | NER-THREAD-01's ">512-token chunked field" is 442 tokens and never chunks; its assert counts bytes for a token property | guard | [x] |
+| [M7-R9](reviews/M7.md#m7-r9) | The bar's assert is decided by the box's power regime, which min-of-3 cannot see — 3.9 s on the reviewer's box; the headline never names the variable | measurement | [x] |
+| [M7-R10](reviews/M7.md#m7-r10) | M7-R6's unit fix reached one number too far — `903 ms/K(i)B` now appears in both units in the same file | docs | [x] |
+
+**Round 3 (2026-07-17) — closure verification: all 3 hold, and the ratio is the right instrument.**
+Re-verified the battery (85 default / 103 onnx lib, `fmt`/`clippy` clean on both feature sets); drove
+M7-R8's fix against the **real tokenizer** (`repeat(60)` = **662 tokens**, 2 windows — genuinely
+chunked, and NER-THREAD-01 reproduced at **194 entities, identical at intra 1…12**, its third
+independent confirmation and the first to cover the chunked path). **M7-R9's ratio survived a regime
+nobody had tried**: the absolute moved **1.50×** between the harness's documented invocation and an
+isolated run — same box, same AC state, 40 minutes apart — while the ratio held at **1.81× / 2.12×**.
+
+**But that experiment is also [M7-R12](reviews/M7.md#m7-r12), and it is the round's finding.** R1
+named the number's *shape*; R9 named its *power regime*; **the power regime does not order the
+milestone's own data** — battery (3,943 ms) is **faster** than three of the four AC measurements
+(4,757 / 4,841 / 4,933), and "throttled AC" was assigned post hoc from the number itself. *A variable
+that cannot sort your observations is not the variable.* **The stop decision still stands — but on
+the ratio, not on the bar**: across six measurements by two people the ~3 s bar was met **once**.
+
+**All 6 closed** (the round-3 closure commit). **M7-R12 was decided by re-measuring under its own
+prescription** — isolated (`--test-threads=1`), on verified AC, with the new calibration leg reporting
+the box at **1.02× the reference**, i.e. demonstrably not slow: the shipped default came back at
+**4,724 ms**, reproducing the reviewer's 4,757 independently. So **~4.7 s is the honest figure, the
+`2.46 s` headline was the fastest of seven observations and has never reproduced, and the bar is
+missed.** The READMEs, this file and DEVLOG now say so; the stop rests on the **ratio** (~1.7–2.3×
+across every regime, floor asserted at ≥1.5×), which is the part that is about the code.
+
+> **The pattern this milestone kept re-learning, four rounds deep, and it is the thing worth carrying
+> out of M7.** R1: name the number's **shape**. R2: **repeat** the measurement. R9: name its **power
+> state**. R12: *the power state doesn't order the data either* — and the variable that does is the
+> harness running five benchmarks against each other. Each fix named one more variable and left the
+> next one hidden **behind the qualification it had just added**. The escape was not a better label
+> but a different instrument: a **ratio against an in-run calibration leg**, which needs no label
+> because it cancels whatever the box is doing. *When you cannot enumerate the variables, stop
+> naming them and measure against something that moves with them.*
+
+| ID | Title | Sev | Status |
+|---|---|---|---|
+| [M7-R11](reviews/M7.md#m7-r11) | The READMEs dropped the two-shape latency table as unsupportable; ROADMAP and DEVLOG still advertise it | docs | [x] |
+| [M7-R12](reviews/M7.md#m7-r12) | "Power regime, nothing else" doesn't order its own data — battery beats 3 of 4 AC runs; the ~2.5 s claim is the best of six | measurement | [x] |
+| [M7-R13](reviews/M7.md#m7-r13) | The ratio guard is vacuous at ≤2 cores, where the shipped default *is* `PRE_M7_SHAPE` — and it reports that as a regression | guard | [x] |
+| [M7-R14](reviews/M7.md#m7-r14) | Both of the bar's constants are uncalibrated: the 8 s ceiling nearly fires on the documented command; the 1.5 floor keeps the 20% blindness | guard | [x] |
+| [M7-R15](reviews/M7.md#m7-r15) | M7-R8's closure credits the chunked path with 60 entities that are 20 extra sentences | docs | [x] |
+| [M7-R16](reviews/M7.md#m7-r16) | The byte-proxy assert M7-R8 killed is still alive 90 lines down, guarding the same property | guard | [x] |
+
+**Round 4 (2026-07-17) — closure verification + the AC/battery correction (`2aad0cc`, docs-only): all
+16 round-1–3 findings hold; the new framing is supported and independently corroborated.** Re-verified
+the suite (85 default / **104** onnx lib, `fmt`/`clippy` clean on both feature sets); `m7_s2` green on
+three isolated runs. `2aad0cc` claims only that the owner's statement *removes* the AC/battery
+explanation — not that it explains the 2.5–7.1 s spread — and the READMEs, ROADMAP, DEVLOG and R12's
+addendum all hold that line (the remaining spread is stated unaccounted-for except the measured 1.50×
+test-concurrency factor). **Corroborated from the box the docs could not read:** its AC power overlay is
+literally Windows' *"Best power efficiency"*, so "AC" and "battery-efficiency" are the same plan on this
+machine, as the owner said. **Two new low-severity findings, both [M7-R11](reviews/M7.md#m7-r11)'s
+pattern a fifth time** — a correction that stops one instance short.
+
+| ID | Title | Sev | Status |
+|---|---|---|---|
+| [M7-R17](reviews/M7.md#m7-r17) | 2aad0cc's AC/battery correction reached the four doc headlines but not TESTING:533 or the harness source, which still cite "battery beat three AC runs" as distinct regimes | docs | [x] |
+| [M7-R18](reviews/M7.md#m7-r18) | The advertised "~1.8–2.3× / 1.81–2.26× across every regime" default speedup is undercut by a clean isolated run (default 1.71–1.75×); the `1.5×` guard floor is unaffected | measurement | [x] |
+
+**Round 5 (2026-07-17) — closure verification + convergence call: both round-4 findings hold; the
+engineering is done.** Re-verified the suite (85 default / **104** onnx lib, `fmt`/`clippy` clean on
+both feature sets); `ner_perf` and `m7_s2` green **isolated**. `e4a8163`'s source diff is
+**comment/string only** — every constant, assert and derivation is byte-identical to round 3, so all
+guards hold as verified. **M7-R17 holds** (the AC/battery framing now survives only in the ledger rows
+and the dated review record, both allowed) and **M7-R18 holds and reproduced under me** — my box is
+*fast* (pre-M7 4,461 ms vs the reference 10,100 ms → 0.44×) and the default ratio compressed to
+**1.77×**, exactly R18's "a faster box pulls the ratio toward the floor". **The call: close M7 once
+[M7-R19](reviews/M7.md#m7-r19) — a one-word docs fix — lands.** No leak, no fail-open, no regression,
+no engineering gap; R19 is the single thing actually wrong (a stale `8 s` where the guard asserts
+`15 s`), and everything else is correct, dated history that self-corrects, or hedged colour around the
+`≥1.5×` floor. Not holding the milestone open for prose.
+
+| ID | Title | Sev | Status |
+|---|---|---|---|
+| [M7-R19](reviews/M7.md#m7-r19) | TESTING's PERF-M7-05 summary still calls the sanity ceiling "8 s"; the guard asserts 15 s (M7-R14 raised it in round 3), and the same entry says so 25 lines down | docs | [x] |
+
+**M7 review ledger closed — 19 findings across 5 rounds, all closed.** Round 5 was the convergence
+round the workflow exists to reach: a single one-word docs fix, then nothing left that is *wrong*.
+The two residual-cosmetic items the reviewer logged were dealt with — the `~1.7–2.2×`/`~1.7–2.3×`
+typical-band split is unified to **~1.7–2.3×** (the widest observed, 2.26×), and the round-2 ROADMAP
+narrative that "reads retired framing before its own correction" is **kept by deliberate choice**: it
+is a problem→resolution passage whose two halves are adjacent paragraphs, and the tension carries the
+milestone's own lesson (*I invented an explanation; the box's owner retired it in one line*). Flatten
+it and the lesson goes with it. **The code has been byte-stable since round 3** (rounds 4–5 touched
+only comments, strings and docs); no leak, no fail-open, no detection regression was ever found. What
+remains open below is **not** a review finding — it is the one scope item that needs a human.
+
+[**Review 6**](reviews/M7.md#review-6) **(2026-07-17) confirmed the ledger is at a fixed point** and
+adds no finding: M7-R19's fix and the band unification both hold and are self-consistent across every
+live surface, `6f27f05`'s source diff is a single one-word comment edit, and the isolated guards re-ran
+green (85 default / 104 onnx lib; `m7_s2` 1.75×/2.01× ≥ the 1.5× floor; NER-THREAD-01 194 entities
+identical at intra 1…12). The findings trended 3→3→2→1→**0**. **The ledger is closed and stays closed.**
+
+**Round 7 ([2026-07-17](reviews/M7.md#review-7)) — the `NER_POOL_SIZE` default flip (2 → 1), a delta on
+the closed milestone.** Verified independently (104 onnx / 85 default lib green, `clippy-onnx` clean); the
+flip driven through the real model — an operator setting nothing now resolves to `pool=1 intra=12` (the
+whole box for a lone request, half the RAM), `NER_POOL_SIZE=2` gives the pooled `2×6`, both clearing the
+`≥1.5×` floor. No detection code changed; no leak, fail-open, over-mask or determinism impact — pool is a
+concurrency/RAM knob only. The −23% throughput cost of `pool=1` is named honestly everywhere the trade is
+discussed (ARCHITECTURE / TESTING / DEVLOG / both READMEs). **One docs finding:** the delta updated every
+doc *except this file*, so the M7 body still advertises the retired `pool=2` default in two current-state
+claims.
+
+| ID | Title | Sev | Status |
+|---|---|---|---|
+| [M7-R20](reviews/M7.md#m7-r20) | The ROADMAP M7 body still advertises the pre-flip `pool=2` default — "not a trade against the shared-proxy case at all" and "zero below 4 cores" now misdescribe the shipped `pool=1` | docs | [x] |
+
+**Round 8 ([2026-07-18](reviews/M7.md#review-8)) — CC-08's resolution (`6cbd461`): placeholder inertness
+*by construction*.** Verified independently (107 onnx / 88 default lib green, both `clippy` clean; the
+`#[ignore]`d `m5_r4` inertness canary re-run against the **real cached model** — zero entities on a chunked
+placeholder field). **The safety claim holds and I could not break it:** `detect_maskable` decides on
+`entity.text`, and `entity.text == input[entity.span]` for every entity reaching it (NER re-slices in
+`ner_decode`; structured/merged spans re-slice in `overlap::materialize`), so dropping a placeholder-shaped
+detection can never strand real PII — a real value is never bracket-wrapped. The final-confirmation filter
+does not weaken M4-R20 (real residue is never bracket-shaped, so it still blocks); the diagnostic is
+genuinely value-free (labels/counts only). No leak, no fail-open, no round-trip or over-mask regression.
+**One low-severity finding:** the `placeholder_tags_suppressed` canary is emitted only on the fail-closed
+branch, so the docs' "makes a filter-leaning model visible" claim doesn't hold in the converging happy path.
+
+| ID | Title | Sev | Status |
+|---|---|---|---|
+| [M7-R21](reviews/M7.md#m7-r21) | `placeholder_tags_suppressed` is logged only on the fail-closed branch — the "makes a filter-leaning model visible" claim (ARCHITECTURE / TESTING NER-INERT-01) is unsupported in the converging happy path; the `m5_r4` test is the real canary | observ. | [x] |
+
+**Round 9 ([2026-07-18](reviews/M7.md#review-9)) — M7.1 landing (S3 cache + S4 fixpoint NER fix).**
+Verified independently (116 onnx / 97 default lib green, the S3 e2e among 15 `proxy_e2e`, `clippy-onnx`
+clean; the live `m7_s4_…converge_instead_of_400` + `m5_r4` inertness driven against the real cached
+XLM-R). **Both features are fail-closed-sound and I could not break either.** S3: `try_detect` is a pure
+function keyed on the whole input, spans index the same bytes on a hit, the two-generation map is bounded
+to `2·cap`, the `if let` lock guard drops before the re-lock (no deadlock) and detection runs off-lock
+(no poisoning) — a hit can never mask less. S4: the structured recognizers run on **every** pass and the
+M4-R20 confirm, so the fail-closed layer's block-on-non-convergence guarantee is intact; masking can
+expose only *structured* PII (never a name), so dropping the NER after pass 0 is a **recall** call inside
+the layer that owns recall, and `NER_REQUIRED` (a *failure* switch, not a recall promise) is unweakened;
+`FailOpen::redetect` correctly delegates so a wrapped NER stays idempotent. No leak, no fail-open, no
+over-mask or determinism regression. **Two low-severity docs/observability findings**, each a later
+commit leaving an earlier claim stale.
+
+| ID | Title | Sev | Status |
+|---|---|---|---|
+| [M7-R22](reviews/M7.md#m7-r22) | S4's `detect_maskable` → `keep_maskable` rename left a broken intra-doc link in source + four current-design references (ARCHITECTURE / TESTING ×2 / ROADMAP) naming the old symbol | docs | [x] |
+| [M7-R23](reviews/M7.md#m7-r23) | S4 keeps the NER out of every masked pass, so M7-R21's runtime `placeholder_tags_suppressed` canary can't observe a filter-leaning *idempotent* NER (the GLiNER case the docs cite); FC-08 only passes on a non-idempotent fake S4 forbids; `m5_r4` is the durable canary | observ. | [x] |
+
+<a id="m71"></a>
+## M7.1 — system-prompt cache (S3) & the fixpoint NER fix (S4) ✅
+
+**Both done 2026-07-18 — and one of them turned out to be a bug, not just a speed-up.** M7 shipped its
+reproducible ~2× and stopped at a ~4.7 s turn (the bar was missed on purpose — see M7's *"Declare the bar,
+then decide against it"*). Both items here were deferred rather than dropped because each traded a real
+risk that had to be argued first; both have now landed with that argument answered. **S4** turned out to be
+the *fix* for the CC-05/CC-08 fail-closed 400 — the NER re-running every fixpoint pass is what re-tagged its
+own sub-word fragments past the bound on a dense system prompt — with its recall risk measured (0 losses).
+**S3** caches the byte-identical system prompt's detection, keyed on the exact bytes so a hit can never mask
+less. With S4 in, the CC battery's non-convergence blocker is resolved (re-run pending on the S4 binary).
+
+- [x] **S3 — don't re-scan an unchanged system prompt every turn. Done 2026-07-18.** *(The named lead: the
+  ~4.7 s turn and the ~40 KB-traffic case both point here.)* Claude Code re-sends 20–40 KB of system prompt
+  + tool schemas every turn, **byte-identical**. `CachingDetector` (`src/pii/cache.rs`) wraps the composite
+  and memoizes `try_detect` **keyed on the exact field bytes**, so turn 2+ skips the scan; the per-request
+  vault still mints placeholders, so numbering is unchanged. **The threat argument the risk demanded is the
+  design:** `try_detect` is a pure function of its input and the key is the whole input, so a hit returns
+  exactly what a fresh scan would — it **can never mask less**. Only `Ok` results cached (an error still
+  fails closed); bounded (two-generation, ~`2×` `PII_CACHE_ENTRIES`, fields 256 B–128 KiB); `redetect` never
+  cached; `PII_CACHE_ENTRIES=0` disables it. Tested unit (CACHE-01) + e2e
+  (`e2e_cache_on_a_repeated_large_field_still_masks_both_times`). Default **on** (16 entries).
+- [x] **S4 — NER on pass 0 only; structured recognizers on later passes. Now the *fix* for the CC-05/CC-08
+  non-convergence, not just a latency lead.** **Done 2026-07-18** — a `redetect` method on `PiiDetector`
+  (default `try_detect`, the NER overrides it to return nothing), `mask_all` calls it on every pass after
+  the first *and* the fixpoint confirm; the real model now converges on dense system-prompt text that
+  400'd before (`ner_perf.rs::m7_s4_dense_org_names_converge_instead_of_400`), plus deterministic
+  `Fragmenter` unit tests (FC-09). *(Investigated 2026-07-18; DEVLOG.)* Passes ≥2 of the fixpoint
+  exist to catch masking **exposing** PII (a masked phone splits a digit run → a card) — a
+  **deterministic-recognizer** phenomenon. Masking a name to `[PERSON_1]` never reveals a new name, so the
+  NER buys nothing after pass 0 — **but it is exactly what keeps the loop from converging.** The NER tags
+  *sub-word fragments* (`"lack"` of `"Slack"`, `"An"` of `"Anthropic"`, [M7-R7](reviews/M7.md#m7-r7)); each
+  mask splits the word and the next pass re-tags the leftover. On a real Claude Code **system prompt** —
+  dense with `Slack`/`GitHub`/`Claude`/`Anthropic` — this needed **> `MAX_MASK_PASSES` (4)** and **400'd on
+  live traffic** (CC-05; the diagnostic pinned it: `per_pass=[[ORG 6, PER 2],[ORG 2],[PER 1],[PER 1]]`,
+  `placeholder_tags_suppressed=0` — real fragments, not placeholders). M7-R7 called this "a latency cost,
+  not a correctness one" — **that was wrong**: past 4 passes it is a fail-closed availability failure.
+  - **Measured (offline, production composite).** PLAIN passes **grow with the dense text**: 6 (5 KB) → 11
+    (15 KB) → 13 (30 KB), unbounded — so a **bound bump is out** (no safe fixed value, and each pass is a
+    full NER scan). **S4 converges in 1 pass at every size.** A **word-boundary snap** of NER spans was
+    tried and **rejected** — it makes convergence *worse* (8 passes vs 4).
+  - **The recall risk is now answered (the argument M7-R7 required).** Dropping the NER after pass 0 could,
+    in principle, miss a name a later pass would have exposed at a seam (`[PERSON_1]-Jones`). Measured: **0**
+    losses — S4 masks every expected entity PLAIN does across the labelled corpus (25 NER entities, 15
+    cases), and **0** raw PII survives when real names/emails/IBAN are injected into fragmenting dense text.
+    Masking only ever *reduces* NER context, so later passes discover no genuinely-new names — only the
+    fragments they created.
+  - **Implementation.** A `redetect` method on `PiiDetector` (default = `try_detect`); `OnnxNerDetector`
+    overrides it to return empty (idempotent after pass 0); `CompositeDetector::redetect` runs the
+    structured recognizers only; `Vault::mask_all` uses `try_detect` on pass 0 and `redetect` after (and for
+    the fixpoint confirm). Fold in the latency win M4-R21 priced (~940 ms of a 4.2 s turn). Builder→reviewer.
 
 <a id="backlog"></a>
 ## Backlog — documented, not scheduled
@@ -628,7 +989,15 @@ DEVLOG 2026-07-16 → *M7 implementation plan*; start at S0.**
 ### Evaluate GLiNER — contextual-PII detector / potential XLM-R successor
 The path for **ambiguous, anchor-less PII** (a bare national phone, a free-form postal address) that the
 deterministic layer can't disambiguate and the current XLM-R (PER/ORG/LOC only) doesn't cover. It is also
-the clean **precision** path for [M4-R6](reviews/M4.md#m4-r6)'s accepted over-mask.
+the clean **precision** path for the two accepted over-masks — and they are *different bugs*, which is why
+both are named here:
+- [M4-R6](reviews/M4.md#m4-r6) — a **deterministic recognizer** over-matching pure-numeric IDs (~18% of
+  9-digit tokens). Its path out is **context**, which is GLiNER's whole premise.
+- **M7's `(Organization, "An")`** — the **NER** emitting a two-character fragment of `"Anthropic's"`, so
+  every Claude Code system prompt reaches the model as `"[ORG_1]thropic's"` ([M7-R7](reviews/M7.md#m7-r7);
+  mechanism in [ARCHITECTURE](ARCHITECTURE.md)). This is a **span-quality** problem, so it is the one of
+  the two that a **model change alone** could fix — and it also costs a second fixpoint pass, which ties
+  this item to M7's S4 lead.
 
 **GLiNER ≠ Piiranha.** Piiranha (a *fixed-label* mDeBERTa token-classifier) was **measured and rejected**
 at M2 (~0 recall on natural sentences). GLiNER is a *zero-shot, **open-label*** span extractor — you pass

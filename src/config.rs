@@ -47,11 +47,23 @@ pub struct Config {
     /// still runs, so it never weakens the fail-closed posture; a loud startup
     /// warning fires when it's on. Never enable in production.
     pub debug_skip_demask: bool,
+    /// Entries for the content-keyed detection cache (S3, M7.1): the byte-identical
+    /// system prompt Claude Code re-sends every turn is detected once and reused,
+    /// saving the dominant NER scan. `0` disables it; otherwise up to ~`2×` this
+    /// many large fields are held. From `PII_CACHE_ENTRIES`; default
+    /// [`DEFAULT_PII_CACHE_ENTRIES`]. Sound because a hit is keyed on the *exact*
+    /// bytes of a deterministic scan, so it can never mask less (see `pii::cache`).
+    pub pii_cache_entries: usize,
 }
 
 /// Default max request body: 16 MiB — comfortably above long-context payloads
 /// without inviting unbounded memory use.
 pub const DEFAULT_MAX_BODY_BYTES: usize = 16 * 1024 * 1024;
+
+/// Default size of the S3 detection cache (M7.1): enough for a system prompt plus a
+/// handful of tool schemas, with ~`2×` this many entries live at once. Overridable
+/// via `PII_CACHE_ENTRIES`; `0` disables the cache entirely.
+pub const DEFAULT_PII_CACHE_ENTRIES: usize = 16;
 
 impl Config {
     /// Load configuration from environment variables, with sensible defaults:
@@ -81,6 +93,14 @@ impl Config {
         };
 
         let debug_skip_demask = env_flag("PII_DEBUG_SKIP_DEMASK");
+
+        let pii_cache_entries = match std::env::var("PII_CACHE_ENTRIES") {
+            Ok(raw) => raw
+                .trim()
+                .parse()
+                .with_context(|| format!("invalid PII_CACHE_ENTRIES: {raw:?}"))?,
+            Err(_) => DEFAULT_PII_CACHE_ENTRIES,
+        };
 
         // Provider routing (M3, Option A): a preset picks OpenAI-compatible
         // defaults (path + which client headers to pass through), each overridable.
@@ -142,6 +162,7 @@ impl Config {
             forward_request_headers,
             pii_locales,
             debug_skip_demask,
+            pii_cache_entries,
         })
     }
 }
@@ -254,6 +275,7 @@ impl fmt::Debug for Config {
             .field("forward_request_headers", &self.forward_request_headers)
             .field("pii_locales", &self.pii_locales)
             .field("debug_skip_demask", &self.debug_skip_demask)
+            .field("pii_cache_entries", &self.pii_cache_entries)
             .finish()
     }
 }

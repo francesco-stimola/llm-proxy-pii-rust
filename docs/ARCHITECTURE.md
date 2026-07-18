@@ -127,22 +127,48 @@ placeholder is **inert** (no recognizer can match `[KIND_N]` or span across it),
 shrinks the un-masked text. The round-trip stays exact — every pass records raw value → placeholder, and
 `demask` restores them all in one tolerant pass.
 
-> **…but that proof covers the *recognizers*, not the NER — and a model swap must re-check it (M5-R4).**
+> **The NER runs only on pass 0 — later passes are structured-only (S4, CC-05/CC-08).** Masking
+> *exposes* PII only by splitting a token, which is a **structured-recognizer** phenomenon (the card
+> above). Masking a name to `[PERSON_1]` never reveals a *new* name, so re-running the NER buys no recall
+> — measured **0** losses across the labelled corpus — while it *does* re-tag the **sub-word fragments**
+> the model emits (`"lack"` of `"Slack"`, `"An"` of `"Anthropic"`; the [M7-R7](reviews/M7.md#m7-r7)
+> over-mask). On a real Claude Code **system prompt**, dense with such names, those fragments chained
+> **past `MAX_MASK_PASSES` and fail-closed 400'd live** (CC-05/CC-08) — offline the pass count grew
+> 6 → 11 → 13 as the field grew, unbounded. So `mask_all` runs the whole detector on pass 0 and only
+> `redetect` — the detectors masking can expose (the structured recognizers), never the NER — on later
+> passes *and the fixpoint confirm*. The pass count is then **O(1) on a fragment-dense field**, and it is
+> the latency win M4-R21 priced (the field's second full NER scan). M7-R7 called this "a latency cost, not
+> a correctness one"; past four passes it was a fail-closed **availability** defect, and this is its fix. A
+> **word-boundary snap** of the fragments was measured and **rejected** — it makes convergence *worse*.
+> The no-recall-loss claim is a model-swap checkpoint:
+> `tests/ner_perf.rs::m7_s4_dense_org_names_converge_instead_of_400`.
+
+> **…and the NER inside it can no longer break that in the *other* way, either, because `mask_all` won't
+> let it (M5-R4 / CC-08).**
 > "A placeholder is inert" is proved **by construction** for the deterministic layer: `[KIND_N]` has no
 > `@`, no `sk-`, nowhere near enough digits, and `[` / `]` sit outside every pattern's character classes.
 > But `mask_all` runs the **`CompositeDetector`**, and the ML NER inside it is under no such constraint —
 > nothing *structurally* stops a model from tagging `[PERSON_1]`, or a dense run of placeholders, as a
-> `Person`/`Organization`. If one did, a pass would mask a placeholder, the text would not strictly shrink,
-> `MAX_MASK_PASSES` would exhaust, and the request would **400** — fail-*closed* (M4-R20 saw to that), so
-> **never a leak**, but a hard availability failure on ordinary input.
+> `Person`. If a pass re-masked one, the text would not strictly shrink, `MAX_MASK_PASSES` would exhaust,
+> and the request would **400** — fail-*closed* (M4-R20), so **never a leak**, but a hard availability
+> failure on ordinary input.
 >
-> For the current model it holds, and it is **measured, not assumed**: XLM-R int8 tags **zero** entities on
-> placeholder-only text, and the full hybrid `mask_all` converges (`tests/ner_perf.rs`,
-> `m5_r4_the_ner_treats_placeholders_as_inert`). That makes placeholder inertness an **empirical property of
-> the chosen model**, and therefore a **model-swap checkpoint** — one that matters more than it sounds,
-> because the Backlog's designated successor is **GLiNER**: a *zero-shot, open-label, **context**-driven*
-> span extractor, i.e. precisely the kind of model that could look at `Contact [PERSON_1] at [ORG_1]` and
-> tag both. **A new NER model must re-run that guard before it ships.**
+> So the loop closes that door itself: `keep_maskable` **drops any detection that is exactly one of our
+> own `[KIND_N]` tokens** — a real value can never take that shape — before it is masked. Every surviving
+> detection is then genuine PII, masking genuine PII strictly shrinks the raw text, and the fixpoint
+> converges **regardless of the NER**. Placeholder inertness is now a property of the *algorithm*, not of
+> the chosen model.
+>
+> The shipped model doesn't even try — XLM-R int8 tags **zero** entities on placeholder-only text
+> (`tests/ner_perf.rs`, `m5_r4_the_ner_treats_placeholders_as_inert`) — but that test is now
+> **belt-and-braces**, not the sole guarantee, and it is the **durable model-swap canary**. The Backlog's
+> successor is **GLiNER**, a *zero-shot, open-label, **context**-driven* extractor that could well look at
+> `Contact [PERSON_1] at [ORG_1]` and tag both; `m5_r4` runs the NER **directly** on placeholder text and
+> catches exactly that, independent of everything else. (The runtime `placeholder_tags_suppressed` counter
+> is a *weaker* signal since **S4**: the NER runs only on pass 0, so it can never re-tag masking's *own*
+> output — the counter fires only when a detector tags placeholder-shaped text already **in the raw field**,
+> e.g. a client echoing placeholders in Run ON. Useful, but it is not the GLiNER canary — the test is,
+> M7-R23.)
 >
 > M5 is also what made this *reachable at scale*: before chunking, a field over ~500 tokens never reached
 > the NER at all (it errored). Chunking now routes exactly the large, placeholder-dense fields through it.
@@ -156,6 +182,31 @@ has ever been shown to need more than **2** passes — an exhaustive search over
 exceeded it, because masking *fragments* a digit run rather than peeling it — so this stays a latent
 path. It is fail-closed regardless, which is the point: the bar does not depend on the search being
 exhaustive.)
+
+> **This fired for real, once, and taught the block to explain itself (CC-08).** A live Claude Code
+> session hit the 400 on an ordinary long turn; it has not reproduced since, in the live session or in
+> a dozen synthetic reconstructions (placeholder-dense fields, the raw CSV, the chunked path — all
+> converge in ≤1 pass). No leak — the block did its job — but a 400 with no *reason* is its own defect.
+> With placeholder re-tagging now ruled out by construction (above), a residue can only be genuine PII
+> that masking keeps re-exposing, so the fail-closed branch logs a **value-free** diagnostic to name it:
+> the per-pass kind tally (is the count shrinking, i.e. a deep nest that would clear with more passes, or
+> stalled?), the residue's kinds, and `placeholder_tags_suppressed`. Kinds and counts only — never the
+> text, which fail-closed never forwards or logs. **That instrument then paid off:** re-running the
+> battery, CC-05 hit the same 400 and the diagnostic pinned it — `placeholder_tags_suppressed=0`, a
+> residue of real `ORG`/`PER` fragments, not placeholders. The cause was **NER sub-word fragmentation**,
+> and the fix is **S4** (above): the NER runs only on pass 0, so the fragments can't chain past the bound.
+
+**Detection cache (S3, `src/pii/cache.rs`, M7.1).** Claude Code re-sends 20–40 KB of **byte-identical**
+system prompt + tool schemas every turn, and detecting PII in it — the NER above all — dominates the
+masking latency. `CachingDetector` wraps the composite and memoizes `try_detect` **keyed on the exact
+field bytes**, so turn 2+ skips the scan; the per-request vault still mints the placeholders, so numbering
+is unchanged. **The fail-closed soundness argument** is the whole design: `try_detect` is a pure function
+of its input (stateless regex; NER inference on the input alone), and the key is the *whole* input — so a
+hit returns exactly what a fresh scan would and **can never mask less**. Only `Ok` results are cached (an
+error still fails closed), the cache is bounded (a two-generation map, ~`2 × PII_CACHE_ENTRIES` live
+entries, only fields 256 B–128 KiB), and `redetect` (the S4 later passes, on per-request masked text) is
+never cached. `PII_CACHE_ENTRIES=0` disables it. Proven end-to-end by
+`tests/proxy_e2e.rs::e2e_cache_on_a_repeated_large_field_still_masks_both_times`.
 
 **Overlap resolution (`src/pii/overlap.rs`).** Detectors produce overlapping candidate spans;
 `resolve_overlaps` reduces them to a non-overlapping set. Its governing rule is an **invariant,
@@ -503,9 +554,85 @@ and — when the `onnx` feature is on and the model env vars are set — the
 `OnnxNerDetector` over the same text, merging spans through `overlap`. NER config
 is env-driven: `NER_MODEL_PATH`, `NER_TOKENIZER_PATH`, `NER_LABELS` (comma-separated
 labels in class-id order), optional `NER_POOL_SIZE` (session pool for concurrency),
-`NER_TOKEN_TYPE_IDS` (BERT-family models), and `NER_REQUIRED` (fail-closed switch).
+`NER_INTRA_THREADS` (per-session threads — M7, see below), `NER_TOKEN_TYPE_IDS`
+(BERT-family models), and `NER_REQUIRED` (fail-closed switch).
 A missing/failed model logs and falls back to structured-only. The model was chosen
 by *measurement* (XLM-R int8 — `docs/M2-NER-EVALUATION.md`, `docs/DEVLOG.md`).
+
+**NER threading — the two knobs multiply (M7).** `NER_POOL_SIZE × NER_INTRA_THREADS` is the
+process's NER thread count under saturated load, and **the invariant is that the product fits the
+box**, not that either factor saturates it (`intra = 12` with `pool = 2` puts 24 threads on 12
+cores — oversubscription, plausibly slower than one). So `NER_INTRA_THREADS` **defaults to a
+derived value**, `max(1, available_parallelism() / NER_POOL_SIZE)` (`onnx::default_intra_threads`);
+a fixed constant is wrong on a 2-core VM and a 64-core server alike. An explicit env value wins; a
+`0` is treated as unset for **both** knobs, never as ONNX Runtime's "pick for me", which would
+reintroduce exactly the oversubscription the derivation prevents. Both resolve in one place
+(`onnx::resolve_pool_and_intra`), which the latency harness calls too — when the harness read its
+own default it silently measured a configuration the server does not ship (M7-R1).
+
+> **State the invariant with its domain, because it is false outside it (M7-R4).** The derivation
+> bounds `pool × intra` by the core count **while `pool ≤ cores`**. Beyond that it *cannot*: `intra`
+> floors at 1 and nothing clamps `NER_POOL_SIZE`, so `NER_POOL_SIZE=8` on a 2-core box is 8 threads
+> on 2 cores and no choice of `intra` fixes it. **That is an operator error the proxy does not
+> defend against** — it hits the ~270 MB-per-session RAM wall long before the thread wall. An
+> invariant asserted unconditionally but true only in one regime is worse than a bounded one: the
+> first version of THREAD-01 wrote the exception into a `cores.max(pool)` term, which green-lit
+> exactly that case under a test name claiming the opposite.
+
+**A single request occupies one session, so the product is the *saturated-load* count — not what a
+lone request gets.** The masking path is sequential at three nested levels: the field walk holds
+`&mut Vault`, `infer_chunked` loops its windows, and only then does the session run. A lone request
+therefore reaches `intra`, never `pool × intra`, and the pool is **inert at concurrency 1**
+(measured: `2×1` ≈ `1×1`). The right shape is a **deployment** question the proxy cannot answer for
+itself — but it *can* default to the case almost everyone runs. **The shipped default is
+`NER_POOL_SIZE=1` (flipped from 2 on 2026-07-17):** a personal proxy in front of Claude Code
+(concurrency ≈ 1) gets all cores on its one request and ~270 MB less RAM, since each session holds
+its own copy of the weights — **measured: 563 MB at `pool=1` vs 834 MB at `pool=2`** (a ~290 MB
+shared base plus ~270 MB per session, so `pool=N` ≈ 290 + N×270 MB — not a clean doubling). A
+**centralizing** operator serving concurrent clients sets `NER_POOL_SIZE=N` for the pooled shape. **The flip is not free, and the cost is named:** `pool=1`
+measured **−23% throughput** under concurrent load — intra-op scaling is sublinear (12 threads buy
+~2.2×, not 12×), so independent sessions aggregate better — but that cost lands only on concurrency
+the default's target does not have, while the RAM it saves is certain. This is the `low-RAM` bar in
+`CLAUDE.md` applied to the dominant deployment; a constant would be wrong on a 2-core VM and a
+64-core server alike, which is why it stays overridable. Numbers: DEVLOG 2026-07-16; the flip: DEVLOG
+2026-07-17.
+
+> **Parallelize *detection*, never *minting*.** Chunk-level fan-out would be safe — windows are
+> read-only w.r.t. the `Vault` and `infer_chunked` already merges them deterministically. The
+> **field** walk is not, and `&mut Vault` is not merely why it's hard, it's why it's *wrong*:
+> placeholder numbering follows encounter order, so racing two fields makes `[EMAIL_1]` vs
+> `[EMAIL_2]` a coin flip and breaks the determinism M1 Part B pins.
+
+> **`NER_INTRA_THREADS` changes performance only — and that it does not change *detection* is
+> EMPIRICAL, not guaranteed (M7-R3).** Verified on XLM-R int8 + the CPU EP: byte-identical entity
+> sets, spans included, at intra 1…12 (`ner_perf.rs::m7_r3_intra_threads_changes_speed_not_detection`).
+> Nothing in ONNX Runtime promises it. Intra-op parallelism repartitions GEMM and reduction work
+> across threads; floating-point addition is **not associative**, so a different partition can move
+> a logit in its last bits — and the BIO decode is a per-token `argmax`, where a near-tie flips on
+> nothing but thread count. A flipped `B-PER` is lost recall, and here a miss is what makes a leak.
+> **A model swap or an execution-provider swap must re-run that guard** — the Backlog's DirectML/CUDA
+> item is exactly where cross-thread non-determinism stops being theoretical. This is
+> [M5-R4](reviews/M5.md#m5-r4)'s rule about the same layer: *the NER's convenient properties are
+> measured, never proved.*
+
+**The NER over-masks sub-word fragments of organization names — accepted (M7).** Measured: the
+hybrid tags `"An"` — two characters of `"Anthropic's"` — as an `Organization` in ordinary
+instruction prose, so a Claude Code system prompt reaches the model as `"[ORG_1]thropic's"`. It is
+**not a leak** (it fails *toward* masking) and it is the same accepted class as
+[M4-R6](reviews/M4.md#m4-r6): privacy beats precision, and a precision fix needs its own recall
+argument. Two things make it worth writing down rather than filing under M4-R6 and forgetting:
+
+- **The mechanism is different, so the fix is too.** M4-R6 is a *deterministic recognizer*
+  over-matching pure-numeric IDs; this is the *NER* emitting a fragment of a word it half-recognized.
+  M4-R6's path out is context (GLiNER); this one's is span quality — the one of the two a **model**
+  change could actually fix.
+- **It corrupts boilerplate, on every turn, and it has a price we already measured.** The
+  augmentation prompt then tells the model `[ORG_1]` is a real value to use verbatim. And because
+  the field is no longer clean, it costs a **second fixpoint pass** — ~940 ms of a 4.2 s turn, which
+  is the concrete link between this precision bug and the S4 fixpoint lead.
+
+Nobody had seen it until M7 ran the NER over a realistic system prompt — the S0 lesson (*a corpus
+has a shape, and the shape is the blind spot*) one level down.
 
 **NER chunking (M5, PERF-01).** `OnnxNerDetector` tokenizes a field once; if it fits, it runs
 exactly as before (M2). A field that doesn't is split into overlapping token windows

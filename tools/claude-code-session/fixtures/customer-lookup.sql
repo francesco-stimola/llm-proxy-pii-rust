@@ -1,17 +1,14 @@
--- CC-09 fixture — the old proxy's TC-04, reproduced on real infrastructure.
+-- CC-09 — the customer lookup the agent runs through the MCP SQL tool.
 --
--- Returns every structured category in one tabular result WITHOUT needing a schema
--- or any real data: it selects literals from DUAL. Run it through the MCP SQL tool
--- from a Claude Code session pointed at the proxy; the result comes back as a
--- `tool_result` content block, which is exactly the shape that must be masked
--- before it reaches the provider.
+-- **PII-free by design.** The query names columns, never values, so reading this file
+-- masks nothing — the PII rides in the *result*, which comes back as a `tool_result` and
+-- is masked by the proxy before it reaches the provider. That is the whole point of CC-09.
 --
--- Every value is synthetic.
+-- Prerequisite: the synthetic table exists — run `cc09-setup.sql` once, out-of-band,
+-- against a throwaway DB (a local SQLite file is enough). Never point this at a real table.
+--
+-- (History: this fixture used to be `SELECT 'bob@test.com'… FROM DUAL`, which put the PII
+-- in the query *text* — so the agent reading it masked the literals *before* the query ran
+-- and the tool_result path was never exercised. Fixed 2026-07-18; see docs/DEVLOG.md.)
 
-SELECT 'bob@test.com'                  AS email,
-       '555-111-2222'                  AS phone,
-       '123-45-6789'                   AS ssn,
-       '4111111111111111'              AS card,
-       'IT60X0542811101000000123456'   AS iban,
-       'sk-ant-api01-test0000000000000000000000000000000000000000000000000' AS secret
-  FROM DUAL;
+SELECT * FROM cc09_customers;

@@ -63,9 +63,19 @@ impl AppState {
             config.upstream_extra_headers.clone(),
         );
         let ner_required = env_flag("NER_REQUIRED");
-        let stages: Vec<Box<dyn Stage>> = vec![Box::new(PrivacyStage::new(
-            build_detector(ner_required, &config.pii_locales).await?,
-        ))];
+        let mut detector = build_detector(ner_required, &config.pii_locales).await?;
+        // Content-keyed detection cache (S3, M7.1): the byte-identical system prompt Claude Code
+        // re-sends every turn is detected once and reused, saving the dominant NER scan. Sound
+        // because a hit is keyed on the exact bytes of a deterministic scan (see `pii::cache`);
+        // `PII_CACHE_ENTRIES=0` opts out. Wrapping the whole composite means the cache sits above
+        // both engines, so a hit skips the recognizers *and* the NER.
+        if config.pii_cache_entries > 0 {
+            detector = Box::new(crate::pii::cache::CachingDetector::new(
+                detector,
+                config.pii_cache_entries,
+            ));
+        }
+        let stages: Vec<Box<dyn Stage>> = vec![Box::new(PrivacyStage::new(detector))];
         if config.debug_skip_demask {
             // Loud, so it can't quietly linger in a real deployment (M2.6).
             tracing::warn!(
@@ -157,10 +167,16 @@ async fn build_detector(
 async fn load_onnx_ner() -> anyhow::Result<Option<Box<dyn PiiDetector>>> {
     use crate::pii::onnx::OnnxNerDetector;
 
-    let pool_size = std::env::var("NER_POOL_SIZE")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(2);
+    // M7. Both knobs resolve in ONE place (`onnx::resolve_pool_and_intra`), which the latency
+    // harness calls too — when each read its own default they silently disagreed (2 vs 1) and M7's
+    // bar measured a config nobody ships (M7-R1). Explicit wins; otherwise `intra` is derived,
+    // because the two knobs multiply and a fixed number is wrong on a 2-core VM and a 64-core
+    // server alike. `0` is unset for both, never ONNX Runtime's "pick for me" (M7-R5).
+    let (pool_size, intra_threads) = crate::pii::onnx::resolve_pool_and_intra(
+        std::env::var("NER_POOL_SIZE").ok().as_deref(),
+        std::env::var("NER_INTRA_THREADS").ok().as_deref(),
+        crate::pii::onnx::available_cores(),
+    );
     let needs_token_type_ids = env_flag("NER_TOKEN_TYPE_IDS");
     let labels_override = std::env::var("NER_LABELS").ok();
 
@@ -203,9 +219,14 @@ async fn load_onnx_ner() -> anyhow::Result<Option<Box<dyn PiiDetector>>> {
         &tokenizer,
         id2label,
         pool_size,
+        intra_threads,
         needs_token_type_ids,
     )?;
-    tracing::info!(model, pool_size, "ONNX NER detector loaded");
+    // `intra_threads` is logged because it is *derived* by default: an operator debugging latency
+    // must be able to see what was picked without reproducing the arithmetic. Both values are the
+    // **effective** ones — resolved once, above, and handed to `load` unchanged — so this line can
+    // never name a pool the process doesn't have (M7-R5).
+    tracing::info!(model, pool_size, intra_threads, "ONNX NER detector loaded");
     Ok(Some(Box::new(detector)))
 }
 

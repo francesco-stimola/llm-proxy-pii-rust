@@ -143,18 +143,85 @@ vengono suddivisi in finestre, così funzionano anche i documenti lunghi.
 
 ### Impronta — misurata, non dichiarata
 
-Memoria residente, misurata il 2026-07-16 (Windows, build debug, a riposo dopo l'avvio):
+Memoria residente (Windows, build debug, a riposo dopo l'avvio; solo-strutturato misurato il
+2026-07-16, le righe ibride per pool il 2026-07-17):
 
 | build | private | working set | cosa domina |
 |---|---|---|---|
 | **solo strutturato** (feature di default) | **~10 MB** | ~36 MB | niente — sono regex |
-| **ibrido** (`--features onnx`, XLM-R int8, `NER_POOL_SIZE=2`) | **~834 MB** | ~862 MB | il NER: **due** sessioni ONNX, cioè il modello tenuto due volte |
+| **ibrido**, default `NER_POOL_SIZE=1` (`--features onnx`, XLM-R int8) | **~563 MB** | ~585 MB | il NER: **una** sessione ONNX |
+| **ibrido**, `NER_POOL_SIZE=2` | ~834 MB | ~856 MB | **due** sessioni — il modello tenuto due volte; ogni sessione aggiunge **~270 MB** |
 
-Il livello deterministico è sostanzialmente gratis; **il modello è tutto il costo**, ed è
-regolabile: `NER_POOL_SIZE` (default `2`) scambia concorrenza per memoria — `1` la dimezza circa.
-Scegli la build in base alla minaccia che hai davvero: il solo strutturato copre già email, IBAN,
-carte, secret e 10 schemi di identificativo nazionale, ed è indipendente dalla lingua. Il NER ti
-compra nomi, organizzazioni e luoghi — nient'altro.
+Il livello deterministico è sostanzialmente gratis; **il modello è tutto il costo**, e scala col
+pool: **~290 MB di base condivisa più ~270 MB per sessione** (misurato — 563 MB a `pool=1`, 834 MB a
+`pool=2`, quindi `pool=N` ≈ 290 + N×270 MB — *non* un raddoppio pulito, perché il runtime e le arene
+della prima sessione sono condivisi). `NER_POOL_SIZE` (**default `1` dal 2026-07-17**) è una sola
+sessione — la forma lean per singolo client; un proxy **centralizzato** lo alza a `N` per throughput
+concorrente a quella RAM. Scegli la build in base alla minaccia che hai davvero: il solo strutturato
+copre già email, IBAN, carte, secret e 10 schemi di identificativo nazionale, ed è indipendente dalla
+lingua. Il NER ti compra nomi, organizzazioni e
+luoghi — nient'altro.
+
+### Latenza — anch'essa misurata, su un payload realistico
+
+Mascheramento di **un turno realistico di Claude Code** (22,3 KiB: system prompt + 10 schemi di
+tool + un messaggio utente), 2026-07-17, macchina di riferimento (Ryzen 5 PRO 8540U, 6 core / 12
+thread) con il suo **piano di alimentazione bilanciato / a risparmio energetico** — un portatile
+normale nel suo stato normale, che è il caso per cui questo proxy esiste — build debug, eseguito in
+isolamento, migliore di 3:
+
+| rilevamento | per turno | per KiB |
+|---|---|---|
+| **solo strutturato** | **~20 ms** | ~0,9 ms |
+| **ibrido** (entrambe le forme — vedi sotto) | **~4,7 s** | ~210 ms |
+
+**Il NER è ~100% del costo** — il livello deterministico è oltre 100× più veloce sugli stessi byte.
+
+**Considera quel numero come proprio di questa macchina, non del prodotto.** Su sette misurazioni
+fatte da due persone, lo stesso codice e la stessa fixture hanno dato **da 2,5 a 7,1 s**. Due
+variabili sono note: eseguire il benchmark insieme ad altri test costa **1,5×** (misurato), e il resto
+non sappiamo spiegarlo. Quello che possiamo dire è cosa *non* è: abbiamo attribuito a lungo la
+dispersione a "rete contro batteria", finché il proprietario della macchina non ha fatto notare che
+entrambi i gruppi di run giravano sullo **stesso profilo di risparmio energetico** — l'alimentatore
+era attaccato, il piano non è mai cambiato. Quell'etichetta non separava nulla, ed è per questo che
+una run "a batteria" ha battuto tre run "a rete". Quindi `~4,7 s` è la cifra che si è riprodotta due
+volte, in modo indipendente, in isolamento; i numeri più veloci che avevamo pubblicato erano il
+migliore di un insieme rumoroso — che non è la stessa cosa della verità.
+
+> Una macchina su un piano di alimentazione **prestazionale** dovrebbe fare meglio di così, e non ne
+> abbiamo misurata una. La cifra sopra è deliberatamente il caso pessimistico del portatile ordinario,
+> non un caso migliore che avremmo potuto allestire.
+
+**Ciò che resta stabile è il *miglioramento*, ed è la parte che riguarda il codice:** il default
+spedito è **almeno 1,5× più veloce** della versione pre-threading — il floor che il test asserisce
+davvero — e **tipicamente ~1,7–2,3×** a seconda della macchina. (Citiamo il floor, non il numero
+migliore visto: l'accelerazione annulla lo stato di alimentazione della macchina ma non la sua
+velocità grezza, quindi una macchina più veloce comprime il rapporto *verso* il floor invece che
+lontano — ed è per questo che ogni banda più stretta che pubblicavamo veniva puntualmente smentita
+dalla run pulita successiva.) Se vuoi verificare l'affermazione di questo repo sulla tua macchina, è
+quel rapporto da guardare — l'harness lo stampa, calcolato contro una gamba di calibrazione misurata
+pochi secondi prima nella stessa run.
+
+**Quale forma usare?** Il default — **`NER_POOL_SIZE=1`** (dal 2026-07-17) — è la forma per singolo
+client (un agente di coding, un IDE): tiene **una** sessione ONNX, quindi usa **~270 MB di RAM in
+meno** della forma a pool (**misurato**: 563 MB contro 834 MB — togliere la seconda sessione libera
+la sua copia da ~270 MB dei pesi, circa un terzo del totale) e dà alla tua unica richiesta in volo
+tutto il box. Al caso personale non costa **nulla**, perché una singola richiesta occupa comunque una sola
+sessione, e **sulla latenza le due forme si equivalgono** (abbiamo misurato ciascuna vincere del
+10–15% in run diverse: la differenza è dentro il rumore di questa macchina). Se invece gestisci un
+proxy **condiviso / centralizzato** davanti a client concorrenti, imposta **`NER_POOL_SIZE=N`**: il
+pool vale circa il **30% di throughput in più** (equivalentemente, `pool=1` è ~−23% sotto carico
+concorrente) — e *quello* è un trade reale, misurato, pagato a `N×` la RAM del modello.
+
+> **Misura sulla tua macchina prima di credere a questi numeri:** `cargo test-onnx --test
+> m7_latency -- --ignored --nocapture --test-threads=1`. **Il `--test-threads=1` è essenziale**:
+> senza, cargo esegue i benchmark in parallelo e si misurano a vicenda (1,5×). L'harness stampa il
+> dettaglio per campo, uno sweep sui thread con min/mediana/**spread**, le cifre di concorrenza e —
+> dato che i millisecondi assoluti non sono confrontabili tra macchine — **un rapporto di
+> accelerazione contro una gamba di calibrazione misurata nella stessa run**, più quanto la tua
+> macchina disti da quella citata qui. Una build *release* è irrilevante (misurato: 3%): il costo è
+> dentro ONNX Runtime, una libreria nativa precompilata, quindi compilare meglio il *nostro* Rust
+> non cambia niente.
 
 ---
 
@@ -229,6 +296,7 @@ Tutto è pilotato da variabili d'ambiente.
 | `UPSTREAM_EXTRA_HEADERS` | *(nessuno)* | `Chiave=Valore;Chiave2=Valore2` header statici per ogni richiesta a monte |
 | `MAX_BODY_BYTES` | `16777216` | Limite del corpo della richiesta (16 MiB) |
 | `PII_LOCALES` | `it,us` | Governa **solo** il livello di riconoscitori inclini a falsi positivi. **I documenti nazionali sono sempre attivi** |
+| `PII_CACHE_ENTRIES` | `16` | Cache di rilevamento (S3): il system prompt byte-identico viene scansionato una volta e riusato, risparmiando la passata NER dominante. Con chiave sui byte esatti, un hit non può **mai** mascherare *meno* di una scansione fresca. `0` la disabilita |
 | `RUST_LOG` | *(non impostata)* | es. `llm_proxy_pii_rust=debug` |
 
 <details>
@@ -241,7 +309,8 @@ Tutto è pilotato da variabili d'ambiente.
 | `NER_MODEL_PATH` + `NER_TOKENIZER_PATH` + `NER_LABELS` | *(non impostate)* | File di modello locali espliciti — **zero chiamate in uscita**, hanno sempre la precedenza |
 | `NER_MODEL_REPO` | *(non impostata)* | Download automatico opzionale (`owner/name`) di un modello con revisione fissata nella cache HuggingFace standard. È l'unica chiamata in uscita dell'intero strumento, fatta una volta all'avvio, e scarica **artefatti del modello, non dati utente** |
 | `NER_MODEL_REVISION` | `478a2a3` | Revisione fissata per il download automatico |
-| `NER_POOL_SIZE` | `2` | Dimensione del pool di sessioni ONNX concorrenti |
+| `NER_POOL_SIZE` | `1` | Dimensione del pool di sessioni ONNX concorrenti. **Default `1`** = una sessione — la forma per singolo client (~563 MB, tutto il box per richiesta). Alzalo a **`N`** per un proxy centralizzato: ~30% di throughput in più a ~270 MB di RAM in più per sessione (vedi la nota sulla latenza sopra) |
+| `NER_INTRA_THREADS` | *derivato* | Thread **per sessione**. Default `max(1, core / NER_POOL_SIZE)` — le due manopole si **moltiplicano**, e il prodotto deve stare nella macchina. Impostala solo se sai perché |
 | `NER_REQUIRED` | disattivato | **Fail closed per i nomi**: un NER mancante o fallito blocca la richiesta (400) invece di degradare silenziosamente al solo strutturato |
 
 Senza né `NER_MODEL_PATH` né `NER_MODEL_REPO`, la build esegue semplicemente il solo rilevamento

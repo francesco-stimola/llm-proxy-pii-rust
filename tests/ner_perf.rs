@@ -19,15 +19,20 @@
 //! set NER_MODEL_PATH=…\model_quantized.onnx
 //! set NER_TOKENIZER_PATH=…\tokenizer.json
 //! set NER_LABELS=O,B-DATE,I-DATE,B-PER,I-PER,B-ORG,I-ORG,B-LOC,I-LOC
-//! cargo test-onnx --test ner_perf -- --ignored --nocapture
+//! cargo test-onnx --test ner_perf -- --ignored --nocapture --test-threads=1
 //! ```
+//!
+//! **`--test-threads=1` matters for the timing guards (M7-R12).** Cargo runs tests concurrently by
+//! default, so without it these measure the NER against other copies of themselves — measured at
+//! 1.5x on a sibling harness. The recall guards here are unaffected; the latency ones are not.
 #![cfg(feature = "onnx")]
 
 use std::time::Instant;
 
 use llm_proxy_pii_rust::pii::anonymizer::Vault;
 use llm_proxy_pii_rust::pii::onnx::{
-    chunk_char_ranges, OnnxNerDetector, CHUNK_OVERLAP_TOKENS, MAX_WINDOW_TOKENS, MODEL_MAX_TOKENS,
+    available_cores, chunk_char_ranges, OnnxNerDetector, CHUNK_OVERLAP_TOKENS, MAX_WINDOW_TOKENS,
+    MODEL_MAX_TOKENS,
 };
 use llm_proxy_pii_rust::pii::PiiDetector;
 
@@ -37,7 +42,10 @@ fn load_detector() -> OnnxNerDetector {
     let tokenizer = std::env::var("NER_TOKENIZER_PATH").expect("set NER_TOKENIZER_PATH");
     let labels = std::env::var("NER_LABELS").expect("set NER_LABELS");
     let id2label = labels.split(',').map(str::to_string).collect();
-    OnnxNerDetector::load(&model, &tokenizer, id2label, 1, false).expect("load NER model")
+    // pool=1, intra=1: these guards measure *recall* and *pass counts*, not wall clock, so they
+    // pin the historical single-threaded shape rather than inheriting M7's derived default (which
+    // would make their numbers depend on the runner's core count).
+    OnnxNerDetector::load(&model, &tokenizer, id2label, 1, 1, false).expect("load NER model")
 }
 
 fn load_tokenizer() -> tokenizers::Tokenizer {
@@ -200,6 +208,112 @@ fn m5_r2_every_retokenized_window_stays_within_the_models_usable_length() {
     }
 }
 
+/// **M7-R3 — `NER_INTRA_THREADS` must change *speed*, never *detection*.**
+///
+/// M7's entire safety argument is that the thread knob is "purely a performance knob". That claim
+/// is **empirical, not structural**, and until this test it was asserted by nothing: every recall
+/// guard in the repo pins `intra=1` on purpose (a score that moves with the runner's core count is
+/// worthless — see `load_detector` above), while production now derives `6` or more. So the one
+/// knob M7 changed was the one knob no guard exercised. The M5-R4 shape exactly.
+///
+/// **Why this is not paranoia.** ONNX Runtime's intra-op parallelism repartitions GEMM and
+/// reduction work across threads, and floating-point addition is **not associative** — a different
+/// partition can change a logit in its last bits. The BIO decode is a per-token `argmax`
+/// (`ner_decode`), so a near-tie between two labels can flip on nothing but thread count. A flipped
+/// `B-PER` is lost recall, and in this repo a miss is what makes a leak.
+///
+/// It holds today for **XLM-R int8 on the CPU EP** — verified here, and that is the whole point:
+/// **an execution-provider swap (the Backlog's DirectML/CUDA item, where cross-thread
+/// non-determinism is genuinely likely) or a model swap (GLiNER) must re-run this.** Without it,
+/// the only thing standing between either and a silent recall change is a reviewer thinking to
+/// check by hand.
+#[test]
+#[ignore]
+fn m7_r3_intra_threads_changes_speed_not_detection() {
+    let model = std::env::var("NER_MODEL_PATH").expect("set NER_MODEL_PATH");
+    let tokenizer = std::env::var("NER_TOKENIZER_PATH").expect("set NER_TOKENIZER_PATH");
+    let labels = std::env::var("NER_LABELS").expect("set NER_LABELS");
+    let id2label: Vec<String> = labels.split(',').map(str::to_string).collect();
+
+    // Inputs chosen for where a partition difference could actually surface: prose with the
+    // entities we care about, a field past the chunking window (a window-boundary decision is the
+    // most likely place for two thread counts to disagree), and the fragment-prone shape that
+    // produces M7's `("An", Organization)` over-mask, which is a near-tie by construction.
+    //
+    // **Assert the property the code branches on, in the unit it branches on (M7-R8).** The first
+    // version asserted `long_field.len() > 2_000` — BYTES — for a decision `infer_chunked` makes on
+    // TOKENS (`> MAX_WINDOW_TOKENS`). `SENTENCE.repeat(40)` is 2,360 bytes and clears that assert by
+    // 18%, while being **442 tokens** — 38 short of the trigger. So the guard's most important input
+    // ran as a single pass and it covered **zero** chunked inputs, under an assert claiming the
+    // opposite. A byte count is a proxy; the tokenizer is the thing. (Third time this repo asserted
+    // a proxy for what it meant — see M5-R10.)
+    let long_field = SENTENCE.repeat(60);
+    let long_tokens = load_tokenizer()
+        .encode(long_field.as_str(), true)
+        .expect("encode")
+        .get_ids()
+        .len();
+    assert!(
+        long_tokens > MAX_WINDOW_TOKENS,
+        "the long input is {long_tokens} tokens, not over the {MAX_WINDOW_TOKENS}-token window — so \
+         this guard never reaches `infer_chunked`, the likeliest place for two thread counts to \
+         disagree, and it is exactly as vacuous as M7-R8 found it (M7-R8)"
+    );
+    let inputs: Vec<&str> = vec![
+        SENTENCE,
+        "Mario Rossi from Acme Corporation visited Milan yesterday.",
+        "Anthropic's models are trained with a knowledge cutoff, so verify any claim.",
+        "Il cliente Mario Rossi di Acme SpA a Milano ha scritto a mario.rossi@acme.it.",
+        "张伟在北京为华为工作。",
+        &long_field,
+    ];
+
+    // `(kind, span.start, span.end)` per input — spans included, because a shifted span is a
+    // different mask even when the count is identical.
+    let fingerprint = |intra: usize| -> Vec<Vec<(String, usize, usize)>> {
+        let detector = OnnxNerDetector::load(&model, &tokenizer, id2label.clone(), 1, intra, false)
+            .expect("load NER model");
+        inputs
+            .iter()
+            .map(|input| {
+                detector
+                    .try_detect(input)
+                    .expect("NER must not error")
+                    .iter()
+                    .map(|e| (format!("{:?}", e.kind), e.span.start, e.span.end))
+                    .collect()
+            })
+            .collect()
+    };
+
+    // `intra=1` is the shape every recall guard pins, so it is the baseline the corpus scores were
+    // measured against.
+    let baseline = fingerprint(1);
+    let total: usize = baseline.iter().map(Vec::len).sum();
+    assert!(
+        total > 10,
+        "the baseline found only {total} entities — a guard that detects almost nothing would \
+         pass this comparison vacuously"
+    );
+    eprintln!("intra= 1 (the shape every recall guard pins): {total} entities");
+
+    for intra in [2usize, 4, 6, available_cores()] {
+        let got = fingerprint(intra);
+        let differing = baseline.iter().zip(&got).filter(|(a, b)| a != b).count();
+        eprintln!(
+            "intra={intra:>2}: {} entities, {differing} inputs differ from the intra=1 baseline",
+            got.iter().map(Vec::len).sum::<usize>()
+        );
+        assert_eq!(
+            got, baseline,
+            "intra={intra} produced DIFFERENT detections than intra=1. `NER_INTRA_THREADS` is \
+             documented as a performance knob; if this fires, it silently changes recall — which \
+             is a leak-relevant regression, not a perf one. Suspect a changed execution provider \
+             or model (see this test's doc comment)."
+        );
+    }
+}
+
 #[test]
 #[ignore]
 fn m5_r4_the_ner_treats_placeholders_as_inert() {
@@ -223,9 +337,25 @@ fn m5_r4_the_ner_treats_placeholders_as_inert() {
     // field this size never reached the model at all).
     let placeholders =
         "Contact [PERSON_1] at [ORG_1] in [LOCATION_1] about [EMAIL_1] and [PHONE_1]. ".repeat(40);
+    // Tokens, not bytes (M7-R16 — the twin of M7-R8, in this same file). This assert used to read
+    // `placeholders.len() > 2_000` and claim it "exercises the chunked path", for a branch
+    // `infer_chunked` takes on `> MAX_WINDOW_TOKENS`. It happened to be true — 1,162 tokens, ~2.4x
+    // the window — but only because placeholder-dense text tokenizes ~2.7x denser per byte than
+    // prose (`[`, `PERSON`, `_`, `1`, `]` each cost a token), so the byte proxy over-shot into
+    // correctness. That is a property of this string's *character*, not of the assert: reword it,
+    // lower the repeat, or swap the tokenizer's vocabulary, and the assert keeps passing while the
+    // field silently stops chunking — and placeholder inertness (M5-R4), the property a MODEL SWAP
+    // must re-check, would go unchecked on the chunked path.
+    let placeholder_tokens = load_tokenizer()
+        .encode(placeholders.as_str(), true)
+        .expect("encode")
+        .get_ids()
+        .len();
     assert!(
-        placeholders.len() > 2_000,
-        "must be large enough to exercise the chunked path"
+        placeholder_tokens > MAX_WINDOW_TOKENS,
+        "the placeholder field is {placeholder_tokens} tokens, not over the {MAX_WINDOW_TOKENS}-token \
+         window — so this guard never reaches `infer_chunked` and placeholder inertness goes \
+         unchecked on the chunked path (M7-R16)"
     );
 
     let entities = detector
@@ -253,4 +383,34 @@ fn m5_r4_the_ner_treats_placeholders_as_inert() {
     vault
         .mask_all(&placeholders, &composite)
         .expect("masking placeholder-dense text must reach a fixpoint, not exhaust its passes");
+}
+
+/// S4 (CC-05/CC-08), live. A field dense with product/org names makes the NER emit **sub-word
+/// fragments** (`"Slack"` → `"lack"`, `"Anthropic"` → `"An"`); before S4 those chained past
+/// `MAX_MASK_PASSES` on every pass and the request **400'd** — reproduced live on a real Claude
+/// Code system prompt. With S4 the NER runs only on pass 0 ([`PiiDetector::redetect`] returns
+/// nothing after), so `mask_all` converges. A model swap must keep this true; if a new NER
+/// fragments *and* S4 regresses, this is the guard that catches it before a user does.
+#[test]
+#[ignore]
+fn m7_s4_dense_org_names_converge_instead_of_400() {
+    let composite = llm_proxy_pii_rust::pii::composite::CompositeDetector::new(vec![
+        Box::new(
+            llm_proxy_pii_rust::pii::recognizers::StructuredRecognizers::with_locales(&[
+                "it".to_string(),
+                "us".to_string(),
+            ]),
+        ),
+        Box::new(load_detector()),
+    ]);
+    // The exact shape the live 400s came from: dense product/org names, scaled well past the
+    // ~5 KB where PLAIN (NER every pass) already needed 6 passes and grew from there.
+    let dense = "You are Claude Code, Anthropic's official CLI for Claude. Claude Code integrates \
+with Slack, GitHub, and the Claude API. The Claude Desktop app and Claude Code both talk to \
+Anthropic. Use GitHub for issues, Slack for chat, and the Anthropic Console for billing. "
+        .repeat(60);
+    let mut vault = Vault::new();
+    vault
+        .mask_all(&dense, &composite)
+        .expect("S4: a dense system prompt must converge in one NER pass, not 400");
 }

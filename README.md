@@ -142,18 +142,81 @@ hardware; large fields are chunked so long documents work too.
 
 ### Footprint — measured, not claimed
 
-Resident memory, measured 2026-07-16 (Windows, debug build, idle after startup):
+Resident memory (Windows, debug build, idle after startup; structured-only measured 2026-07-16, the
+hybrid pool rows 2026-07-17):
 
 | build | private | working set | what dominates |
 |---|---|---|---|
 | **structured only** (default features) | **~10 MB** | ~36 MB | nothing — it's regex |
-| **hybrid** (`--features onnx`, XLM-R int8, `NER_POOL_SIZE=2`) | **~834 MB** | ~862 MB | the NER: **two** ONNX sessions, i.e. the model held twice |
+| **hybrid**, default `NER_POOL_SIZE=1` (`--features onnx`, XLM-R int8) | **~563 MB** | ~585 MB | the NER: **one** ONNX session |
+| **hybrid**, `NER_POOL_SIZE=2` | ~834 MB | ~856 MB | **two** sessions — the model held twice; each session adds **~270 MB** |
 
-The deterministic layer is essentially free; **the model is the whole cost**, and it is tunable:
-`NER_POOL_SIZE` (default `2`) trades concurrency for memory — `1` roughly halves it. Pick the
-build to match the threat you actually have: structured-only already covers emails, IBANs, cards,
-secrets and 10 national ID schemes, and it is language-independent. The NER buys you names,
-organizations and locations — nothing else.
+The deterministic layer is essentially free; **the model is the whole cost**, and it scales with the
+pool: **~290 MB of shared base plus ~270 MB per session** (measured — 563 MB at `pool=1`, 834 MB at
+`pool=2`, so `pool=N` ≈ 290 + N×270 MB — *not* a clean doubling, because the runtime and the first
+session's arenas are shared). `NER_POOL_SIZE` (**default `1` since 2026-07-17**) is one session — the
+lean single-client shape; a **centralizing** proxy raises it to `N` for concurrent throughput at that
+RAM. Pick the build to match the threat you actually have: structured-only already covers emails,
+IBANs, cards, secrets and 10 national ID schemes, and it is language-independent. The NER buys you
+names, organizations and locations — nothing else.
+
+### Latency — also measured, on a realistic payload
+
+Masking one **realistic Claude Code turn** (22.3 KiB: system prompt + 10 tool schemas + a user
+message), 2026-07-17, reference box (Ryzen 5 PRO 8540U, 6 cores / 12 threads) on its **balanced /
+energy-efficiency power plan** — a normal laptop in its normal state, which is the case this proxy
+exists for — debug build, run in isolation, best of 3:
+
+| detection | per turn | per KiB |
+|---|---|---|
+| **structured only** | **~20 ms** | ~0.9 ms |
+| **hybrid** (either shape — see below) | **~4.7 s** | ~210 ms |
+
+**The NER is ~100% of the cost** — the deterministic layer is well over 100× faster on the same
+bytes.
+
+**Treat that number as this box's, not as the product's.** Across seven measurements by two people
+the same code and fixture ranged **2.5–7.1 s**. Two variables are known: running the benchmark
+alongside other tests costs **1.5×** (measured), and the rest we cannot account for. What we can say
+is what it is *not*: we spent a while attributing the spread to "AC versus battery" until the machine's
+owner pointed out that both sets of runs were on the **same energy-efficiency profile** — the charger
+was plugged in, the power plan never changed. That label had been separating nothing, which is why a
+"battery" run beat three "AC" ones. So `~4.7 s` is the figure that reproduced twice, independently, in
+isolation; the faster numbers we once published were the best of a noisy set, which is not the same
+thing as the truth.
+
+> A box on a **performance** power plan should do better than this, and we have not measured one. The
+> figure above is deliberately the pessimistic, ordinary-laptop case rather than a best case we could
+> stage.
+
+**What is stable is the *improvement*, and that is the part that is about the code:** the shipped
+default is **at least 1.5× faster** than the pre-threading version — the floor the test actually
+asserts — and **typically ~1.7–2.3×** depending on the box. (We quote the floor, not the best
+number seen: the speedup cancels the box's power state but not its raw speed, so a faster machine
+compresses the ratio *toward* the floor rather than away from it — which is why every tighter band
+we published kept being undercut by the next clean run.) If you want to check this repo's claim on
+your own box, that ratio is what to check — the harness prints it, computed against a calibration
+leg measured seconds away in the same run.
+
+**Which shape should you run?** The default — **`NER_POOL_SIZE=1`** (since 2026-07-17) — is the
+single-client shape (a coding agent, an IDE): it holds **one** ONNX session, so it uses **~270 MB
+less RAM** than the pooled shape (**measured**: 563 MB vs 834 MB — dropping the second session frees
+its ~270 MB copy of the weights, about a third off the total) and gives your one in-flight request
+the whole box. It costs the personal case **nothing**, because a single request only ever occupies
+one session anyway, and **latency between the two shapes is a wash** (we have measured each winning by
+10–15% on different runs; the difference is inside this box's noise). If instead you run a
+**shared / centralizing** proxy fronting concurrent clients, set **`NER_POOL_SIZE=N`**: the pool is
+worth **~30% more throughput** (equivalently, `pool=1` is ~−23% under concurrent load) — that one
+*is* a real, measured trade, bought at `N×` the model RAM.
+
+> **Measure on your own box before believing any of this:** `cargo test-onnx --test m7_latency --
+> --ignored --nocapture --test-threads=1`. **The `--test-threads=1` is load-bearing** — without it
+> cargo runs the benchmarks concurrently and they measure each other (1.5×). The harness prints the
+> per-field breakdown, a thread sweep with min/median/**spread**, the concurrency figures, and —
+> because absolute milliseconds are not comparable across machines — **a speedup ratio against an
+> in-run calibration leg**, plus how far your box is from the one quoted here. A *release* build is
+> irrelevant (measured: 3%): the cost is inside ONNX Runtime, a prebuilt native library, so
+> compiling our Rust harder changes nothing.
 
 ---
 
@@ -226,6 +289,7 @@ Everything is environment-driven.
 | `UPSTREAM_EXTRA_HEADERS` | *(none)* | `Key=Value;Key2=Value2` static headers for every upstream request |
 | `MAX_BODY_BYTES` | `16777216` | Request body limit (16 MiB) |
 | `PII_LOCALES` | `it,us` | Gates only the *false-positive-prone* recognizer tier. **National IDs are always on regardless** |
+| `PII_CACHE_ENTRIES` | `16` | Detection cache (S3): the byte-identical system prompt is scanned once and reused, saving the dominant NER pass. Keyed on exact bytes, so a hit can never mask *less* than a fresh scan. `0` disables it |
 | `RUST_LOG` | *(unset)* | e.g. `llm_proxy_pii_rust=debug` |
 
 <details>
@@ -238,7 +302,8 @@ Everything is environment-driven.
 | `NER_MODEL_PATH` + `NER_TOKENIZER_PATH` + `NER_LABELS` | *(unset)* | Explicit local model files — **zero outbound calls**, always wins if set |
 | `NER_MODEL_REPO` | *(unset)* | Opt-in auto-download (`owner/name`) of a revision-pinned model into the standard HuggingFace cache. The only outbound call in the whole tool, made once at startup, and it fetches **model artifacts, not user data** |
 | `NER_MODEL_REVISION` | `478a2a3` | Pinned revision for auto-download |
-| `NER_POOL_SIZE` | `2` | Concurrent ONNX session pool size |
+| `NER_POOL_SIZE` | `1` | Concurrent ONNX session pool size. **Default `1`** = one session — the single-client shape (~563 MB, whole box per request). Raise to **`N`** for a centralizing proxy: ~30% more throughput at ~270 MB more RAM per session (see the latency note above) |
+| `NER_INTRA_THREADS` | *derived* | Threads **per session**. Defaults to `max(1, cores / NER_POOL_SIZE)` — the two knobs **multiply**, and the product must fit the box. Set it only if you know why |
 | `NER_REQUIRED` | off | **Fail closed for names**: a missing or failing NER blocks the request (400) instead of silently degrading to structured-only |
 
 With neither `NER_MODEL_PATH` nor `NER_MODEL_REPO` set, the build simply runs

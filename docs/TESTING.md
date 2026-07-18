@@ -312,6 +312,41 @@ asserts the value is still masked and round-trips, so a "fix" that buys speed wi
   the fixpoint is **confirmed**, not assumed. Also asserts the error carries **no input text** (DBG-02's
   never-log-raw-PII rule) and that a normally-converging detector still returns `Ok` — so the guard can't
   pass by breaking masking for everyone.
+- FC-07 — `mask_all_converges_even_if_a_detector_tags_its_own_placeholders` (M5-R4 / CC-08): **placeholder
+  inertness by construction.** A `CompositeDetector` pairs the real recognizers (which mint `[EMAIL_1]`)
+  with a `TagsPlaceholders` detector that re-tags every `[KIND_N]` as a `Person` — the exact NER pathology
+  that would loop `mask_all` to a 400. `mask_all` must still converge (`"mail bob@test.com"` → `"mail
+  [EMAIL_1]"`, restored intact), because `keep_maskable` drops the placeholder detections before masking.
+  The unit `is_placeholder_token_matches_only_our_own_tokens` pins the filter's boundary: our tokens (incl.
+  the tolerant `[email-3]`, `[ PERSON 2 ]`) match; a foreign `[TODO_1]`, a partial match, two tokens, and
+  real PII do **not** — so it can never drop a genuine value.
+- FC-08 — the **runtime suppression canary** (M7-R21), log-captured on a **scoped** subscriber:
+  `converging_mask_emits_the_value_free_suppression_canary` runs the FC-07 composite (which suppresses a
+  re-tagged placeholder) on a *converging* input and asserts the `debug!` fires carrying
+  `placeholder_tags_suppressed` and **no** raw value; `a_clean_convergence_stays_silent` asserts a no-
+  suppression run emits nothing. Together they pin that the counter is **value-free** and fires on the
+  converging path whenever a detector tags placeholder-shaped text. **Post-S4 caveat (M7-R23):** since the
+  NER runs only on pass 0, this counter can *not* observe a model re-tagging masking's own output — it
+  reflects only placeholder-shaped text already in the **raw field** (e.g. a client echoing placeholders in
+  Run ON). The durable model-swap canary is **NER-INERT-01**, which runs the NER directly on placeholder text.
+- FC-09 — **S4: the NER runs only on pass 0** (`src/pii/anonymizer.rs`, CC-05/CC-08). A `Fragmenter` fake
+  models the sub-word fragmentation the real NER does (tags the first alphabetic char → masking exposes the
+  next, forever). `s4_a_re_running_fragmenter_exhausts_the_bound` (idempotent=false → the default
+  `redetect` re-runs) must **400** — the bug; `s4_an_idempotent_ner_lets_masking_converge` (idempotent=true
+  → `redetect` empty, the NER after pass 0) must **converge** (`"Slack"` → `"[ORG_1]lack"`, masked once) —
+  the fix. Deterministic, no model needed. The live counterpart is `ner_perf.rs::
+  m7_s4_dense_org_names_converge_instead_of_400` *(`--features onnx`, `#[ignore]`d)* — real XLM-R, dense
+  system-prompt text converges instead of 400-ing — a **model-swap checkpoint**, since S4's no-recall-loss
+  rests on the NER not exposing new names when a neighbour is masked.
+- CACHE-01 — the **S3 detection cache** (`src/pii/cache.rs`, M7.1) is sound and bounded. Unit:
+  `a_repeated_field_is_scanned_once_and_the_hit_matches` (a hit returns the *exact* fresh result — the
+  no-mask-less guarantee), `an_error_is_not_cached_and_still_fails_closed` (a detector error propagates and
+  is never memoized as success), `redetect_is_never_cached` (later fixpoint passes always delegate — they
+  run on per-request masked text), `small_fields_are_not_cached` (below the threshold), and
+  `a_hot_key_survives_eviction_of_cold_ones` (the two-generation bound is LRU-ish: the hot key stays live
+  while cold keys roll off). E2e: `proxy_e2e.rs::e2e_cache_on_a_repeated_large_field_still_masks_both_times`
+  sends a byte-identical PII-bearing large field twice with the cache ON and asserts **both** requests mask
+  the email — the pipeline-level proof a cache hit never masks less than a fresh scan.
 
 ### M5 / M6 — live provider verification
 
@@ -366,19 +401,40 @@ is a finding. *Client* is the only thing the flag changes. Paths are relative to
 
 ---
 
+> <a id="cc-prompt-design"></a>
+> **Why these read like ordinary work, and why that is the design (M7/S5).** The first version of
+> this battery asked things like *"reply with exactly this sentence: contact jane.doe@example.com,
+> IBAN …"*. **Claude Code refused — correctly.** It is an *agent with repo context* (it inherited
+> this repo's precisely because the fixture workspace lives inside it), and a stranger dictating a
+> sentence full of credentials reads as an injection attempt. CC-01 / CC-02 / CC-08 therefore never
+> ran at all.
+>
+> **The fix is not to argue the agent out of its judgement.** A `CLAUDE.md` telling it to comply
+> would work and would be the wrong fix: it makes the test a special case of itself, and what ships
+> is then verified under a rule no real user has. The fix is to ask for **plausible work** — read
+> this file, format this contact, write this note. Which is *also* what real Claude Code traffic
+> looks like, so the rewrite makes the battery both runnable **and** more representative. The PII
+> still has to travel; it just travels the way it actually does.
+
 **CC-01 — structured PII in a chat prompt**
-- **Ask:** `Rispondi esattamente con questa frase e nient'altro: contatta jane.doe@example.com, IBAN IT60X0542811101000000123456.`
+- **Ask:** `Formatta questo contatto come JSON, senza commenti: Jane Doe, jane.doe@example.com, IBAN IT60X0542811101000000123456.`
 - **Upstream:** `[EMAIL_1]` + `[IBAN_1]`; neither raw value anywhere.
-- **Client — OFF:** the real email and IBAN. **— ON:** `[EMAIL_1]`, `[IBAN_1]`.
-- **Proves:** the baseline round-trip on real traffic.
+- **Client — OFF:** JSON carrying the real email and IBAN. **— ON:** JSON carrying `[EMAIL_1]`,
+  `[IBAN_1]`.
+- **Proves:** the baseline round-trip on real traffic. *A formatting request is work; the model
+  answers it without objection, and the values must still round-trip verbatim inside the JSON.*
 
 **CC-02 — NER entities** *(the one that catches a half-running product)*
-- **Ask:** `Rispondi esattamente con questa frase e nient'altro: Mario Rossi lavora per Acme S.p.A. a Milano.`
+- **Ask:** `Scrivi una nota di rilascio di una riga che ringrazia Mario Rossi di Acme S.p.A. (sede di Milano) per la segnalazione.`
 - **Upstream:** `[PERSON_1]`, `[ORG_1]`, `[LOCATION_1]`; no `Mario Rossi` / `Acme` / `Milano`.
-- **Client — OFF:** the real names. **— ON:** the three placeholders.
+- **Client — OFF:** a release note naming the real person, org and city. **— ON:** the same note
+  carrying the three placeholders.
 - **Proves:** **the hybrid is actually running.** Every other scenario would pass with the NER
   off — email and IBAN are *deterministic* recognizers. Only this one fails. If `Mario Rossi`
   appears upstream in clear, that is a **leak**, not a recall nit.
+- **Why this ask:** writing a release note is unremarkable work, so the agent just does it — but it
+  cannot do it without carrying a Person, an Organization and a Location into the request, which is
+  exactly what must be masked.
 
 **CC-03 — a file with PII → `tool_result`**
 - **Ask:** `Leggi fixtures/contacts.csv e dimmi quante righe di dati contiene e qual è l'email della prima.`
@@ -424,21 +480,35 @@ is a finding. *Client* is the only thing the flag changes. Paths are relative to
   which is what keeps the signature valid.
 
 **CC-08 — a long streamed answer**
-- **Ask:** `Ripeti esattamente questa riga 30 volte, una per riga, senza numerarle: contatta bob@test.com`
-- **Upstream:** `[EMAIL_1]` (once — it is one prompt).
-- **Client — OFF:** 30 lines each carrying the **intact** `bob@test.com` — none split, mangled,
-  or left as a placeholder. **— ON:** 30 lines of `[EMAIL_1]`.
+- **Ask:** `Leggi fixtures/contacts.csv e genera, per ogni contatto e per ognuno dei 10 mesi da gennaio a ottobre, una riga di promemoria del tipo "<mese>: scrivere a <email>". Solo le righe.`
+- **Upstream:** `[EMAIL_1]`…`[EMAIL_3]` — the emails arrive in the **tool result** (the CSV read),
+  so this also covers re-anonymization on the way *up*; no raw address anywhere.
+- **Client — OFF:** ~30 lines each carrying an **intact** address — none split, mangled, or left as
+  a placeholder. **— ON:** the same lines carrying `[EMAIL_n]`.
 - **Proves:** the Anthropic SSE hold-back over many real deltas — a placeholder split across
-  `text_delta`s is reassembled every time, not just once.
+  `text_delta`s is reassembled every time, not just once. **30 restorations of a value the model
+  never saw** is the point: one lucky reassembly proves nothing.
+- **Why this ask:** generating a reminder list from a CSV is ordinary work, and it yields a long
+  streamed answer that repeats the same placeholders dozens of times — the shape CC-08 needs, with
+  none of the "repeat after me" framing that got the original refused.
 
-**CC-09 — PII through an MCP SQL tool** *(the old proxy's TC-04, on real infrastructure)*
-- **Ask:** `Esegui la query in fixtures/customer-lookup.sql con il tool MCP SQL e mostrami il risultato.`
-- **Upstream:** the `tool_result` carries `[EMAIL_1]`, `[PHONE_1]`, `[SSN_1]`, `[CARD_1]`,
-  `[IBAN_1]`, `[SECRET_1]`; none of the six raw values.
+**CC-09 — PII through an MCP SQL tool** *(the old proxy's TC-04)*
+- **Setup (once, out-of-band — NOT through the proxy):** run `fixtures/cc09-setup.sql` against a
+  **throwaway** DB (a local SQLite file is enough) to create `cc09_customers` with one synthetic row
+  (email/phone/ssn/card/iban/secret). This puts the PII in the query **result**, not the query **text**.
+  Never point this at a real table — synthetic data only.
+- **Ask:** `Con il tool MCP SQL, esegui SELECT * FROM cc09_customers e mostrami il risultato.`
+  (equivalently `fixtures/customer-lookup.sql`, which is now exactly that PII-free query).
+- **Upstream:** the `tool_result` carries `[EMAIL_n]`, `[PHONE_1]`, `[SSN_1]`, `[CARD_1]`, `[IBAN_1]`,
+  `[SECRET_1]`; none of the six raw values.
 - **Client — OFF:** the real row. **— ON:** the row of placeholders.
 - **Proves:** PII arriving through an **MCP tool result** — a path the proxy never sees coming and
-  cannot special-case — is masked like any other. `SELECT … FROM DUAL` needs no schema or real
-  data.
+  cannot special-case — is masked like any other. Verified live **2026-07-18** (DEVLOG): DBG-02 = 0 on
+  all six values.
+- **Why the query text must be PII-free (the original TC-04 shape got this wrong).**
+  `SELECT 'bob@test.com'… FROM DUAL` carries the PII as **literals in the query text**, so the agent
+  *reading* the `.sql` masks them **before** the query runs and the `tool_result` path is never
+  exercised. The PII must ride in the **result** (a table), not the text (2026-07-18).
 
 ---
 - **E2E-02 / E2E-04** — done; see *End-to-end* above.
@@ -469,6 +539,140 @@ is a finding. *Client* is the only thing the flag changes. Paths are relative to
     last window (a third of the entities lost on one measured input), so
     `the_last_window_reaches_the_true_text_end_not_the_closing_token_sentinel` pins it directly.
 
+<a id="m7-latency"></a>
+### M7 — the latency harness (`tests/m7_latency.rs`, `--features onnx`, `#[ignore]`d)
+
+**Why it is a separate file from `ner_perf.rs`, and the lesson it encodes.** `PERF-01` measured a
+*repeated synthetic sentence* and concluded "linear" — true, and beside the point: it never measured
+a **real client's payload**. Then M7's own opening numbers were taken on a blob *densely packed with
+names* and reported ~0.96 s/KB — the same mistake, one level down. **A corpus has a shape, and the
+shape is the blind spot** (M4-R13 → PERF-01 → here). So this file's fixture is the experiment, and
+its shape is **asserted**, not assumed.
+
+- **PERF-M7-01** — `m7_s0_a_realistic_claude_code_turn_measured_per_field`. One realistic turn (112
+  fields / **22.3 KiB**) masked with **one vault, field by field**, as production does: one big
+  `system`, 10 medium `tools[].description`, 100 tiny `input_schema` descriptions, one ~130 B user
+  message carrying all the PII. Reports per-field cost and **fixpoint pass counts**. It **reports,
+  it does not assert** — one sample, on a harness whose run-to-run spread is ~40%; the bar lives in
+  PERF-M7-05, over repeats (M7-R2).
+  - **The fixture's shape guards are load-bearing.** Total size must be 20–50 KB, `system` must be
+    exactly one field, and the schema tier must be >50 fields. The first draft tripped the size
+    guard at 13.5 KiB (350-byte tool descriptions; real ones are 1–4 KB) — i.e. the guard caught a
+    fixture that would have under-measured the product, which is the entire job.
+  - **Do not "improve" it with a captured real body.** The trace log has one, but it is already
+    **masked**, so its NER pass finds nothing and the measurement lies *optimistically*. Synthesize
+    the shape, not the content.
+- **PERF-M7-05** — `m7_s2_the_bar_holds_for_every_shipped_shape`. **M7's deliverable, guarded as a
+  RATIO**: it measures the **pre-M7 shape (`2×1`) as an in-run calibration leg** and asserts every
+  shipped shape is **≥1.5×** it — the single-session default (`NER_POOL_SIZE` unset → 1 × 12, the
+  personal shape since the 2026-07-17 flip) *and* the pooled centralized shape (`NER_POOL_SIZE=2` →
+  2 × 6), min of 3 reps each. Plus a **loose 15 s** absolute ceiling for order-of-magnitude
+  regressions only.
+  - **Run it isolated: `--test-threads=1` (M7-R12).** Cargo runs tests concurrently, so the old
+    documented command had these benchmarks **measuring each other** — worth **1.50×** on the
+    absolute at constant power (4,757 ms isolated → 7,142 ms contended). Three review rounds blamed
+    that class of gap on power management before anyone measured the harness itself.
+  - **Why a ratio and not the ~3 s bar (M7-R9/M7-R12) — the most useful thing in this catalog entry.**
+    Same code, same fixture, same box, two people: **2,462 / 3,943 / 4,724 / 4,757 / 4,841 / 4,933 /
+    7,142 ms**, each run internally tight (spread < 7%). **The ordering variable is still not
+    identified** — and it is *not* power: the runs once labelled "battery" and "AC" turned out to be
+    the same energy-efficiency plan (charger attached or not; M7-R17), so that label ordered nothing,
+    which is exactly why a "battery" run could beat three "AC" ones. A wall-clock assert on that is a
+    **box-state detector**: red on five of seven runs, and green through a genuine 20% regression. The
+    ratio is the part that is about the code: it held ~**1.7–2.3×** across all seven while the absolute
+    moved 2.9×. (Quote the guard's **≥1.5× floor**, not a tight band — a faster box compresses the
+    ratio toward the floor, so any band keeps being undercut; M7-R18.)
+  - **Min-of-N was the wrong fix, and knowing why matters more than the fix.** It answers M7-R2's
+    *jitter*, and this is not jitter: all N reps sit inside the regime and agree tightly on the wrong
+    number. **Precise, and wrong.** The harness's own footer had already said the drift was *between*
+    runs.
+  - **What it cannot see, because an honest guard says so (M7-R14).** The 1.5 floor against a worst
+    *observed* ~1.7 tolerates a **~13% regression** — materially the blindness the wall-clock bar had.
+    The ratio buys **regime-independence, not sensitivity**; it answers the false *positive*, not the
+    false *negative*. The floor cannot be tightened toward the worst observation (a fast box
+    legitimately compresses the ratio toward it — M7-R18 — so a tighter floor would false-fire), so
+    the honest move is to state the limit rather than to imply it away. The **15 s** ceiling is
+    order-of-magnitude only — it was 8 s, which fired on the harness's own documented command
+    (median 10,391 ms) and blamed the power state for test concurrency.
+  - **Its domain (M7-R13 / M7.1).** The guard still **skips below 4 cores and says so**, but the
+    2026-07-17 default flip (`pool 2 → 1`) changed *why*. Under the old `pool=2` default `intra`
+    floored at 1 there, so the derived default *was* `PRE_M7_SHAPE` and the ratio was 1.0 by
+    construction. Under `pool=1` the derivation is `intra = cores`, so that identity holds **only at
+    1 core**; between 2 and 3 the derived shapes add threads but too few to clear the 1.5× floor
+    reliably, so 4 stays the conservative line. Pinned in
+    `onnx::thread_tests::the_default_gives_one_session_the_whole_box`: **the speedup scales with the
+    box, and this guard has nothing dependable to say below 4 cores.**
+  - **Why both shapes (M7-R1).** The first cut asserted `pool=1` only, while the *server* then
+    defaulted to `pool=2` — ~28% headroom on a config nobody ran, none on the one they did. Both now
+    resolve through `onnx::resolve_pool_and_intra`, the **server's own** function, so the harness
+    cannot drift from production. (Since the flip the default *is* `pool=1`, so PERF-M7-05 now guards
+    that default **and** the pooled `NER_POOL_SIZE=2` shape a centralizing operator sets.)
+  - **It measures and prints every row before asserting any**, because the first cut asserted inside
+    the loop: a failure on the default meant the personal shape never ran and never printed, on a test
+    whose entire purpose is the two-row comparison. **A guard must not destroy the evidence needed to
+    interpret it.**
+- **PERF-M7-02** — `m7_s0_what_the_ner_finds_in_boilerplate_that_has_no_pii`. Prints every entity
+  the hybrid finds in text that carries **no PII by construction**. Each hit is a false positive that
+  costs its field a **second full NER scan**. Measured: `(Organization, "An")` — a two-character
+  fragment of "Anthropic's" — in the system prompt. **This is the test that refuted M7's own premise**
+  ("the boilerplate has ~zero PII, so it costs one pass"). Diagnostic: it reports, it does not assert,
+  because the *right* number here is a precision question (M4-R6's class), not a latency one.
+- **PERF-M7-03** — `m7_s1_how_much_of_the_box_can_one_request_use`. Sweeps `pool × intra`, **3 reps
+  per shape**, printing **min / median / spread**. Reports; does not assert, because the numbers are
+  box-specific. Confirms scaling is **sublinear** (12 threads → ~2×).
+  - **Read the `spread` column, and know it understates the noise (M7-R2).** `spread` is
+    within-run; the same configuration also drifts ~40% *between* runs on the reference box. **This
+    harness resolves large effects, not small ones**, and its footer says which rows a *mechanism*
+    backs. The first cut ran each shape **once** and turned an 18% `1×6`-vs-`1×12` gap into the
+    stated conclusion "SMT helps" — which inverts run to run. **SMT is unresolved**; the reps are
+    the guard that would have prevented the claim.
+  - The pool's inertness at concurrency 1 (`2×1` ≈ `1×1`) is real but should be believed **from the
+    code**, not this table: one request occupies one session, so `pool` cannot help it. When the two
+    rows differ here, that is the box.
+- **PERF-M7-04** — `m7_s1_throughput_under_concurrent_load_must_not_regress`. 4 concurrent turns,
+  turns/s per shape. **The guard against optimizing latency by quietly wrecking the shared-proxy
+  case** the pool was built for. It is what measured `pool=1` at **−23% throughput** (the reviewer
+  independently got −21%), refuting the builder's own "it is not a trade at all". That −23% is
+  exactly why the 2026-07-17 default flip to `pool=1` is scoped the way it is: the flip targets the
+  **personal** proxy, which has no concurrency to lose that on, and a centralizing operator reclaims
+  it with `NER_POOL_SIZE=N` — this test is the reason that stays an override, not the default.
+- **THREAD-01** — `src/pii/onnx.rs::thread_tests` (unit, **no model needed**, runs in plain
+  `cargo test --features onnx`). Pins the two pure functions the threading rests on, as functions of
+  `(pool, cores)` — so the CI runner's core count cannot decide whether they are correct.
+  - `derive_intra_threads`: the oversubscription invariant **with its domain** — `pool × intra ≤
+    cores` while `pool ≤ cores`, and `intra == 1` beyond it, where the derivation is out of moves.
+    **The regimes are split on purpose (M7-R4):** the first version asserted
+    `pool * intra <= cores.max(pool)` across both, which passes for `pool > cores` by widening the
+    bound to the pool itself — green-lighting 8 threads on a 2-core box under a name claiming the
+    opposite. A test may not hide its exception inside a `max`.
+  - `resolve_pool_and_intra`: **both** knobs treat `0` and garbage as unset (M7-R5 — M7 shipped that
+    guard on the new knob only, leaving `NER_POOL_SIZE=0` safe by two independent clamps while the
+    startup log printed `pool_size=0, intra_threads=12`, which no arithmetic reconciles); an explicit
+    value wins; and the default is `DEFAULT_POOL_SIZE`, the same constant `server.rs` uses — which is
+    what makes M7-R1's harness/server drift structurally impossible.
+- **NER-THREAD-01** — `tests/ner_perf.rs::m7_r3_intra_threads_changes_speed_not_detection`
+  (`--features onnx`, `#[ignore]`d, needs a model). **`NER_INTRA_THREADS` must change speed, never
+  detection** — fingerprints `(kind, span.start, span.end)` over prose, **a field past the
+  `MAX_WINDOW_TOKENS` chunking window** (~660 tokens), CJK, and the fragment-prone `"Anthropic's"`
+  shape, at intra 1 / 2 / 4 / 6 / all-cores, and asserts every set is **identical**. Measured: **194
+  entities**, identical at every count, with a non-vacuity floor so a guard that detects nothing cannot
+  pass.
+  - **Its chunked input is asserted in *tokens*, through the real tokenizer (M7-R8).** The first cut
+    asserted `long_field.len() > 2_000` — **bytes** — for a branch `infer_chunked` takes on **tokens**
+    (`> MAX_WINDOW_TOKENS` = 480). The input was 2,360 bytes and cleared it by 18% while being **442
+    tokens**: 38 short of the trigger, so the guard covered **zero** chunked inputs — the one case
+    M7-R3 named as the whole reason to have it. This is [M5-R10](reviews/M5.md#m5-r10)'s shape a file
+    over (*the assert pins a proxy in the wrong unit, not the property the code depends on*), and the
+    M4 retrospective's lesson 6: **a quantity a test never varies is a quantity the test cannot see.**
+    Third time in this repo. The constant is imported, never hand-copied ([M5-R9](reviews/M5.md#m5-r9)).
+  - **Why it exists (M7-R3):** every *recall* guard in this repo pins `intra=1` **on purpose** — a
+    score that moves with the runner's core count is worthless — so the one knob M7 changed was the
+    one knob nothing exercised. The property is **empirical**: ORT repartitions reduction work across
+    threads, float addition is not associative, and the BIO decode is a per-token `argmax` where a
+    near-tie flips on nothing but thread count. **This is the guard a DirectML/CUDA EP swap or a
+    GLiNER swap must trip over** — see ARCHITECTURE → *NER threading*, and M5-R4 for the same rule
+    about the same layer.
+
 ### M5 review round 1 — the guards the findings left behind
 
 - **NER-CHUNK-01** — `every_window_is_sliceable_even_when_an_offset_lands_inside_a_multibyte_char`
@@ -498,15 +702,19 @@ is a finding. *Client* is the only thing the flag changes. Paths are relative to
   window both chunks (non-vacuity) and stays under the ceiling. `run_and_decode` clamps as a
   last-resort valve; **this is the guard that makes sure the valve never fires.**
 - **NER-INERT-01** *(live, `--features onnx`, `#[ignore]`d)* — `m5_r4_the_ner_treats_placeholders_as_inert`
-  (`tests/ner_perf.rs`, M5-R4). **The check a model swap must not skip.** `Vault::mask_all` masks to a
-  fixpoint, and its convergence proof — *"a placeholder is inert"* — is proved **by construction** only
-  for the regex recognizers. The NER is an ML model under no such constraint: tag `[PERSON_1]` and the
-  text stops shrinking, `MAX_MASK_PASSES` exhausts, and the request **400s** (fail-closed, never a leak,
-  but a hard availability failure on ordinary input). Asserts XLM-R tags **zero** entities across a
-  3 040-byte placeholder-only field — large enough to exercise the **chunked** path, the one M5 newly
-  opened — and that the full hybrid `mask_all` converges on it. Placeholder inertness is therefore an
-  **empirical property of the chosen model**; **GLiNER** (Backlog) is *zero-shot, open-label,
-  context-driven* — exactly the kind that could read `Contact [PERSON_1] at [ORG_1]` and tag both.
+  (`tests/ner_perf.rs`, M5-R4). **Now belt-and-braces, not the sole guarantee.** `Vault::mask_all` masks to
+  a fixpoint; placeholder inertness — the reason it converges — is proved **by construction** for the regex
+  recognizers, and since CC-08 is **enforced by construction for the NER too**: `keep_maskable` drops any
+  detection that is one of our own `[KIND_N]` tokens (FC-07), so a model that tags `[PERSON_1]` can no
+  longer stall the fixpoint. This test still asserts XLM-R tags **zero** entities across a 3 040-byte
+  placeholder-only field — large enough to exercise the **chunked** path — but its role shifted from *the*
+  safety proof to **the model-swap canary**: **GLiNER** (Backlog) is *zero-shot, open-label, context-driven*
+  and could read `Contact [PERSON_1] at [ORG_1]` and tag both — this test runs the NER **directly** on
+  placeholder text and catches exactly that. Run it on a swap to know **whether** the model leans on the
+  filter; correctness never depends on it (S4 converges the fixpoint regardless). **Post-S4 (M7-R23):** the
+  runtime `placeholder_tags_suppressed` counter (FC-08) is *not* a substitute — the NER runs only on pass 0,
+  so it can't observe a model re-tagging masking's own output; it only flags placeholder-shaped text already
+  in the raw field. This test is that canary; the counter is a weaker, separate signal.
 - **MSRV-01** *(CI)* — the `msrv` job (`.github/workflows/ci.yml`, M5-R5) **builds** the crate on the
   declared floor, **1.89**, with `--features onnx`. Before this, `rust-version` was a claim nothing
   checked — and it was **false**: the declared `1.82` could not even parse the dependency tree.
@@ -601,9 +809,14 @@ PII). Placeholder-**presence** asserts are on the **specific masked field** (or 
 > **What it did *not* exercise is the hybrid.** No model was configured, so the run was silently structured-only:
 > email and IBAN masked because they are *deterministic* recognizers, while the NER never ran. Verifying the
 > hybrid is the [CC battery](#cc-battery) (CC-01…CC-09 × Run OFF/ON, `NER_REQUIRED=1` — the flag that makes that
-> silent downgrade fatal), and it is **blocked on M7**: its prompts need rewriting (Claude Code correctly refused
-> them as injection attempts) and 9 scenarios × 2 runs is impractical at the current NER latency. **`1.0.0` now
-> waits on M7, not on this box.** The automated mock coverage above remains the permanent guarantee.
+> silent downgrade fatal).
+>
+> **M7 unblocked it on both counts (2026-07-16), and it is now the last thing before `1.0.0`.** The prompts that
+> Claude Code refused as injection attempts are [rewritten as ordinary work](#cc-prompt-design), and a realistic
+> turn masks in ~2.5 s at the default (`NER_POOL_SIZE` unset) instead of the claimed 27 s, so 9 scenarios ×
+> 2 runs is practical. What remains is
+> irreducibly manual: a human, a live key, and eyes on two traces. The automated mock coverage above remains the
+> permanent guarantee; the battery is what proves it on real traffic.
 
 ### Dependency footprint (M2.5-R1)
 - DEP-01 — `tests/dependency_footprint.rs` (`default_build_excludes_the_onnx_and_hf_stack`): `cargo tree` on the **default** features must contain no `hf-hub`/`hf-xet`/`aws-lc`/`ort`/`tokenizers` — the ONNX/HF stack (heavy, native) stays behind the `onnx` feature so the shipped default build is native-dep-free.
@@ -641,5 +854,9 @@ PII). Placeholder-**presence** asserts are on the **specific masked field** (or 
   verification test half the product; see [`MANUAL_VERIFICATION.md`](MANUAL_VERIFICATION.md)).
   Run it from the repo root: `--target-dir` is relative to the cwd.
 - Live-model tests (EVAL-01, the NER-CHUNK / NER-INERT / perf guards) are `#[ignore]`d and need a
-  configured model — `cargo test-onnx --test ner_perf -- --ignored --nocapture`.
+  configured model — `cargo test-onnx --test ner_perf -- --ignored --nocapture --test-threads=1`.
+  **`--test-threads=1` is part of the recipe for anything that measures time (M7-R12):** cargo runs
+  tests concurrently by default, so without it the benchmarks measure the product *against other
+  copies of themselves* — 1.50× on the reference box, at constant power. Recall guards don't care;
+  latency guards do, and M7 spent three review rounds blaming power management for it.
 - End-to-end against a mock provider — harness added in M1.
