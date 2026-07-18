@@ -80,6 +80,7 @@ async fn spawn_proxy_against_real_anthropic() -> SocketAddr {
         ],
         pii_locales: vec!["it".to_string(), "us".to_string()],
         debug_skip_demask: false,
+        pii_cache_entries: 0,
     };
     let app = build_router(AppState::new(&config).await.expect("build app state"));
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

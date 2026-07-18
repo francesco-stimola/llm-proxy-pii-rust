@@ -296,6 +296,7 @@ Tutto è pilotato da variabili d'ambiente.
 | `UPSTREAM_EXTRA_HEADERS` | *(nessuno)* | `Chiave=Valore;Chiave2=Valore2` header statici per ogni richiesta a monte |
 | `MAX_BODY_BYTES` | `16777216` | Limite del corpo della richiesta (16 MiB) |
 | `PII_LOCALES` | `it,us` | Governa **solo** il livello di riconoscitori inclini a falsi positivi. **I documenti nazionali sono sempre attivi** |
+| `PII_CACHE_ENTRIES` | `16` | Cache di rilevamento (S3): il system prompt byte-identico viene scansionato una volta e riusato, risparmiando la passata NER dominante. Con chiave sui byte esatti, un hit non può **mai** mascherare *meno* di una scansione fresca. `0` la disabilita |
 | `RUST_LOG` | *(non impostata)* | es. `llm_proxy_pii_rust=debug` |
 
 <details>

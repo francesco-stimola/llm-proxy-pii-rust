@@ -6,6 +6,7 @@
 //! so the pipeline never depends on a concrete engine.
 
 pub mod anonymizer;
+pub mod cache;
 pub mod composite;
 pub mod ner_decode;
 pub mod overlap;

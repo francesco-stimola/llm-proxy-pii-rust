@@ -63,9 +63,19 @@ impl AppState {
             config.upstream_extra_headers.clone(),
         );
         let ner_required = env_flag("NER_REQUIRED");
-        let stages: Vec<Box<dyn Stage>> = vec![Box::new(PrivacyStage::new(
-            build_detector(ner_required, &config.pii_locales).await?,
-        ))];
+        let mut detector = build_detector(ner_required, &config.pii_locales).await?;
+        // Content-keyed detection cache (S3, M7.1): the byte-identical system prompt Claude Code
+        // re-sends every turn is detected once and reused, saving the dominant NER scan. Sound
+        // because a hit is keyed on the exact bytes of a deterministic scan (see `pii::cache`);
+        // `PII_CACHE_ENTRIES=0` opts out. Wrapping the whole composite means the cache sits above
+        // both engines, so a hit skips the recognizers *and* the NER.
+        if config.pii_cache_entries > 0 {
+            detector = Box::new(crate::pii::cache::CachingDetector::new(
+                detector,
+                config.pii_cache_entries,
+            ));
+        }
+        let stages: Vec<Box<dyn Stage>> = vec![Box::new(PrivacyStage::new(detector))];
         if config.debug_skip_demask {
             // Loud, so it can't quietly linger in a real deployment (M2.6).
             tracing::warn!(

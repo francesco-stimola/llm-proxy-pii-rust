@@ -83,6 +83,7 @@ async fn spawn_proxy(upstream: SocketAddr) -> SocketAddr {
         forward_request_headers: Vec::new(),
         pii_locales: vec!["it".to_string(), "us".to_string()],
         debug_skip_demask: false,
+        pii_cache_entries: 0,
     };
     let app = build_router(AppState::new(&config).await.expect("app state"));
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

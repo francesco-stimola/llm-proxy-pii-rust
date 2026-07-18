@@ -64,6 +64,31 @@ async fn spawn_proxy_cfg(upstream: SocketAddr, debug_skip_demask: bool) -> Socke
         forward_request_headers: Vec::new(),
         pii_locales: vec!["it".to_string(), "us".to_string()],
         debug_skip_demask,
+        pii_cache_entries: 0,
+    };
+    let app = build_router(AppState::new(&config).await.expect("build app state"));
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    addr
+}
+
+/// Spawn the proxy with the S3 detection cache ON (`cache_entries` entries). Exercises the cache
+/// in the real pipeline: a repeated large field must still mask on every request (S3 soundness).
+async fn spawn_proxy_cached(upstream: SocketAddr, cache_entries: usize) -> SocketAddr {
+    let config = Config {
+        listen: "127.0.0.1:0".parse().unwrap(),
+        upstream_base_url: format!("http://{upstream}"),
+        upstream_api_key: None,
+        max_body_bytes: llm_proxy_pii_rust::config::DEFAULT_MAX_BODY_BYTES,
+        provider: "openai".to_string(),
+        upstream_chat_path: "/v1/chat/completions".to_string(),
+        upstream_messages_path: "/v1/messages".to_string(),
+        upstream_extra_headers: Vec::new(),
+        forward_request_headers: Vec::new(),
+        pii_locales: vec!["it".to_string(), "us".to_string()],
+        debug_skip_demask: false,
+        pii_cache_entries: cache_entries,
     };
     let app = build_router(AppState::new(&config).await.expect("build app state"));
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -87,6 +112,7 @@ async fn spawn_proxy_provider(upstream: SocketAddr, provider: &str) -> SocketAdd
         forward_request_headers: Vec::new(),
         pii_locales: vec!["it".to_string(), "us".to_string()],
         debug_skip_demask: false,
+        pii_cache_entries: 0,
     };
     let app = build_router(AppState::new(&config).await.expect("build app state"));
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -736,4 +762,40 @@ async fn e2e_clean_request_passes_through_unchanged() {
         reply["choices"][0]["message"]["content"],
         "You said: just say hi"
     );
+}
+
+#[tokio::test]
+async fn e2e_cache_on_a_repeated_large_field_still_masks_both_times() {
+    // S3 (M7.1): with the detection cache ON, a byte-identical large field sent twice must mask on
+    // BOTH requests — the second is served from the cache, and a cache hit must never mask *less*
+    // than a fresh scan. This is the pipeline-level proof of the soundness argument in `pii::cache`.
+    let proxy = spawn_proxy_cached(spawn_mock_upstream().await, 16).await;
+
+    // A field over MIN_CACHEABLE_LEN (256 B) carrying a real email — so it is both cached and
+    // PII-bearing. The steady boilerplate is exactly the system-prompt shape S3 exists for.
+    let system = format!(
+        "You are a helpful assistant. {}Reach the operator at cacheprobe@example.com anytime.",
+        "Some steady boilerplate context. ".repeat(12)
+    );
+    let body = json!({
+        "messages": [
+            { "role": "system", "content": system },
+            { "role": "user", "content": "hi" }
+        ]
+    });
+
+    for attempt in 1..=2 {
+        let reply = chat(proxy, body.clone()).await;
+        let sent_system = reply["upstream_received"]["messages"][0]["content"]
+            .as_str()
+            .expect("the masked system message");
+        assert!(
+            !sent_system.contains("cacheprobe@example.com"),
+            "attempt {attempt}: raw email reached upstream (cache masked less than a fresh scan): {sent_system}"
+        );
+        assert!(
+            sent_system.contains("[EMAIL_1]"),
+            "attempt {attempt}: the email must be masked to a placeholder: {sent_system}"
+        );
+    }
 }

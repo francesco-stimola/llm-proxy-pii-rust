@@ -36,8 +36,8 @@ completion**; findings, counts and closure notes live in each milestone's sectio
 | [M5 — Integration & performance testing](#m5) | ✅ complete |
 | [**M6 — Native Anthropic `/v1/messages`**](#m6) | ✅ **code-complete**, and **verified live**: a real Claude Code session round-trips through the proxy (2026-07-16) |
 | [**M7 — NER latency**](#m7) | 🔨 **code-complete, review ledger closed** (21 findings / 8 rounds, all closed): **≥1.5× faster than pre-M7** (asserted floor; typically ~1.7–2.3×, scales with the box, **not asserted below 4 cores** — a strict no-op only at 1 core since the 2026-07-17 `NER_POOL_SIZE` default flip to `pool=1`). A realistic turn masks in **~4.7 s** at the shipped default on the reference box — **the ~3 s bar was missed; we stopped anyway** ([M7-R12](reviews/M7.md#m7-r12)). **CC battery (2026-07-18): masking (Run ON) leak-clean; Run OFF underway.** A fail-closed **non-convergence 400** recurred (CC-08, then CC-05) — root-caused to NER **sub-word fragmentation** on the dense system prompt, fixed by **[S4](#m71)** (the placeholder-inertness hardening was valid but not the cause). No leak; an availability defect |
-| [**M7.1 — system-prompt cache + fixpoint NER fix**](#m71) | ⬜ **not started** — **S4** (NER on pass 0 only) is now the **fix** for the CC-05/CC-08 fail-closed 400, recall-validated (0 losses); **S3** (system-prompt entity cache) stays pure latency. S4's 1.0.0-gating is **conditional** on the battery |
-| [First tagged release `1.0.0`](#m6) | ⬜ not started — gated on the CC battery closing; its **Run OFF half** is underway but **blocked on some turns by the non-convergence 400** whose fix is **[S4](#m71)**. Privacy holds (fail-closed never leaks); a proxy that 400s real turns isn't "usable", so S4 likely lands first. Then manual PR → merge → tag |
+| [**M7.1 — system-prompt cache + fixpoint NER fix**](#m71) | ✅ **complete (2026-07-18)** — **S4** (NER on pass 0 only) fixes the CC-05/CC-08 fail-closed 400, recall-validated (0 losses); **S3** (`CachingDetector`, exact-byte-keyed, can't mask less) memoizes the byte-identical system prompt's detection. 116 onnx lib tests, clippy clean |
+| [First tagged release `1.0.0`](#m6) | ⬜ not started — the non-convergence blocker is **fixed** ([S4](#m71)); left is a **CC battery re-run on the S4 binary** (Run OFF half + re-confirm CC-05/CC-08), then a manual PR → merge → tag. Privacy held throughout (fail-closed never leaked) |
 
 ---
 
@@ -717,12 +717,12 @@ DEVLOG 2026-07-16 → *M7 implementation plan*; start at S0.**
     **CC-03…CC-07 and CC-09 ran ON-only** — so the *de-mask* (client gets the real values restored) is
     unproven live for those shapes. Per [`MANUAL_VERIFICATION.md`](MANUAL_VERIFICATION.md), each scenario
     needs **both** postures: ON shows the request left masked, OFF shows the client got it restored — only
-    together do they prove the *same* round-trip. **OFF so far:** CC-03 ✅, CC-04 ✅ (DBG-02 = 0), then
-    **CC-05 hit the fail-closed non-convergence 400** (the [S4](#m71) fragmentation bug — the instrumented
-    diagnostic pinned it live). **Left:** CC-06, CC-07, CC-09 OFF, and CC-08 both postures. Continuing on the
-    current binary to see if more turns 400; any that do are queued for S4. **If the battery can't close
-    without them, [S4](#m71) lands first, then this re-runs on the S4 binary.** CC-01 / CC-02: already
-    OFF+ON, skip.
+    together do they prove the *same* round-trip. **OFF pre-S4:** CC-03 ✅, CC-04 ✅, CC-06 ✅, CC-07 ✅
+    (DBG-02 = 0); **CC-05 and CC-09 hit the fail-closed non-convergence 400** (the fragmentation bug — the
+    instrumented diagnostic pinned both: real `ORG`/`PER` fragments, `placeholder_tags_suppressed=0`). **[S4](#m71)
+    is now implemented and fixes it** (the real model converges where it 400'd). **Left: re-run the OFF half
+    on the S4 binary** — CC-05, CC-09 (must now pass), plus CC-06, CC-07, CC-09 OFF de-mask and CC-08 both
+    postures. CC-01 / CC-02: already OFF+ON, skip. To be run **with the user** (a live key + real Claude Code).
   It needs a human at the keyboard with a live key and a real Claude Code — this environment has neither,
   so it cannot be automated away. Procedure: [`MANUAL_VERIFICATION.md`](MANUAL_VERIFICATION.md);
   **`NER_REQUIRED=1` is non-negotiable** (it is what makes a silently structured-only run fatal — the
@@ -911,28 +911,27 @@ branch, so the docs' "makes a filter-leaning model visible" claim doesn't hold i
 | [M7-R21](reviews/M7.md#m7-r21) | `placeholder_tags_suppressed` is logged only on the fail-closed branch — the "makes a filter-leaning model visible" claim (ARCHITECTURE / TESTING NER-INERT-01) is unsupported in the converging happy path; the `m5_r4` test is the real canary | observ. | [x] |
 
 <a id="m71"></a>
-## M7.1 — system-prompt cache (S3) & the fixpoint NER fix (S4)
+## M7.1 — system-prompt cache (S3) & the fixpoint NER fix (S4) ✅
 
-**Two leads M7 named but did not buy — and one of them turned out to be a bug, not just a speed-up.** M7
-shipped its reproducible ~2× and stopped at a ~4.7 s turn (the bar was missed on purpose — see M7's
-*"Declare the bar, then decide against it"*). Both items below were deferred rather than dropped because
-each traded a real risk that had to be argued first. **S4 is no longer optional:** the CC-05/CC-08
-investigation (2026-07-18) showed its "latency" mechanism — the NER re-running every fixpoint pass — is
-what makes masking **fail-closed (400) on real Claude Code system prompts**. So S4 is now the *fix* for a
-correctness/availability defect (and its recall risk is answered — see the item), while **S3 stays pure
-latency.** Whether this gates `1.0.0` is conditional: the privacy property holds (fail-closed never leaks),
-but a proxy that 400s a fraction of real turns is not "usable" — so if the CC battery keeps hitting it, S4
-lands before `1.0.0`; if the battery closes anyway, S4 can follow.
+**Both done 2026-07-18 — and one of them turned out to be a bug, not just a speed-up.** M7 shipped its
+reproducible ~2× and stopped at a ~4.7 s turn (the bar was missed on purpose — see M7's *"Declare the bar,
+then decide against it"*). Both items here were deferred rather than dropped because each traded a real
+risk that had to be argued first; both have now landed with that argument answered. **S4** turned out to be
+the *fix* for the CC-05/CC-08 fail-closed 400 — the NER re-running every fixpoint pass is what re-tagged its
+own sub-word fragments past the bound on a dense system prompt — with its recall risk measured (0 losses).
+**S3** caches the byte-identical system prompt's detection, keyed on the exact bytes so a hit can never mask
+less. With S4 in, the CC battery's non-convergence blocker is resolved (re-run pending on the S4 binary).
 
-- [ ] **S3 — don't re-scan an unchanged system prompt every turn.** *(The named lead: the ~4.7 s turn and
-  the ~40 KB-traffic case both point here.)* Claude Code re-sends 20–40 KB of system prompt + tool schemas
-  every turn, **byte-identical**, and we re-scan all of it from scratch; it dominates the payload. A
-  **content-keyed cache of the detected *entities*** (leaving the per-request vault to mint placeholders as
-  it does now, so numbering stays per-request and deterministic) makes turn 2+ nearly free — and unlike the
-  thread-count win, it is **indifferent to the box**. **The risk to answer first:** it adds *state on the
-  masking path*, which needs its own threat argument (a stale cache entry must never mask *less* than a
-  fresh scan — fail-closed means the cache may only ever be a superset, or be dropped). That is why it is
-  listed with a guard, not just a TODO.
+- [x] **S3 — don't re-scan an unchanged system prompt every turn. Done 2026-07-18.** *(The named lead: the
+  ~4.7 s turn and the ~40 KB-traffic case both point here.)* Claude Code re-sends 20–40 KB of system prompt
+  + tool schemas every turn, **byte-identical**. `CachingDetector` (`src/pii/cache.rs`) wraps the composite
+  and memoizes `try_detect` **keyed on the exact field bytes**, so turn 2+ skips the scan; the per-request
+  vault still mints placeholders, so numbering is unchanged. **The threat argument the risk demanded is the
+  design:** `try_detect` is a pure function of its input and the key is the whole input, so a hit returns
+  exactly what a fresh scan would — it **can never mask less**. Only `Ok` results cached (an error still
+  fails closed); bounded (two-generation, ~`2×` `PII_CACHE_ENTRIES`, fields 256 B–128 KiB); `redetect` never
+  cached; `PII_CACHE_ENTRIES=0` disables it. Tested unit (CACHE-01) + e2e
+  (`e2e_cache_on_a_repeated_large_field_still_masks_both_times`). Default **on** (16 entries).
 - [x] **S4 — NER on pass 0 only; structured recognizers on later passes. Now the *fix* for the CC-05/CC-08
   non-convergence, not just a latency lead.** **Done 2026-07-18** — a `redetect` method on `PiiDetector`
   (default `try_detect`, the NER overrides it to return nothing), `mask_all` calls it on every pass after

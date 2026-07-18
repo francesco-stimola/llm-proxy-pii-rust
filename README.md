@@ -289,6 +289,7 @@ Everything is environment-driven.
 | `UPSTREAM_EXTRA_HEADERS` | *(none)* | `Key=Value;Key2=Value2` static headers for every upstream request |
 | `MAX_BODY_BYTES` | `16777216` | Request body limit (16 MiB) |
 | `PII_LOCALES` | `it,us` | Gates only the *false-positive-prone* recognizer tier. **National IDs are always on regardless** |
+| `PII_CACHE_ENTRIES` | `16` | Detection cache (S3): the byte-identical system prompt is scanned once and reused, saving the dominant NER pass. Keyed on exact bytes, so a hit can never mask *less* than a fresh scan. `0` disables it |
 | `RUST_LOG` | *(unset)* | e.g. `llm_proxy_pii_rust=debug` |
 
 <details>

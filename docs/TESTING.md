@@ -336,6 +336,15 @@ asserts the value is still masked and round-trips, so a "fix" that buys speed wi
   m7_s4_dense_org_names_converge_instead_of_400` *(`--features onnx`, `#[ignore]`d)* — real XLM-R, dense
   system-prompt text converges instead of 400-ing — a **model-swap checkpoint**, since S4's no-recall-loss
   rests on the NER not exposing new names when a neighbour is masked.
+- CACHE-01 — the **S3 detection cache** (`src/pii/cache.rs`, M7.1) is sound and bounded. Unit:
+  `a_repeated_field_is_scanned_once_and_the_hit_matches` (a hit returns the *exact* fresh result — the
+  no-mask-less guarantee), `an_error_is_not_cached_and_still_fails_closed` (a detector error propagates and
+  is never memoized as success), `redetect_is_never_cached` (later fixpoint passes always delegate — they
+  run on per-request masked text), `small_fields_are_not_cached` (below the threshold), and
+  `a_hot_key_survives_eviction_of_cold_ones` (the two-generation bound is LRU-ish: the hot key stays live
+  while cold keys roll off). E2e: `proxy_e2e.rs::e2e_cache_on_a_repeated_large_field_still_masks_both_times`
+  sends a byte-identical PII-bearing large field twice with the cache ON and asserts **both** requests mask
+  the email — the pipeline-level proof a cache hit never masks less than a fresh scan.
 
 ### M5 / M6 — live provider verification
 

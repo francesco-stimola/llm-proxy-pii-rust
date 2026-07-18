@@ -3,6 +3,27 @@
 Newest first. One entry per meaningful change — note *what* and *why*, not just
 *what*. This is the running history so context is never lost between sessions.
 
+## 2026-07-18 — S3: content-keyed detection cache (M7.1 complete)
+
+**The other M7.1 lead, landed.** Claude Code re-sends 20–40 KB of **byte-identical** system prompt + tool
+schemas every turn; detecting PII in it (the NER above all) dominates the masking latency. `CachingDetector`
+(`src/pii/cache.rs`) wraps the composite and memoizes `try_detect` **keyed on the exact field bytes**, so
+turn 2+ skips the scan. The per-request vault still mints the placeholders, so numbering is unchanged — the
+cache stores *what/where*, never a mask.
+
+**The threat argument the ROADMAP demanded, discharged.** A cache hit must never mask *less* than a fresh
+scan. `try_detect` is a pure function of its input (stateless regex; NER inference on the input alone) and
+the key is the *whole* input, so a hit returns exactly what a fresh scan would — it cannot mask less. Only
+`Ok` results are cached (an error still fails closed); the cache is bounded (a dependency-free two-generation
+map, ~`2 × PII_CACHE_ENTRIES` live entries, only fields 256 B–128 KiB, hot keys promoted on read); and
+`redetect` (S4's later passes, on per-request masked text) is never cached. `PII_CACHE_ENTRIES` (default 16,
+`0` disables) is the one knob. Default **on** — it is sound, and the latency win is the whole point.
+
+Tested: 5 unit tests (hit==fresh, error-not-cached, redetect-uncached, small-skipped, bounded-LRU) + an e2e
+(`proxy_e2e.rs::e2e_cache_on_a_repeated_large_field_still_masks_both_times`, a repeated PII-bearing large
+field masks on both requests). 116 onnx lib tests green, clippy clean. **M7.1 is complete** (S3 + S4);
+ARCHITECTURE has both invariants. Left before `1.0.0`: the CC battery re-run on the S4 binary, with the user.
+
 ## 2026-07-18 — the *real* non-convergence cause, found live: NER sub-word fragmentation (CC-05) → S4 is the fix
 
 **The instrumentation paid off.** Running the CC battery's **Run OFF** half on the diagnostic binary, **CC-05

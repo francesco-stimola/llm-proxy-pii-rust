@@ -190,8 +190,22 @@ exhaustive.)
 > that masking keeps re-exposing, so the fail-closed branch logs a **value-free** diagnostic to name it:
 > the per-pass kind tally (is the count shrinking, i.e. a deep nest that would clear with more passes, or
 > stalled?), the residue's kinds, and `placeholder_tags_suppressed`. Kinds and counts only — never the
-> text, which fail-closed never forwards or logs. The exact trigger stays unpinned by choice: the
-> instrument turns any recurrence into a pinned cause, which is worth more than a synthetic guess.
+> text, which fail-closed never forwards or logs. **That instrument then paid off:** re-running the
+> battery, CC-05 hit the same 400 and the diagnostic pinned it — `placeholder_tags_suppressed=0`, a
+> residue of real `ORG`/`PER` fragments, not placeholders. The cause was **NER sub-word fragmentation**,
+> and the fix is **S4** (above): the NER runs only on pass 0, so the fragments can't chain past the bound.
+
+**Detection cache (S3, `src/pii/cache.rs`, M7.1).** Claude Code re-sends 20–40 KB of **byte-identical**
+system prompt + tool schemas every turn, and detecting PII in it — the NER above all — dominates the
+masking latency. `CachingDetector` wraps the composite and memoizes `try_detect` **keyed on the exact
+field bytes**, so turn 2+ skips the scan; the per-request vault still mints the placeholders, so numbering
+is unchanged. **The fail-closed soundness argument** is the whole design: `try_detect` is a pure function
+of its input (stateless regex; NER inference on the input alone), and the key is the *whole* input — so a
+hit returns exactly what a fresh scan would and **can never mask less**. Only `Ok` results are cached (an
+error still fails closed), the cache is bounded (a two-generation map, ~`2 × PII_CACHE_ENTRIES` live
+entries, only fields 256 B–128 KiB), and `redetect` (the S4 later passes, on per-request masked text) is
+never cached. `PII_CACHE_ENTRIES=0` disables it. Proven end-to-end by
+`tests/proxy_e2e.rs::e2e_cache_on_a_repeated_large_field_still_masks_both_times`.
 
 **Overlap resolution (`src/pii/overlap.rs`).** Detectors produce overlapping candidate spans;
 `resolve_overlaps` reduces them to a non-overlapping set. Its governing rule is an **invariant,
