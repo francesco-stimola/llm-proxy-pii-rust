@@ -3,6 +3,90 @@
 Newest first. One entry per meaningful change — note *what* and *why*, not just
 *what*. This is the running history so context is never lost between sessions.
 
+## 2026-07-18 — M8/M9 promoted from Backlog; the M8 GLiNER implementation plan
+
+**Post-`1.0.0` planning.** With `1.0.0` tagged and the ROADMAP's scheduled work all closed (the only open
+checkboxes left were the two GPU-optimization backlog items), the next two directions are promoted to
+numbered milestones: **M8 — GLiNER** (contextual / open-label PII) and **M9 — GPU optimization**. M9 keeps
+its existing rationale (EP-agnostic model choice, DirectML on this box); M8 gets the plan below. The ROADMAP
+M8 section carries the scope checkboxes — this entry carries the *how*.
+
+### Why GLiNER is not a drop-in (the thing the plan is shaped around)
+
+The current NER (`OnnxNerDetector`) is **token-classification**: `input_ids` + `attention_mask` → per-token
+logits → argmax → BIO decode (`ner_decode`). GLiNER is a different architecture, and every stage below
+exists because of one of these differences:
+- **Open-label input.** The entity types are fed to the model *as text* — prepended to the input, framed by
+  special entity/separator tokens — so the label set is chosen at inference (`"person"`, `"phone number"`,
+  `"address"`, …), not baked into the head. This is the whole reason to want it: contextual, anchor-less PII
+  (a bare national phone, a free-form address) the deterministic layer can't disambiguate.
+- **Span output, not per-token.** It emits scores per *(span, label)* pair, decoded by threshold + greedy
+  non-overlapping selection — a `gliner_decode` module, the span×label analogue of BIO `ner_decode`.
+- **Word-level spans.** It scores spans over *words*, so the detector must map words → sub-word token ranges
+  (via the tokenizer's word ids / offsets) — more bookkeeping than argmax-per-token.
+- **The labels share the sequence budget.** Because the labels are prepended to *every* window, the usable
+  text budget is `model_max − prefix − specials − drift`, so M5's chunking math is recomputed against a
+  budget the labels eat into.
+
+Artifacts: `onnx-community/gliner_multi_pii-v1` (base `urchade/gliner_multi-v2.1`, PII-tuned, 6 languages
+incl. IT), int8 `model_quantized.onnx` (~349 MB) + `tokenizer.json` (mDeBERTa-v3 SentencePiece) + config,
+**revision-pinned**. Community conversion → scoring against the corpus *is* the trust check.
+
+### Stages
+
+- **S0 — Verify the ONNX I/O contract from the real export.** Download the pinned model; inspect the
+  graph's actual input/output names and shapes. The key unknown: does the export **enumerate spans inside
+  the graph**, or expect `span_idx` / `span_mask` as inputs? GLiNER ONNX exports differ here, and the decode
+  design forks on the answer. Deliverable: the documented contract. **Everything downstream is built against
+  this, not a guess.**
+- **S1 — `GLiNerDetector` (`src/pii/gliner.rs`) + `gliner_decode`.** The detector: tokenize with the label
+  prefix, build the word→token map, enumerate candidate spans (or feed span inputs per S0), run the session,
+  pull span logits. The decode (model-independent, unit-tested without a model like `ner_decode`):
+  (span, label, score) → per-label threshold → greedy non-overlap → `Vec<PiiEntity>`. Behind `onnx`; slots
+  into `CompositeDetector` behind the `PiiDetector` trait, so the pipeline is untouched. `GLINER_LABELS`
+  (natural-language types) → `PiiKind` map; start mapping to **existing** kinds (phone number → `Phone`,
+  address → `Location`) so placeholders and de-mask are unchanged — a new `PiiKind::Address` is a
+  deliberate, eval-justified addition (it ripples through `label`/`from_label`/`priority`/`is_structured`).
+- **S2 — The eval harness + the measured decision (the gate).** `tests/gliner_eval.rs` (`#[ignore]`,
+  `--features onnx`) scores GLiNER int8 **through the hybrid resolver** on an extended `ner_cases.json`
+  (add bare national phones, free-form addresses, single-word names) — P/R/F1 per type + CPU latency / RAM /
+  size vs XLM-R int8. **Recall is metric #1.** The decision: **successor** (GLiNER replaces XLM-R in the
+  composite — the clean win, one model; requires ≥ XLM-R's M4 floor Person 0.83 / Org 1.00 / Loc 0.91),
+  **addition** (both NERs run — GLiNER only for the contextual kinds; 2× model RAM + latency, only if it
+  underperforms XLM-R on PER/ORG/LOC but adds real contextual value), or **rejected** (doesn't clear the
+  lean bar — a legitimate outcome, exactly as M7 stopped at its bar and Piiranha was rejected at M2).
+  Numbers → DEVLOG. **Recommended: evaluate as a successor first.**
+- **S3 — Chunking against the shared label-prefix budget.** Port M5's discipline — the compile-time headroom
+  invariant (M5-R2/M5-R10), enforcement at the single choke point, the posture-is-the-caller's rule (M5-R7)
+  — recomputed so the window budget subtracts the label prefix, which rides every window. Guard: every
+  re-tokenized window **plus its prefix** stays under GLiNER's usable max.
+- **S4 — Wire into load + `redetect` idempotence + the model-swap canaries.** Extend `load_onnx_ner`/`hf.rs`
+  (or a parallel `load_gliner`) for the pinned repo. Fail closed under `NER_REQUIRED`, `FailOpen`-wrapped
+  otherwise. Override `redetect` → empty **with the 0-loss recall measurement re-run for GLiNER** (the S4
+  argument is per-model: masking a name never reveals a new one). **Re-run the `m5_r4` placeholder-inertness
+  canary against the real GLiNER model** — inertness is enforced by construction since S4's `keep_maskable`,
+  but the canary is how a *filter-leaning idempotent* model (the GLiNER case the docs flag, M5-R4 / M7-R23)
+  is caught. Wire successor-vs-addition per S2.
+- **S5 — Docs + builder→reviewer.** ARCHITECTURE (span decode, shared-budget chunking, label config),
+  TESTING (eval + corpus cases + re-run canaries), READMEs (env + detection matrix), DEVLOG. Reviewer loop
+  until clean.
+
+### Invariants any NER swap must re-check (carried from the reviews)
+- **Placeholder inertness (M5-R4 → the `m5_r4` canary).** Enforced by construction since S4, but the docs
+  single out "GLiNER especially" — re-run the canary against the real model.
+- **The fixpoint / `redetect` (S4).** GLiNER overrides `redetect` → empty on the same argument as XLM-R; the
+  0-loss recall claim is per-model and must be re-measured.
+- **Sequence-budget headroom (M5-R2/R10).** Recomputed for GLiNER's label-shared budget; a tokenizer swap
+  re-opens the drift number.
+- **Fail-closed posture (M5-R7).** Any GLiNER threshold may degrade its own recall but must never decide the
+  caller's posture — errors flow through `try_detect` / `FailOpen` exactly as the NER's do.
+
+### Cross-link to M9
+If GLiNER int8's CPU latency misses the lean bar, that is the trigger to pull **M9 (GPU)** forward, not to
+ship slow: the escalation path in `M2-NER-EVALUATION.md` is explicit that a GPU EP + `model_fp16.onnx` is
+how a heavier model earns its place (on CPU, fp16 is up-cast to fp32 — no speedup, so fp16 only pays off on
+GPU).
+
 ## 2026-07-18 — CC battery CLOSED on the S4 binary: the two 400s converge, zero leak
 
 **The last box on the road to `1.0.0`.** Re-ran the CC battery through the proxy against real Anthropic on

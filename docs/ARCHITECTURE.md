@@ -15,8 +15,8 @@ anonymized request upstream, and restores the original values in the response.
 - **Engine-agnostic detection** — everything sits behind the `PiiDetector` trait,
   so we can swap models or add engines without touching the proxy.
 - **CPU-first, GPU later** — correctness and reproducibility on CPU first; GPU is
-  a deferred (Backlog) optimization behind a feature flag. GPU behavior isn't
-  automatic — it depends on the model and quantization.
+  a deferred ([M9](ROADMAP.md#m9)) optimization behind a feature flag. GPU behavior
+  isn't automatic — it depends on the model and quantization.
 - **Textbook & lean** — idiomatic Rust, low RAM/CPU, no over-engineering.
 
 ## Hybrid detection (key decision)
@@ -45,7 +45,7 @@ unstructured-entity load.
   false-positive when always on. The pure-numeric 9-/11-digit IDs (BSN/NIF, DE/LV) accept a
   small fraction of arbitrary numbers on checksum alone (~18% of 9-digit tokens); this is an
   **accepted over-mask tradeoff** (M4-R6) — privacy-first, never a leak — not context-gated
-  (that would leak); the contextual precision path is GLiNER (Backlog).
+  (that would leak); the contextual precision path is GLiNER ([M8](ROADMAP.md#m8)).
 - **FP-prone** — ambiguous recognizers (e.g. national *phone* formats with no `+CC`) —
   **opt-in per locale** via `PII_LOCALES` (`fp_prone_recognizers`). None yet.
 
@@ -793,8 +793,8 @@ cannot recognise as breaking.
 - **Over-mask, never leak** — the standing tie-breaker. Where precision and recall
   conflict, recall wins: the pure-numeric national IDs accept ~18% of arbitrary 9-digit
   tokens (M4-R6) and a union may swallow a bare `@domain`. Both are **accepted on
-  purpose**. The precision path is *context* (GLiNER, Backlog), never a keyword gate —
-  gating a recognizer on nearby words reintroduces leaks.
+  purpose**. The precision path is *context* (GLiNER, [M8](ROADMAP.md#m8)), never a keyword
+  gate — gating a recognizer on nearby words reintroduces leaks.
 - **Resolved (M1)**: the `Stage` signature threads a per-request `RequestContext`
   (carrying the `Vault`) from request to response.
 - **Resolved (M1.5)**: the scanned text fields are fixed — see *Robustness &

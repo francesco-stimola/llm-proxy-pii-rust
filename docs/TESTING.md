@@ -708,7 +708,7 @@ its shape is **asserted**, not assumed.
   detection that is one of our own `[KIND_N]` tokens (FC-07), so a model that tags `[PERSON_1]` can no
   longer stall the fixpoint. This test still asserts XLM-R tags **zero** entities across a 3 040-byte
   placeholder-only field — large enough to exercise the **chunked** path — but its role shifted from *the*
-  safety proof to **the model-swap canary**: **GLiNER** (Backlog) is *zero-shot, open-label, context-driven*
+  safety proof to **the model-swap canary**: **GLiNER** ([M8](ROADMAP.md#m8)) is *zero-shot, open-label, context-driven*
   and could read `Contact [PERSON_1] at [ORG_1]` and tag both — this test runs the NER **directly** on
   placeholder text and catches exactly that. Run it on a swap to know **whether** the model leans on the
   filter; correctness never depends on it (S4 converges the fixpoint regardless). **Post-S4 (M7-R23):** the
