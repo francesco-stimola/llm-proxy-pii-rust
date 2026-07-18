@@ -457,14 +457,23 @@ is a finding. *Client* is the only thing the flag changes. Paths are relative to
   streamed answer that repeats the same placeholders dozens of times — the shape CC-08 needs, with
   none of the "repeat after me" framing that got the original refused.
 
-**CC-09 — PII through an MCP SQL tool** *(the old proxy's TC-04, on real infrastructure)*
-- **Ask:** `Esegui la query in fixtures/customer-lookup.sql con il tool MCP SQL e mostrami il risultato.`
-- **Upstream:** the `tool_result` carries `[EMAIL_1]`, `[PHONE_1]`, `[SSN_1]`, `[CARD_1]`,
-  `[IBAN_1]`, `[SECRET_1]`; none of the six raw values.
+**CC-09 — PII through an MCP SQL tool** *(the old proxy's TC-04)*
+- **Setup (once, out-of-band — NOT through the proxy):** run `fixtures/cc09-setup.sql` against a
+  **throwaway** DB (a local SQLite file is enough) to create `cc09_customers` with one synthetic row
+  (email/phone/ssn/card/iban/secret). This puts the PII in the query **result**, not the query **text**.
+  Never point this at a real table — synthetic data only.
+- **Ask:** `Con il tool MCP SQL, esegui SELECT * FROM cc09_customers e mostrami il risultato.`
+  (equivalently `fixtures/customer-lookup.sql`, which is now exactly that PII-free query).
+- **Upstream:** the `tool_result` carries `[EMAIL_n]`, `[PHONE_1]`, `[SSN_1]`, `[CARD_1]`, `[IBAN_1]`,
+  `[SECRET_1]`; none of the six raw values.
 - **Client — OFF:** the real row. **— ON:** the row of placeholders.
 - **Proves:** PII arriving through an **MCP tool result** — a path the proxy never sees coming and
-  cannot special-case — is masked like any other. `SELECT … FROM DUAL` needs no schema or real
-  data.
+  cannot special-case — is masked like any other. Verified live **2026-07-18** (DEVLOG): DBG-02 = 0 on
+  all six values.
+- **Why the query text must be PII-free (the original TC-04 shape got this wrong).**
+  `SELECT 'bob@test.com'… FROM DUAL` carries the PII as **literals in the query text**, so the agent
+  *reading* the `.sql` masks them **before** the query runs and the `tool_result` path is never
+  exercised. The PII must ride in the **result** (a table), not the text (2026-07-18).
 
 ---
 - **E2E-02 / E2E-04** — done; see *End-to-end* above.

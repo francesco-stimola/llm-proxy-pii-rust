@@ -3,7 +3,7 @@
 Newest first. One entry per meaningful change — note *what* and *why*, not just
 *what*. This is the running history so context is never lost between sessions.
 
-## 2026-07-18 — CC battery live run: 7/9 leak-clean, CC-08 finds a real non-convergence, CC-09 parked
+## 2026-07-18 — CC battery live run: 8/9 leak-clean, CC-08 the one finding
 
 **Manual verification, the M7 → `1.0.0` gate.** Ran a real Claude Code session through the proxy against
 real Anthropic — hybrid, `NER_REQUIRED=1`, at the new **`pool=1` default** (exercised live throughout,
@@ -46,19 +46,26 @@ repeated-placeholder context, so each pass re-masks it and the text never shrink
   CC-08 to capture what stays detectable on pass 4, then fix (likely: protect existing placeholders from
   re-detection) + a regression test. Tracked in ROADMAP.
 
-**CC-09 — the fixture masks itself; parked pending a synthetic DB.** `customer-lookup.sql` carries the
-PII as **literals in the query text** (`SELECT 'bob@test.com'… FROM DUAL`). To run it, the agent reads
-the file → the proxy masks the literals **on read** → the agent runs a query that already says
-`[EMAIL_1]` → the result has nothing new to mask. So the fixture never exercises the `tool_result` path
-it exists for. Fix: a synthetic table + a **PII-free query** (`SELECT * FROM …`) so the PII rides in the
-*result*, not the *text*. The available SQL MCP servers (oracle-sqlcl, python-sql) point **only at real
-corporate Oracle DBs** — no synthetic one — so we do **not** query real tables (real-PII risk); the
-owner is configuring a throwaway DB and CC-09 resumes then. (Table-free alternative: run the `.sql`
-**by path** via SQLcl `@`, so the query text never reaches the LLM.)
+**CC-09 — leak-clean, after fixing a self-sabotaging fixture.** The original `customer-lookup.sql`
+carried the PII as **literals in the query text** (`SELECT 'bob@test.com'… FROM DUAL`): to run it the
+agent reads the file → the proxy masks the literals **on read** → the agent runs a query that already
+says `[EMAIL_1]` → the result has nothing new to mask, and the `tool_result` path the scenario exists
+for is never exercised. **Fix (2026-07-18):** put the PII in a **table**, not the text. A synthetic
+`cc09_customers` (one row: email/phone/ssn/card/iban/secret) is created out-of-band by
+`fixtures/cc09-setup.sql`, and the agent runs the **PII-free** `SELECT * FROM cc09_customers`
+(`customer-lookup.sql` is now exactly that). The available SQL MCP servers pointed only at real
+corporate Oracle DBs (we did **not** query real tables — real-PII risk), so the owner stood up a
+throwaway **SQLite** DB for the `python-sql` server (absolute-path connection, so the setup session and
+the CC session hit the same file). **Run ON, verified:** the client saw
+`[EMAIL_2]/[PHONE_1]/[SSN_1]/[CARD_1]/[IBAN_1]/[SECRET_1]`, and DBG-02 on the outbound log returned
+**0** for all six raw values and every PII pattern. So an **MCP tool result** — a path the proxy never
+sees coming — is masked like any other. (The raw row does appear in Claude Code's *local* tool-output
+pane; that is the MCP tool's local return, which never transits the proxy — only the re-send to the
+model does, and that left masked.) TESTING / MANUAL_VERIFICATION / the two fixtures updated to match.
 
 **Bottom line for `1.0.0`:** the privacy property held on every turn that ran, including the fail-closed
-block. Two items remain before the battery closes: **fix CC-08's non-convergence**, and **run CC-09**
-against a synthetic table.
+block and the MCP tool-result path. **8/9 leak-clean; one item remains before the battery closes: fix
+CC-08's non-convergence.**
 
 ## 2026-07-17 — `NER_POOL_SIZE` default flips 2 → 1 (the personal shape becomes the default)
 

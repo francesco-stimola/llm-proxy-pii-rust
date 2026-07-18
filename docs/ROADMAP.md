@@ -695,9 +695,9 @@ DEVLOG 2026-07-16 → *M7 implementation plan*; start at S0.**
   > file and summarise it, format this contact as JSON, run this query. Which is *also* what real
   > Claude Code traffic looks like — so the rewrite makes the battery both runnable **and** more
   > representative. CC-03/04/06/09 are already this shape; the chat-only ones are not.
-- [ ] **Re-run the CC battery** — **live run 2026-07-18 (DEVLOG): 7/9 leak-clean at the `pool=1`
-  default** (CC-01…CC-07; ~41 forwarded requests, DBG-02 = 0 throughout, incl. all 3 secrets in CC-06).
-  **Two items remain before it closes — the last things between here and `1.0.0`:**
+- [ ] **Re-run the CC battery** — **live run 2026-07-18 (DEVLOG): 8/9 leak-clean at the `pool=1`
+  default** (CC-01…CC-07 + CC-09; DBG-02 = 0 throughout, incl. all 3 secrets in CC-06 and the MCP
+  tool-result in CC-09). **One item remains before it closes — the last thing between here and `1.0.0`:**
   - [ ] **Fix CC-08's non-convergence.** The long-reminder-list turn hit a **fail-closed 400** ("masking
     did not reach a fixpoint in 4 passes"). The guard fired **correctly** — blocked before forwarding,
     zero leak (`anonymizer.rs::mask_all`, `MAX_MASK_PASSES=4`, M4-R20) — but masking that *can't
@@ -707,11 +707,13 @@ DEVLOG 2026-07-16 → *M7 implementation plan*; start at S0.**
     and the failing content isn't logged (by design). Plan: a *value-free* per-pass kind/count log in
     `mask_all` → re-run CC-08 → pin the culprit kind → fix (likely protect placeholders from re-detection)
     + regression test.
-  - [ ] **Run CC-09 against a synthetic table.** `customer-lookup.sql` carries PII as **literals in the
-    query text**, so reading it masks them *before* execution — the `tool_result` path it exists for never
-    runs. Fix: a synthetic table + PII-free `SELECT * FROM …` (PII in the *result*, not the *text*). The
-    SQL MCP servers point only at real corporate Oracle DBs (no synthetic one; we do **not** query real
-    tables); the owner is configuring a throwaway DB. Table-free alt: run the `.sql` by path via SQLcl `@`.
+  - [x] **CC-09 — done, leak-clean (2026-07-18).** The `tool_result` masking test. The original
+    `customer-lookup.sql` carried PII as **literals in the query text**, so reading it masked them before
+    execution — the path it exists for never ran. Fixed: `fixtures/cc09-setup.sql` creates a synthetic
+    `cc09_customers` (out-of-band, throwaway SQLite via the `python-sql` MCP server), and the agent runs
+    the PII-free `SELECT * FROM cc09_customers` (`customer-lookup.sql` is now that). Verified: client saw
+    `[EMAIL_2]/[PHONE_1]/[SSN_1]/[CARD_1]/[IBAN_1]/[SECRET_1]`, DBG-02 = 0 on all six raw values. TESTING /
+    MANUAL_VERIFICATION / the two fixtures updated to match.
   It needs a human at the keyboard with a live key and a real Claude Code — this environment has neither,
   so it cannot be automated away. Procedure: [`MANUAL_VERIFICATION.md`](MANUAL_VERIFICATION.md);
   **`NER_REQUIRED=1` is non-negotiable** (it is what makes a silently structured-only run fatal — the

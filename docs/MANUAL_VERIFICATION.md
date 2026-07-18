@@ -170,8 +170,11 @@ the client gets restored (OFF) — the full chain, not two independently-plausib
   Confirm there is **no** `forwarding masked request body` line for that turn. But masking that cannot
   converge on an ordinary input is a real *availability* defect — capture the scenario and diagnose
   (CC-08 hit this on 2026-07-18; see DEVLOG and ROADMAP → *Re-run the CC battery*).
-- **CC-09 note — the fixture masks itself.** `customer-lookup.sql` carries the PII as **literals in the
-  query text**, so *reading* the file masks them before the query ever runs, and the `tool_result` path
-  the scenario exists for is never exercised. Run the `.sql` **by path** (SQLcl `@`, so the text never
-  reaches the LLM) **or** query a **synthetic table** with a PII-free `SELECT * FROM …` (PII in the
-  *result*, not the *text*). Never point this at a real table — synthetic data only.
+- **CC-09 — the query text must be PII-free.** The original `SELECT '…' FROM DUAL` carried the values as
+  **literals in the query text**, so *reading* the `.sql` masked them before the query ran and the
+  `tool_result` path was never exercised. **Fixed 2026-07-18:** run `fixtures/cc09-setup.sql` once,
+  **out-of-band** (a local SQLite file is enough — the `python-sql` MCP server takes an absolute-path
+  `sqlite` connection), to create a synthetic `cc09_customers`; then the agent runs the PII-free
+  `SELECT * FROM cc09_customers` (that is now `customer-lookup.sql`). The PII rides in the **result**,
+  not the **text**. Never point this at a real table — synthetic data only. Verified leak-clean
+  2026-07-18 (DBG-02 = 0 on all six values).
