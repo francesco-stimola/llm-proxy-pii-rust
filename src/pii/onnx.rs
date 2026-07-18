@@ -595,16 +595,31 @@ mod thread_tests {
         // concurrency 1), so the default matches the pre-M7 *thread count* — the case where M7
         // delivers nothing — **only on a single-core box**. From two cores up it already adds
         // threads a lone request can use.
-        assert_eq!(resolve_pool_and_intra(None, None, 1), (DEFAULT_POOL_SIZE, 1)); // the only no-op
-        assert_eq!(resolve_pool_and_intra(None, None, 2), (DEFAULT_POOL_SIZE, 2));
-        assert_eq!(resolve_pool_and_intra(None, None, 3), (DEFAULT_POOL_SIZE, 3));
-        assert_eq!(resolve_pool_and_intra(None, None, 4), (DEFAULT_POOL_SIZE, 4));
+        assert_eq!(
+            resolve_pool_and_intra(None, None, 1),
+            (DEFAULT_POOL_SIZE, 1)
+        ); // the only no-op
+        assert_eq!(
+            resolve_pool_and_intra(None, None, 2),
+            (DEFAULT_POOL_SIZE, 2)
+        );
+        assert_eq!(
+            resolve_pool_and_intra(None, None, 3),
+            (DEFAULT_POOL_SIZE, 3)
+        );
+        assert_eq!(
+            resolve_pool_and_intra(None, None, 4),
+            (DEFAULT_POOL_SIZE, 4)
+        );
         // The corollary worth pinning: the thread count — and so the speedup — **scales with the
         // box**, so a claim like "~2x faster" is a claim about a 12-thread machine, not a universal
         // one. `tests/m7_latency.rs` still skips its ratio guard below 4 cores, but for a *different*
         // reason now (M7.1): not "ratio 1.0 by construction" (true only at 1 core here), but that
         // the few-thread shapes below that are too thread-poor to clear the 1.5x floor reliably.
-        assert_eq!(resolve_pool_and_intra(None, None, 12), (DEFAULT_POOL_SIZE, 12));
+        assert_eq!(
+            resolve_pool_and_intra(None, None, 12),
+            (DEFAULT_POOL_SIZE, 12)
+        );
     }
 
     #[test]

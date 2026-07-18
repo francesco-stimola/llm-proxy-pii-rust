@@ -141,7 +141,10 @@ impl Vault {
         }
         // The passes ran out having masked real PII on every one of them, so we do NOT know
         // `current` is clean. Confirm it with `redetect` (M4-R20) — and block if it isn't.
-        let remaining = keep_maskable(detector.redetect(&current)?, &mut placeholder_tags_suppressed);
+        let remaining = keep_maskable(
+            detector.redetect(&current)?,
+            &mut placeholder_tags_suppressed,
+        );
         if remaining.is_empty() {
             note_suppressed_placeholders(placeholder_tags_suppressed);
             return Ok(current);

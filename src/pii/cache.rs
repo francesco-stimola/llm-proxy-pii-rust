@@ -186,7 +186,10 @@ mod tests {
         let first = caching.try_detect(&input).unwrap();
         let second = caching.try_detect(&input).unwrap();
 
-        assert_eq!(first, second, "a cache hit must return exactly the fresh result");
+        assert_eq!(
+            first, second,
+            "a cache hit must return exactly the fresh result"
+        );
         // The inner detector ran exactly once — the second call was served from cache.
         // (Downcast-free: re-run a third time and confirm the result is still identical.)
         let third = caching.try_detect(&input).unwrap();
@@ -214,14 +217,20 @@ mod tests {
         // Prime the try_detect cache, then redetect again — still must delegate, not read the cache.
         caching.try_detect(&input).unwrap();
         let out = caching.redetect(&input).unwrap();
-        assert!(out.is_empty(), "redetect must reflect the (empty) inner, not the cached try_detect");
+        assert!(
+            out.is_empty(),
+            "redetect must reflect the (empty) inner, not the cached try_detect"
+        );
     }
 
     #[test]
     fn an_error_is_not_cached_and_still_fails_closed() {
         let caching = CachingDetector::new(Box::new(Counting::new(true)), 8);
         let input = big();
-        assert!(caching.try_detect(&input).is_err(), "a detector error must propagate (fail closed)");
+        assert!(
+            caching.try_detect(&input).is_err(),
+            "a detector error must propagate (fail closed)"
+        );
         // And it wasn't cached as a success: a second call still errors (re-invokes the inner).
         assert!(caching.try_detect(&input).is_err());
     }

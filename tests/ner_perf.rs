@@ -395,9 +395,12 @@ fn m5_r4_the_ner_treats_placeholders_as_inert() {
 #[ignore]
 fn m7_s4_dense_org_names_converge_instead_of_400() {
     let composite = llm_proxy_pii_rust::pii::composite::CompositeDetector::new(vec![
-        Box::new(llm_proxy_pii_rust::pii::recognizers::StructuredRecognizers::with_locales(
-            &["it".to_string(), "us".to_string()],
-        )),
+        Box::new(
+            llm_proxy_pii_rust::pii::recognizers::StructuredRecognizers::with_locales(&[
+                "it".to_string(),
+                "us".to_string(),
+            ]),
+        ),
         Box::new(load_detector()),
     ]);
     // The exact shape the live 400s came from: dense product/org names, scaled well past the

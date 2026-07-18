@@ -463,7 +463,11 @@ fn bar_shapes() -> Vec<(&'static str, usize, usize)> {
     let (default_pool, default_intra) = resolve_pool_and_intra(None, None, cores);
     let (shared_pool, shared_intra) = resolve_pool_and_intra(Some("2"), None, cores);
     vec![
-        ("default / personal (NER_POOL_SIZE unset)", default_pool, default_intra),
+        (
+            "default / personal (NER_POOL_SIZE unset)",
+            default_pool,
+            default_intra,
+        ),
         ("centralized (NER_POOL_SIZE=2)", shared_pool, shared_intra),
     ]
 }
