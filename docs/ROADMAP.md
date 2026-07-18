@@ -701,7 +701,7 @@ DEVLOG 2026-07-16 → *M7 implementation plan*; start at S0.**
     ~10 offline reconstructions against the production composite (placeholder-dense fields, the raw CSV,
     the chunked path) all converge in ≤1 pass; the trigger is content-specific to that one session and
     stays unpinned **by choice**. Resolution (owner's call): **placeholder inertness now enforced *by
-    construction*** — `mask_all`'s `detect_maskable` drops any detection that is one of our own `[KIND_N]`
+    construction*** — `mask_all`'s `keep_maskable` drops any detection that is one of our own `[KIND_N]`
     tokens, so the fixpoint converges regardless of the NER (M5-R4 upgraded from empirical to algorithmic;
     the `m5_r4` test stays as a model-swap canary) — **plus a value-free non-convergence diagnostic**
     (per-pass kind tally + residue kinds + `placeholder_tags_suppressed`) so any recurrence names its own
@@ -926,8 +926,8 @@ commit leaving an earlier claim stale.
 
 | ID | Title | Sev | Status |
 |---|---|---|---|
-| [M7-R22](reviews/M7.md#m7-r22) | S4's `detect_maskable` → `keep_maskable` rename left a broken intra-doc link in source + four current-design references (ARCHITECTURE / TESTING ×2 / ROADMAP) naming the old symbol | docs | [ ] |
-| [M7-R23](reviews/M7.md#m7-r23) | S4 keeps the NER out of every masked pass, so M7-R21's runtime `placeholder_tags_suppressed` canary can't observe a filter-leaning *idempotent* NER (the GLiNER case the docs cite); FC-08 only passes on a non-idempotent fake S4 forbids; `m5_r4` is the durable canary | observ. | [ ] |
+| [M7-R22](reviews/M7.md#m7-r22) | S4's `detect_maskable` → `keep_maskable` rename left a broken intra-doc link in source + four current-design references (ARCHITECTURE / TESTING ×2 / ROADMAP) naming the old symbol | docs | [x] |
+| [M7-R23](reviews/M7.md#m7-r23) | S4 keeps the NER out of every masked pass, so M7-R21's runtime `placeholder_tags_suppressed` canary can't observe a filter-leaning *idempotent* NER (the GLiNER case the docs cite); FC-08 only passes on a non-idempotent fake S4 forbids; `m5_r4` is the durable canary | observ. | [x] |
 
 <a id="m71"></a>
 ## M7.1 — system-prompt cache (S3) & the fixpoint NER fix (S4) ✅

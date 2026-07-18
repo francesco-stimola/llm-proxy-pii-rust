@@ -316,7 +316,7 @@ asserts the value is still masked and round-trips, so a "fix" that buys speed wi
   inertness by construction.** A `CompositeDetector` pairs the real recognizers (which mint `[EMAIL_1]`)
   with a `TagsPlaceholders` detector that re-tags every `[KIND_N]` as a `Person` — the exact NER pathology
   that would loop `mask_all` to a 400. `mask_all` must still converge (`"mail bob@test.com"` → `"mail
-  [EMAIL_1]"`, restored intact), because `detect_maskable` drops the placeholder detections before masking.
+  [EMAIL_1]"`, restored intact), because `keep_maskable` drops the placeholder detections before masking.
   The unit `is_placeholder_token_matches_only_our_own_tokens` pins the filter's boundary: our tokens (incl.
   the tolerant `[email-3]`, `[ PERSON 2 ]`) match; a foreign `[TODO_1]`, a partial match, two tokens, and
   real PII do **not** — so it can never drop a genuine value.
@@ -324,9 +324,11 @@ asserts the value is still masked and round-trips, so a "fix" that buys speed wi
   `converging_mask_emits_the_value_free_suppression_canary` runs the FC-07 composite (which suppresses a
   re-tagged placeholder) on a *converging* input and asserts the `debug!` fires carrying
   `placeholder_tags_suppressed` and **no** raw value; `a_clean_convergence_stays_silent` asserts a no-
-  suppression run emits nothing. Together they pin that a filter-leaning model is visible in ordinary
-  operation (not only when it 400s), value-free — the runtime half of the model-swap canary whose
-  compile-time half is NER-INERT-01.
+  suppression run emits nothing. Together they pin that the counter is **value-free** and fires on the
+  converging path whenever a detector tags placeholder-shaped text. **Post-S4 caveat (M7-R23):** since the
+  NER runs only on pass 0, this counter can *not* observe a model re-tagging masking's own output — it
+  reflects only placeholder-shaped text already in the **raw field** (e.g. a client echoing placeholders in
+  Run ON). The durable model-swap canary is **NER-INERT-01**, which runs the NER directly on placeholder text.
 - FC-09 — **S4: the NER runs only on pass 0** (`src/pii/anonymizer.rs`, CC-05/CC-08). A `Fragmenter` fake
   models the sub-word fragmentation the real NER does (tags the first alphabetic char → masking exposes the
   next, forever). `s4_a_re_running_fragmenter_exhausts_the_bound` (idempotent=false → the default
@@ -702,16 +704,17 @@ its shape is **asserted**, not assumed.
 - **NER-INERT-01** *(live, `--features onnx`, `#[ignore]`d)* — `m5_r4_the_ner_treats_placeholders_as_inert`
   (`tests/ner_perf.rs`, M5-R4). **Now belt-and-braces, not the sole guarantee.** `Vault::mask_all` masks to
   a fixpoint; placeholder inertness — the reason it converges — is proved **by construction** for the regex
-  recognizers, and since CC-08 is **enforced by construction for the NER too**: `detect_maskable` drops any
+  recognizers, and since CC-08 is **enforced by construction for the NER too**: `keep_maskable` drops any
   detection that is one of our own `[KIND_N]` tokens (FC-07), so a model that tags `[PERSON_1]` can no
   longer stall the fixpoint. This test still asserts XLM-R tags **zero** entities across a 3 040-byte
   placeholder-only field — large enough to exercise the **chunked** path — but its role shifted from *the*
-  safety proof to a **model-swap canary**: **GLiNER** (Backlog) is *zero-shot, open-label, context-driven*
-  and could read `Contact [PERSON_1] at [ORG_1]` and tag both; when a model does, the filter absorbs it and
-  the `placeholder_tags_suppressed` counter makes it visible — at `debug` on the converging path
-  (`note_suppressed_placeholders`) and in the fail-closed `warn!` if it also can't converge (M7-R21). This
-  test is the **compile-time** half of that canary — run it on a swap to know **whether** the model leans on
-  the filter, not because correctness depends on it.
+  safety proof to **the model-swap canary**: **GLiNER** (Backlog) is *zero-shot, open-label, context-driven*
+  and could read `Contact [PERSON_1] at [ORG_1]` and tag both — this test runs the NER **directly** on
+  placeholder text and catches exactly that. Run it on a swap to know **whether** the model leans on the
+  filter; correctness never depends on it (S4 converges the fixpoint regardless). **Post-S4 (M7-R23):** the
+  runtime `placeholder_tags_suppressed` counter (FC-08) is *not* a substitute — the NER runs only on pass 0,
+  so it can't observe a model re-tagging masking's own output; it only flags placeholder-shaped text already
+  in the raw field. This test is that canary; the counter is a weaker, separate signal.
 - **MSRV-01** *(CI)* — the `msrv` job (`.github/workflows/ci.yml`, M5-R5) **builds** the crate on the
   declared floor, **1.89**, with `--features onnx`. Before this, `rust-version` was a claim nothing
   checked — and it was **false**: the declared `1.82` could not even parse the dependency tree.

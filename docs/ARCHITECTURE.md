@@ -153,7 +153,7 @@ shrinks the un-masked text. The round-trip stays exact — every pass records ra
 > and the request would **400** — fail-*closed* (M4-R20), so **never a leak**, but a hard availability
 > failure on ordinary input.
 >
-> So the loop closes that door itself: `detect_maskable` **drops any detection that is exactly one of our
+> So the loop closes that door itself: `keep_maskable` **drops any detection that is exactly one of our
 > own `[KIND_N]` tokens** — a real value can never take that shape — before it is masked. Every surviving
 > detection is then genuine PII, masking genuine PII strictly shrinks the raw text, and the fixpoint
 > converges **regardless of the NER**. Placeholder inertness is now a property of the *algorithm*, not of
@@ -161,13 +161,14 @@ shrinks the un-masked text. The round-trip stays exact — every pass records ra
 >
 > The shipped model doesn't even try — XLM-R int8 tags **zero** entities on placeholder-only text
 > (`tests/ner_perf.rs`, `m5_r4_the_ner_treats_placeholders_as_inert`) — but that test is now
-> **belt-and-braces**, not the sole guarantee. It still earns its keep as a model-swap canary: the
-> Backlog's successor is **GLiNER**, a *zero-shot, open-label, **context**-driven* extractor that could
-> well look at `Contact [PERSON_1] at [ORG_1]` and tag both. If it does, the filter absorbs it instead of
-> 400-ing — and it is **visible in the logs either way** (M7-R21): a value-free `debug!` counts the drops
-> on the **converging** path (`placeholder_tags_suppressed`, via `note_suppressed_placeholders`), and the
-> fail-closed `warn!` carries the same count if the request *also* can't converge. So a model that starts
-> leaning on the filter shows up in ordinary operation, not only when it 400s.
+> **belt-and-braces**, not the sole guarantee, and it is the **durable model-swap canary**. The Backlog's
+> successor is **GLiNER**, a *zero-shot, open-label, **context**-driven* extractor that could well look at
+> `Contact [PERSON_1] at [ORG_1]` and tag both; `m5_r4` runs the NER **directly** on placeholder text and
+> catches exactly that, independent of everything else. (The runtime `placeholder_tags_suppressed` counter
+> is a *weaker* signal since **S4**: the NER runs only on pass 0, so it can never re-tag masking's *own*
+> output — the counter fires only when a detector tags placeholder-shaped text already **in the raw field**,
+> e.g. a client echoing placeholders in Run ON. Useful, but it is not the GLiNER canary — the test is,
+> M7-R23.)
 >
 > M5 is also what made this *reachable at scale*: before chunking, a field over ~500 tokens never reached
 > the NER at all (it errored). Chunking now routes exactly the large, placeholder-dense fields through it.

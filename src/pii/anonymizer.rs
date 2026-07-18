@@ -96,12 +96,13 @@ impl Vault {
     /// dense system prompt's NER fragments needed >4 passes and 400'd. It stays fail-closed regardless.)
     ///
     /// On that branch it also logs a **value-free** diagnostic — the per-pass kind tally, the
-    /// residue's kinds, and `placeholder_tags_suppressed`, a count of any placeholder tokens the
-    /// detector tried to re-tag ([`keep_maskable`] now absorbs them). Kinds and counts only,
-    /// never the offending text; it is the only signal there is, since fail-closed blocks *before*
-    /// the forward-trace that would otherwise show what didn't settle. The **converging** path
-    /// carries the same canary at `debug` via [`note_suppressed_placeholders`] (M7-R21), so a
-    /// model that leans on the filter *without* 400-ing is still visible in the logs.
+    /// residue's kinds, and `placeholder_tags_suppressed`, a count of any placeholder-shaped tokens
+    /// [`keep_maskable`] dropped. Kinds and counts only, never the offending text; it is the only
+    /// signal there is, since fail-closed blocks *before* the forward-trace that would otherwise show
+    /// what didn't settle. The **converging** path carries that count at `debug` too, via
+    /// [`note_suppressed_placeholders`]. (Note, M7-R23: since **S4** the NER runs only on pass 0, so
+    /// this counts placeholder-shaped text already in the *raw* field — a client echoing placeholders
+    /// — never a model re-tagging masking's own output. The model-swap canary is the `m5_r4` test.)
     ///
     /// The round-trip stays exact: each pass records raw value → placeholder, and
     /// [`demask`](Self::demask) restores every placeholder in one tolerant pass.
@@ -115,9 +116,10 @@ impl Vault {
         // non-convergence on the fail-closed branch below. Value-free: kinds and counts, never
         // the text — the granularity `Config`/`Confidence` already log at.
         let mut per_pass: Vec<Vec<(&'static str, usize)>> = Vec::new();
-        // Model-behaviour canary: how many detections `keep_maskable` dropped as our own
-        // placeholder tokens. Zero for the shipped NER; a non-zero value after a model swap is
-        // the tell that inertness has started leaning on the filter rather than the model.
+        // Count of placeholder-shaped tokens `keep_maskable` dropped. Zero for the shipped NER.
+        // Since S4 the NER runs only on pass 0, so this counts placeholder-shaped text already in
+        // the raw field (a client echoing placeholders), not a model re-tagging our output (M7-R23).
+        // Rides the fail-closed diagnostic below and a converging-path `debug` note.
         let mut placeholder_tags_suppressed = 0usize;
         for pass in 0..MAX_MASK_PASSES {
             // Pass 0 runs the whole detector; later passes run only `redetect` — the detectors
@@ -339,12 +341,13 @@ fn keep_maskable(entities: Vec<PiiEntity>, suppressed: &mut usize) -> Vec<PiiEnt
     maskable
 }
 
-/// The **runtime half** of the placeholder-inertness model-swap canary (M7-R21). When masking
-/// *converges*, note — value-free, at `debug` — that the detector handed back some of our own
-/// placeholders which [`detect_maskable`] dropped. Silent in the shipped case (`suppressed == 0`
-/// for XLM-R int8), so it only ever speaks when a swapped-in model has started leaning on the
-/// filter *without* 400-ing, the one path the fail-closed `warn!` (its other half) can't see.
-/// The compile-time half stays `tests/ner_perf.rs::m5_r4_the_ner_treats_placeholders_as_inert`.
+/// Value-free `debug` note (M7-R21): when masking *converges*, record that some detector handed back a
+/// placeholder-shaped token that [`keep_maskable`] dropped. Silent in the shipped case
+/// (`suppressed == 0` for XLM-R int8). Since **S4** the NER runs only on pass 0, so this counts
+/// placeholder-shaped text already in the *raw* field (e.g. a client echoing placeholders in Run ON),
+/// **not** a model re-tagging masking's own output — that can no longer happen (M7-R23). The
+/// model-swap canary is `tests/ner_perf.rs::m5_r4_the_ner_treats_placeholders_as_inert`, which runs
+/// the NER directly on placeholder text.
 fn note_suppressed_placeholders(suppressed: usize) {
     if suppressed > 0 {
         tracing::debug!(
