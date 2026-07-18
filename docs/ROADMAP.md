@@ -910,6 +910,25 @@ branch, so the docs' "makes a filter-leaning model visible" claim doesn't hold i
 |---|---|---|---|
 | [M7-R21](reviews/M7.md#m7-r21) | `placeholder_tags_suppressed` is logged only on the fail-closed branch — the "makes a filter-leaning model visible" claim (ARCHITECTURE / TESTING NER-INERT-01) is unsupported in the converging happy path; the `m5_r4` test is the real canary | observ. | [x] |
 
+**Round 9 ([2026-07-18](reviews/M7.md#review-9)) — M7.1 landing (S3 cache + S4 fixpoint NER fix).**
+Verified independently (116 onnx / 97 default lib green, the S3 e2e among 15 `proxy_e2e`, `clippy-onnx`
+clean; the live `m7_s4_…converge_instead_of_400` + `m5_r4` inertness driven against the real cached
+XLM-R). **Both features are fail-closed-sound and I could not break either.** S3: `try_detect` is a pure
+function keyed on the whole input, spans index the same bytes on a hit, the two-generation map is bounded
+to `2·cap`, the `if let` lock guard drops before the re-lock (no deadlock) and detection runs off-lock
+(no poisoning) — a hit can never mask less. S4: the structured recognizers run on **every** pass and the
+M4-R20 confirm, so the fail-closed layer's block-on-non-convergence guarantee is intact; masking can
+expose only *structured* PII (never a name), so dropping the NER after pass 0 is a **recall** call inside
+the layer that owns recall, and `NER_REQUIRED` (a *failure* switch, not a recall promise) is unweakened;
+`FailOpen::redetect` correctly delegates so a wrapped NER stays idempotent. No leak, no fail-open, no
+over-mask or determinism regression. **Two low-severity docs/observability findings**, each a later
+commit leaving an earlier claim stale.
+
+| ID | Title | Sev | Status |
+|---|---|---|---|
+| [M7-R22](reviews/M7.md#m7-r22) | S4's `detect_maskable` → `keep_maskable` rename left a broken intra-doc link in source + four current-design references (ARCHITECTURE / TESTING ×2 / ROADMAP) naming the old symbol | docs | [ ] |
+| [M7-R23](reviews/M7.md#m7-r23) | S4 keeps the NER out of every masked pass, so M7-R21's runtime `placeholder_tags_suppressed` canary can't observe a filter-leaning *idempotent* NER (the GLiNER case the docs cite); FC-08 only passes on a non-idempotent fake S4 forbids; `m5_r4` is the durable canary | observ. | [ ] |
+
 <a id="m71"></a>
 ## M7.1 — system-prompt cache (S3) & the fixpoint NER fix (S4) ✅
 
