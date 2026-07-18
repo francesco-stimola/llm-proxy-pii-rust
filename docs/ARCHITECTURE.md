@@ -147,9 +147,10 @@ shrinks the un-masked text. The round-trip stays exact — every pass records ra
 > **belt-and-braces**, not the sole guarantee. It still earns its keep as a model-swap canary: the
 > Backlog's successor is **GLiNER**, a *zero-shot, open-label, **context**-driven* extractor that could
 > well look at `Contact [PERSON_1] at [ORG_1]` and tag both. If it does, the filter absorbs it instead of
-> 400-ing — and the non-convergence diagnostic counts exactly that (`placeholder_tags_suppressed` in the
-> fail-closed log), so a model that starts leaning on the filter is **visible before it becomes a mystery
-> 400**.
+> 400-ing — and it is **visible in the logs either way** (M7-R21): a value-free `debug!` counts the drops
+> on the **converging** path (`placeholder_tags_suppressed`, via `note_suppressed_placeholders`), and the
+> fail-closed `warn!` carries the same count if the request *also* can't converge. So a model that starts
+> leaning on the filter shows up in ordinary operation, not only when it 400s.
 >
 > M5 is also what made this *reachable at scale*: before chunking, a field over ~500 tokens never reached
 > the NER at all (it errored). Chunking now routes exactly the large, placeholder-dense fields through it.

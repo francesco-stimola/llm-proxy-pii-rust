@@ -93,10 +93,12 @@ impl Vault {
     /// passes — this is a latent path, and it stays fail-closed anyway.)
     ///
     /// On that branch it also logs a **value-free** diagnostic — the per-pass kind tally, the
-    /// residue's kinds, and a count of any placeholder tokens the detector tried to re-tag (a
-    /// model-swap canary, since [`detect_maskable`] now absorbs them). Kinds and counts only,
-    /// never the offending text; it is the only signal there is, since fail-closed blocks
-    /// *before* the forward-trace that would otherwise show what didn't settle.
+    /// residue's kinds, and `placeholder_tags_suppressed`, a count of any placeholder tokens the
+    /// detector tried to re-tag ([`detect_maskable`] now absorbs them). Kinds and counts only,
+    /// never the offending text; it is the only signal there is, since fail-closed blocks *before*
+    /// the forward-trace that would otherwise show what didn't settle. The **converging** path
+    /// carries the same canary at `debug` via [`note_suppressed_placeholders`] (M7-R21), so a
+    /// model that leans on the filter *without* 400-ing is still visible in the logs.
     ///
     /// The round-trip stays exact: each pass records raw value → placeholder, and
     /// [`demask`](Self::demask) restores every placeholder in one tolerant pass.
@@ -117,6 +119,7 @@ impl Vault {
         for _ in 0..MAX_MASK_PASSES {
             let entities = detect_maskable(detector, &current, &mut placeholder_tags_suppressed)?;
             if entities.is_empty() {
+                note_suppressed_placeholders(placeholder_tags_suppressed);
                 return Ok(current);
             }
             per_pass.push(kind_histogram(&entities));
@@ -126,6 +129,7 @@ impl Vault {
         // `current` is clean. Confirm it (M4-R20) — and block if it isn't.
         let remaining = detect_maskable(detector, &current, &mut placeholder_tags_suppressed)?;
         if remaining.is_empty() {
+            note_suppressed_placeholders(placeholder_tags_suppressed);
             return Ok(current);
         }
         // Non-convergence, diagnosed without ever logging a value (M4-R20). Placeholders are
@@ -325,6 +329,21 @@ fn detect_maskable(
     Ok(maskable)
 }
 
+/// The **runtime half** of the placeholder-inertness model-swap canary (M7-R21). When masking
+/// *converges*, note — value-free, at `debug` — that the detector handed back some of our own
+/// placeholders which [`detect_maskable`] dropped. Silent in the shipped case (`suppressed == 0`
+/// for XLM-R int8), so it only ever speaks when a swapped-in model has started leaning on the
+/// filter *without* 400-ing, the one path the fail-closed `warn!` (its other half) can't see.
+/// The compile-time half stays `tests/ner_perf.rs::m5_r4_the_ner_treats_placeholders_as_inert`.
+fn note_suppressed_placeholders(suppressed: usize) {
+    if suppressed > 0 {
+        tracing::debug!(
+            placeholder_tags_suppressed = suppressed,
+            "detector tagged our own placeholders; dropped as inert (masking still converged)"
+        );
+    }
+}
+
 /// A value-free tally of one detection pass: `(kind-label, count)` sorted by label for
 /// stable output. Used **only** to explain a non-convergence in [`Vault::mask_all`] — labels
 /// and counts carry no PII (the never-log-raw-values rule), and the sort keeps the log line
@@ -352,10 +371,48 @@ fn json_string_body(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{Arc, Mutex};
+
+    use tracing_subscriber::fmt::MakeWriter;
+
     use super::*;
     use crate::pii::composite::CompositeDetector;
     use crate::pii::recognizers::StructuredRecognizers;
     use crate::pii::{Confidence, PiiDetector, PiiEntity, PiiKind};
+
+    /// Capture this crate's `debug`-and-up logs emitted while `f` runs, as one string. A
+    /// **scoped** subscriber (`with_default`, thread-local) so it never fights the process-global
+    /// one `tests/log_safety.rs` installs — different binary, and different mechanism regardless.
+    fn capture_debug_logs(f: impl FnOnce()) -> String {
+        type Buf = Arc<Mutex<Vec<u8>>>;
+        #[derive(Clone)]
+        struct BufMaker(Buf);
+        struct BufSink(Buf);
+        impl std::io::Write for BufSink {
+            fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(data);
+                Ok(data.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        impl<'a> MakeWriter<'a> for BufMaker {
+            type Writer = BufSink;
+            fn make_writer(&'a self) -> Self::Writer {
+                BufSink(self.0.clone())
+            }
+        }
+        let buf: Buf = Arc::new(Mutex::new(Vec::new()));
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::DEBUG)
+            .with_writer(BufMaker(buf.clone()))
+            .with_ansi(false)
+            .finish();
+        tracing::subscriber::with_default(subscriber, f);
+        let bytes = buf.lock().unwrap().clone();
+        String::from_utf8(bytes).unwrap()
+    }
 
     /// Build a vault mapping a `[PERSON_1]` placeholder to a value with a quote.
     fn vault_with_quoted_person(value: &str) -> Vault {
@@ -541,6 +598,50 @@ mod tests {
         assert!(!is_placeholder_token("[TODO_1]"));
         assert!(!is_placeholder_token("see [EMAIL_1] here"));
         assert!(!is_placeholder_token("[EMAIL_1] and [EMAIL_2]"));
+    }
+
+    #[test]
+    fn converging_mask_emits_the_value_free_suppression_canary() {
+        // M7-R21: when a detector re-tags our placeholders but masking still converges, the
+        // runtime canary must surface at `debug` (`note_suppressed_placeholders`) — and, being on
+        // the request path, it must carry no raw value. Without it, a filter-leaning model that
+        // never 400s is invisible until it does.
+        let composite = CompositeDetector::new(vec![
+            Box::new(StructuredRecognizers::new()),
+            Box::new(TagsPlaceholders),
+        ]);
+        let logs = capture_debug_logs(|| {
+            let mut vault = Vault::new();
+            let masked = vault
+                .mask_all("mail bob@test.com", &composite)
+                .expect("converges");
+            assert_eq!(masked, "mail [EMAIL_1]");
+        });
+        assert!(
+            logs.contains("placeholder_tags_suppressed"),
+            "the converging path must emit the suppression canary; logs:\n{logs}"
+        );
+        assert!(
+            !logs.contains("bob@test.com"),
+            "the canary must be value-free; logs:\n{logs}"
+        );
+    }
+
+    #[test]
+    fn a_clean_convergence_stays_silent() {
+        // Nothing re-tagged → nothing suppressed → no canary line. It must not fire spuriously on
+        // the overwhelmingly common case (the shipped model suppresses zero).
+        let detector = StructuredRecognizers::new();
+        let logs = capture_debug_logs(|| {
+            let mut vault = Vault::new();
+            let _ = vault
+                .mask_all("mail bob@test.com", &detector)
+                .expect("converges");
+        });
+        assert!(
+            !logs.contains("placeholder_tags_suppressed"),
+            "a clean convergence must stay silent; logs:\n{logs}"
+        );
     }
 
     #[test]

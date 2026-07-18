@@ -320,6 +320,13 @@ asserts the value is still masked and round-trips, so a "fix" that buys speed wi
   The unit `is_placeholder_token_matches_only_our_own_tokens` pins the filter's boundary: our tokens (incl.
   the tolerant `[email-3]`, `[ PERSON 2 ]`) match; a foreign `[TODO_1]`, a partial match, two tokens, and
   real PII do **not** — so it can never drop a genuine value.
+- FC-08 — the **runtime suppression canary** (M7-R21), log-captured on a **scoped** subscriber:
+  `converging_mask_emits_the_value_free_suppression_canary` runs the FC-07 composite (which suppresses a
+  re-tagged placeholder) on a *converging* input and asserts the `debug!` fires carrying
+  `placeholder_tags_suppressed` and **no** raw value; `a_clean_convergence_stays_silent` asserts a no-
+  suppression run emits nothing. Together they pin that a filter-leaning model is visible in ordinary
+  operation (not only when it 400s), value-free — the runtime half of the model-swap canary whose
+  compile-time half is NER-INERT-01.
 
 ### M5 / M6 — live provider verification
 
@@ -683,8 +690,10 @@ its shape is **asserted**, not assumed.
   placeholder-only field — large enough to exercise the **chunked** path — but its role shifted from *the*
   safety proof to a **model-swap canary**: **GLiNER** (Backlog) is *zero-shot, open-label, context-driven*
   and could read `Contact [PERSON_1] at [ORG_1]` and tag both; when a model does, the filter absorbs it and
-  the fail-closed diagnostic's `placeholder_tags_suppressed` counter makes it visible. A swap should re-run
-  this to know **whether** the model leans on the filter, not because correctness depends on it.
+  the `placeholder_tags_suppressed` counter makes it visible — at `debug` on the converging path
+  (`note_suppressed_placeholders`) and in the fail-closed `warn!` if it also can't converge (M7-R21). This
+  test is the **compile-time** half of that canary — run it on a swap to know **whether** the model leans on
+  the filter, not because correctness depends on it.
 - **MSRV-01** *(CI)* — the `msrv` job (`.github/workflows/ci.yml`, M5-R5) **builds** the crate on the
   declared floor, **1.89**, with `--features onnx`. Before this, `rust-version` was a claim nothing
   checked — and it was **false**: the declared `1.82` could not even parse the dependency tree.

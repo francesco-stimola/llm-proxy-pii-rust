@@ -35,7 +35,7 @@ completion**; findings, counts and closure notes live in each milestone's sectio
 | [M4 — Broad locale & language coverage](#m4) | ✅ complete |
 | [M5 — Integration & performance testing](#m5) | ✅ complete |
 | [**M6 — Native Anthropic `/v1/messages`**](#m6) | ✅ **code-complete**, and **verified live**: a real Claude Code session round-trips through the proxy (2026-07-16) |
-| [**M7 — NER latency**](#m7) | 🔨 **code-complete, review ledger closed** (20 findings / 7 rounds, all closed; code byte-stable since round 3): **≥1.5× faster than pre-M7** (asserted floor; typically ~1.7–2.3×, scales with the box, **not asserted below 4 cores** — a strict no-op only at 1 core since the 2026-07-17 `NER_POOL_SIZE` default flip to `pool=1`). A realistic turn masks in **~4.7 s** at the shipped default on the reference box — **the ~3 s bar was missed; we stopped anyway** ([M7-R12](reviews/M7.md#m7-r12)). **CC battery re-run complete (2026-07-18): 8/9 leak-clean + CC-08's fail-closed 400 resolved** (placeholder inertness by construction + a value-free block diagnostic) |
+| [**M7 — NER latency**](#m7) | 🔨 **code-complete, review ledger closed** (20 findings / 7 rounds, all closed; code byte-stable since round 3): **≥1.5× faster than pre-M7** (asserted floor; typically ~1.7–2.3×, scales with the box, **not asserted below 4 cores** — a strict no-op only at 1 core since the 2026-07-17 `NER_POOL_SIZE` default flip to `pool=1`). A realistic turn masks in **~4.7 s** at the shipped default on the reference box — **the ~3 s bar was missed; we stopped anyway** ([M7-R12](reviews/M7.md#m7-r12)). **CC battery (2026-07-18): masking half done — 8/9 leak-clean + CC-08's fail-closed 400 resolved** (placeholder inertness by construction + a value-free block diagnostic); **the Run OFF half (de-mask) is the one box left** |
 | [First tagged release `1.0.0`](#m6) | ⬜ not started — gated on [M7](#m7)'s battery re-run: the product we advertise must be usable, not just correct |
 
 ---
@@ -695,9 +695,10 @@ DEVLOG 2026-07-16 → *M7 implementation plan*; start at S0.**
   > file and summarise it, format this contact as JSON, run this query. Which is *also* what real
   > Claude Code traffic looks like — so the rewrite makes the battery both runnable **and** more
   > representative. CC-03/04/06/09 are already this shape; the chat-only ones are not.
-- [x] **Re-run the CC battery** — **live run 2026-07-18 (DEVLOG): 8/9 leak-clean at the `pool=1`
+- [ ] **Re-run the CC battery** — **live run 2026-07-18 (DEVLOG): 8/9 leak-clean at the `pool=1`
   default** (CC-01…CC-07 + CC-09; DBG-02 = 0 throughout, incl. all 3 secrets in CC-06 and the MCP
-  tool-result in CC-09), and **CC-08's fail-closed 400 resolved the same day.** Both sub-items closed:
+  tool-result in CC-09), and **CC-08's fail-closed 400 resolved the same day.** The masking (Run ON) half
+  holds; **the Run OFF half is the one thing left** before this closes:
   - [x] **CC-08's non-convergence — resolved (2026-07-18).** The long-reminder-list turn hit a
     **fail-closed 400** ("masking did not reach a fixpoint in 4 passes"): the guard fired **correctly**
     (blocked before forwarding, zero leak), but a 400 on ordinary work is a real availability defect.
@@ -717,6 +718,13 @@ DEVLOG 2026-07-16 → *M7 implementation plan*; start at S0.**
     the PII-free `SELECT * FROM cc09_customers` (`customer-lookup.sql` is now that). Verified: client saw
     `[EMAIL_2]/[PHONE_1]/[SSN_1]/[CARD_1]/[IBAN_1]/[SECRET_1]`, DBG-02 = 0 on all six raw values. TESTING /
     MANUAL_VERIFICATION / the two fixtures updated to match.
+  - [ ] **Complete the Run OFF half.** The 2026-07-18 run proved masking (Run ON) end-to-end, but
+    **CC-03…CC-07 and CC-09 ran ON-only** — so the *de-mask* (client gets the real values restored) is
+    unproven live for those shapes. Per [`MANUAL_VERIFICATION.md`](MANUAL_VERIFICATION.md), each scenario
+    needs **both** postures: ON shows the request left masked, OFF shows the client got it restored — only
+    together do they prove the *same* round-trip. **Left to run OFF:** CC-03, CC-04, CC-05, CC-06, CC-07,
+    CC-09. **CC-08:** both postures, on the **fixed** binary (the `detect_maskable` change touched the
+    masking path). **CC-01 / CC-02:** already OFF+ON, and unaffected — skip.
   It needs a human at the keyboard with a live key and a real Claude Code — this environment has neither,
   so it cannot be automated away. Procedure: [`MANUAL_VERIFICATION.md`](MANUAL_VERIFICATION.md);
   **`NER_REQUIRED=1` is non-negotiable** (it is what makes a silently structured-only run fatal — the
@@ -902,7 +910,7 @@ branch, so the docs' "makes a filter-leaning model visible" claim doesn't hold i
 
 | ID | Title | Sev | Status |
 |---|---|---|---|
-| [M7-R21](reviews/M7.md#m7-r21) | `placeholder_tags_suppressed` is logged only on the fail-closed branch — the "makes a filter-leaning model visible" claim (ARCHITECTURE / TESTING NER-INERT-01) is unsupported in the converging happy path; the `m5_r4` test is the real canary | observ. | [ ] |
+| [M7-R21](reviews/M7.md#m7-r21) | `placeholder_tags_suppressed` is logged only on the fail-closed branch — the "makes a filter-leaning model visible" claim (ARCHITECTURE / TESTING NER-INERT-01) is unsupported in the converging happy path; the `m5_r4` test is the real canary | observ. | [x] |
 
 <a id="backlog"></a>
 ## Backlog — documented, not scheduled
