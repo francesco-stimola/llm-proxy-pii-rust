@@ -888,6 +888,22 @@ claims.
 |---|---|---|---|
 | [M7-R20](reviews/M7.md#m7-r20) | The ROADMAP M7 body still advertises the pre-flip `pool=2` default — "not a trade against the shared-proxy case at all" and "zero below 4 cores" now misdescribe the shipped `pool=1` | docs | [x] |
 
+**Round 8 ([2026-07-18](reviews/M7.md#review-8)) — CC-08's resolution (`6cbd461`): placeholder inertness
+*by construction*.** Verified independently (107 onnx / 88 default lib green, both `clippy` clean; the
+`#[ignore]`d `m5_r4` inertness canary re-run against the **real cached model** — zero entities on a chunked
+placeholder field). **The safety claim holds and I could not break it:** `detect_maskable` decides on
+`entity.text`, and `entity.text == input[entity.span]` for every entity reaching it (NER re-slices in
+`ner_decode`; structured/merged spans re-slice in `overlap::materialize`), so dropping a placeholder-shaped
+detection can never strand real PII — a real value is never bracket-wrapped. The final-confirmation filter
+does not weaken M4-R20 (real residue is never bracket-shaped, so it still blocks); the diagnostic is
+genuinely value-free (labels/counts only). No leak, no fail-open, no round-trip or over-mask regression.
+**One low-severity finding:** the `placeholder_tags_suppressed` canary is emitted only on the fail-closed
+branch, so the docs' "makes a filter-leaning model visible" claim doesn't hold in the converging happy path.
+
+| ID | Title | Sev | Status |
+|---|---|---|---|
+| [M7-R21](reviews/M7.md#m7-r21) | `placeholder_tags_suppressed` is logged only on the fail-closed branch — the "makes a filter-leaning model visible" claim (ARCHITECTURE / TESTING NER-INERT-01) is unsupported in the converging happy path; the `m5_r4` test is the real canary | observ. | [ ] |
+
 <a id="backlog"></a>
 ## Backlog — documented, not scheduled
 
