@@ -3,6 +3,49 @@
 Newest first. One entry per meaningful change — note *what* and *why*, not just
 *what*. This is the running history so context is never lost between sessions.
 
+## 2026-07-18 — CC-08 resolved: placeholder inertness *by construction* + a value-free block diagnostic
+
+**The finding, recapped.** CC-08 (a long reminder-list turn) returned a fail-closed **400** — masking
+could not confirm a fixpoint in `MAX_MASK_PASSES=4`. The guard fired **correctly**: blocked before
+forwarding, **zero leak**. But a 400 on ordinary work is a real *availability* defect, and the 400 carried
+no *reason* — the failing content isn't logged (by design, fail-closed blocks before the forward-trace).
+
+**Diagnosis: the prime suspect was wrong.** The suspected mechanism was the NER tagging one of our own
+`[KIND_N]` placeholders, so each pass re-masks it and the text never shrinks (`anonymizer.rs:75-80`, the
+latent path the code documents). Rebuilt an instrumented proxy and had the owner re-run CC-08: it
+**converged** (fresh session, less accumulated context). Then reproduced offline against the **production
+composite** (structured it+us + the real ONNX NER) over every CC-08-like shape — placeholder-dense fields
+with two-digit indices and mixed kinds in Italian context, the raw `contacts.csv`, and a chunk-triggering
+long field. **All converge in ≤1 pass; the official `m5_r4` inertness test passes.** Across the live re-run
+and ~10 synthetic reconstructions, the 400 **never reproduced**. Conclusion: placeholders are **empirically
+inert for this model** — the suspected cause is *not* what fired. The real trigger is content-specific to
+that one session (an unseen system-prompt/context field, or deep structured nesting > 4 passes), which
+fail-closed handles correctly by design.
+
+**Resolution (owner's call: instrument + harden, don't chase an unpinnable trigger).**
+- **Placeholder inertness is now enforced *by construction*, for every engine.** `Vault::mask_all` runs
+  detection through a new `detect_maskable`, which **drops any detection that is exactly one of our own
+  `[KIND_N]` tokens** (`is_placeholder_token`) before masking — a real value can never take that shape, so
+  this never drops genuine PII. Every surviving detection is real PII, masking real PII strictly shrinks the
+  raw text, so the fixpoint converges **regardless of the NER**. This upgrades M5-R4 from an *empirical
+  model property* to an *algorithm property*; the `m5_r4` NER test stays as **belt-and-braces + a model-swap
+  canary** (it still tells us *whether* a future model — e.g. GLiNER — leans on the filter).
+- **The fail-closed branch now explains itself, value-free.** On non-convergence it logs the **per-pass kind
+  tally** (shrinking = a deep nest that would clear with more passes; stalled = genuine), the **residue's
+  kinds**, and `placeholder_tags_suppressed` (the canary). Kinds and counts only — never the text, which
+  fail-closed never forwards or logs. This turns any *future* recurrence into a pinned cause, which is worth
+  more than a synthetic guess at this one.
+- **Tests:** `mask_all_converges_even_if_a_detector_tags_its_own_placeholders` (a `TagsPlaceholders`
+  detector that re-tags every placeholder — the exact pathology — and `mask_all` still converges),
+  `is_placeholder_token_matches_only_our_own_tokens` (the filter's boundary: our tokens incl. tolerant
+  corruptions in, foreign `[TODO_1]` / partials / real PII out), and `kind_histogram_…is_value_free`.
+  107 onnx lib tests green, `clippy` clean. Invariant promoted to `ARCHITECTURE.md` → *Masking must run to a
+  fixpoint*; catalog in `TESTING.md` (FC-07, NER-INERT-01 reworded).
+
+**Why not a live re-run to confirm?** The fix only *adds* a filter that can never make convergence worse,
+and CC-08 already converged live before it. The privacy property is untouched; the change is covered by
+tests + the reviewer. A live re-run would only re-show convergence.
+
 ## 2026-07-18 — CC battery live run: 8/9 leak-clean, CC-08 the one finding
 
 **Manual verification, the M7 → `1.0.0` gate.** Ran a real Claude Code session through the proxy against
@@ -64,8 +107,8 @@ pane; that is the MCP tool's local return, which never transits the proxy — on
 model does, and that left masked.) TESTING / MANUAL_VERIFICATION / the two fixtures updated to match.
 
 **Bottom line for `1.0.0`:** the privacy property held on every turn that ran, including the fail-closed
-block and the MCP tool-result path. **8/9 leak-clean; one item remains before the battery closes: fix
-CC-08's non-convergence.**
+block and the MCP tool-result path. **8/9 leak-clean; CC-08's non-convergence resolved the same day** —
+see the entry above (placeholder inertness by construction + a value-free block diagnostic).
 
 ## 2026-07-17 — `NER_POOL_SIZE` default flips 2 → 1 (the personal shape becomes the default)
 

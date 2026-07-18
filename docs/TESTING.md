@@ -312,6 +312,14 @@ asserts the value is still masked and round-trips, so a "fix" that buys speed wi
   the fixpoint is **confirmed**, not assumed. Also asserts the error carries **no input text** (DBG-02's
   never-log-raw-PII rule) and that a normally-converging detector still returns `Ok` — so the guard can't
   pass by breaking masking for everyone.
+- FC-07 — `mask_all_converges_even_if_a_detector_tags_its_own_placeholders` (M5-R4 / CC-08): **placeholder
+  inertness by construction.** A `CompositeDetector` pairs the real recognizers (which mint `[EMAIL_1]`)
+  with a `TagsPlaceholders` detector that re-tags every `[KIND_N]` as a `Person` — the exact NER pathology
+  that would loop `mask_all` to a 400. `mask_all` must still converge (`"mail bob@test.com"` → `"mail
+  [EMAIL_1]"`, restored intact), because `detect_maskable` drops the placeholder detections before masking.
+  The unit `is_placeholder_token_matches_only_our_own_tokens` pins the filter's boundary: our tokens (incl.
+  the tolerant `[email-3]`, `[ PERSON 2 ]`) match; a foreign `[TODO_1]`, a partial match, two tokens, and
+  real PII do **not** — so it can never drop a genuine value.
 
 ### M5 / M6 — live provider verification
 
@@ -667,15 +675,16 @@ its shape is **asserted**, not assumed.
   window both chunks (non-vacuity) and stays under the ceiling. `run_and_decode` clamps as a
   last-resort valve; **this is the guard that makes sure the valve never fires.**
 - **NER-INERT-01** *(live, `--features onnx`, `#[ignore]`d)* — `m5_r4_the_ner_treats_placeholders_as_inert`
-  (`tests/ner_perf.rs`, M5-R4). **The check a model swap must not skip.** `Vault::mask_all` masks to a
-  fixpoint, and its convergence proof — *"a placeholder is inert"* — is proved **by construction** only
-  for the regex recognizers. The NER is an ML model under no such constraint: tag `[PERSON_1]` and the
-  text stops shrinking, `MAX_MASK_PASSES` exhausts, and the request **400s** (fail-closed, never a leak,
-  but a hard availability failure on ordinary input). Asserts XLM-R tags **zero** entities across a
-  3 040-byte placeholder-only field — large enough to exercise the **chunked** path, the one M5 newly
-  opened — and that the full hybrid `mask_all` converges on it. Placeholder inertness is therefore an
-  **empirical property of the chosen model**; **GLiNER** (Backlog) is *zero-shot, open-label,
-  context-driven* — exactly the kind that could read `Contact [PERSON_1] at [ORG_1]` and tag both.
+  (`tests/ner_perf.rs`, M5-R4). **Now belt-and-braces, not the sole guarantee.** `Vault::mask_all` masks to
+  a fixpoint; placeholder inertness — the reason it converges — is proved **by construction** for the regex
+  recognizers, and since CC-08 is **enforced by construction for the NER too**: `detect_maskable` drops any
+  detection that is one of our own `[KIND_N]` tokens (FC-07), so a model that tags `[PERSON_1]` can no
+  longer stall the fixpoint. This test still asserts XLM-R tags **zero** entities across a 3 040-byte
+  placeholder-only field — large enough to exercise the **chunked** path — but its role shifted from *the*
+  safety proof to a **model-swap canary**: **GLiNER** (Backlog) is *zero-shot, open-label, context-driven*
+  and could read `Contact [PERSON_1] at [ORG_1]` and tag both; when a model does, the filter absorbs it and
+  the fail-closed diagnostic's `placeholder_tags_suppressed` counter makes it visible. A swap should re-run
+  this to know **whether** the model leans on the filter, not because correctness depends on it.
 - **MSRV-01** *(CI)* — the `msrv` job (`.github/workflows/ci.yml`, M5-R5) **builds** the crate on the
   declared floor, **1.89**, with `--features onnx`. Before this, `rust-version` was a claim nothing
   checked — and it was **false**: the declared `1.82` could not even parse the dependency tree.

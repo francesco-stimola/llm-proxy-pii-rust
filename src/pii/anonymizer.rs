@@ -71,13 +71,17 @@ impl Vault {
     /// digits; `[` / `]` are outside every pattern's character classes), so each pass
     /// strictly shrinks the un-masked text.
     ///
-    /// **That inertness is proved by construction for the recognizers, but only *measured* for the
-    /// NER (M5-R4).** `detector` here is the whole `CompositeDetector`, and an ML model is under no
-    /// such constraint — nothing structurally stops one from tagging `[PERSON_1]` as a `Person`. If
-    /// one did, this loop would never shrink the text and would exhaust its passes into a 400
-    /// (fail-closed, never a leak — see below). It holds for the current model, verified by
-    /// `tests/ner_perf.rs::m5_r4_the_ner_treats_placeholders_as_inert`. **A new NER model must
-    /// re-run that check** — see `ARCHITECTURE.md` → *Masking must run to a fixpoint*.
+    /// **That inertness is enforced by construction for *every* engine (M5-R4, CC-08).** The
+    /// recognizers can't match a placeholder (proved above); an ML model is under no such
+    /// constraint — nothing structurally stops one from tagging `[PERSON_1]` as a `Person`, and if
+    /// a pass re-masked it the text would never shrink and the loop would 400. So this loop no
+    /// longer trusts the model here: [`detect_maskable`] **drops any detection that is exactly one
+    /// of our own `[KIND_N]` tokens** before masking, which a real value can never be. Every
+    /// surviving detection is genuine PII, and masking genuine PII strictly shrinks the raw text,
+    /// so the fixpoint converges *regardless* of the NER. The shipped model doesn't even try —
+    /// `tests/ner_perf.rs::m5_r4_the_ner_treats_placeholders_as_inert` still pins that, now as
+    /// belt-and-braces rather than the sole guarantee (see `ARCHITECTURE.md` → *Masking must run
+    /// to a fixpoint*).
     ///
     /// **Exhausting [`MAX_MASK_PASSES`] fails *closed* (M4-R20).** The bound is a safety
     /// net, not a proof: "each pass strictly shrinks the un-masked text" buys *eventual*
@@ -88,6 +92,12 @@ impl Vault {
     /// privacy proxy must not have. (No input has ever been shown to need more than **2**
     /// passes — this is a latent path, and it stays fail-closed anyway.)
     ///
+    /// On that branch it also logs a **value-free** diagnostic — the per-pass kind tally, the
+    /// residue's kinds, and a count of any placeholder tokens the detector tried to re-tag (a
+    /// model-swap canary, since [`detect_maskable`] now absorbs them). Kinds and counts only,
+    /// never the offending text; it is the only signal there is, since fail-closed blocks
+    /// *before* the forward-trace that would otherwise show what didn't settle.
+    ///
     /// The round-trip stays exact: each pass records raw value → placeholder, and
     /// [`demask`](Self::demask) restores every placeholder in one tolerant pass.
     pub fn mask_all(
@@ -96,21 +106,39 @@ impl Vault {
         detector: &dyn PiiDetector,
     ) -> Result<String, DetectError> {
         let mut current = text.to_string();
+        // Per-pass tally of the **maskable** (real-PII) detections, kept only to explain a
+        // non-convergence on the fail-closed branch below. Value-free: kinds and counts, never
+        // the text — the granularity `Config`/`Confidence` already log at.
+        let mut per_pass: Vec<Vec<(&'static str, usize)>> = Vec::new();
+        // Model-behaviour canary: how many detections `detect_maskable` dropped as our own
+        // placeholder tokens. Zero for the shipped NER; a non-zero value after a model swap is
+        // the tell that inertness has started leaning on the filter rather than the model.
+        let mut placeholder_tags_suppressed = 0usize;
         for _ in 0..MAX_MASK_PASSES {
-            let entities = detector.try_detect(&current)?;
+            let entities = detect_maskable(detector, &current, &mut placeholder_tags_suppressed)?;
             if entities.is_empty() {
                 return Ok(current);
             }
+            per_pass.push(kind_histogram(&entities));
             current = self.mask(&current, &entities);
         }
-        // The passes ran out having masked something on every one of them, so we do NOT
-        // know `current` is clean. Confirm it (M4-R20) — and block if it isn't.
-        if detector.try_detect(&current)?.is_empty() {
+        // The passes ran out having masked real PII on every one of them, so we do NOT know
+        // `current` is clean. Confirm it (M4-R20) — and block if it isn't.
+        let remaining = detect_maskable(detector, &current, &mut placeholder_tags_suppressed)?;
+        if remaining.is_empty() {
             return Ok(current);
         }
-        // Kind-free, value-free: just the fact that we gave up.
+        // Non-convergence, diagnosed without ever logging a value (M4-R20). Placeholders are
+        // inert by construction now (`detect_maskable` drops them), so a residue here is *real*
+        // PII that masking keeps re-exposing: the per-pass tally shows whether its count is
+        // shrinking (a deep structured nest that would clear with more passes) or stalled, and
+        // `placeholder_tags_suppressed` flags a model that has started tagging our own output.
+        let remaining_kinds = kind_histogram(&remaining);
         tracing::warn!(
             passes = MAX_MASK_PASSES,
+            ?per_pass,
+            remaining = ?remaining_kinds,
+            placeholder_tags_suppressed,
             "masking did not reach a fixpoint; blocking the request (fail closed)"
         );
         Err(DetectError {
@@ -257,6 +285,60 @@ fn char_boundary_at_or_after(s: &str, i: usize) -> usize {
     at
 }
 
+/// Whether `text` is **exactly one of our own placeholder tokens** — `[KIND_N]` for a known
+/// [`PiiKind`] label, plus the tolerant corruptions [`PLACEHOLDER_RE`] accepts, and ignoring
+/// surrounding whitespace. Nothing else: a partial match, a foreign label like `[TODO_1]`, or
+/// two tokens in a row all return `false`.
+///
+/// This is the key to placeholder inertness *by construction* (M5-R4): a real PII value can
+/// never take this shape, so [`detect_maskable`] can drop such a detection with no risk of
+/// dropping real PII — see [`Vault::mask_all`].
+fn is_placeholder_token(text: &str) -> bool {
+    let trimmed = text.trim();
+    PLACEHOLDER_RE.captures(trimmed).is_some_and(|caps| {
+        let whole = caps.get(0).expect("group 0 always present");
+        whole.start() == 0
+            && whole.end() == trimmed.len()
+            && super::PiiKind::from_label(&caps[1]).is_some()
+    })
+}
+
+/// Detect PII in `text`, then **drop any detection that is one of our own placeholders**
+/// (see [`is_placeholder_token`]), tallying how many were dropped into `suppressed`.
+///
+/// The recognizers cannot match a placeholder, but an ML NER is under no such constraint, and
+/// one that re-tagged `[PERSON_1]` would keep [`Vault::mask_all`] from ever reaching a fixpoint.
+/// Filtering here makes convergence a property of the algorithm, not of the model.
+fn detect_maskable(
+    detector: &dyn PiiDetector,
+    text: &str,
+    suppressed: &mut usize,
+) -> Result<Vec<PiiEntity>, DetectError> {
+    let mut maskable = Vec::new();
+    for entity in detector.try_detect(text)? {
+        if is_placeholder_token(&entity.text) {
+            *suppressed += 1;
+        } else {
+            maskable.push(entity);
+        }
+    }
+    Ok(maskable)
+}
+
+/// A value-free tally of one detection pass: `(kind-label, count)` sorted by label for
+/// stable output. Used **only** to explain a non-convergence in [`Vault::mask_all`] — labels
+/// and counts carry no PII (the never-log-raw-values rule), and the sort keeps the log line
+/// diffable across passes and runs.
+fn kind_histogram(entities: &[PiiEntity]) -> Vec<(&'static str, usize)> {
+    let mut counts: HashMap<&'static str, usize> = HashMap::new();
+    for e in entities {
+        *counts.entry(e.kind.label()).or_insert(0) += 1;
+    }
+    let mut out: Vec<(&'static str, usize)> = counts.into_iter().collect();
+    out.sort_unstable_by_key(|(label, _)| *label);
+    out
+}
+
 /// Escape `s` as the **body** of a JSON string (no surrounding quotes) — i.e. the
 /// form it must take when substituted into an already-quoted JSON-string field.
 /// `serde_json::to_string` yields `"…escaped…"`; we drop the outer quotes.
@@ -271,6 +353,7 @@ fn json_string_body(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pii::composite::CompositeDetector;
     use crate::pii::recognizers::StructuredRecognizers;
     use crate::pii::{Confidence, PiiDetector, PiiEntity, PiiKind};
 
@@ -406,6 +489,76 @@ mod tests {
             .mask_all("mail bob@test.com", &detector)
             .expect("converges");
         assert_eq!(masked, "mail [EMAIL_1]");
+    }
+
+    /// A detector that tags **every** placeholder token it sees as a `Person` — modelling
+    /// exactly the NER pathology placeholder-inertness defends against (M5-R4 / CC-08). A model
+    /// that did this would drive `mask_all` to re-mask its own output forever and 400.
+    struct TagsPlaceholders;
+
+    impl PiiDetector for TagsPlaceholders {
+        fn detect(&self, input: &str) -> Vec<PiiEntity> {
+            PLACEHOLDER_RE
+                .find_iter(input)
+                .map(|m| PiiEntity {
+                    kind: PiiKind::Person,
+                    span: m.start()..m.end(),
+                    text: m.as_str().to_string(),
+                    confidence: Confidence::Structural,
+                })
+                .collect()
+        }
+    }
+
+    #[test]
+    fn mask_all_converges_even_if_a_detector_tags_its_own_placeholders() {
+        // M5-R4 / CC-08: inertness is now BY CONSTRUCTION. Pair a real recognizer (which mints
+        // `[EMAIL_1]`) with a detector that re-tags that placeholder every pass. Before the
+        // filter this looped to MAX_MASK_PASSES and 400'd; now `mask_all` drops the placeholder
+        // detection and converges — masking only the genuine email, exactly once.
+        let composite = CompositeDetector::new(vec![
+            Box::new(StructuredRecognizers::new()),
+            Box::new(TagsPlaceholders),
+        ]);
+        let mut vault = Vault::new();
+        let masked = vault
+            .mask_all("mail bob@test.com", &composite)
+            .expect("a placeholder-tagging detector must not break convergence");
+        assert_eq!(masked, "mail [EMAIL_1]");
+        // The round-trip is untouched: the placeholder still restores to the real value.
+        assert_eq!(vault.demask(&masked), "mail bob@test.com");
+    }
+
+    #[test]
+    fn is_placeholder_token_matches_only_our_own_tokens() {
+        // Our tokens, including the tolerant corruptions and surrounding whitespace.
+        assert!(is_placeholder_token("[EMAIL_1]"));
+        assert!(is_placeholder_token("  [ PERSON 2 ]  "));
+        assert!(is_placeholder_token("[email-3]"));
+        assert!(is_placeholder_token("[ORG_11]"));
+        // Not ours: real PII, a foreign label, a partial match, two tokens.
+        assert!(!is_placeholder_token("bob@test.com"));
+        assert!(!is_placeholder_token("[TODO_1]"));
+        assert!(!is_placeholder_token("see [EMAIL_1] here"));
+        assert!(!is_placeholder_token("[EMAIL_1] and [EMAIL_2]"));
+    }
+
+    #[test]
+    fn kind_histogram_tallies_by_label_and_is_value_free() {
+        // The non-convergence diagnostic summarizes a pass as `(label, count)`, sorted by
+        // label. Only labels and counts come out — a raw value has no path into the tally,
+        // which is what keeps the fail-closed log line safe to emit (M4-R20).
+        let e = |kind: PiiKind| PiiEntity {
+            kind,
+            span: 0..1,
+            text: "secret-value".to_string(),
+            confidence: Confidence::Structural,
+        };
+        let hist = kind_histogram(&[e(PiiKind::Person), e(PiiKind::Email), e(PiiKind::Email)]);
+
+        assert_eq!(hist, vec![("EMAIL", 2), ("PERSON", 1)]);
+        // The offending text never rides along.
+        assert!(!format!("{hist:?}").contains("secret-value"));
     }
 
     #[test]

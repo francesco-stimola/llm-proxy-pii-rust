@@ -127,22 +127,29 @@ placeholder is **inert** (no recognizer can match `[KIND_N]` or span across it),
 shrinks the un-masked text. The round-trip stays exact — every pass records raw value → placeholder, and
 `demask` restores them all in one tolerant pass.
 
-> **…but that proof covers the *recognizers*, not the NER — and a model swap must re-check it (M5-R4).**
+> **…and the NER inside it can no longer break that, because `mask_all` won't let it (M5-R4 / CC-08).**
 > "A placeholder is inert" is proved **by construction** for the deterministic layer: `[KIND_N]` has no
 > `@`, no `sk-`, nowhere near enough digits, and `[` / `]` sit outside every pattern's character classes.
 > But `mask_all` runs the **`CompositeDetector`**, and the ML NER inside it is under no such constraint —
 > nothing *structurally* stops a model from tagging `[PERSON_1]`, or a dense run of placeholders, as a
-> `Person`/`Organization`. If one did, a pass would mask a placeholder, the text would not strictly shrink,
-> `MAX_MASK_PASSES` would exhaust, and the request would **400** — fail-*closed* (M4-R20 saw to that), so
-> **never a leak**, but a hard availability failure on ordinary input.
+> `Person`. If a pass re-masked one, the text would not strictly shrink, `MAX_MASK_PASSES` would exhaust,
+> and the request would **400** — fail-*closed* (M4-R20), so **never a leak**, but a hard availability
+> failure on ordinary input.
 >
-> For the current model it holds, and it is **measured, not assumed**: XLM-R int8 tags **zero** entities on
-> placeholder-only text, and the full hybrid `mask_all` converges (`tests/ner_perf.rs`,
-> `m5_r4_the_ner_treats_placeholders_as_inert`). That makes placeholder inertness an **empirical property of
-> the chosen model**, and therefore a **model-swap checkpoint** — one that matters more than it sounds,
-> because the Backlog's designated successor is **GLiNER**: a *zero-shot, open-label, **context**-driven*
-> span extractor, i.e. precisely the kind of model that could look at `Contact [PERSON_1] at [ORG_1]` and
-> tag both. **A new NER model must re-run that guard before it ships.**
+> So the loop closes that door itself: `detect_maskable` **drops any detection that is exactly one of our
+> own `[KIND_N]` tokens** — a real value can never take that shape — before it is masked. Every surviving
+> detection is then genuine PII, masking genuine PII strictly shrinks the raw text, and the fixpoint
+> converges **regardless of the NER**. Placeholder inertness is now a property of the *algorithm*, not of
+> the chosen model.
+>
+> The shipped model doesn't even try — XLM-R int8 tags **zero** entities on placeholder-only text
+> (`tests/ner_perf.rs`, `m5_r4_the_ner_treats_placeholders_as_inert`) — but that test is now
+> **belt-and-braces**, not the sole guarantee. It still earns its keep as a model-swap canary: the
+> Backlog's successor is **GLiNER**, a *zero-shot, open-label, **context**-driven* extractor that could
+> well look at `Contact [PERSON_1] at [ORG_1]` and tag both. If it does, the filter absorbs it instead of
+> 400-ing — and the non-convergence diagnostic counts exactly that (`placeholder_tags_suppressed` in the
+> fail-closed log), so a model that starts leaning on the filter is **visible before it becomes a mystery
+> 400**.
 >
 > M5 is also what made this *reachable at scale*: before chunking, a field over ~500 tokens never reached
 > the NER at all (it errored). Chunking now routes exactly the large, placeholder-dense fields through it.
@@ -156,6 +163,17 @@ has ever been shown to need more than **2** passes — an exhaustive search over
 exceeded it, because masking *fragments* a digit run rather than peeling it — so this stays a latent
 path. It is fail-closed regardless, which is the point: the bar does not depend on the search being
 exhaustive.)
+
+> **This fired for real, once, and taught the block to explain itself (CC-08).** A live Claude Code
+> session hit the 400 on an ordinary long turn; it has not reproduced since, in the live session or in
+> a dozen synthetic reconstructions (placeholder-dense fields, the raw CSV, the chunked path — all
+> converge in ≤1 pass). No leak — the block did its job — but a 400 with no *reason* is its own defect.
+> With placeholder re-tagging now ruled out by construction (above), a residue can only be genuine PII
+> that masking keeps re-exposing, so the fail-closed branch logs a **value-free** diagnostic to name it:
+> the per-pass kind tally (is the count shrinking, i.e. a deep nest that would clear with more passes, or
+> stalled?), the residue's kinds, and `placeholder_tags_suppressed`. Kinds and counts only — never the
+> text, which fail-closed never forwards or logs. The exact trigger stays unpinned by choice: the
+> instrument turns any recurrence into a pinned cause, which is worth more than a synthetic guess.
 
 **Overlap resolution (`src/pii/overlap.rs`).** Detectors produce overlapping candidate spans;
 `resolve_overlaps` reduces them to a non-overlapping set. Its governing rule is an **invariant,

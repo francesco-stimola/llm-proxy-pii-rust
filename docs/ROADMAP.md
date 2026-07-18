@@ -35,7 +35,7 @@ completion**; findings, counts and closure notes live in each milestone's sectio
 | [M4 — Broad locale & language coverage](#m4) | ✅ complete |
 | [M5 — Integration & performance testing](#m5) | ✅ complete |
 | [**M6 — Native Anthropic `/v1/messages`**](#m6) | ✅ **code-complete**, and **verified live**: a real Claude Code session round-trips through the proxy (2026-07-16) |
-| [**M7 — NER latency**](#m7) | 🔨 **code-complete, review ledger closed** (20 findings / 7 rounds, all closed; code byte-stable since round 3): **≥1.5× faster than pre-M7** (asserted floor; typically ~1.7–2.3×, scales with the box, **not asserted below 4 cores** — a strict no-op only at 1 core since the 2026-07-17 `NER_POOL_SIZE` default flip to `pool=1`). A realistic turn masks in **~4.7 s** at the shipped default on the reference box — **the ~3 s bar was missed; we stopped anyway** ([M7-R12](reviews/M7.md#m7-r12)). **One box left, and it needs a human: the CC battery re-run** (a live key + a real Claude Code) |
+| [**M7 — NER latency**](#m7) | 🔨 **code-complete, review ledger closed** (20 findings / 7 rounds, all closed; code byte-stable since round 3): **≥1.5× faster than pre-M7** (asserted floor; typically ~1.7–2.3×, scales with the box, **not asserted below 4 cores** — a strict no-op only at 1 core since the 2026-07-17 `NER_POOL_SIZE` default flip to `pool=1`). A realistic turn masks in **~4.7 s** at the shipped default on the reference box — **the ~3 s bar was missed; we stopped anyway** ([M7-R12](reviews/M7.md#m7-r12)). **CC battery re-run complete (2026-07-18): 8/9 leak-clean + CC-08's fail-closed 400 resolved** (placeholder inertness by construction + a value-free block diagnostic) |
 | [First tagged release `1.0.0`](#m6) | ⬜ not started — gated on [M7](#m7)'s battery re-run: the product we advertise must be usable, not just correct |
 
 ---
@@ -695,18 +695,21 @@ DEVLOG 2026-07-16 → *M7 implementation plan*; start at S0.**
   > file and summarise it, format this contact as JSON, run this query. Which is *also* what real
   > Claude Code traffic looks like — so the rewrite makes the battery both runnable **and** more
   > representative. CC-03/04/06/09 are already this shape; the chat-only ones are not.
-- [ ] **Re-run the CC battery** — **live run 2026-07-18 (DEVLOG): 8/9 leak-clean at the `pool=1`
+- [x] **Re-run the CC battery** — **live run 2026-07-18 (DEVLOG): 8/9 leak-clean at the `pool=1`
   default** (CC-01…CC-07 + CC-09; DBG-02 = 0 throughout, incl. all 3 secrets in CC-06 and the MCP
-  tool-result in CC-09). **One item remains before it closes — the last thing between here and `1.0.0`:**
-  - [ ] **Fix CC-08's non-convergence.** The long-reminder-list turn hit a **fail-closed 400** ("masking
-    did not reach a fixpoint in 4 passes"). The guard fired **correctly** — blocked before forwarding,
-    zero leak (`anonymizer.rs::mask_all`, `MAX_MASK_PASSES=4`, M4-R20) — but masking that *can't
-    converge* on an ordinary task is a real availability defect, and the **latent path** the code itself
-    documents ("no input has needed > 2 passes"). Suspect: the NER tagging a placeholder in the repeated-
-    placeholder context (`anonymizer.rs:75-80`). **Not yet reproduced** — three synthetic tries converged,
-    and the failing content isn't logged (by design). Plan: a *value-free* per-pass kind/count log in
-    `mask_all` → re-run CC-08 → pin the culprit kind → fix (likely protect placeholders from re-detection)
-    + regression test.
+  tool-result in CC-09), and **CC-08's fail-closed 400 resolved the same day.** Both sub-items closed:
+  - [x] **CC-08's non-convergence — resolved (2026-07-18).** The long-reminder-list turn hit a
+    **fail-closed 400** ("masking did not reach a fixpoint in 4 passes"): the guard fired **correctly**
+    (blocked before forwarding, zero leak), but a 400 on ordinary work is a real availability defect.
+    **The suspected cause (NER re-tagging a placeholder) was disproven** — a live re-run converged, and
+    ~10 offline reconstructions against the production composite (placeholder-dense fields, the raw CSV,
+    the chunked path) all converge in ≤1 pass; the trigger is content-specific to that one session and
+    stays unpinned **by choice**. Resolution (owner's call): **placeholder inertness now enforced *by
+    construction*** — `mask_all`'s `detect_maskable` drops any detection that is one of our own `[KIND_N]`
+    tokens, so the fixpoint converges regardless of the NER (M5-R4 upgraded from empirical to algorithmic;
+    the `m5_r4` test stays as a model-swap canary) — **plus a value-free non-convergence diagnostic**
+    (per-pass kind tally + residue kinds + `placeholder_tags_suppressed`) so any recurrence names its own
+    cause. Tests FC-07 + unit; docs in `ARCHITECTURE.md` (fixpoint), `TESTING.md`, `DEVLOG.md`.
   - [x] **CC-09 — done, leak-clean (2026-07-18).** The `tool_result` masking test. The original
     `customer-lookup.sql` carried PII as **literals in the query text**, so reading it masked them before
     execution — the path it exists for never ran. Fixed: `fixtures/cc09-setup.sql` creates a synthetic
