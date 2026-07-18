@@ -35,9 +35,9 @@ completion**; findings, counts and closure notes live in each milestone's sectio
 | [M4 — Broad locale & language coverage](#m4) | ✅ complete |
 | [M5 — Integration & performance testing](#m5) | ✅ complete |
 | [**M6 — Native Anthropic `/v1/messages`**](#m6) | ✅ **code-complete**, and **verified live**: a real Claude Code session round-trips through the proxy (2026-07-16) |
-| [**M7 — NER latency**](#m7) | 🔨 **code-complete, review ledger closed** (21 findings / 8 rounds, all closed): **≥1.5× faster than pre-M7** (asserted floor; typically ~1.7–2.3×, scales with the box, **not asserted below 4 cores** — a strict no-op only at 1 core since the 2026-07-17 `NER_POOL_SIZE` default flip to `pool=1`). A realistic turn masks in **~4.7 s** at the shipped default on the reference box — **the ~3 s bar was missed; we stopped anyway** ([M7-R12](reviews/M7.md#m7-r12)). **CC battery (2026-07-18): masking half done — 8/9 leak-clean + CC-08's fail-closed 400 resolved** (placeholder inertness by construction + a value-free block diagnostic); **the Run OFF half (de-mask) is the one box left** |
-| [**M7.1 — deferred latency leads**](#m71) | ⬜ **not started** — the two latency optimisations M7 named but did not buy (S3 system-prompt entity cache; S4 skip the NER on the fixpoint's later passes). Pure latency; **does not gate `1.0.0`** |
-| [First tagged release `1.0.0`](#m6) | ⬜ not started — **the one box left is [M7](#m7)'s CC battery Run OFF half** (masking half + CC-08 done 2026-07-18); then a manual PR → merge → tag. Correctness and privacy are already there; [M7.1](#m71) is latency, not a gate |
+| [**M7 — NER latency**](#m7) | 🔨 **code-complete, review ledger closed** (21 findings / 8 rounds, all closed): **≥1.5× faster than pre-M7** (asserted floor; typically ~1.7–2.3×, scales with the box, **not asserted below 4 cores** — a strict no-op only at 1 core since the 2026-07-17 `NER_POOL_SIZE` default flip to `pool=1`). A realistic turn masks in **~4.7 s** at the shipped default on the reference box — **the ~3 s bar was missed; we stopped anyway** ([M7-R12](reviews/M7.md#m7-r12)). **CC battery (2026-07-18): masking (Run ON) leak-clean; Run OFF underway.** A fail-closed **non-convergence 400** recurred (CC-08, then CC-05) — root-caused to NER **sub-word fragmentation** on the dense system prompt, fixed by **[S4](#m71)** (the placeholder-inertness hardening was valid but not the cause). No leak; an availability defect |
+| [**M7.1 — system-prompt cache + fixpoint NER fix**](#m71) | ⬜ **not started** — **S4** (NER on pass 0 only) is now the **fix** for the CC-05/CC-08 fail-closed 400, recall-validated (0 losses); **S3** (system-prompt entity cache) stays pure latency. S4's 1.0.0-gating is **conditional** on the battery |
+| [First tagged release `1.0.0`](#m6) | ⬜ not started — gated on the CC battery closing; its **Run OFF half** is underway but **blocked on some turns by the non-convergence 400** whose fix is **[S4](#m71)**. Privacy holds (fail-closed never leaks); a proxy that 400s real turns isn't "usable", so S4 likely lands first. Then manual PR → merge → tag |
 
 ---
 
@@ -717,9 +717,12 @@ DEVLOG 2026-07-16 → *M7 implementation plan*; start at S0.**
     **CC-03…CC-07 and CC-09 ran ON-only** — so the *de-mask* (client gets the real values restored) is
     unproven live for those shapes. Per [`MANUAL_VERIFICATION.md`](MANUAL_VERIFICATION.md), each scenario
     needs **both** postures: ON shows the request left masked, OFF shows the client got it restored — only
-    together do they prove the *same* round-trip. **Left to run OFF:** CC-03, CC-04, CC-05, CC-06, CC-07,
-    CC-09. **CC-08:** both postures, on the **fixed** binary (the `detect_maskable` change touched the
-    masking path). **CC-01 / CC-02:** already OFF+ON, and unaffected — skip.
+    together do they prove the *same* round-trip. **OFF so far:** CC-03 ✅, CC-04 ✅ (DBG-02 = 0), then
+    **CC-05 hit the fail-closed non-convergence 400** (the [S4](#m71) fragmentation bug — the instrumented
+    diagnostic pinned it live). **Left:** CC-06, CC-07, CC-09 OFF, and CC-08 both postures. Continuing on the
+    current binary to see if more turns 400; any that do are queued for S4. **If the battery can't close
+    without them, [S4](#m71) lands first, then this re-runs on the S4 binary.** CC-01 / CC-02: already
+    OFF+ON, skip.
   It needs a human at the keyboard with a live key and a real Claude Code — this environment has neither,
   so it cannot be automated away. Procedure: [`MANUAL_VERIFICATION.md`](MANUAL_VERIFICATION.md);
   **`NER_REQUIRED=1` is non-negotiable** (it is what makes a silently structured-only run fatal — the
@@ -908,13 +911,18 @@ branch, so the docs' "makes a filter-leaning model visible" claim doesn't hold i
 | [M7-R21](reviews/M7.md#m7-r21) | `placeholder_tags_suppressed` is logged only on the fail-closed branch — the "makes a filter-leaning model visible" claim (ARCHITECTURE / TESTING NER-INERT-01) is unsupported in the converging happy path; the `m5_r4` test is the real canary | observ. | [x] |
 
 <a id="m71"></a>
-## M7.1 — deferred latency leads: system-prompt cache & fixpoint second pass
+## M7.1 — system-prompt cache (S3) & the fixpoint NER fix (S4)
 
-**The two leads M7 named but did not buy.** M7 shipped its reproducible ~2× and stopped at a ~4.7 s turn
-(the bar was missed on purpose — see M7's *"Declare the bar, then decide against it"*). The remaining gap
-is dominated by two known optimisations, both **deferred here rather than dropped**: each trades a real
-risk that must be argued before it ships, not taken because we happened to be in the code. Neither gates
-`1.0.0` (correctness and privacy are already there); both are pure latency.
+**Two leads M7 named but did not buy — and one of them turned out to be a bug, not just a speed-up.** M7
+shipped its reproducible ~2× and stopped at a ~4.7 s turn (the bar was missed on purpose — see M7's
+*"Declare the bar, then decide against it"*). Both items below were deferred rather than dropped because
+each traded a real risk that had to be argued first. **S4 is no longer optional:** the CC-05/CC-08
+investigation (2026-07-18) showed its "latency" mechanism — the NER re-running every fixpoint pass — is
+what makes masking **fail-closed (400) on real Claude Code system prompts**. So S4 is now the *fix* for a
+correctness/availability defect (and its recall risk is answered — see the item), while **S3 stays pure
+latency.** Whether this gates `1.0.0` is conditional: the privacy property holds (fail-closed never leaks),
+but a proxy that 400s a fraction of real turns is not "usable" — so if the CC battery keeps hitting it, S4
+lands before `1.0.0`; if the battery closes anyway, S4 can follow.
 
 - [ ] **S3 — don't re-scan an unchanged system prompt every turn.** *(The named lead: the ~4.7 s turn and
   the ~40 KB-traffic case both point here.)* Claude Code re-sends 20–40 KB of system prompt + tool schemas
@@ -925,14 +933,31 @@ risk that must be argued before it ships, not taken because we happened to be in
   masking path*, which needs its own threat argument (a stale cache entry must never mask *less* than a
   fresh scan — fail-closed means the cache may only ever be a superset, or be dropped). That is why it is
   listed with a guard, not just a TODO.
-- [ ] **S4 — stop paying twice for the fixpoint.** A no-PII 34.7 KB field (one pass) masks in 9.9 s
-  = 286 ms/KB; a *smaller* 29.4 KB field with PII (two passes) takes 26.6 s = 903 ms/KB — **2.7× slower
-  while 15% shorter**. M4-R21 accepted that cost when the NER saw sentences. The lead: passes ≥2 exist to
-  catch masking **exposing** PII (a masked phone splits a digit run, revealing a card) — a
-  **deterministic-recognizer** phenomenon. Masking a name to `[PERSON_1]` does not reveal a new name. So
-  re-run only the structured layer on later passes. **The risk to answer first:** NER recall **at the
-  seams** — `[PERSON_1]-Jones` is exactly the shape that would decide whether dropping the NER from later
-  passes can miss a name the rewrite just exposed.
+- [ ] **S4 — NER on pass 0 only; structured recognizers on later passes. Now the *fix* for the CC-05/CC-08
+  non-convergence, not just a latency lead.** *(Investigated 2026-07-18; DEVLOG.)* Passes ≥2 of the fixpoint
+  exist to catch masking **exposing** PII (a masked phone splits a digit run → a card) — a
+  **deterministic-recognizer** phenomenon. Masking a name to `[PERSON_1]` never reveals a new name, so the
+  NER buys nothing after pass 0 — **but it is exactly what keeps the loop from converging.** The NER tags
+  *sub-word fragments* (`"lack"` of `"Slack"`, `"An"` of `"Anthropic"`, [M7-R7](reviews/M7.md#m7-r7)); each
+  mask splits the word and the next pass re-tags the leftover. On a real Claude Code **system prompt** —
+  dense with `Slack`/`GitHub`/`Claude`/`Anthropic` — this needed **> `MAX_MASK_PASSES` (4)** and **400'd on
+  live traffic** (CC-05; the diagnostic pinned it: `per_pass=[[ORG 6, PER 2],[ORG 2],[PER 1],[PER 1]]`,
+  `placeholder_tags_suppressed=0` — real fragments, not placeholders). M7-R7 called this "a latency cost,
+  not a correctness one" — **that was wrong**: past 4 passes it is a fail-closed availability failure.
+  - **Measured (offline, production composite).** PLAIN passes **grow with the dense text**: 6 (5 KB) → 11
+    (15 KB) → 13 (30 KB), unbounded — so a **bound bump is out** (no safe fixed value, and each pass is a
+    full NER scan). **S4 converges in 1 pass at every size.** A **word-boundary snap** of NER spans was
+    tried and **rejected** — it makes convergence *worse* (8 passes vs 4).
+  - **The recall risk is now answered (the argument M7-R7 required).** Dropping the NER after pass 0 could,
+    in principle, miss a name a later pass would have exposed at a seam (`[PERSON_1]-Jones`). Measured: **0**
+    losses — S4 masks every expected entity PLAIN does across the labelled corpus (25 NER entities, 15
+    cases), and **0** raw PII survives when real names/emails/IBAN are injected into fragmenting dense text.
+    Masking only ever *reduces* NER context, so later passes discover no genuinely-new names — only the
+    fragments they created.
+  - **Implementation.** A `redetect` method on `PiiDetector` (default = `try_detect`); `OnnxNerDetector`
+    overrides it to return empty (idempotent after pass 0); `CompositeDetector::redetect` runs the
+    structured recognizers only; `Vault::mask_all` uses `try_detect` on pass 0 and `redetect` after (and for
+    the fixpoint confirm). Fold in the latency win M4-R21 priced (~940 ms of a 4.2 s turn). Builder→reviewer.
 
 <a id="backlog"></a>
 ## Backlog — documented, not scheduled

@@ -3,6 +3,40 @@
 Newest first. One entry per meaningful change — note *what* and *why*, not just
 *what*. This is the running history so context is never lost between sessions.
 
+## 2026-07-18 — the *real* non-convergence cause, found live: NER sub-word fragmentation (CC-05) → S4 is the fix
+
+**The instrumentation paid off.** Running the CC battery's **Run OFF** half on the diagnostic binary, **CC-05
+(a plain "what's the email?" turn) hit the fail-closed 400** — and this time the value-free diagnostic named
+the cause: `per_pass=[[ORG 6, PER 2],[ORG 2],[PER 1],[PER 1]]`, `remaining=[ORG 2]`,
+**`placeholder_tags_suppressed=0`**. So it is **not** placeholder re-tagging (the earlier hardening was valid
+but not the cause) — it is the **NER tagging sub-word fragments** of dense product/org names. The masked
+bodies show it plainly: `S[ORG_6]` (Slack → "lack" tagged, "S" left), `Git[ORG_4]` (GitHub), `[PERSON_2] Code`
+(Claude). Each mask splits the word; the next pass re-tags the leftover; the Claude Code **system prompt** is
+dense with these, so it needs **> `MAX_MASK_PASSES`** and 400s. This is [M7-R7](reviews/M7.md#m7-r7)'s
+fragment over-mask — which M7-R7 called "a latency cost, not a correctness one." **Live CC-05 proves that
+wrong:** past 4 passes it is a fail-closed availability failure on real Claude Code traffic. It never
+reproduced synthetically before because no synthetic input carried a real system prompt's density.
+
+**Investigated three fixes offline (production composite, real XLM-R):**
+- **Word-boundary snap** (extend a fragment span to the whole word) — **rejected**: it makes convergence
+  *worse* (8 passes vs 4 on the same dense text). Counterintuitive but measured.
+- **Bump `MAX_MASK_PASSES`** — **rejected**: PLAIN passes **grow with the dense text**, 6 (5 KB) → 11 (15 KB)
+  → 13 (30 KB), unbounded; no safe fixed value, and each pass is a full NER scan.
+- **S4 (NER on pass 0 only, structured recognizers after)** — **converges in 1 pass at every size.** This is
+  the M7.1 "stop paying twice for the fixpoint" lead, now promoted from optimisation to *the fix*.
+
+**S4's recall risk — the argument M7-R7 demanded — is answered.** Dropping the NER after pass 0 could in
+principle miss a name a later pass would expose at a seam (`[PERSON_1]-Jones`). Measured: **0** losses — S4
+masks every expected entity PLAIN does across the labelled corpus (25 NER entities / 15 cases), and **0** raw
+PII survives when real names/emails/IBAN are injected into fragmenting dense text. Masking only ever *reduces*
+NER context, so later passes surface no genuinely-new names — only the fragments they created.
+
+**Decision (owner):** record all of this in M7.1's S4 spec (done, ROADMAP), keep running the OFF battery on
+the current binary to collect any further 400s, and do the S4 change as a proper builder→reviewer cycle. S4
+now conditionally gates `1.0.0`: fail-closed never leaks, but a proxy that 400s a fraction of real turns is
+not "usable". Investigation harness was throwaway (`tests/cc05_investigate.rs`, deleted); the numbers live
+here and the regression tests ship with S4.
+
 ## 2026-07-18 — CC-08 resolved: placeholder inertness *by construction* + a value-free block diagnostic
 
 **The finding, recapped.** CC-08 (a long reminder-list turn) returned a fail-closed **400** — masking
