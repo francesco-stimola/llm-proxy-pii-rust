@@ -3,6 +3,23 @@
 Newest first. One entry per meaningful change — note *what* and *why*, not just
 *what*. This is the running history so context is never lost between sessions.
 
+## 2026-07-18 — CC battery CLOSED on the S4 binary: the two 400s converge, zero leak
+
+**The last box on the road to `1.0.0`.** Re-ran the CC battery through the proxy against real Anthropic on
+the **S4 binary** (cache S3 on), with the owner driving Claude Code:
+- **CC-05** (chat "what's the email?") — 400'd pre-S4; now **converges**, client gets the real email (OFF).
+- **CC-09** (MCP SQL `SELECT *`) — 400'd pre-S4; now **converges**, all six real values restored (OFF).
+- **CC-08** (the original 400 — reminder list ×30) — **both postures**: OFF restores the three real emails
+  across all 30 lines; ON shows `[EMAIL_2/3/4]` (exactly what the provider saw). 30 restorations of values
+  the model never held.
+
+**Zero fixpoint 400 across the entire S4 run; DBG-02 = 0 on every value, every scenario.** S4 is validated
+live, end-to-end: the fragmentation non-convergence that blocked three scenarios is gone. CC-03/04/06/07
+were leak-clean pre-S4 and S4 only ever masks *more* (it runs the full NER on pass 0 unchanged; it drops the
+NER only on *later* passes), and the de-mask code S4 doesn't touch, so their earlier OFF results carry.
+CC-01/02 were already both postures. **The battery is closed; the privacy property held on every turn,
+including the fail-closed blocks.** `1.0.0` is unblocked — all that's left is the mechanical PR → merge → tag.
+
 ## 2026-07-18 — S3: content-keyed detection cache (M7.1 complete)
 
 **The other M7.1 lead, landed.** Claude Code re-sends 20–40 KB of **byte-identical** system prompt + tool
