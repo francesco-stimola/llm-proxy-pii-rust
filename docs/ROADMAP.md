@@ -35,8 +35,9 @@ completion**; findings, counts and closure notes live in each milestone's sectio
 | [M4 — Broad locale & language coverage](#m4) | ✅ complete |
 | [M5 — Integration & performance testing](#m5) | ✅ complete |
 | [**M6 — Native Anthropic `/v1/messages`**](#m6) | ✅ **code-complete**, and **verified live**: a real Claude Code session round-trips through the proxy (2026-07-16) |
-| [**M7 — NER latency**](#m7) | 🔨 **code-complete, review ledger closed** (20 findings / 7 rounds, all closed; code byte-stable since round 3): **≥1.5× faster than pre-M7** (asserted floor; typically ~1.7–2.3×, scales with the box, **not asserted below 4 cores** — a strict no-op only at 1 core since the 2026-07-17 `NER_POOL_SIZE` default flip to `pool=1`). A realistic turn masks in **~4.7 s** at the shipped default on the reference box — **the ~3 s bar was missed; we stopped anyway** ([M7-R12](reviews/M7.md#m7-r12)). **CC battery (2026-07-18): masking half done — 8/9 leak-clean + CC-08's fail-closed 400 resolved** (placeholder inertness by construction + a value-free block diagnostic); **the Run OFF half (de-mask) is the one box left** |
-| [First tagged release `1.0.0`](#m6) | ⬜ not started — gated on [M7](#m7)'s battery re-run: the product we advertise must be usable, not just correct |
+| [**M7 — NER latency**](#m7) | 🔨 **code-complete, review ledger closed** (21 findings / 8 rounds, all closed): **≥1.5× faster than pre-M7** (asserted floor; typically ~1.7–2.3×, scales with the box, **not asserted below 4 cores** — a strict no-op only at 1 core since the 2026-07-17 `NER_POOL_SIZE` default flip to `pool=1`). A realistic turn masks in **~4.7 s** at the shipped default on the reference box — **the ~3 s bar was missed; we stopped anyway** ([M7-R12](reviews/M7.md#m7-r12)). **CC battery (2026-07-18): masking half done — 8/9 leak-clean + CC-08's fail-closed 400 resolved** (placeholder inertness by construction + a value-free block diagnostic); **the Run OFF half (de-mask) is the one box left** |
+| [**M7.1 — deferred latency leads**](#m71) | ⬜ **not started** — the two latency optimisations M7 named but did not buy (S3 system-prompt entity cache; S4 skip the NER on the fixpoint's later passes). Pure latency; **does not gate `1.0.0`** |
+| [First tagged release `1.0.0`](#m6) | ⬜ not started — **the one box left is [M7](#m7)'s CC battery Run OFF half** (masking half + CC-08 done 2026-07-18); then a manual PR → merge → tag. Correctness and privacy are already there; [M7.1](#m71) is latency, not a gate |
 
 ---
 
@@ -667,17 +668,11 @@ DEVLOG 2026-07-16 → *M7 implementation plan*; start at S0.**
   > beat 12; (2) **scaling is sublinear** — expect ~3× from 6 threads, not 6×, and less on an **int8**
   > model whose kernels are memory-bandwidth-bound rather than ALU-bound. Benchmark both axes before
   > believing either.
-- [ ] **Stop paying twice for the fixpoint.** A no-PII 34.7 KB field (one pass) masks in 9.9 s
-  = 286 ms/KB; a *smaller* 29.4 KB field with PII (two passes) takes 26.6 s = 903 ms/KB — **2.7×
-  slower while 15% shorter**. M4-R21 accepted that cost when the NER saw sentences. The lead:
-  passes ≥2 exist to catch masking **exposing** PII (a masked phone splits a digit run, revealing a
-  card) — a **deterministic-recognizer** phenomenon. Masking a name to `[PERSON_1]` does not reveal
-  a new name. So re-run only the structured layer on later passes. **Needs a real argument about NER
-  recall at the seams before it ships** — `[PERSON_1]-Jones` is exactly the shape that would decide it.
-- [ ] **Don't re-scan an unchanged system prompt every turn.** It is byte-identical across turns and
-  dominates the payload. Any answer here (content-keyed cache of the *entities*, leaving the
-  per-request vault to mint placeholders as it does now) adds state, and state on the masking path
-  needs its own threat argument — which is why this is listed last, not first.
+- **S3 (system-prompt entity cache) and S4 (skip the NER on the fixpoint's later passes)** — the two
+  latency leads M7 named but **deliberately did not buy** (M7 delivered its reproducible ~2×; each of
+  these trades real risk — state on the masking path; lost NER recall at the seams — and should be bought
+  on purpose, not because we were already in here). **Deferred to [M7.1](#m71)**, where the mechanism and
+  the risk each must answer are written out in full.
 - [x] **Rewrite the CC prompts as natural agent tasks** — a **verification debt from M6**, tracked
   here because M7 owns the re-run. The battery said *"reply with exactly this sentence: contact
   jane.doe@example.com, IBAN …"*, and the model **refused it as an injection attempt** — correctly.
@@ -911,6 +906,33 @@ branch, so the docs' "makes a filter-leaning model visible" claim doesn't hold i
 | ID | Title | Sev | Status |
 |---|---|---|---|
 | [M7-R21](reviews/M7.md#m7-r21) | `placeholder_tags_suppressed` is logged only on the fail-closed branch — the "makes a filter-leaning model visible" claim (ARCHITECTURE / TESTING NER-INERT-01) is unsupported in the converging happy path; the `m5_r4` test is the real canary | observ. | [x] |
+
+<a id="m71"></a>
+## M7.1 — deferred latency leads: system-prompt cache & fixpoint second pass
+
+**The two leads M7 named but did not buy.** M7 shipped its reproducible ~2× and stopped at a ~4.7 s turn
+(the bar was missed on purpose — see M7's *"Declare the bar, then decide against it"*). The remaining gap
+is dominated by two known optimisations, both **deferred here rather than dropped**: each trades a real
+risk that must be argued before it ships, not taken because we happened to be in the code. Neither gates
+`1.0.0` (correctness and privacy are already there); both are pure latency.
+
+- [ ] **S3 — don't re-scan an unchanged system prompt every turn.** *(The named lead: the ~4.7 s turn and
+  the ~40 KB-traffic case both point here.)* Claude Code re-sends 20–40 KB of system prompt + tool schemas
+  every turn, **byte-identical**, and we re-scan all of it from scratch; it dominates the payload. A
+  **content-keyed cache of the detected *entities*** (leaving the per-request vault to mint placeholders as
+  it does now, so numbering stays per-request and deterministic) makes turn 2+ nearly free — and unlike the
+  thread-count win, it is **indifferent to the box**. **The risk to answer first:** it adds *state on the
+  masking path*, which needs its own threat argument (a stale cache entry must never mask *less* than a
+  fresh scan — fail-closed means the cache may only ever be a superset, or be dropped). That is why it is
+  listed with a guard, not just a TODO.
+- [ ] **S4 — stop paying twice for the fixpoint.** A no-PII 34.7 KB field (one pass) masks in 9.9 s
+  = 286 ms/KB; a *smaller* 29.4 KB field with PII (two passes) takes 26.6 s = 903 ms/KB — **2.7× slower
+  while 15% shorter**. M4-R21 accepted that cost when the NER saw sentences. The lead: passes ≥2 exist to
+  catch masking **exposing** PII (a masked phone splits a digit run, revealing a card) — a
+  **deterministic-recognizer** phenomenon. Masking a name to `[PERSON_1]` does not reveal a new name. So
+  re-run only the structured layer on later passes. **The risk to answer first:** NER recall **at the
+  seams** — `[PERSON_1]-Jones` is exactly the shape that would decide whether dropping the NER from later
+  passes can miss a name the rewrite just exposed.
 
 <a id="backlog"></a>
 ## Backlog — documented, not scheduled
