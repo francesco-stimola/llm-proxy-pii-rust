@@ -595,10 +595,12 @@ DEVLOG 2026-07-16 → *M7 implementation plan*; start at S0.**
   > the next clean run; the floor has not.
   >
   > **Its domain, stated because an invariant without one is worse than none**
-  > ([M7-R13](reviews/M7.md#m7-r13)): the speedup **scales with the core count and is zero below 4
-  > cores**, where the derived default *is* the pre-M7 shape. And the ratio buys
-  > regime-independence, **not sensitivity** — at a 1.5 floor against a ~1.7 worst case it still
-  > tolerates a ~13% regression ([M7-R14](reviews/M7.md#m7-r14)).
+  > ([M7-R13](reviews/M7.md#m7-r13)): the speedup **scales with the core count**, so the ≥1.5×
+  > floor is asserted only where there are cores to parallelize over (**≥4**). Since the
+  > 2026-07-17 `pool=1` flip the derived default is `intra = cores`, a strict no-op versus the
+  > pre-M7 single-thread shape **only at 1 core** — from two cores up it already adds threads
+  > (DEVLOG 2026-07-17). And the ratio buys regime-independence, **not sensitivity** — at a 1.5
+  > floor against a ~1.7 worst case it still tolerates a ~13% regression ([M7-R14](reviews/M7.md#m7-r14)).
   >
   > **S3 is the named lead** for the two open cases (the ~4.7 s turn, and ~40 KB traffic): the
   > boilerplate is byte-identical every turn, so a content-keyed cache makes turn 2+ nearly free —
@@ -986,6 +988,16 @@ less. With S4 in, the CC battery's non-convergence blocker is resolved (re-run p
     overrides it to return empty (idempotent after pass 0); `CompositeDetector::redetect` runs the
     structured recognizers only; `Vault::mask_all` uses `try_detect` on pass 0 and `redetect` after (and for
     the fixpoint confirm). Fold in the latency win M4-R21 priced (~940 ms of a 4.2 s turn). Builder→reviewer.
+
+### Landing & release — `v1.0.0` (2026-07-18)
+
+**Reviewed as round 9 of the [M7 ledger](reviews/M7.md)** (the round that lands M7.1's S3 + S4): 116 onnx / 97
+default lib green, clippy clean, findings R22/R23 closed — M7.1 has no separate ledger, its review lives
+there. With that, the **first tagged release** was cut here, off M7.1: **tag `v1.0.0` on `main`**, `Cargo.toml`
+at `1.0.0`, after the CC battery closed on the S4 binary. Every gate met — the M6 native route + M7 latency +
+M7.1 (S3/S4), both postures (`openai` / `anthropic`) leak-clean, **zero fixpoint 400** on the S4 binary.
+(Superseded by `1.1.0` at [M8](#m8); a release tag is noted next to its milestone in the Status table, not as
+its own row.)
 
 <a id="m8"></a>
 ## M8 — GLiNER: contextual / open-label PII detection ✅
