@@ -1086,9 +1086,21 @@ future work. Review pending.
 Builder→reviewer loop opened 2026-07-19. Findings recorded here as a compact ledger (id · title · sev ·
 status); the full entry + fix + closure note lives in [`reviews/M8.md`](reviews/M8.md).
 
+**Round 1 (2026-07-19): 5 findings — none a leak, none a fail-open regression.** Verified independently:
+108 default / 132 onnx lib green, clippy + fmt clean, and all three gated GLiNER tests reproduced against
+the real int8 model (Person 0.583 / Org 1.00 / Loc 0.909 — the DEVLOG numbers to the digit; the `markerV0`
+tensor contract decodes correctly on the real export). The fixpoint is **provably safe** with GLiNER in the
+composite (convergence rests on S4's `redetect → empty`, not on `keep_maskable`), a GLiNER `Phone` flows
+soundly through the union-merge, and *addition, not successor* is honestly recorded. Findings are
+hardening / test-coverage / docs.
+
 | ID | Title | Sev | Status |
 |---|---|---|---|
-| — | _(review in progress)_ | — | — |
+| [M8-R1](reviews/M8.md#m8-r1) | GLiNER chunking has no choke-point ceiling guard — re-tokenized `seq` never checked vs `max_len` (the S3 "port M5's discipline" item, only half-delivered) | hardening | [ ] |
+| [M8-R2](reviews/M8.md#m8-r2) | GLiNER's multi-window chunking path has never run against the real model (all gated inputs are single-window) | test-cov | [ ] |
+| [M8-R3](reviews/M8.md#m8-r3) | ARCHITECTURE says a GLiNER guess "loses in overlap" — false for its `Phone`, which is `is_structured()` and is union-merged | docs | [ ] |
+| [M8-R4](reviews/M8.md#m8-r4) | `gliner_decode.rs` has 11 unit tests; DEVLOG/TESTING say 12 | docs | [ ] |
+| [M8-R5](reviews/M8.md#m8-r5) | `load_gliner` silently disables GLiNER on partial config / an out-of-range `GLINER_THRESHOLD` | hardening | [ ] |
 
 <a id="m9"></a>
 ## M9 — GPU optimization
