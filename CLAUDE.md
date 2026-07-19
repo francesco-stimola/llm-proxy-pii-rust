@@ -9,6 +9,11 @@ A privacy proxy in front of an OpenAI-compatible LLM: it masks PII locally
   before starting work; keep the checkboxes current as work lands. Its **milestone
   status table** at the top is the whole backlog at a glance — one row per milestone,
   each linking to its section — so you never have to scroll for "what's open?".
+  **Keep that table lean and it stays useful:** one row *per milestone* (a release tag is
+  noted next to the milestone it was cut from, never its own row), and the Status cell is a
+  **single label** — ✅ complete · 🔨 code-complete · 📋 planned — never a prose paragraph.
+  All detail (findings, counts, dates, caveats) lives in the milestone's own section, not the
+  table. It's easy to forget and let a row grow verbose — don't.
 - `docs/ARCHITECTURE.md` — design, the fail-closed model, and **the invariants the
   detection layer rests on** (no-abandoned-bytes, mask-to-a-fixpoint, ASCII word
   boundaries). `docs/TESTING.md` — test strategy & catalog, incl. the property

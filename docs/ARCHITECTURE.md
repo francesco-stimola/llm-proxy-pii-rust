@@ -100,6 +100,16 @@ mechanisms are complementary: **bounded recognizers rescan; unbounded ones itera
 > `Scan::Overlapping`. `tests/complexity.rs` (DOS-01…03) is the guard — it fails on a super-linear scan
 > in seconds rather than hanging.
 
+> **And a *bounded* recognizer can still need the fixpoint (M8-R8).** A multi-arm bounded recognizer whose
+> longest arm can span into an **adjacent** value inherits the Sequential recognizers' fixpoint reliance for
+> a different reason. The national-phone regex is one: its 3-group arm can greedily take the trunk of the
+> *next* number (`0800 1111 0800`), an over-long span the `is_valid` validator **rejects** — and because the
+> overlapping rescan resumes *forward* of that rejected match, single-pass `detect()` misses the shorter
+> valid form it shadowed (the first of the two numbers). No leak on the request path: `Vault::mask_all`'s
+> confirmed fixpoint re-detects, masking the second value un-shadows the first. So such a recognizer must
+> **never** override `redetect` to skip later passes, and its anti-swallow guard must assert at the
+> **`mask_all`** level (does the fixpoint mask *both*?), not on single-pass `detect()`.
+
 **Masking must be linear in the entity *count*, not just the field *size* (M4-R24).** These are **two
 independent dimensions**, and closing one says nothing about the other. `Vault::mask` used to splice
 placeholders in right-to-left with `String::replace_range`; each splice memmoves the whole tail, so *k*

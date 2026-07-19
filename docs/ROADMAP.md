@@ -19,9 +19,10 @@ invariants) and [`TESTING.md`](TESTING.md) (the guards) — read *those* to unde
 
 ## Status
 
-This table is the whole backlog at a glance — each row links to its section below. It tracks **only
-completion**; findings, counts and closure notes live in each milestone's section and in
-[`reviews/`](reviews/), so this table can't drift out of sync with them.
+This table is the whole backlog at a glance — **one row per milestone**, each linking to its section below.
+The Status column is a **single label** — ✅ complete · 🔨 code-complete · 📋 planned — and nothing more:
+findings, counts, dates and closure notes live in each milestone's section and in [`reviews/`](reviews/), so
+this table can't drift. A **release tag** is noted next to the milestone it was cut from, never as its own row.
 
 | Milestone | Status |
 |---|---|
@@ -32,15 +33,14 @@ completion**; findings, counts and closure notes live in each milestone's sectio
 | [M2.5 — HuggingFace model management](#m25) | ✅ complete |
 | [M2.6 — Debug & observability modes](#m26) | ✅ complete |
 | [M3 — Streaming & multi-provider routing](#m3) | ✅ complete |
-| [M4 — Broad locale & language coverage](#m4) | ✅ complete |
+| [M4 — Broad locale & language coverage](#m4) | ✅ complete · tag `v0.4.0` (interim badge release) |
 | [M5 — Integration & performance testing](#m5) | ✅ complete |
-| [**M6 — Native Anthropic `/v1/messages`**](#m6) | ✅ **code-complete**, and **verified live**: a real Claude Code session round-trips through the proxy (2026-07-16) |
-| [**M7 — NER latency**](#m7) | 🔨 **code-complete, review ledger closed** (21 findings / 8 rounds, all closed): **≥1.5× faster than pre-M7** (asserted floor; typically ~1.7–2.3×, scales with the box, **not asserted below 4 cores** — a strict no-op only at 1 core since the 2026-07-17 `NER_POOL_SIZE` default flip to `pool=1`). A realistic turn masks in **~4.7 s** at the shipped default on the reference box — **the ~3 s bar was missed; we stopped anyway** ([M7-R12](reviews/M7.md#m7-r12)). **CC battery — CLOSED (2026-07-18):** both postures, DBG-02 = 0 throughout; the fail-closed non-convergence 400 (CC-08/CC-05/CC-09, NER **sub-word fragmentation** on the dense system prompt) fixed by **[S4](#m71)** — re-run on the S4 binary, all three converge, **zero fixpoint 400** |
-| [**M7.1 — system-prompt cache + fixpoint NER fix**](#m71) | ✅ **complete (2026-07-18)** — **S4** (NER on pass 0 only) fixes the CC-05/CC-08 fail-closed 400, recall-validated (0 losses); **S3** (`CachingDetector`, exact-byte-keyed, can't mask less) memoizes the byte-identical system prompt's detection. 116 onnx lib tests, clippy clean, review-clean (round 9) |
-| [First tagged release `1.0.0`](#m6) | ✅ **released (2026-07-18)** — tag `v1.0.0` cut on `main` (`Cargo.toml` at `1.0.0`) after the CC battery closed. Every gate met: M6 route + M7 latency + M7.1 (S3/S4), both postures leak-clean, zero fixpoint 400 on the S4 binary |
-| [**M8 — GLiNER: contextual / open-label PII**](#m8) | ✅ **complete (2026-07-19), review-clean (3 rounds, 7 findings all closed)** — `GLiNerDetector` + `gliner_decode` built and **validated end-to-end against the real int8 model**; wired **opt-in** (`GLINER_MODEL_PATH`). **Measured verdict: addition, not successor** — matches XLM-R on Loc (0.91) / Org (1.00) but Person recall 0.58 < XLM-R 0.83, so XLM-R stays default; GLiNER adds contextual kinds (bare phone, address). 133 onnx / 109 default lib green, clippy clean. Numbers: [DEVLOG 2026-07-19](DEVLOG.md) |
-| [**M8.1 — national phone recognizer (opt-in, per-locale)**](#m81) | 🔨 **code-complete (2026-07-19), reviewed round 1 — 1 finding open, not a leak** ([M8-R8](reviews/M8.md#m8-r8)) — fills the ex-Backlog "Locale phone national formats" gap **deterministically**, without a second ML model: the `fp_prone_recognizers` seam now carries GB/DE `0`-trunk phone recognizers gated by `PII_LOCALES`, validated by the pure-Rust **`phonenumber`** crate's `is_valid()` (real assigned-range check). Measured on an adversarial corpus: **GB precision 1.000, DE 0.909**. Native-dep-free bar holds (pure Rust); accepted cost ~3 MB binary. 115 default lib green, clippy clean |
-| [**M9 — GPU optimization**](#m9) | 📋 **planned (2026-07-18)** — promoted from Backlog. GPU execution provider (DirectML / CUDA) behind config; the M2 model choice is EP-agnostic, so this constrains nothing upstream. Likely pulled forward by M8 if GLiNER's CPU latency misses the lean bar |
+| [M6 — Native Anthropic `/v1/messages`](#m6) | ✅ complete |
+| [M7 — NER latency](#m7) | ✅ complete |
+| [M7.1 — system-prompt cache + fixpoint NER fix](#m71) | ✅ complete · tag `v1.0.0` |
+| [M8 — GLiNER: contextual / open-label PII](#m8) | ✅ complete |
+| [M8.1 — national phone recognizer (opt-in)](#m81) | ✅ complete |
+| [M9 — GPU optimization](#m9) | 📋 planned |
 
 ---
 
@@ -1126,7 +1126,7 @@ M8 findings closed; no leak, fail-closed intact, fixpoint safe, window cap recal
 honest.
 
 <a id="m81"></a>
-### M8.1 — national phone recognizer (opt-in, per-locale) 🔨
+### M8.1 — national phone recognizer (opt-in, per-locale) ✅
 
 **Post-merge follow-up to M8 (2026-07-19). M8 pointed the ex-Backlog *"Locale phone national formats"* gap
 at GLiNER's context as the clean path; a feasibility study found a *deterministic* path that is better on
@@ -1168,7 +1168,8 @@ Numbers + the footprint analysis: **[DEVLOG 2026-07-19](DEVLOG.md) → *M8.1***.
 - [x] **Docs** — ARCHITECTURE (the recognizer + the accepted dep tradeoff + "the validator is not a locale
   discriminator: numbering plans overlap, which is privacy-safe"), TESTING (the new cases), READMEs
   (`PII_LOCALES` now enables GB/DE phone; the binary-size note), DEVLOG, this section.
-- [ ] **Builder→reviewer loop** — pending.
+- [x] **Builder→reviewer loop** — round 1 (2026-07-19): 1 finding (M8-R8, hardening, not a leak), closed;
+  **review-clean**.
 
 ### Review ledger — M8.1 → [`reviews/M8.md`](reviews/M8.md)
 **Round 4 (2026-07-19): 1 finding, not a leak.** Verified independently on both feature sets — 115 default /
@@ -1180,7 +1181,13 @@ covers it, verified).
 
 | ID | Title | Sev | Status |
 |---|---|---|---|
-| [M8-R8](reviews/M8.md#m8-r8) | Swallow guard blind spot: a longer *invalid* arm-1 match shadows the first of two adjacent numbers; only the **fixpoint** (not the bounded regex) prevents the single-pass miss — safety misattributed, latent if `redetect` is ever shortcut | hardening | [ ] |
+| [M8-R8](reviews/M8.md#m8-r8) | Swallow guard blind spot: a longer *invalid* arm-1 match shadows the first of two adjacent numbers; only the **fixpoint** (not the bounded regex) prevents the single-pass miss — safety misattributed, latent if `redetect` is ever shortcut | hardening | [x] |
+
+**Round 4 closed (2026-07-19).** Builder fixed source: the `national_phone_recognizer` doc no longer claims
+the bounded groups prevent a cross-boundary match (they bound the *length*); the real backstop — the
+`mask_all` fixpoint — is named, and a `mask_all`-level test (`adjacent_national_phones_are_both_masked_by_the_fixpoint`)
+now pins it, so a future `redetect` shortcut fails there instead of leaking. Rule promoted to
+ARCHITECTURE (next to `Scan`/fixpoint). **116 default lib green. M8.1 review-clean.**
 
 <a id="m9"></a>
 ## M9 — GPU optimization

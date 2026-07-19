@@ -322,13 +322,21 @@ fn fp_prone_recognizers(code: &str) -> Vec<Recognizer> {
 /// per-locale `phonenumber` validator. GB and DE share the regex (both use a `0` trunk
 /// prefix); only the validator's region differs.
 ///
-/// The regex enumerates a **bounded** number of digit groups on purpose — a compact run
-/// plus 2- and 3-group forms — so a match can never run across two adjacent numbers and
-/// swallow one (the "trailing number" bug the universal phone / IBAN patterns also guard
-/// against; an open `(?:[ -]?\d)+` would grab `020 7946 0958 0161 496 0000` as one
-/// over-long span that `is_valid` then rejects — a leak). Max ~15 chars → the pattern is
-/// length-bounded, so [`Scan::Overlapping`] stays linear (M4-R19). Every anchored arm
-/// uses ASCII `(?-u:\b)` (M4-R13) so a `0`-run inside a longer ASCII token
+/// The regex enumerates a **bounded** number of digit groups — a compact run plus 2- and
+/// 3-group forms — which bounds the match **length** (max ~15 chars): that keeps
+/// [`Scan::Overlapping`] linear (M4-R19) and stops an open `(?:[ -]?\d)+` from eating an
+/// unbounded digit run. It does **not** stop a match from crossing the boundary between two
+/// adjacent numbers — arm 1's greedy `\d{3,4}` can take the *trunk of the next* number
+/// (`0800 1111 0800`), an over-long span `is_valid` then **rejects**, which shadows the
+/// first number's shorter valid form in a single [`detect`](PiiDetector::detect) pass (the
+/// overlapping rescan resumes *forward* of the rejected match, so `find_at` can't return the
+/// shorter one). **That costs no coverage on the request path:** masking runs through
+/// [`Vault::mask_all`](crate::pii::anonymizer::Vault::mask_all), whose **fixpoint** re-detects
+/// — masking the second number un-shadows the first, and the next pass masks it. This is the
+/// same backstop the `Scan::Sequential` recognizers (Email/Secret) rely on for their chained
+/// case (M4-R11), made load-bearing here (M8-R8) and pinned by a `mask_all`-level test — so
+/// this recognizer must **never** override `redetect` to skip later passes. Every anchored
+/// arm uses ASCII `(?-u:\b)` (M4-R13) so a `0`-run inside a longer ASCII token
 /// (`user0207946095@…`) is not a candidate. Precision is the validator's job, not the
 /// regex's.
 fn national_phone_recognizer(validate: fn(&str) -> bool) -> Recognizer {
@@ -1449,10 +1457,12 @@ mod tests {
 
     #[test]
     fn national_phone_does_not_swallow_an_adjacent_number() {
-        // Two real GB numbers separated by a SINGLE space, no word between: the
-        // bounded-group regex must yield two spans, never one over-long span that
-        // is_valid() would then reject (a leak). Both start with `0`, so a naive open
-        // pattern would grab them as one.
+        // Two real GB numbers separated by a SINGLE space, no word between: an open
+        // `(?:[ -]?\d)+` would grab them as one over-long span that is_valid() rejects.
+        // Here the greedy match at position 0 is *already* the valid full number (the two
+        // 3-group numbers don't let a longer arm-1 match form), so single-pass detect()
+        // yields both. The *shadowing* sibling shape — where a longer invalid arm-1 match
+        // hides the first number in one pass — is M8-R8, pinned at the `mask_all` level below.
         let got = kinds_with(&["gb"], "020 7946 0958 0161 496 0000");
         let phones: Vec<&String> = got
             .iter()
@@ -1464,6 +1474,37 @@ mod tests {
                 && phones.iter().any(|t| *t == "0161 496 0000"),
             "both adjacent numbers must be detected separately, got {got:?}"
         );
+    }
+
+    #[test]
+    fn adjacent_national_phones_are_both_masked_by_the_fixpoint() {
+        // M8-R8: arm 1's greedy `\d{3,4}` can take the trunk of the *next* number
+        // (`0800 1111 0800`), an over-long span is_valid() rejects — which shadows the FIRST
+        // number's shorter valid form in a single detect() pass (the overlapping rescan
+        // resumes forward of the rejected match). The request path masks with
+        // `Vault::mask_all`, whose fixpoint re-detects: masking the second number un-shadows
+        // the first, and the next pass masks it. This makes that fixpoint reliance
+        // load-bearing and visible — a future `redetect` shortcut that skips later passes (an
+        // S4-style latency move) would fail HERE instead of leaking silently.
+        use crate::pii::anonymizer::Vault;
+        let detector = StructuredRecognizers::with_locales(&["gb"]);
+        for input in [
+            "0800 1111 0800 1111",     // two identical freephones — the shadowing shape
+            "0800 1111 0207 946 0958", // 2-group first, 3-group second
+            "call 0800 1111 0800 1111 now", // in prose
+        ] {
+            let mut vault = Vault::new();
+            let masked = vault.mask_all(input, &detector).unwrap();
+            assert!(
+                detector.detect(&masked).is_empty(),
+                "a national phone survived mask_all of {input:?}: {masked:?}"
+            );
+            assert_eq!(
+                vault.demask(&masked),
+                input,
+                "round-trip must be exact for {input:?}"
+            );
+        }
     }
 
     #[test]
