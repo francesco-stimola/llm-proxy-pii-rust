@@ -1238,6 +1238,25 @@ so **DirectML is the only GPU path here** (and the only vendor-agnostic one on W
 > higher-recall path viable at speed; optionally cut the ~4.7 s XLM-R turn), not a latency rescue.
 > XLM-R has no pre-shipped `model_fp16.onnx` (only `model.onnx` fp32 + int8); GLiNER's fp16 is on HF.
 
+- [ ] **Builder→reviewer loop** — round 1 (2026-07-20): 11 findings, **none a leak**. Verified
+  independently: 143 lib + all integration tests green, `clippy-onnx` / `clippy-directml` clean, and the
+  DirectML verdict **reproduced with the shipped tool** (CPU-int8 27.1/46.5/108.4 ms vs DML-int8
+  101.1/346.1/599.3 ms). Full record: [reviews/M9.md](reviews/M9.md).
+
+| Finding | Title | Severity | Done |
+|---|---|---|---|
+| [M9-R1](reviews/M9.md#m9-r1) | The server logs the **requested** provider as if it were the **effective** one — `build_session_reporting` was wired to the benchmark, not to production | observability | [ ] |
+| [M9-R2](reviews/M9.md#m9-r2) | A session pool can end up **heterogeneous** (some sessions on GPU, some on CPU), making the backend a per-request variable | correctness | [ ] |
+| [M9-R3](reviews/M9.md#m9-r3) | `--bench-providers` ignores `NER_INTRA_THREADS` / `NER_POOL_SIZE`, so its CPU baseline isn't the CPU the server runs — M7-R1's class, in a new place | correctness | [ ] |
+| [M9-R4](reviews/M9.md#m9-r4) | An unrecognized CLI argument (`--bench-provider`, `--help`) silently **starts a live proxy** instead of failing | hardening | [ ] |
+| [M9-R5](reviews/M9.md#m9-r5) | `engaged()` / `ok` reports **registration**, not execution: ORT's per-node CPU fallback is counted as an accelerator measurement | docs | [ ] |
+| [M9-R6](reviews/M9.md#m9-r6) | ARCHITECTURE contradicts itself on the fallback's safety in adjacent paragraphs ("bit-identical on any backend" vs "subtly different logits") | docs | [ ] |
+| [M9-R7](reviews/M9.md#m9-r7) | The provider table marks DirectML "✅ tested" like CPU, while the prose says no EP is trusted until the determinism guard is re-run | docs | [ ] |
+| [M9-R8](reviews/M9.md#m9-r8) | `--bench-providers` cannot benchmark a BERT-family model — it never sends `token_type_ids` | correctness | [ ] |
+| [M9-R9](reviews/M9.md#m9-r9) | The README sample output is fabricated, and demonstrates the exact coupled-axes error the section warns against | docs | [ ] |
+| [M9-R10](reviews/M9.md#m9-r10) | Source doc drift: `onnx.rs` still says GPU "comes later (M4)"; `load_onnx_ner`'s doc block was orphaned onto `resolve_ner_model` | docs | [ ] |
+| [M9-R11](reviews/M9.md#m9-r11) | The CPU fallback is **initialization-only**; a mid-life EP failure degrades silently and never re-arms, while SETUP says "always safe to try" | docs | [ ] |
+
 <a id="backlog"></a>
 ## Backlog — documented, not scheduled
 
