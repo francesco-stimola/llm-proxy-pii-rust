@@ -39,7 +39,7 @@ this table can't drift. A **release tag** is noted next to the milestone it was 
 | [M7 — NER latency](#m7) | ✅ complete |
 | [M7.1 — system-prompt cache + fixpoint NER fix](#m71) | ✅ complete · tag `v1.0.0` |
 | [M8 — GLiNER: contextual / open-label PII](#m8) | ✅ complete |
-| [M8.1 — national phone recognizer (opt-in)](#m81) | ✅ complete |
+| [M8.1 — national phone recognizer (opt-in)](#m81) | ✅ complete · tag `v1.1.0` |
 | [M9 — GPU optimization](#m9) | 🔨 code-complete |
 
 ---
