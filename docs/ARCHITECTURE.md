@@ -15,8 +15,8 @@ anonymized request upstream, and restores the original values in the response.
 - **Engine-agnostic detection** — everything sits behind the `PiiDetector` trait,
   so we can swap models or add engines without touching the proxy.
 - **CPU-first, GPU later** — correctness and reproducibility on CPU first; GPU is
-  a deferred (Backlog) optimization behind a feature flag. GPU behavior isn't
-  automatic — it depends on the model and quantization.
+  a deferred ([M9](ROADMAP.md#m9)) optimization behind a feature flag. GPU behavior
+  isn't automatic — it depends on the model and quantization.
 - **Textbook & lean** — idiomatic Rust, low RAM/CPU, no over-engineering.
 
 ## Hybrid detection (key decision)
@@ -45,7 +45,7 @@ unstructured-entity load.
   false-positive when always on. The pure-numeric 9-/11-digit IDs (BSN/NIF, DE/LV) accept a
   small fraction of arbitrary numbers on checksum alone (~18% of 9-digit tokens); this is an
   **accepted over-mask tradeoff** (M4-R6) — privacy-first, never a leak — not context-gated
-  (that would leak); the contextual precision path is GLiNER (Backlog).
+  (that would leak); the contextual precision path is GLiNER ([M8](ROADMAP.md#m8)).
 - **FP-prone** — ambiguous recognizers (e.g. national *phone* formats with no `+CC`) —
   **opt-in per locale** via `PII_LOCALES` (`fp_prone_recognizers`). None yet.
 
@@ -559,6 +559,36 @@ labels in class-id order), optional `NER_POOL_SIZE` (session pool for concurrenc
 A missing/failed model logs and falls back to structured-only. The model was chosen
 by *measurement* (XLM-R int8 — `docs/M2-NER-EVALUATION.md`, `docs/DEVLOG.md`).
 
+**GLiNER — contextual / open-label detection (M8, opt-in, off by default).** A *second* ML engine,
+`GLiNerDetector`, joins the composite when `GLINER_MODEL_PATH` (+ `GLINER_TOKENIZER_PATH` /
+`GLINER_CONFIG_PATH`) is set. Unlike the token-classification NER, GLiNER is a *zero-shot span
+extractor*: the entity types are fed to it **as text** (`"person"`, `"phone number"`, `"address"`), it
+scores every candidate **word-span × type**, and detection is a sigmoid threshold + greedy
+non-overlapping selection (`gliner_decode`, the span×label analogue of BIO `ner_decode`; the model I/O
+contract — GLiNER span-mode `markerV0`, six named inputs → `[1, num_words, max_width, num_types]` logits
+— is documented and verified against the real export in `src/pii/gliner.rs`). **It is not a successor to
+XLM-R:** measured on the shipped **int8** model its Person recall (~0.58) is below XLM-R's (~0.83), so it
+does not replace the NER — it *adds* what XLM-R can't do, the contextual kinds the deterministic layer
+can't anchor (a **bare national phone** with no `+CC`, a free-form address). It maps
+`"phone number" → Phone` / `"address" → Location` on purpose (email stays deterministic). Its overlap
+behaviour follows the kind, not the engine: a GLiNER **name** guess (`Person`/`Organization`/`Location`,
+so also `address`) is an NER kind and is **dropped whole** when it overlaps a structured span (M2-R7),
+while a GLiNER **`Phone`** is `is_structured()`, so `overlap` **union-merges** it with any overlapping
+structured span rather than dropping it — the checksum-backed kind still *names* the union, and both
+spans are masked. Either way a GLiNER false positive is an **over-mask, never a leak** — the standing
+tie-breaker. `NER_REQUIRED` means "**≥1** ML detector (XLM-R and/or GLiNER) must load and run unwrapped".
+Tunables: `GLINER_LABELS`, `GLINER_THRESHOLD` (default **0.15** — int8 confidences run low, set by a
+measured sweep), `GLINER_POOL_SIZE`, `GLINER_INTRA_THREADS`. Explicit local paths only for now (the
+airtight-privacy path). Decision + numbers: `docs/DEVLOG.md` 2026-07-19.
+
+> **GLiNER tags our own placeholders — and it is safe anyway (M5-R4, "GLiNER especially").** Being
+> zero-shot and context-driven, GLiNER *does* score `[PERSON_1]` as a person (int8 XLM-R does not — that
+> is why the docs singled it out). This cannot stall the fixpoint: `keep_maskable` drops an exact
+> `[KIND_N]` hit **by construction** (CC-08) and **S4** keeps GLiNER off every pass after the first
+> (`redetect → empty`, idempotent — masking a name never reveals a new one), so `mask_all` on
+> placeholder-dense text converges unchanged rather than 400ing. The `m5_r4`-style canary is
+> `tests/gliner_eval.rs::gliner_placeholder_inertness_canary`.
+
 **NER threading — the two knobs multiply (M7).** `NER_POOL_SIZE × NER_INTRA_THREADS` is the
 process's NER thread count under saturated load, and **the invariant is that the product fits the
 box**, not that either factor saturates it (`intra = 12` with `pool = 2` puts 24 threads on 12
@@ -793,8 +823,8 @@ cannot recognise as breaking.
 - **Over-mask, never leak** — the standing tie-breaker. Where precision and recall
   conflict, recall wins: the pure-numeric national IDs accept ~18% of arbitrary 9-digit
   tokens (M4-R6) and a union may swallow a bare `@domain`. Both are **accepted on
-  purpose**. The precision path is *context* (GLiNER, Backlog), never a keyword gate —
-  gating a recognizer on nearby words reintroduces leaks.
+  purpose**. The precision path is *context* (GLiNER, [M8](ROADMAP.md#m8)), never a keyword
+  gate — gating a recognizer on nearby words reintroduces leaks.
 - **Resolved (M1)**: the `Stage` signature threads a per-request `RequestContext`
   (carrying the `Vault`) from request to response.
 - **Resolved (M1.5)**: the scanned text fields are fixed — see *Robustness &

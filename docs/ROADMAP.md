@@ -37,7 +37,9 @@ completion**; findings, counts and closure notes live in each milestone's sectio
 | [**M6 — Native Anthropic `/v1/messages`**](#m6) | ✅ **code-complete**, and **verified live**: a real Claude Code session round-trips through the proxy (2026-07-16) |
 | [**M7 — NER latency**](#m7) | 🔨 **code-complete, review ledger closed** (21 findings / 8 rounds, all closed): **≥1.5× faster than pre-M7** (asserted floor; typically ~1.7–2.3×, scales with the box, **not asserted below 4 cores** — a strict no-op only at 1 core since the 2026-07-17 `NER_POOL_SIZE` default flip to `pool=1`). A realistic turn masks in **~4.7 s** at the shipped default on the reference box — **the ~3 s bar was missed; we stopped anyway** ([M7-R12](reviews/M7.md#m7-r12)). **CC battery — CLOSED (2026-07-18):** both postures, DBG-02 = 0 throughout; the fail-closed non-convergence 400 (CC-08/CC-05/CC-09, NER **sub-word fragmentation** on the dense system prompt) fixed by **[S4](#m71)** — re-run on the S4 binary, all three converge, **zero fixpoint 400** |
 | [**M7.1 — system-prompt cache + fixpoint NER fix**](#m71) | ✅ **complete (2026-07-18)** — **S4** (NER on pass 0 only) fixes the CC-05/CC-08 fail-closed 400, recall-validated (0 losses); **S3** (`CachingDetector`, exact-byte-keyed, can't mask less) memoizes the byte-identical system prompt's detection. 116 onnx lib tests, clippy clean, review-clean (round 9) |
-| [First tagged release `1.0.0`](#m6) | 🟢 **unblocked (2026-07-18)** — every gate is met: M6 route + M7 latency + M7.1 (S3/S4), the **CC battery is closed** (both postures, zero leak, zero fixpoint 400 on the S4 binary). Left is purely mechanical: a manual PR (`feat/m7-ner-latency` → `main`) → merge → tag |
+| [First tagged release `1.0.0`](#m6) | ✅ **released (2026-07-18)** — tag `v1.0.0` cut on `main` (`Cargo.toml` at `1.0.0`) after the CC battery closed. Every gate met: M6 route + M7 latency + M7.1 (S3/S4), both postures leak-clean, zero fixpoint 400 on the S4 binary |
+| [**M8 — GLiNER: contextual / open-label PII**](#m8) | ✅ **complete (2026-07-19), review-clean (3 rounds, 7 findings all closed)** — `GLiNerDetector` + `gliner_decode` built and **validated end-to-end against the real int8 model**; wired **opt-in** (`GLINER_MODEL_PATH`). **Measured verdict: addition, not successor** — matches XLM-R on Loc (0.91) / Org (1.00) but Person recall 0.58 < XLM-R 0.83, so XLM-R stays default; GLiNER adds contextual kinds (bare phone, address). 133 onnx / 109 default lib green, clippy clean. Numbers: [DEVLOG 2026-07-19](DEVLOG.md) |
+| [**M9 — GPU optimization**](#m9) | 📋 **planned (2026-07-18)** — promoted from Backlog. GPU execution provider (DirectML / CUDA) behind config; the M2 model choice is EP-agnostic, so this constrains nothing upstream. Likely pulled forward by M8 if GLiNER's CPU latency misses the lean bar |
 
 ---
 
@@ -209,7 +211,7 @@ upstream provider.
 - [x] **Validate the NER across its declared domain** — scored XLM-R int8 on all **10** languages: Person 0.83 / Org 1.00 / Loc 0.91 (per-language notes in DEVLOG 2026-07-13)
 - [x] Extend the corpus with multi-language cases (`multilingual_preview`) **and non-ASCII structured cases** (`non_ascii_scripts` — see M4-R13)
 - [x] Provider-agnostic verification — `e2e_masking_is_provider_agnostic`: `openai` vs `anthropic` presets → a byte-identical masked body upstream
-- **Locale phone national formats** → moved to Backlog (the FP-prone tier's first recognizer; the `+CC` arm already covers the unambiguous case)
+- **Locale phone national formats** → descoped from M4 (the FP-prone tier's first recognizer; the `+CC` arm already covers the unambiguous case) — now folded into [M8](#m8), where context (not a per-locale regex) is the clean path
 
 ### Review ledger — M4 → [`reviews/M4.md`](reviews/M4.md)
 **Seven review rounds, 24 findings — all closed.** More than every other milestone combined, because
@@ -983,58 +985,186 @@ less. With S4 in, the CC battery's non-convergence blocker is resolved (re-run p
     structured recognizers only; `Vault::mask_all` uses `try_detect` on pass 0 and `redetect` after (and for
     the fixpoint confirm). Fold in the latency win M4-R21 priced (~940 ms of a 4.2 s turn). Builder→reviewer.
 
-<a id="backlog"></a>
-## Backlog — documented, not scheduled
+<a id="m8"></a>
+## M8 — GLiNER: contextual / open-label PII detection ✅
 
-### Evaluate GLiNER — contextual-PII detector / potential XLM-R successor
-The path for **ambiguous, anchor-less PII** (a bare national phone, a free-form postal address) that the
-deterministic layer can't disambiguate and the current XLM-R (PER/ORG/LOC only) doesn't cover. It is also
-the clean **precision** path for the two accepted over-masks — and they are *different bugs*, which is why
-both are named here:
+**Promoted from Backlog 2026-07-18.** The path for **ambiguous, anchor-less PII** the deterministic layer
+can't disambiguate (a bare national phone, a free-form postal address) and the current XLM-R (PER/ORG/LOC
+only) doesn't cover. GLiNER is a *zero-shot, open-label* span extractor — you pass labels like `"person"` /
+`"phone number"` / `"address"` at inference and it matches by **context** — so it is a candidate
+**successor** to XLM-R (named entities *and* contextual PII in one model), not merely an add-on. Full
+implementation plan (stages, files, the span-decode design): **[DEVLOG 2026-07-18](DEVLOG.md) → *M8 GLiNER
+implementation plan*.** Model landscape in [`M2-NER-EVALUATION.md`](M2-NER-EVALUATION.md).
+
+> **GLiNER ≠ Piiranha, and that difference is why this is open.** Piiranha (a *fixed-label* mDeBERTa
+> token-classifier) was **measured and rejected** at M2 (~0 recall on natural sentences — it fired on
+> subword fragments). GLiNER is the *opposite* architecture: open-label span scoring, matched by context.
+> It was set aside at M2 for *first-version scaffolding simplicity* — a separate detector was more
+> integration than a first pass warranted — **not** for any capability doubt. **When this is picked up, the
+> evolution to evaluate is GLiNER, not Piiranha.**
+
+**Two accepted over-masks this targets — different bugs, both named because a model change touches both:**
 - [M4-R6](reviews/M4.md#m4-r6) — a **deterministic recognizer** over-matching pure-numeric IDs (~18% of
-  9-digit tokens). Its path out is **context**, which is GLiNER's whole premise.
-- **M7's `(Organization, "An")`** — the **NER** emitting a two-character fragment of `"Anthropic's"`, so
-  every Claude Code system prompt reaches the model as `"[ORG_1]thropic's"` ([M7-R7](reviews/M7.md#m7-r7);
-  mechanism in [ARCHITECTURE](ARCHITECTURE.md)). This is a **span-quality** problem, so it is the one of
-  the two that a **model change alone** could fix — and it also costs a second fixpoint pass, which ties
-  this item to M7's S4 lead.
+  9-digit tokens). Its path out is **context**, GLiNER's whole premise. A *precision* gain, not the primary
+  goal (recall stays metric #1).
+- **M7's `(Organization, "An")`** ([M7-R7](reviews/M7.md#m7-r7)) — the **NER** emitting a two-character
+  fragment of `"Anthropic's"`, so every Claude Code system prompt reaches the model as `"[ORG_1]thropic's"`.
+  A **span-quality** problem a better model fixes at the source. **S4 already made it non-fatal** (the NER
+  runs once, so the fragment no longer chains the fixpoint into a 400); M8 could make it non-existent.
 
-**GLiNER ≠ Piiranha.** Piiranha (a *fixed-label* mDeBERTa token-classifier) was **measured and rejected**
-at M2 (~0 recall on natural sentences). GLiNER is a *zero-shot, **open-label*** span extractor — you pass
-labels like `"phone number"` at inference and it matches by **context** — and is **not yet evaluated**. It
-could be a single more-capable **successor** to XLM-R (named entities *and* contextual PII in one model).
+**And the recall frontier it opens — the ex-Backlog *"Locale phone national formats"*, folded in here.**
+The two over-masks above are *precision*; GLiNER's larger prize is **recall on PII the platform cannot
+catch today**. A bare national phone with no `+CC` anchor (UK `020 …`, DE `030 …`) collides with ordinary
+number sequences, so the deterministic layer deliberately does **not** match it (the
+`fp_prone_recognizers(code)` seam is wired and empty, gated by `PII_LOCALES`) and XLM-R doesn't cover phone
+numbers at all — so it goes **upstream unmasked**. That is the gap a regex can't close without false
+positives and **context can**: GLiNER's `"phone number"` / `"address"` labels are the clean path (the
+un-anchored phone and the free-form address are exactly the new corpus cases the S2 eval must add).
 
-Needs a **measured eval** (score `gliner_multi_pii-v1` int8 through the hybrid on the corpus; CPU latency /
-RAM against the lean bar) and a **separate detector + span decode** (it is *not* token-classification, so
-not a drop-in). Detail in [`M2-NER-EVALUATION.md`](M2-NER-EVALUATION.md).
+**Measure first — the milestone is empowered to say no.** Same non-negotiable as M2: no heavy model
+pre-emptively. GLiNER is scored through the **hybrid resolver** (not the NER alone), int8, against the lean
+CPU bar, *before* it is adopted — and the eval can reject it, exactly as M7 stopped at its bar and Piiranha
+was rejected at M2. The decision it produces — **successor** (replace XLM-R), **addition** (run alongside
+for contextual kinds only), or **rejected** — gates everything downstream.
 
-> **Why it's backlog and not done:** GLiNER was set aside for *first-version scaffolding simplicity* — a
-> separate detector was more integration than a first pass warranted. **Not** for any capability doubt.
-> That is the **opposite** of Piiranha, which is a *measured* dead-end on prose. **When this is picked up,
-> the evolution to evaluate is GLiNER, not Piiranha.**
+**Done 2026-07-19 — measured, and shipped opt-in (the verdict is *addition, not successor*).** Built and
+validated **end-to-end against the real model** (`onnx-community/gliner_multi_pii-v1` int8): a
+`GLiNerDetector` + `gliner_decode` behind the `PiiDetector` trait, wired **opt-in** via `GLINER_MODEL_PATH`.
+At the measured-optimal threshold (**0.15**) int8 GLiNER matches XLM-R on **Location (0.91)** and
+**Organization (1.00)** — but its **Person recall is 0.58 vs XLM-R's 0.83** (single-word / CJK / Arabic
+names it never scores), so replacing XLM-R would regress the most important kind. **So XLM-R stays the
+default NER; GLiNER ships off by default**, enabled to add the contextual, open-label kinds XLM-R can't — a
+**bare national phone** (no `+CC`) and a free-form address. Full numbers + threshold sweep + the decision:
+[DEVLOG 2026-07-19](DEVLOG.md). **The verdict is now measured across the whole quantization spread**
+(int8 / fp16 / fp32): less aggressive quantization lifts Person recall 0.58 → 0.67 (fp16 ≡ fp32, since ORT
+up-casts fp16→fp32 on CPU — so fp16 is the higher-recall option, ~580 MB; fp32 is pointless on CPU) but is
+**still < XLM-R's 0.83** — the residual gap is the *model*, not the quantization. Review-clean (3 rounds,
+7 findings).
 
-### Locale phone national formats *(the FP-prone tier — moved out of M4)*
-National phone numbers with no `+CC` anchor (UK `020 …`, DE `030 …`) collide with ordinary number
-sequences, so they're false-positive-prone. The `fp_prone_recognizers(code)` seam is wired and empty, gated
-by `PII_LOCALES`. The universal `+CC` arm already catches the unambiguous case. **The clean way to catch
-the ambiguous form is *context*, not regex** — so this really belongs to the GLiNER escalation above.
+### Scope
+- [x] **The ONNX I/O contract, verified from the real export first (S0).** GLiNER is **not**
+  token-classification: its graph takes extra inputs (the entity types as text + word/span masks) and emits
+  **span logits**, and the exact input/output names & shapes differ between community exports. Pin
+  `onnx-community/gliner_multi_pii-v1` at a revision and *document* its contract before building the decode
+  — building against a guessed contract is the trap.
+- [x] **`GLiNerDetector` + a span-decode path (S1).** A new detector (`src/pii/gliner.rs`) behind the `onnx`
+  feature, and a model-independent `gliner_decode` ((span, label, score) → threshold → greedy non-overlap →
+  `PiiEntity`), unit-tested without a model — the span×label analogue of today's BIO `ner_decode`. Slots
+  into `CompositeDetector` behind the `PiiDetector` trait like `OnnxNerDetector`, so the pipeline is
+  untouched.
+- [x] **Open-label config → `PiiKind` map (S1).** `GLINER_LABELS` is a list of natural-language types
+  (`"person"`, `"organization"`, `"location"`, `"phone number"`, …), each mapped to a `PiiKind`. Start by
+  mapping to **existing kinds** (phone number → `Phone`, address → `Location`) so the placeholder vocabulary
+  and de-mask are unchanged; a genuinely-new kind (a free-form `Address`) is a deliberate `PiiKind` addition
+  the eval must justify — it ripples through `label`/`from_label`/`priority`/`is_structured`.
+- [x] **The measured eval + the decision (S2).** `tests/gliner_eval.rs` (`#[ignore]`, `--features onnx`)
+  scores GLiNER int8 through the hybrid on an **extended** `ner_cases.json` (add contextual-PII cases: bare
+  national phones, free-form addresses, single-word names) — recall / precision / F1 per type + CPU latency /
+  RAM / size vs XLM-R int8. **Recall is metric #1** (a miss is a leak); to be a *successor* it must at least
+  match XLM-R's M4 10-language floor (Person 0.83 / Org 1.00 / Loc 0.91). Numbers → DEVLOG.
+- [x] **Chunking with the shared label-prefix budget (S3).** GLiNER prepends the labels to **every** window,
+  so the usable text budget is `model_max − prefix − specials − drift`, not the whole sequence — the more
+  labels, the smaller the window. Port M5's chunking discipline (the compile-time headroom invariant
+  [M5-R2](reviews/M5.md#m5-r2)/[M5-R10](reviews/M5.md#m5-r10), enforcement at the single choke point)
+  recomputed for a budget the labels eat into. Guard: every re-tokenized window + its prefix stays under
+  GLiNER's max.
+- [x] **Wire into load + the model-swap canaries (S4).** Extend `load_onnx_ner`/`hf.rs` for the pinned repo
+  (revision-pinned fetch; a community conversion — scoring against the corpus *is* the trust check). Fail
+  closed under `NER_REQUIRED`, `FailOpen`-wrapped otherwise (the [M5-R7](reviews/M5.md#m5-r7) rule holds: a
+  threshold may degrade GLiNER's own recall, never decide the caller's posture). Override `redetect` → empty
+  **with the 0-loss recall measurement re-run for GLiNER** (S4's argument is per-model), and **re-run the
+  `m5_r4` placeholder-inertness canary against the real GLiNER model** — the docs already flag "GLiNER
+  especially" ([M5-R4](reviews/M5.md#m5-r4), [M7-R23](reviews/M7.md#m7-r23)); inertness is enforced by
+  construction since S4, but the canary is how a filter-leaning idempotent model is caught.
+- [x] **Docs + builder→reviewer (S5).** ARCHITECTURE (the span decode, the label config, the not-a-successor
+  decision), TESTING (the smoke / eval / inertness-canary harness), READMEs (the new env + the detection
+  matrix), DEVLOG. **Reviewer loop closed** (3 rounds, 7 findings, all closed — see the ledger below).
 
-### GPU optimization *(was M4 — deferred 2026-07-12)*
-Faster inference once the model is locked. **Deferred on purpose:** the M2 model choice is
+> **If the CPU latency misses the lean bar, that is the trigger for [M9](#m9), not a reason to ship slow.**
+> GLiNER int8 is heavier than XLM-R int8; the escalation path
+> ([`M2-NER-EVALUATION.md`](M2-NER-EVALUATION.md)) is explicit that a GPU EP is how a heavier model earns
+> its place — so M8's eval is what may *pull M9 forward*.
+
+### Review ledger — M8 → [`reviews/M8.md`](reviews/M8.md)
+**Builder→reviewer loop CLOSED (2026-07-19) — 7 findings across 3 rounds (5 → 2 → 0), all closed; none a
+leak, none a fail-open regression.** Findings recorded here as a compact ledger (id · title · sev ·
+status); the full entry + fix + closure note lives in [`reviews/M8.md`](reviews/M8.md).
+
+**Round 1 (2026-07-19): 5 findings — none a leak, none a fail-open regression.** Verified independently:
+108 default / 132 onnx lib green, clippy + fmt clean, and all three gated GLiNER tests reproduced against
+the real int8 model (Person 0.583 / Org 1.00 / Loc 0.909 — the DEVLOG numbers to the digit; the `markerV0`
+tensor contract decodes correctly on the real export). The fixpoint is **provably safe** with GLiNER in the
+composite (convergence rests on S4's `redetect → empty`, not on `keep_maskable`), a GLiNER `Phone` flows
+soundly through the union-merge, and *addition, not successor* is honestly recorded. Findings are
+hardening / test-coverage / docs.
+
+| ID | Title | Sev | Status |
+|---|---|---|---|
+| [M8-R1](reviews/M8.md#m8-r1) | GLiNER chunking has no choke-point ceiling guard — re-tokenized `seq` never checked vs `max_len` (the S3 "port M5's discipline" item, only half-delivered) | hardening | [x] |
+| [M8-R2](reviews/M8.md#m8-r2) | GLiNER's multi-window chunking path has never run against the real model (all gated inputs are single-window) | test-cov | [x] |
+| [M8-R3](reviews/M8.md#m8-r3) | ARCHITECTURE says a GLiNER guess "loses in overlap" — false for its `Phone`, which is `is_structured()` and is union-merged | docs | [x] |
+| [M8-R4](reviews/M8.md#m8-r4) | `gliner_decode.rs` had 11 unit tests; a 12th was added to match DEVLOG/TESTING | docs | [x] |
+| [M8-R5](reviews/M8.md#m8-r5) | `load_gliner` silently disables GLiNER on partial config / an out-of-range `GLINER_THRESHOLD` | hardening | [x] |
+
+**Round 2 (2026-07-19): closure verification — all 5 hold.** Re-verified 109 default / 133 onnx lib green
+(clean shell), clippy + fmt clean, all four gated tests reproduced on the real int8 model. The R1/R2 window
+cap is **correct and recall-preserving** — independently confirmed with a throwaway real-model probe that a
+name is detected at every offset in a capped window and mid-way through multi-window fields. Two new
+findings, both low, neither a leak.
+
+| ID | Title | Sev | Status |
+|---|---|---|---|
+| [M8-R6](reviews/M8.md#m8-r6) | `required_ner_is_fatal_when_absent` is non-hermetic — ambient `GLINER_MODEL_PATH` (the M8 gated-test env) breaks the onnx lib suite | test-quality | [x] |
+| [M8-R7](reviews/M8.md#m8-r7) | window-cap recall rationale mis-explains *why* it works (measured: bounded context, not overlap-near-start); the two knobs have different jobs | docs | [x] |
+
+**Round 3 (2026-07-19): both closures verified — [M8 review-clean](reviews/M8.md#review-3).** Reproduced the
+R6 repro then confirmed 133/0 with the gated env set; R7 rationale corrected. No new findings. All seven
+M8 findings closed; no leak, fail-closed intact, fixpoint safe, window cap recall-preserving, decision
+honest.
+
+<a id="m9"></a>
+## M9 — GPU optimization
+
+**Promoted from Backlog 2026-07-18** *(was slated for M4, deferred 2026-07-12)*. Faster inference once the
+model is locked. **Deferred on purpose, and still correctly deferred:** the M2 model choice is
 **execution-provider-agnostic** (standard ONNX, runs on any `ort` EP), so GPU constrains nothing upstream —
 no reason to spend on it until real latency/load demands it. On this Windows/no-admin box the natural EP is
-**DirectML** (any DX12 GPU, no CUDA/admin); going to GPU is mostly a config change (swap the EP; int8 →
-the pre-shipped `model_fp16.onnx`).
+**DirectML** (any DX12 GPU, no CUDA/admin); going to GPU is mostly a config change (swap the EP; int8 → the
+pre-shipped `model_fp16.onnx`).
+
 - [ ] GPU execution provider (CUDA / DirectML) behind config
 - [ ] Quantization tuning; benchmark against the CPU baseline
 
+> **The likely trigger is [M8](#m8).** GLiNER int8 is heavier than XLM-R int8; if its measured CPU latency
+> misses the lean bar, the escalation path ([`M2-NER-EVALUATION.md`](M2-NER-EVALUATION.md)) is to pull this
+> forward — a GPU EP + the `model_fp16.onnx` variant is how a heavier model becomes viable. On CPU, fp16 is
+> up-cast to fp32 (no speedup), so fp16 only pays off *here*.
+
+<a id="backlog"></a>
+## Backlog — documented, not scheduled
+
 ### Option B — native provider adapters
-The heavy alternative to M3's Option A: support each provider's **native** API (e.g. Anthropic's
-`POST /v1/messages`) instead of its OpenAI-compat endpoint. Needs a **per-provider, schema-aware masking
-adapter** (Anthropic uses `system`, content blocks, `tool_use`/`tool_result`, `tools[].input_schema`), plus
-native auth and paths. **Higher leak risk — a missed schema field is a leak** — so it stays unscheduled
-until a concrete need outweighs the OpenAI-compat path. **The Anthropic slice now has that need and is
-promoted to [M6](#m6)** (Claude Code passthrough); native adapters for *other* providers remain here.
+The heavy alternative to M3's Option A: support a provider's **native** API instead of its OpenAI-compat
+endpoint, via a **per-provider, schema-aware masking adapter** — **higher leak risk, because a missed schema
+field is a leak.** The rule holds: unscheduled until a concrete **client with a real user** needs a native
+schema that Option A can't serve.
+
+**The Anthropic slice is done — [M6](#m6) shipped native `POST /v1/messages` for Claude Code, and it is the
+blueprint** for any future adapter ("native-in, mask-in-place": walk the native schema directly, no OpenAI
+round-trip). What remains here is narrower than "every provider", because **Option A already covers any
+client that speaks OpenAI-compat** — OpenAI, Azure OpenAI, Copilot, and the OpenAI-compat endpoints
+Gemini / Mistral / Cohere all expose. A *native* adapter earns its leak risk only for a client that speaks a
+provider's **native** protocol:
+- **Google Gemini native** (`generateContent`: `contents[].parts[]`, `systemInstruction`,
+  `functionCall` / `functionResponse`, `tools[].functionDeclarations`) — **the one strong analogue to the
+  M6 trigger**: a native **Gemini CLI** is to Gemini what Claude Code is to Anthropic. If a real user wants
+  to front it, this is the next native adapter, following the M6 blueprint.
+- **Bedrock / Vertex** hosting endpoints — possible but heavier: the hard part is **native auth** (SigV4 /
+  GCP), not the schema. Already named out-of-scope by [M6](#m6).
+
+**Recommendation: keep, don't delete.** It records *why* Option A was chosen and names the single realistic
+next trigger (Gemini) — deleting it would just re-raise both questions later. Not deleted, not scheduled: it
+waits for a real user behind a native client, exactly as the Anthropic slice waited for Claude Code.
 
 ### Request-level provider routing *(moved out of M3)*
 Provider selection is **per-instance** today (`UPSTREAM_PROVIDER`, chosen at startup), which already covers

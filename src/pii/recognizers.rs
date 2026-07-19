@@ -260,7 +260,7 @@ fn national_id_recognizers() -> Vec<Recognizer> {
         // standalone 9-digit token that happens to check out is masked. That is the
         // privacy-first choice (over-mask, never leak) — context-gating it would
         // reintroduce leaks (M4-R1). The clean precision path is the contextual
-        // GLiNER detector (Backlog), not a keyword gate.
+        // GLiNER detector (M8), not a keyword gate.
         Recognizer {
             kind: PiiKind::NationalId,
             regex: Regex::new(r"(?-u:\b)\d{9}(?-u:\b)").unwrap(),
@@ -307,8 +307,9 @@ fn national_id_recognizers() -> Vec<Recognizer> {
 #[allow(clippy::match_single_binding)]
 fn fp_prone_recognizers(code: &str) -> Vec<Recognizer> {
     match code.trim().to_ascii_lowercase().as_str() {
-        // e.g. "gb" => vec![ UK national phone formats ] — deferred to the
-        // docs/ROADMAP.md **Backlog** ("Locale phone national formats").
+        // e.g. "gb" => vec![ UK national phone formats ] — the ex-Backlog "Locale
+        // phone national formats", now folded into docs/ROADMAP.md **M8** (GLiNER):
+        // the clean path for the un-anchored form is context, not a per-locale regex.
         _ => Vec::new(),
     }
 }

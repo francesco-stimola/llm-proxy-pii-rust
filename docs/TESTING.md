@@ -192,6 +192,14 @@ false positive): `email`, `phone`, `ssn`, `credit_card`, `iban`, `secret`,
 - EVAL-01 — `tests/ner_eval.rs` (`--features onnx`, `#[ignore]`d): scores a live model against `ner_cases.json` through the hybrid resolver. **Run 2026-07-12** (XLM-R int8 vs Piiranha — see DEVLOG); run with `-- --ignored --nocapture` once a model is configured (`NER_MODEL_REPO` auto-download or `NER_MODEL_PATH` explicit).
 - EVAL-02 — `tally_counts_duplicates_as_multiset` (`tests/ner_eval.rs`, non-network): the harness scores TP/FP/FN as a multiset, so a duplicate `(kind, text)` can't inflate recall (M2-R10).
 
+### M8 — GLiNER (contextual / open-label, feature `onnx`)
+- GLINER-DEC-01…12 — `src/pii/gliner_decode.rs` unit tests (**no model**): the regex word splitter (reference `\w+(?:[-_]\w+)*|\S` — separates trailing punctuation, handles multibyte), `gliner_label_to_kind` (incl. `phone number → Phone`, `address → Location`; email stays `None`), `parse_gliner_labels` **fails closed** on an unmappable label, and `decode_spans` (sigmoid threshold, greedy non-overlap, multi-word spans, out-of-range/malformed spans skipped not indexed).
+- GLINER-WIN-01…05 — `src/pii/gliner.rs` unit tests (**no model**): `GlinerParams::from_config_json` (fields + published defaults) and `plan_word_windows` (single window, token-budget split with an N-word overlap, an oversized single word in its own window, empty).
+- SMOKE-GLINER *(live, `--features onnx`, `#[ignore]`d)* — `tests/gliner_eval.rs::smoke_gliner_detects_known_entities`: the **S0 validation** — proves the tensor contract on the **real** int8 model (Mario Rossi→Person, Google→Org, Milano→Location, `020 7946 0958`→Phone). If `words_mask` / `span_idx` / the logits layout were wrong these would not decode. Gated on `GLINER_MODEL_PATH` / `GLINER_TOKENIZER_PATH` / `GLINER_CONFIG_PATH`.
+- GLINER-CHUNK *(live, `#[ignore]`d)* — `gliner_chunks_a_large_field_and_keeps_recall`: exercises the **multi-window** path on a field far longer than one window — asserts it runs **without error** (chunking + the M8-R1 `max_len` choke-point guard don't crash/spuriously-fail) and keeps recall on a well-positioned entity. The guard against the seq≈384 all-low-logits zone + the `MAX_WINDOW_TEXT_TOKENS`=100 recall cap (M8-R1/R2).
+- GLINER-EVAL *(live, `#[ignore]`d)* — `evaluate_gliner_against_corpus`: scores GLiNER int8 through the hybrid on `ner_cases.json`. **Run 2026-07-19** — the *not-a-successor* verdict (Person 0.58 < XLM-R 0.83; Loc 0.91 / Org 1.00 at the measured-optimal threshold 0.15). Numbers + sweep in DEVLOG.
+- GLINER-INERT-01 *(live, `#[ignore]`d)* — `gliner_placeholder_inertness_canary`: the **M5-R4 "GLiNER especially"** canary. Confirms GLiNER **does** tag `[KIND_N]` placeholders (unlike int8 XLM-R) yet `mask_all` **converges** on placeholder-dense text (`keep_maskable` drops exact hits by construction + S4 keeps it off later passes). The durable model-swap canary for GLiNER.
+
 ### M2.5 — HuggingFace model management (feature `onnx`, no network)
 - HF-01 — `parse_id2label` orders labels by class id (not JSON order), matches the XLM-R config, and **fails closed** on non-contiguous ids / missing `id2label` / non-integer keys / **empty `id2label`** (`empty_id2label_is_an_error`, M2.5-R2) (`src/pii/hf.rs`).
 - HF-02 — `standard_hub_cache_dir` yields the conventional `<home>/.cache/huggingface/hub` tail (not `hf-hub`'s `/tmp` fallback).
@@ -708,7 +716,7 @@ its shape is **asserted**, not assumed.
   detection that is one of our own `[KIND_N]` tokens (FC-07), so a model that tags `[PERSON_1]` can no
   longer stall the fixpoint. This test still asserts XLM-R tags **zero** entities across a 3 040-byte
   placeholder-only field — large enough to exercise the **chunked** path — but its role shifted from *the*
-  safety proof to **the model-swap canary**: **GLiNER** (Backlog) is *zero-shot, open-label, context-driven*
+  safety proof to **the model-swap canary**: **GLiNER** ([M8](ROADMAP.md#m8)) is *zero-shot, open-label, context-driven*
   and could read `Contact [PERSON_1] at [ORG_1]` and tag both — this test runs the NER **directly** on
   placeholder text and catches exactly that. Run it on a swap to know **whether** the model leans on the
   filter; correctness never depends on it (S4 converges the fixpoint regardless). **Post-S4 (M7-R23):** the

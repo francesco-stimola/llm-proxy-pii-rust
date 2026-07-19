@@ -8,10 +8,13 @@
 pub mod anonymizer;
 pub mod cache;
 pub mod composite;
+pub mod gliner_decode;
 pub mod ner_decode;
 pub mod overlap;
 pub mod recognizers;
 
+#[cfg(feature = "onnx")]
+pub mod gliner;
 #[cfg(feature = "onnx")]
 pub mod hf;
 #[cfg(feature = "onnx")]

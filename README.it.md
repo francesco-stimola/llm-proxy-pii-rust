@@ -151,6 +151,14 @@ Memoria residente (Windows, build debug, a riposo dopo l'avvio; solo-strutturato
 | **solo strutturato** (feature di default) | **~10 MB** | ~36 MB | niente — sono regex |
 | **ibrido**, default `NER_POOL_SIZE=1` (`--features onnx`, XLM-R int8) | **~563 MB** | ~585 MB | il NER: **una** sessione ONNX |
 | **ibrido**, `NER_POOL_SIZE=2` | ~834 MB | ~856 MB | **due** sessioni — il modello tenuto due volte; ogni sessione aggiunge **~270 MB** |
+| **ibrido + GLiNER int8** solo (opt-in, `GLINER_MODEL_PATH`, XLM-R spento) | ~537 MB | ~560 MB | la singola sessione di GLiNER — paragonabile a XLM-R da solo (M8) |
+| **ibrido, XLM-R + GLiNER int8** (entrambi, opt-in) | **~1073 MB** | ~1094 MB | **due modelli caricati** — GLiNER aggiunge **~510 MB** sopra XLM-R (M8) |
+
+> **GLiNER (M8) è opt-in e *additivo*** — **non** sostituisce il NER (misurato: su int8 la sua recall
+> sui nomi è sotto quella di XLM-R — vedi [ROADMAP M8](docs/ROADMAP.md#m8)). Abilitato insieme a XLM-R
+> carica un **secondo** modello, quindi considera la RAM: **~1,07 GB** per entrambi contro ~563 MB per
+> il solo XLM-R (misurato). Esegui GLiNER *al posto* di XLM-R (~537 MB) solo se vuoi specificamente le
+> sue categorie contestuali e accetti la recall più debole sui nomi.
 
 Il livello deterministico è sostanzialmente gratis; **il modello è tutto il costo**, e scala col
 pool: **~290 MB di base condivisa più ~270 MB per sessione** (misurato — 563 MB a `pool=1`, 834 MB a
@@ -264,7 +272,8 @@ strumenti cambia in fretta; verifica la doc corrente di ciascuno prima di farci 
 | **pi** (`@earendil-works/pi`) | ✅ | un provider con `"api": "openai-completions"`, `"baseUrl": ".../v1"` |
 | **GitHub Copilot CLI** | ✅ | BYOK: `COPILOT_PROVIDER_BASE_URL=http://127.0.0.1:8080/v1` (il modello deve supportare tool + streaming) |
 | **GitHub Copilot Chat** (VS Code) | ✅ | BYOK → un provider "OpenAI Compatible" puntato al proxy (solo chat) |
-| **Claude Code** · SDK Anthropic | ✅ novità (M6) | puntalo al proxy con `UPSTREAM_PROVIDER=anthropic`; il body nativo `/v1/messages` è mascherato **in place** (nessuna traduzione OpenAI). *La verifica end-to-end dal vivo contro Anthropic reale è il [gate `1.0.0`](docs/ROADMAP.md#m6) ancora aperto.* |
+| **Claude Code** · SDK Anthropic | ✅ (M6) | puntalo al proxy con `UPSTREAM_PROVIDER=anthropic`; il body nativo `/v1/messages` è mascherato **in place** (nessuna traduzione OpenAI). Verificato dal vivo end-to-end contro Anthropic reale. |
+| **Client nativi di altri vendor** — es. la **Gemini CLI** (API Gemini nativa), gli SDK nativi Bedrock / Vertex | ❌ **non supportati** | parlano il protocollo **nativo** di un vendor che il proxy non serve. Il proxy maschera i client OpenAI-compatibili (sopra) e il `/v1/messages` nativo di Anthropic (M6) — *nient'altro*. Aggiungere un altro schema nativo richiede un adapter per-provider — **[Opzione B, Backlog](docs/ROADMAP.md#backlog)** (Gemini è il prossimo candidato nominato). |
 
 > **Il discrimine è il base URL, non il brand.** GitHub Copilot compare su *entrambi* gli assi — un
 > preset *upstream* (`UPSTREAM_PROVIDER=copilot`) **e**, via BYOK, un *client* (Copilot CLI / Chat):
@@ -277,6 +286,16 @@ anche come *client nativo*** — **M6** serve il `/v1/messages` nativo di Anthro
 contenuto, `tool_use`/`tool_result`, streaming), così un client nativo come Claude Code è mascherato
 senza una modalità OpenAI-compat. La rotta è registrata solo quando `UPSTREAM_PROVIDER=anthropic`; su
 qualsiasi altro upstream `/v1/messages` restituisce ancora 404.
+
+> **Detto chiaramente: esistono solo due superfici native — OpenAI-compatibile e Anthropic
+> `/v1/messages`.** Un coding agent legato al protocollo **nativo di un altro vendor** **non** è
+> mascherato. Il caso concreto oggi è la **Gemini CLI** (`generateContent` nativo di Gemini); gli SDK
+> nativi Bedrock / Vertex sono la stessa classe. Un client simile richiederebbe un **adapter nativo
+> per-provider schema-aware**, e un campo di schema mancato è un leak — quindi è lavoro deliberato e
+> **non schedulato**, tracciato come [**Opzione B — adapter provider nativi**](docs/ROADMAP.md#backlog)
+> (con Gemini indicato come il più probabile prossimo). Finché non esiste un adapter, usa un agente del
+> genere solo tramite una modalità OpenAI-compatibile / BYOK se ne ha una; se parla solo l'API nativa
+> del suo vendor, il proxy non può ancora proteggerlo.
 
 ---
 
@@ -311,10 +330,36 @@ Tutto è pilotato da variabili d'ambiente.
 | `NER_MODEL_REVISION` | `478a2a3` | Revisione fissata per il download automatico |
 | `NER_POOL_SIZE` | `1` | Dimensione del pool di sessioni ONNX concorrenti. **Default `1`** = una sessione — la forma per singolo client (~563 MB, tutto il box per richiesta). Alzalo a **`N`** per un proxy centralizzato: ~30% di throughput in più a ~270 MB di RAM in più per sessione (vedi la nota sulla latenza sopra) |
 | `NER_INTRA_THREADS` | *derivato* | Thread **per sessione**. Default `max(1, core / NER_POOL_SIZE)` — le due manopole si **moltiplicano**, e il prodotto deve stare nella macchina. Impostala solo se sai perché |
-| `NER_REQUIRED` | disattivato | **Fail closed per i nomi**: un NER mancante o fallito blocca la richiesta (400) invece di degradare silenziosamente al solo strutturato |
+| `NER_REQUIRED` | disattivato | **Fail closed per i nomi**: se impostato, **almeno un** detector ML (il NER e/o GLiNER sotto) deve caricarsi, e ognuno caricato gira "unwrapped" — un fallimento blocca la richiesta (400) invece di degradare silenziosamente al solo strutturato |
 
 Senza né `NER_MODEL_PATH` né `NER_MODEL_REPO`, la build esegue semplicemente il solo rilevamento
 strutturato.
+
+</details>
+
+<details>
+<summary><b>GLiNER (entità contestuali / open-label) — <code>--features onnx</code>, opt-in</b></summary>
+
+<br>
+
+Un **secondo** motore ML opzionale (M8). GLiNER è un *estrattore di span zero-shot* — rileva la PII
+contestuale e open-label che il layer deterministico non riesce ad ancorare e che il NER XLM-R non
+copre: un **telefono nazionale** senza `+CC`, un **indirizzo** libero. È **disattivato di default e non
+è un successore** di XLM-R — sul modello int8 la sua recall sui nomi è più bassa — quindi *aggiunge* al
+NER invece di sostituirlo (decisione misurata: `docs/DEVLOG.md` 2026-07-19).
+
+| Variabile | Default | Scopo |
+|---|---|---|
+| `GLINER_MODEL_PATH` + `GLINER_TOKENIZER_PATH` + `GLINER_CONFIG_PATH` | *(non impostate)* | File locali espliciti (`.onnx` + `tokenizer.json` + il `gliner_config.json` del modello) — **zero chiamate in uscita**. Non impostate = GLiNER spento |
+| `GLINER_LABELS` | `person,organization,location,phone number,address` | Tipi di entità in linguaggio naturale (separati da virgola); ognuno mappa a un `PiiKind` (un'etichetta non mappabile è rifiutata) |
+| `GLINER_THRESHOLD` | `0.15` | Soglia di probabilità per span — bassa perché le confidenze del modello int8 sono basse (misurato); più bassa = più recall, più over-mask |
+| `GLINER_POOL_SIZE` / `GLINER_INTRA_THREADS` | `1` / *derivato* | Pool di sessioni + thread per sessione, stessa forma delle manopole del NER (si moltiplicano) |
+
+Il modello testato è `onnx-community/gliner_multi_pii-v1` (int8 `model_quantized.onnx`). Per **recall più
+alta sui nomi** a più RAM, punta invece `GLINER_MODEL_PATH` a `model_fp16.onnx` (~580 MB) — recall Person
+misurata **0.67 vs 0.58 di int8** (fp32 non dà guadagni ulteriori su CPU, dove ORT up-casta fp16→fp32).
+Nessuna raggiunge lo 0.83 di XLM-R, ed è per questo che GLiNER resta opt-in. Abilitare GLiNER **insieme**
+al NER XLM-R carica **due** modelli — considera la RAM di conseguenza.
 
 </details>
 

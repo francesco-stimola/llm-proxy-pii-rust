@@ -111,28 +111,50 @@ async fn build_detector(
 
     #[cfg(feature = "onnx")]
     {
+        // The ML layer is one or both of the token-classification NER (M2, XLM-R) and the
+        // GLiNER span detector (M8) — each opt-in via its own env. `NER_REQUIRED` means
+        // "the ML layer must be present and must not silently degrade": at least one must
+        // load, and every loaded one runs **unwrapped** so its errors fail the request
+        // closed. Without it, each is `FailOpen`-wrapped (a per-request inference error is
+        // swallowed to structured-only).
         let mut detectors = vec![structured];
+        let mut ml_loaded = 0usize;
+
+        // (a) Token-classification NER (M2).
         match load_onnx_ner().await {
             Ok(Some(ner)) => {
-                // Required → propagate its errors (fail closed); otherwise wrap
-                // so a per-request inference error is swallowed (fail open).
-                detectors.push(if ner_required {
-                    ner
-                } else {
-                    Box::new(crate::pii::composite::FailOpen(ner))
-                });
+                detectors.push(wrap_ml(ner, ner_required));
+                ml_loaded += 1;
             }
-            Ok(None) => anyhow::ensure!(
-                !ner_required,
-                "NER_REQUIRED is set but the NER is not configured (set NER_MODEL_PATH / NER_TOKENIZER_PATH / NER_LABELS)"
-            ),
+            Ok(None) => {}
             Err(err) => {
                 if ner_required {
                     return Err(err.context("NER_REQUIRED is set and the NER model failed to load"));
                 }
-                tracing::error!(error = %err, "NER configured but failed to load; running structured-only");
+                tracing::error!(error = %err, "NER configured but failed to load; continuing without it");
             }
         }
+        // (b) GLiNER contextual / open-label span detector (M8) — opt-in.
+        match load_gliner().await {
+            Ok(Some(gliner)) => {
+                detectors.push(wrap_ml(gliner, ner_required));
+                ml_loaded += 1;
+            }
+            Ok(None) => {}
+            Err(err) => {
+                if ner_required {
+                    return Err(
+                        err.context("NER_REQUIRED is set and the GLiNER model failed to load")
+                    );
+                }
+                tracing::error!(error = %err, "GLiNER configured but failed to load; continuing without it");
+            }
+        }
+
+        anyhow::ensure!(
+            !ner_required || ml_loaded > 0,
+            "NER_REQUIRED is set but no ML detector is configured (set NER_MODEL_PATH / NER_MODEL_REPO or GLINER_MODEL_PATH)"
+        );
         Ok(Box::new(CompositeDetector::new(detectors)))
     }
     #[cfg(not(feature = "onnx"))]
@@ -227,6 +249,104 @@ async fn load_onnx_ner() -> anyhow::Result<Option<Box<dyn PiiDetector>>> {
     // **effective** ones — resolved once, above, and handed to `load` unchanged — so this line can
     // never name a pool the process doesn't have (M7-R5).
     tracing::info!(model, pool_size, intra_threads, "ONNX NER detector loaded");
+    Ok(Some(Box::new(detector)))
+}
+
+/// Wrap an ML detector for the composite: **unwrapped** under `NER_REQUIRED` (its errors
+/// fail the request closed), else `FailOpen` (a per-request inference error is swallowed
+/// to structured-only). Shared by the NER and GLiNER so the posture rule has one home.
+#[cfg(feature = "onnx")]
+fn wrap_ml(detector: Box<dyn PiiDetector>, ner_required: bool) -> Box<dyn PiiDetector> {
+    if ner_required {
+        detector
+    } else {
+        Box::new(crate::pii::composite::FailOpen(detector))
+    }
+}
+
+/// Load the GLiNER span detector (M8) from env — **opt-in, off by default**. GLiNER is
+/// *not* a drop-in successor to the XLM-R NER: on the shipped **int8** model its Person
+/// recall (~0.58) is below XLM-R's (~0.83), so enabling it does not replace the NER — it
+/// **adds** contextual, open-label detection (a bare national phone, a free-form address)
+/// that the deterministic layer can't anchor and XLM-R doesn't cover (DEVLOG M8, the eval).
+///
+/// **Explicit local files only** — `GLINER_MODEL_PATH` + `GLINER_TOKENIZER_PATH` +
+/// `GLINER_CONFIG_PATH` (the model's `gliner_config.json`, for the shape params). This is
+/// the airtight-privacy path (zero outbound calls); an `hf-hub` auto-download parity with
+/// the NER is a documented future addition. Tunables: `GLINER_LABELS` (comma-separated
+/// natural-language types; default person/organization/location/phone number/address),
+/// `GLINER_THRESHOLD`, `GLINER_POOL_SIZE`, `GLINER_INTRA_THREADS`. `Ok(None)` only when
+/// `GLINER_MODEL_PATH` is unset (opt-out); once it is set, a missing companion var or a broken
+/// `GLINER_THRESHOLD` is an **`Err`** (M8-R5) — never a silent disable — and the caller decides
+/// if that's fatal (`NER_REQUIRED`) or logged-and-skipped.
+#[cfg(feature = "onnx")]
+async fn load_gliner() -> anyhow::Result<Option<Box<dyn PiiDetector>>> {
+    use crate::pii::gliner::{GLiNerDetector, GlinerParams, DEFAULT_THRESHOLD};
+    use crate::pii::gliner_decode::{default_gliner_labels, parse_gliner_labels};
+
+    let Ok(model) = std::env::var("GLINER_MODEL_PATH") else {
+        return Ok(None); // not configured — GLiNER is opt-in
+    };
+    // `GLINER_MODEL_PATH` is set → GLiNER is *intended*. A missing companion is a config error,
+    // **not a silent opt-out** (M8-R5): a typo'd `GLINER_TOKENIZER_PATH` must surface, not quietly
+    // disable an opt-in security feature. `Err` flows to the caller's posture (fatal under
+    // `NER_REQUIRED`, else logged and skipped) rather than vanishing as `Ok(None)`.
+    let (Some(tokenizer), Some(config)) = (
+        std::env::var("GLINER_TOKENIZER_PATH").ok(),
+        std::env::var("GLINER_CONFIG_PATH").ok(),
+    ) else {
+        return Err(anyhow::anyhow!(
+            "GLINER_MODEL_PATH is set but GLINER_TOKENIZER_PATH and/or GLINER_CONFIG_PATH is missing"
+        ));
+    };
+
+    let config_json = std::fs::read_to_string(&config)
+        .map_err(|e| anyhow::anyhow!("read GLiNER config {config}: {e}"))?;
+    let params = GlinerParams::from_config_json(&config_json)?;
+    let labels = match std::env::var("GLINER_LABELS") {
+        Ok(spec) => parse_gliner_labels(&spec).map_err(|e| anyhow::anyhow!(e))?,
+        Err(_) => default_gliner_labels(),
+    };
+    // A *set* threshold must parse and be a probability. Silently defaulting on a parse error, or
+    // accepting `2.0` (→ nothing ever masks), would quietly disable the detector (M8-R5). Unset =
+    // the measured default.
+    let threshold = match std::env::var("GLINER_THRESHOLD") {
+        Ok(s) => {
+            let t: f32 = s
+                .parse()
+                .map_err(|_| anyhow::anyhow!("GLINER_THRESHOLD is not a number: {s:?}"))?;
+            anyhow::ensure!(
+                (0.0..=1.0).contains(&t),
+                "GLINER_THRESHOLD must be a probability in [0.0, 1.0], got {t}"
+            );
+            t
+        }
+        Err(_) => DEFAULT_THRESHOLD,
+    };
+    // Same pool/intra derivation as the NER (its own env), so an operator running both
+    // models controls each independently (the two knobs multiply — M7).
+    let (pool_size, intra_threads) = crate::pii::onnx::resolve_pool_and_intra(
+        std::env::var("GLINER_POOL_SIZE").ok().as_deref(),
+        std::env::var("GLINER_INTRA_THREADS").ok().as_deref(),
+        crate::pii::onnx::available_cores(),
+    );
+
+    let detector = GLiNerDetector::load(
+        &model,
+        &tokenizer,
+        labels,
+        params,
+        threshold,
+        pool_size,
+        intra_threads,
+    )?;
+    tracing::info!(
+        model,
+        pool_size,
+        intra_threads,
+        threshold,
+        "GLiNER detector loaded"
+    );
     Ok(Some(Box::new(detector)))
 }
 
@@ -689,7 +809,19 @@ mod tests {
     #[tokio::test]
     async fn required_ner_is_fatal_when_absent() {
         // M2-R1: requiring a NER that can't be present (no `onnx` feature, or —
-        // with the feature — no model configured in the test env) is fatal.
+        // with the feature — no model configured) is fatal.
+        //
+        // `build_detector` reads the model-source env vars, so "no model configured" must be made
+        // true for this process rather than assumed (M8-R6): a developer who set `GLINER_MODEL_PATH`
+        // / `NER_MODEL_PATH` to run the `#[ignore]`d gated tests would otherwise see this fail,
+        // because GLiNER/NER would actually load. `remove_var` is safe here not because nothing else
+        // reads env concurrently (other lib tests read `HOME`/`HF_*`), but because every reader in
+        // this binary goes through `std::env`'s lock, and no **FFI/C** `getenv` reader (which would
+        // race off-lock) runs in the lib-test process — the ONNX session that could is only in the
+        // separate gated-test integration binary. (edition 2021 → `remove_var` is not `unsafe`.)
+        for var in ["NER_MODEL_PATH", "NER_MODEL_REPO", "GLINER_MODEL_PATH"] {
+            std::env::remove_var(var);
+        }
         assert!(build_detector(true, &[]).await.is_err());
         // Not requiring it always yields a structured-only detector.
         assert!(build_detector(false, &[]).await.is_ok());
