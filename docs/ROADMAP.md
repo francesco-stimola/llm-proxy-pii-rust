@@ -39,7 +39,7 @@ completion**; findings, counts and closure notes live in each milestone's sectio
 | [**M7.1 — system-prompt cache + fixpoint NER fix**](#m71) | ✅ **complete (2026-07-18)** — **S4** (NER on pass 0 only) fixes the CC-05/CC-08 fail-closed 400, recall-validated (0 losses); **S3** (`CachingDetector`, exact-byte-keyed, can't mask less) memoizes the byte-identical system prompt's detection. 116 onnx lib tests, clippy clean, review-clean (round 9) |
 | [First tagged release `1.0.0`](#m6) | ✅ **released (2026-07-18)** — tag `v1.0.0` cut on `main` (`Cargo.toml` at `1.0.0`) after the CC battery closed. Every gate met: M6 route + M7 latency + M7.1 (S3/S4), both postures leak-clean, zero fixpoint 400 on the S4 binary |
 | [**M8 — GLiNER: contextual / open-label PII**](#m8) | ✅ **complete (2026-07-19), review-clean (3 rounds, 7 findings all closed)** — `GLiNerDetector` + `gliner_decode` built and **validated end-to-end against the real int8 model**; wired **opt-in** (`GLINER_MODEL_PATH`). **Measured verdict: addition, not successor** — matches XLM-R on Loc (0.91) / Org (1.00) but Person recall 0.58 < XLM-R 0.83, so XLM-R stays default; GLiNER adds contextual kinds (bare phone, address). 133 onnx / 109 default lib green, clippy clean. Numbers: [DEVLOG 2026-07-19](DEVLOG.md) |
-| [**M8.1 — national phone recognizer (opt-in, per-locale)**](#m81) | 🔨 **code-complete (2026-07-19), review pending** — fills the ex-Backlog "Locale phone national formats" gap **deterministically**, without a second ML model: the `fp_prone_recognizers` seam now carries GB/DE `0`-trunk phone recognizers gated by `PII_LOCALES`, validated by the pure-Rust **`phonenumber`** crate's `is_valid()` (real assigned-range check). Measured on an adversarial corpus: **GB precision 1.000, DE 0.909**. Native-dep-free bar holds (pure Rust); accepted cost ~3 MB binary. 115 default lib green, clippy clean |
+| [**M8.1 — national phone recognizer (opt-in, per-locale)**](#m81) | 🔨 **code-complete (2026-07-19), reviewed round 1 — 1 finding open, not a leak** ([M8-R8](reviews/M8.md#m8-r8)) — fills the ex-Backlog "Locale phone national formats" gap **deterministically**, without a second ML model: the `fp_prone_recognizers` seam now carries GB/DE `0`-trunk phone recognizers gated by `PII_LOCALES`, validated by the pure-Rust **`phonenumber`** crate's `is_valid()` (real assigned-range check). Measured on an adversarial corpus: **GB precision 1.000, DE 0.909**. Native-dep-free bar holds (pure Rust); accepted cost ~3 MB binary. 115 default lib green, clippy clean |
 | [**M9 — GPU optimization**](#m9) | 📋 **planned (2026-07-18)** — promoted from Backlog. GPU execution provider (DirectML / CUDA) behind config; the M2 model choice is EP-agnostic, so this constrains nothing upstream. Likely pulled forward by M8 if GLiNER's CPU latency misses the lean bar |
 
 ---
@@ -1171,7 +1171,16 @@ Numbers + the footprint analysis: **[DEVLOG 2026-07-19](DEVLOG.md) → *M8.1***.
 - [ ] **Builder→reviewer loop** — pending.
 
 ### Review ledger — M8.1 → [`reviews/M8.md`](reviews/M8.md)
-_Reviewer loop pending; findings will land here as `M8-R8…` rows._
+**Round 4 (2026-07-19): 1 finding, not a leak.** Verified independently on both feature sets — 115 default /
+139 onnx lib green, no warnings, `clippy`(+`-onnx -D warnings`)/`fmt` clean; native-dep-free bar holds
+(`phonenumber` is pure Rust, unmaintained transitives honestly recorded); gating real, fail-closed/overlap
+sound, locale non-discriminator reproduced. Fuzzed the swallow guard against the real `Vault::mask_all`:
+adjacent/hyphen/mixed all split and round-trip. One blind spot found — **not a runtime leak** (the fixpoint
+covers it, verified).
+
+| ID | Title | Sev | Status |
+|---|---|---|---|
+| [M8-R8](reviews/M8.md#m8-r8) | Swallow guard blind spot: a longer *invalid* arm-1 match shadows the first of two adjacent numbers; only the **fixpoint** (not the bounded regex) prevents the single-pass miss — safety misattributed, latent if `redetect` is ever shortcut | hardening | [ ] |
 
 <a id="m9"></a>
 ## M9 — GPU optimization
