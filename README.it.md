@@ -311,10 +311,33 @@ Tutto è pilotato da variabili d'ambiente.
 | `NER_MODEL_REVISION` | `478a2a3` | Revisione fissata per il download automatico |
 | `NER_POOL_SIZE` | `1` | Dimensione del pool di sessioni ONNX concorrenti. **Default `1`** = una sessione — la forma per singolo client (~563 MB, tutto il box per richiesta). Alzalo a **`N`** per un proxy centralizzato: ~30% di throughput in più a ~270 MB di RAM in più per sessione (vedi la nota sulla latenza sopra) |
 | `NER_INTRA_THREADS` | *derivato* | Thread **per sessione**. Default `max(1, core / NER_POOL_SIZE)` — le due manopole si **moltiplicano**, e il prodotto deve stare nella macchina. Impostala solo se sai perché |
-| `NER_REQUIRED` | disattivato | **Fail closed per i nomi**: un NER mancante o fallito blocca la richiesta (400) invece di degradare silenziosamente al solo strutturato |
+| `NER_REQUIRED` | disattivato | **Fail closed per i nomi**: se impostato, **almeno un** detector ML (il NER e/o GLiNER sotto) deve caricarsi, e ognuno caricato gira "unwrapped" — un fallimento blocca la richiesta (400) invece di degradare silenziosamente al solo strutturato |
 
 Senza né `NER_MODEL_PATH` né `NER_MODEL_REPO`, la build esegue semplicemente il solo rilevamento
 strutturato.
+
+</details>
+
+<details>
+<summary><b>GLiNER (entità contestuali / open-label) — <code>--features onnx</code>, opt-in</b></summary>
+
+<br>
+
+Un **secondo** motore ML opzionale (M8). GLiNER è un *estrattore di span zero-shot* — rileva la PII
+contestuale e open-label che il layer deterministico non riesce ad ancorare e che il NER XLM-R non
+copre: un **telefono nazionale** senza `+CC`, un **indirizzo** libero. È **disattivato di default e non
+è un successore** di XLM-R — sul modello int8 la sua recall sui nomi è più bassa — quindi *aggiunge* al
+NER invece di sostituirlo (decisione misurata: `docs/DEVLOG.md` 2026-07-19).
+
+| Variabile | Default | Scopo |
+|---|---|---|
+| `GLINER_MODEL_PATH` + `GLINER_TOKENIZER_PATH` + `GLINER_CONFIG_PATH` | *(non impostate)* | File locali espliciti (`.onnx` + `tokenizer.json` + il `gliner_config.json` del modello) — **zero chiamate in uscita**. Non impostate = GLiNER spento |
+| `GLINER_LABELS` | `person,organization,location,phone number,address` | Tipi di entità in linguaggio naturale (separati da virgola); ognuno mappa a un `PiiKind` (un'etichetta non mappabile è rifiutata) |
+| `GLINER_THRESHOLD` | `0.15` | Soglia di probabilità per span — bassa perché le confidenze del modello int8 sono basse (misurato); più bassa = più recall, più over-mask |
+| `GLINER_POOL_SIZE` / `GLINER_INTRA_THREADS` | `1` / *derivato* | Pool di sessioni + thread per sessione, stessa forma delle manopole del NER (si moltiplicano) |
+
+Il modello testato è `onnx-community/gliner_multi_pii-v1` (int8 `model_quantized.onnx`). Abilitare GLiNER
+**insieme** al NER XLM-R carica **due** modelli — considera la RAM di conseguenza.
 
 </details>
 

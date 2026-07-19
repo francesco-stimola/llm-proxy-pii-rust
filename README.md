@@ -304,10 +304,33 @@ Everything is environment-driven.
 | `NER_MODEL_REVISION` | `478a2a3` | Pinned revision for auto-download |
 | `NER_POOL_SIZE` | `1` | Concurrent ONNX session pool size. **Default `1`** = one session — the single-client shape (~563 MB, whole box per request). Raise to **`N`** for a centralizing proxy: ~30% more throughput at ~270 MB more RAM per session (see the latency note above) |
 | `NER_INTRA_THREADS` | *derived* | Threads **per session**. Defaults to `max(1, cores / NER_POOL_SIZE)` — the two knobs **multiply**, and the product must fit the box. Set it only if you know why |
-| `NER_REQUIRED` | off | **Fail closed for names**: a missing or failing NER blocks the request (400) instead of silently degrading to structured-only |
+| `NER_REQUIRED` | off | **Fail closed for names**: with it set, **at least one** ML detector (the NER and/or GLiNER below) must load, and every loaded one runs unwrapped — a failure blocks the request (400) instead of silently degrading to structured-only |
 
 With neither `NER_MODEL_PATH` nor `NER_MODEL_REPO` set, the build simply runs
 structured-only.
+
+</details>
+
+<details>
+<summary><b>GLiNER (contextual / open-label entities) — <code>--features onnx</code>, opt-in</b></summary>
+
+<br>
+
+A **second, optional** ML engine (M8). GLiNER is a *zero-shot span extractor* — it detects the
+contextual, open-label PII the deterministic layer can't anchor and the XLM-R NER doesn't cover: a
+**bare national phone** with no `+CC`, a free-form **address**. It is **off by default and not a
+successor** to XLM-R — on the shipped int8 model its name recall is lower — so it *adds* to the NER
+rather than replacing it (measured decision: `docs/DEVLOG.md` 2026-07-19).
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `GLINER_MODEL_PATH` + `GLINER_TOKENIZER_PATH` + `GLINER_CONFIG_PATH` | *(unset)* | Explicit local files (model `.onnx` + `tokenizer.json` + the model's `gliner_config.json`) — **zero outbound calls**. Unset = GLiNER off |
+| `GLINER_LABELS` | `person,organization,location,phone number,address` | Comma-separated natural-language entity types; each maps to a `PiiKind` (an unmappable label is rejected) |
+| `GLINER_THRESHOLD` | `0.15` | Per-span probability threshold — low because the int8 model's confidences run low (measured); lower = more recall, more over-mask |
+| `GLINER_POOL_SIZE` / `GLINER_INTRA_THREADS` | `1` / *derived* | Session pool + per-session threads, same shape as the NER's knobs (they multiply) |
+
+`onnx-community/gliner_multi_pii-v1` (int8 `model_quantized.onnx`) is the tested model. Enabling GLiNER
+**alongside** the XLM-R NER loads **two** models — budget the RAM accordingly.
 
 </details>
 

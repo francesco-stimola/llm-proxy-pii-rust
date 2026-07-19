@@ -3,6 +3,67 @@
 Newest first. One entry per meaningful change — note *what* and *why*, not just
 *what*. This is the running history so context is never lost between sessions.
 
+## 2026-07-19 — M8 GLiNER implemented, measured, and shipped **opt-in** (not a successor on int8)
+
+**Built the whole M8 slice and validated it end-to-end against the real model**
+(`onnx-community/gliner_multi_pii-v1`, int8 `model_quantized.onnx`, 349 MB, pinned). New:
+`src/pii/gliner_decode.rs` (model-independent: the regex word splitter, the span decode, the
+label→`PiiKind` map — 12 unit tests), `src/pii/gliner.rs` (`GLiNerDetector`: prompt + tensor build,
+the session pool, word-window chunking — 5 unit tests), the `load_gliner` opt-in wiring in
+`server.rs`, and `tests/gliner_eval.rs` (smoke + eval + inertness canary, `#[ignore]`d, gated on
+`GLINER_MODEL_PATH`). 132 onnx / 108 default lib tests green, `clippy` clean on both feature sets.
+
+**S0 — the ONNX I/O contract, verified from the real export** (not guessed). GLiNER span-mode
+`markerV0`: inputs `input_ids` / `attention_mask` / `words_mask` (i64 `[1,L]`), `text_lengths`
+(i64 `[1,1]`), `span_idx` (i64 `[1,S,2]`), `span_mask` (**bool** `[1,S]`); output `logits`
+(f32 `[1, num_words, max_width, num_types]`). `S = num_words·max_width`, word-major, so the flat
+logit index is `(word·max_width + width)·num_types + type` — the decode reads it directly.
+
+**Two bugs the smoke test caught on the real model** (the reason S0 must be *run*, not reasoned):
+1. **Word splitter.** GLiNER's `whitespace` splitter is not "split on spaces" — it is the regex
+   `\w+(?:[-_]\w+)*|\S` (verified against the reference `gliner` lib), which **separates trailing
+   punctuation**: `"Milano."` → `["Milano", "."]`. A pure-whitespace split kept `"Milano."` whole
+   and measurably lowered scores. Fixed in `split_words`.
+2. **Threshold.** The int8 model's confidences run low; correct entities cluster at **0.15–0.6**, so
+   the nominal 0.5 missed most of them. Default set to **0.15** by a measured sweep (below).
+
+**The measured decision (S2) — score through the hybrid on `ner_cases.json`, int8, threshold sweep:**
+
+| threshold | Person R/P | Org R/P | Location R/P |
+|---|---|---|---|
+| 0.30 | 0.58 / 0.88 | 1.00 / 1.00 | 0.27 / 1.00 |
+| 0.20 | 0.58 / 0.78 | 1.00 / 1.00 | 0.64 / 1.00 |
+| **0.15** | **0.58 / 0.78** | **1.00 / 1.00** | **0.91 / 1.00** |
+| 0.10 | 0.58 / 0.64 | 1.00 / 1.00 | 0.91 / 1.00 |
+
+At the 0.15 optimum GLiNER **matches XLM-R on Location (0.91) and Organization (1.00)** but its
+**Person recall is stuck at 0.583 at every threshold** — single-word / CJK / Arabic names (Tizio,
+Caia, 张伟, محمد أحمد) it never scores, where XLM-R's floor is **0.83**. **So int8 GLiNER is *not* a
+successor** — replacing XLM-R would regress name recall, i.e. more leaks, on the most important kind.
+**Decision: ship it opt-in, off by default.** XLM-R stays the default NER; GLiNER is enabled via
+`GLINER_MODEL_PATH` (+ `_TOKENIZER_PATH` / `_CONFIG_PATH`), adding what XLM-R *can't* do — contextual,
+open-label kinds like a **bare national phone** (`"020 7946 0958"`, no `+CC`, the M8 recall gap) and a
+free-form address. Whether **fp32** GLiNER clears the successor bar is unmeasured (1.16 GB, beyond the
+lean default anyway) — future work. This is the "measure first, the milestone may say no [to
+successor]" gate doing its job, exactly like Piiranha at M2 and the stop-at-the-bar call at M7.
+
+**The inertness canary — "GLiNER especially" (M5-R4) confirmed, and safe.** Run directly on
+placeholder-dense text, GLiNER **does** tag our own `[PERSON_1]` / `[ORG_1]` tokens as entities (int8
+XLM-R does not — that is why the docs singled GLiNER out). It is safe regardless: `keep_maskable`
+drops an *exact* `[KIND_N]` hit by construction (CC-08) and **S4** keeps GLiNER off every pass after
+the first, so `mask_all` on placeholder-dense input **converges with the text unchanged** (verified —
+`gliner_placeholder_inertness_canary`), never a fixpoint 400. `redetect → empty` (idempotent after
+pass 0) carries to GLiNER for the same reason it does to XLM-R.
+
+**Integration shape.** `GLiNerDetector` implements `PiiDetector`, so it drops into `CompositeDetector`
+next to the structured recognizers and XLM-R; the overlap resolver dedups a GLiNER guess against a
+deterministic match (checksum wins), and a GLiNER false positive is an over-mask, never a leak. GLiNER
+maps `"phone number" → Phone` / `"address" → Location` deliberately (email stays with the deterministic
+layer). `NER_REQUIRED` now means "≥1 ML detector (XLM-R and/or GLiNER) must load and run unwrapped";
+`GLINER_LABELS` / `GLINER_THRESHOLD` / `GLINER_POOL_SIZE` / `GLINER_INTRA_THREADS` tune it. Explicit
+local paths only for now (the airtight-privacy path); an `hf-hub` auto-download parity with the NER is
+a documented future addition.
+
 ## 2026-07-18 — M8/M9 promoted from Backlog; the M8 GLiNER implementation plan
 
 **Post-`1.0.0` planning.** With `1.0.0` tagged and the ROADMAP's scheduled work all closed (the only open

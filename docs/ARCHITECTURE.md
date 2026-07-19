@@ -559,6 +559,32 @@ labels in class-id order), optional `NER_POOL_SIZE` (session pool for concurrenc
 A missing/failed model logs and falls back to structured-only. The model was chosen
 by *measurement* (XLM-R int8 — `docs/M2-NER-EVALUATION.md`, `docs/DEVLOG.md`).
 
+**GLiNER — contextual / open-label detection (M8, opt-in, off by default).** A *second* ML engine,
+`GLiNerDetector`, joins the composite when `GLINER_MODEL_PATH` (+ `GLINER_TOKENIZER_PATH` /
+`GLINER_CONFIG_PATH`) is set. Unlike the token-classification NER, GLiNER is a *zero-shot span
+extractor*: the entity types are fed to it **as text** (`"person"`, `"phone number"`, `"address"`), it
+scores every candidate **word-span × type**, and detection is a sigmoid threshold + greedy
+non-overlapping selection (`gliner_decode`, the span×label analogue of BIO `ner_decode`; the model I/O
+contract — GLiNER span-mode `markerV0`, six named inputs → `[1, num_words, max_width, num_types]` logits
+— is documented and verified against the real export in `src/pii/gliner.rs`). **It is not a successor to
+XLM-R:** measured on the shipped **int8** model its Person recall (~0.58) is below XLM-R's (~0.83), so it
+does not replace the NER — it *adds* what XLM-R can't do, the contextual kinds the deterministic layer
+can't anchor (a **bare national phone** with no `+CC`, a free-form address). It maps
+`"phone number" → Phone` / `"address" → Location` on purpose (email stays deterministic); a GLiNER guess
+overlapping a checksum-backed match loses in `overlap`, and a false positive is an over-mask, never a
+leak. `NER_REQUIRED` means "**≥1** ML detector (XLM-R and/or GLiNER) must load and run unwrapped".
+Tunables: `GLINER_LABELS`, `GLINER_THRESHOLD` (default **0.15** — int8 confidences run low, set by a
+measured sweep), `GLINER_POOL_SIZE`, `GLINER_INTRA_THREADS`. Explicit local paths only for now (the
+airtight-privacy path). Decision + numbers: `docs/DEVLOG.md` 2026-07-19.
+
+> **GLiNER tags our own placeholders — and it is safe anyway (M5-R4, "GLiNER especially").** Being
+> zero-shot and context-driven, GLiNER *does* score `[PERSON_1]` as a person (int8 XLM-R does not — that
+> is why the docs singled it out). This cannot stall the fixpoint: `keep_maskable` drops an exact
+> `[KIND_N]` hit **by construction** (CC-08) and **S4** keeps GLiNER off every pass after the first
+> (`redetect → empty`, idempotent — masking a name never reveals a new one), so `mask_all` on
+> placeholder-dense text converges unchanged rather than 400ing. The `m5_r4`-style canary is
+> `tests/gliner_eval.rs::gliner_placeholder_inertness_canary`.
+
 **NER threading — the two knobs multiply (M7).** `NER_POOL_SIZE × NER_INTRA_THREADS` is the
 process's NER thread count under saturated load, and **the invariant is that the product fits the
 box**, not that either factor saturates it (`intra = 12` with `pool = 2` puts 24 threads on 12
