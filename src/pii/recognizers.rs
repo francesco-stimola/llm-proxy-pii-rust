@@ -39,6 +39,7 @@
 
 use std::ops::Range;
 
+use phonenumber::country::Id;
 use regex::Regex;
 
 use super::overlap::resolve_overlaps;
@@ -297,21 +298,69 @@ fn national_id_recognizers() -> Vec<Recognizer> {
 }
 
 /// **FP-prone** recognizers for one locale (M4-R1) — ambiguous patterns opted in
-/// via `PII_LOCALES` (unlike national IDs, which are always on). None yet: the seam
-/// is kept for national *phone* formats (numbers with no `+CC`), which need careful
-/// precision work before they can run globally. Unknown codes yield nothing.
+/// via `PII_LOCALES` (unlike national IDs, which are always on). Unknown codes yield
+/// nothing.
 ///
-/// The `match` **is** the seam, which is why it stays even though every arm but the
-/// wildcard is still missing: dissolving it (as clippy suggests) would drop `code` on the
-/// floor and leave the next locale nowhere to land.
-#[allow(clippy::match_single_binding)]
+/// **National phone numbers with no `+CC` (M8.1).** The un-anchored domestic form
+/// (`020 7946 0958`, `030 12345678`) is exactly the "FP-prone" case M4-R1 moved out of
+/// the always-on tier: a `0`-trunk digit run looks like an order number, a sort code, or
+/// a national ID. What makes it safe here is the **validator** — a loose `0`-anchored
+/// regex proposes a candidate, and [`national_phone_valid`] accepts it only if the
+/// `phonenumber` crate (libphonenumber) deems it a REAL, assigned number for the region,
+/// a check no hand-written regex can do. Measured on an adversarial corpus
+/// (docs/DEVLOG.md, M8.1): GB precision 1.000, DE 0.909. Opt-in per locale because tight
+/// numbering plans (GB) validate near-perfectly while permissive ones need vetting.
 fn fp_prone_recognizers(code: &str) -> Vec<Recognizer> {
     match code.trim().to_ascii_lowercase().as_str() {
-        // e.g. "gb" => vec![ UK national phone formats ] — the ex-Backlog "Locale
-        // phone national formats", now folded into docs/ROADMAP.md **M8** (GLiNER):
-        // the clean path for the un-anchored form is context, not a per-locale regex.
+        "gb" => vec![national_phone_recognizer(gb_phone_valid)],
+        "de" => vec![national_phone_recognizer(de_phone_valid)],
         _ => Vec::new(),
     }
+}
+
+/// The shared national-phone recognizer: a loose `0`-trunk candidate regex, gated by a
+/// per-locale `phonenumber` validator. GB and DE share the regex (both use a `0` trunk
+/// prefix); only the validator's region differs.
+///
+/// The regex enumerates a **bounded** number of digit groups on purpose — a compact run
+/// plus 2- and 3-group forms — so a match can never run across two adjacent numbers and
+/// swallow one (the "trailing number" bug the universal phone / IBAN patterns also guard
+/// against; an open `(?:[ -]?\d)+` would grab `020 7946 0958 0161 496 0000` as one
+/// over-long span that `is_valid` then rejects — a leak). Max ~15 chars → the pattern is
+/// length-bounded, so [`Scan::Overlapping`] stays linear (M4-R19). Every anchored arm
+/// uses ASCII `(?-u:\b)` (M4-R13) so a `0`-run inside a longer ASCII token
+/// (`user0207946095@…`) is not a candidate. Precision is the validator's job, not the
+/// regex's.
+fn national_phone_recognizer(validate: fn(&str) -> bool) -> Recognizer {
+    Recognizer {
+        kind: PiiKind::Phone,
+        regex: Regex::new(
+            r"(?-u:\b)0\d{1,4}[ -]\d{3,4}[ -]\d{3,4}(?-u:\b)|(?-u:\b)0\d{1,4}[ -]\d{4,8}(?-u:\b)|(?-u:\b)0\d{6,11}(?-u:\b)",
+        )
+        .unwrap(),
+        validate: Some(validate),
+        scan: Scan::Overlapping,
+    }
+}
+
+/// `validate` for GB / DE national phone candidates: accept only what `phonenumber`
+/// confirms is a real, assigned number for the region (`is_valid` — assigned prefix +
+/// length, not merely a *possible* length). This is what defuses the M4-R1 FP concern:
+/// sequential digits, all-zeros, sort codes, refs and unassigned prefixes all parse but
+/// are **not valid**, so they are rejected. A `fn(&str) -> bool` can't carry the region,
+/// so there is one thin wrapper per locale.
+fn gb_phone_valid(matched: &str) -> bool {
+    national_phone_valid(Id::GB, matched)
+}
+
+fn de_phone_valid(matched: &str) -> bool {
+    national_phone_valid(Id::DE, matched)
+}
+
+fn national_phone_valid(country: Id, matched: &str) -> bool {
+    phonenumber::parse(Some(country), matched)
+        .map(|number| number.is_valid())
+        .unwrap_or(false)
 }
 
 impl Default for StructuredRecognizers {
@@ -1327,6 +1376,112 @@ mod tests {
         // A real, correctly-sized, mod-97-valid IBAN stays Verified.
         let e = StructuredRecognizers::new().detect("IBAN IT60X0542811101000000123456");
         assert_eq!(e[0].confidence, Confidence::Verified);
+    }
+
+    // ---- M8.1: opt-in national phone recognizers (GB / DE) via `phonenumber` ----
+
+    /// Assert `input` masks to exactly one `Phone` span whose text is the full `number`.
+    /// (Where the universal 3-3-4 phone arm also fires on a sub-span, the resolver unions
+    /// the two same-kind spans back to the full number — so this stays exact.)
+    fn assert_phone<S: AsRef<str>>(locales: &[S], input: &str, number: &str) {
+        assert_eq!(
+            kinds_with(locales, input),
+            vec![(PiiKind::Phone, number.to_string())],
+            "input {input:?}"
+        );
+    }
+
+    #[test]
+    fn gb_national_phone_detected_when_gb_enabled() {
+        // The un-anchored domestic forms the universal (US 3-3-4 / +CC) arm misses:
+        // 3-4-4 grouping, 5-6 mobile, compact, freephone.
+        for (input, number) in [
+            ("call 020 7946 0958 now", "020 7946 0958"),
+            ("mob 07911 123456 pls", "07911 123456"),
+            ("compact 02079460958 ok", "02079460958"),
+            ("free 0800 1111 line", "0800 1111"),
+            ("leeds 0113 496 0000 x", "0113 496 0000"),
+        ] {
+            assert_phone(&["gb"], input, number);
+        }
+    }
+
+    #[test]
+    fn de_national_phone_detected_when_de_enabled() {
+        for (input, number) in [
+            ("Berlin 030 12345678 heute", "030 12345678"),
+            ("mobil 0171 1234567 bitte", "0171 1234567"),
+            ("Frankfurt 069 90009000 x", "069 90009000"),
+            ("kompakt 03012345678 ok", "03012345678"),
+        ] {
+            assert_phone(&["de"], input, number);
+        }
+    }
+
+    #[test]
+    fn national_phone_is_gated_by_pii_locales() {
+        // `020 7946 0958` is a 3-4-4 GB number the UNIVERSAL arm does not match (it needs
+        // 3-3-4 or a `+CC`), and its spaces break the contiguous 9/11-digit ID patterns —
+        // so with GB *off* it is masked by nothing, proving the gate is real, not masked
+        // by a coincidental universal hit.
+        assert!(
+            kinds_with(&["it", "us"], "call 020 7946 0958 now").is_empty(),
+            "GB national phone must not be masked when `gb` is not in PII_LOCALES"
+        );
+        assert!(kinds_with(&["de"], "call 020 7946 0958 now").is_empty());
+        // Turning GB on masks it.
+        assert_phone(&["gb"], "call 020 7946 0958 now", "020 7946 0958");
+    }
+
+    #[test]
+    fn national_phone_validator_rejects_lookalikes() {
+        // COMPACT 0-leading runs of phone-plausible length: the universal arm can't touch
+        // them (no separators), so they reach the `phonenumber` validator — which rejects
+        // them because they are not assigned numbers. This is the M4-R1 FP concern, defused.
+        for junk in ["0000000000", "0123456789", "0999999999"] {
+            assert!(
+                kinds_with(&["gb"], &format!("ref {junk} end")).is_empty(),
+                "look-alike {junk:?} must be rejected by is_valid()"
+            );
+            assert!(kinds_with(&["de"], &format!("ref {junk} end")).is_empty());
+        }
+    }
+
+    #[test]
+    fn national_phone_does_not_swallow_an_adjacent_number() {
+        // Two real GB numbers separated by a SINGLE space, no word between: the
+        // bounded-group regex must yield two spans, never one over-long span that
+        // is_valid() would then reject (a leak). Both start with `0`, so a naive open
+        // pattern would grab them as one.
+        let got = kinds_with(&["gb"], "020 7946 0958 0161 496 0000");
+        let phones: Vec<&String> = got
+            .iter()
+            .filter(|(k, _)| *k == PiiKind::Phone)
+            .map(|(_, t)| t)
+            .collect();
+        assert!(
+            phones.iter().any(|t| *t == "020 7946 0958")
+                && phones.iter().any(|t| *t == "0161 496 0000"),
+            "both adjacent numbers must be detected separately, got {got:?}"
+        );
+    }
+
+    #[test]
+    fn national_phone_validators_accept_reals_reject_junk() {
+        // Direct validator unit tests (region-specific).
+        assert!(gb_phone_valid("020 7946 0958"));
+        assert!(gb_phone_valid("07911 123456"));
+        assert!(!gb_phone_valid("0000000000"));
+        assert!(!gb_phone_valid("0123456789"));
+        assert!(de_phone_valid("030 12345678"));
+        assert!(de_phone_valid("0171 1234567"));
+        assert!(!de_phone_valid("0000000000"));
+        // NOTE: the validator is not a locale *discriminator* — national numbering plans
+        // overlap, so a number valid in one region can be valid in another (e.g.
+        // `07911 123456` validates as DE too). That is privacy-safe: over-masking a real
+        // phone is never a leak. But some region-specific numbers still fail elsewhere —
+        // a London geographic number is not a valid DE number:
+        assert!(!de_phone_valid("020 7946 0958"));
     }
 
     /// Real PII values, deliberately including the **grouped** shapes (spaces inside the
