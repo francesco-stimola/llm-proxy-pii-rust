@@ -1102,6 +1102,17 @@ hardening / test-coverage / docs.
 | [M8-R4](reviews/M8.md#m8-r4) | `gliner_decode.rs` had 11 unit tests; a 12th was added to match DEVLOG/TESTING | docs | [x] |
 | [M8-R5](reviews/M8.md#m8-r5) | `load_gliner` silently disables GLiNER on partial config / an out-of-range `GLINER_THRESHOLD` | hardening | [x] |
 
+**Round 2 (2026-07-19): closure verification — all 5 hold.** Re-verified 109 default / 133 onnx lib green
+(clean shell), clippy + fmt clean, all four gated tests reproduced on the real int8 model. The R1/R2 window
+cap is **correct and recall-preserving** — independently confirmed with a throwaway real-model probe that a
+name is detected at every offset in a capped window and mid-way through multi-window fields. Two new
+findings, both low, neither a leak.
+
+| ID | Title | Sev | Status |
+|---|---|---|---|
+| [M8-R6](reviews/M8.md#m8-r6) | `required_ner_is_fatal_when_absent` is non-hermetic — ambient `GLINER_MODEL_PATH` (the M8 gated-test env) breaks the onnx lib suite | test-quality | [ ] |
+| [M8-R7](reviews/M8.md#m8-r7) | window-cap recall rationale mis-explains *why* it works (measured: bounded context, not overlap-near-start); the two knobs have different jobs | docs | [ ] |
+
 <a id="m9"></a>
 ## M9 — GPU optimization
 
