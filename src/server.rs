@@ -111,28 +111,50 @@ async fn build_detector(
 
     #[cfg(feature = "onnx")]
     {
+        // The ML layer is one or both of the token-classification NER (M2, XLM-R) and the
+        // GLiNER span detector (M8) — each opt-in via its own env. `NER_REQUIRED` means
+        // "the ML layer must be present and must not silently degrade": at least one must
+        // load, and every loaded one runs **unwrapped** so its errors fail the request
+        // closed. Without it, each is `FailOpen`-wrapped (a per-request inference error is
+        // swallowed to structured-only).
         let mut detectors = vec![structured];
+        let mut ml_loaded = 0usize;
+
+        // (a) Token-classification NER (M2).
         match load_onnx_ner().await {
             Ok(Some(ner)) => {
-                // Required → propagate its errors (fail closed); otherwise wrap
-                // so a per-request inference error is swallowed (fail open).
-                detectors.push(if ner_required {
-                    ner
-                } else {
-                    Box::new(crate::pii::composite::FailOpen(ner))
-                });
+                detectors.push(wrap_ml(ner, ner_required));
+                ml_loaded += 1;
             }
-            Ok(None) => anyhow::ensure!(
-                !ner_required,
-                "NER_REQUIRED is set but the NER is not configured (set NER_MODEL_PATH / NER_TOKENIZER_PATH / NER_LABELS)"
-            ),
+            Ok(None) => {}
             Err(err) => {
                 if ner_required {
                     return Err(err.context("NER_REQUIRED is set and the NER model failed to load"));
                 }
-                tracing::error!(error = %err, "NER configured but failed to load; running structured-only");
+                tracing::error!(error = %err, "NER configured but failed to load; continuing without it");
             }
         }
+        // (b) GLiNER contextual / open-label span detector (M8) — opt-in.
+        match load_gliner().await {
+            Ok(Some(gliner)) => {
+                detectors.push(wrap_ml(gliner, ner_required));
+                ml_loaded += 1;
+            }
+            Ok(None) => {}
+            Err(err) => {
+                if ner_required {
+                    return Err(
+                        err.context("NER_REQUIRED is set and the GLiNER model failed to load")
+                    );
+                }
+                tracing::error!(error = %err, "GLiNER configured but failed to load; continuing without it");
+            }
+        }
+
+        anyhow::ensure!(
+            !ner_required || ml_loaded > 0,
+            "NER_REQUIRED is set but no ML detector is configured (set NER_MODEL_PATH / NER_MODEL_REPO or GLINER_MODEL_PATH)"
+        );
         Ok(Box::new(CompositeDetector::new(detectors)))
     }
     #[cfg(not(feature = "onnx"))]
@@ -227,6 +249,84 @@ async fn load_onnx_ner() -> anyhow::Result<Option<Box<dyn PiiDetector>>> {
     // **effective** ones — resolved once, above, and handed to `load` unchanged — so this line can
     // never name a pool the process doesn't have (M7-R5).
     tracing::info!(model, pool_size, intra_threads, "ONNX NER detector loaded");
+    Ok(Some(Box::new(detector)))
+}
+
+/// Wrap an ML detector for the composite: **unwrapped** under `NER_REQUIRED` (its errors
+/// fail the request closed), else `FailOpen` (a per-request inference error is swallowed
+/// to structured-only). Shared by the NER and GLiNER so the posture rule has one home.
+#[cfg(feature = "onnx")]
+fn wrap_ml(detector: Box<dyn PiiDetector>, ner_required: bool) -> Box<dyn PiiDetector> {
+    if ner_required {
+        detector
+    } else {
+        Box::new(crate::pii::composite::FailOpen(detector))
+    }
+}
+
+/// Load the GLiNER span detector (M8) from env — **opt-in, off by default**. GLiNER is
+/// *not* a drop-in successor to the XLM-R NER: on the shipped **int8** model its Person
+/// recall (~0.58) is below XLM-R's (~0.83), so enabling it does not replace the NER — it
+/// **adds** contextual, open-label detection (a bare national phone, a free-form address)
+/// that the deterministic layer can't anchor and XLM-R doesn't cover (DEVLOG M8, the eval).
+///
+/// **Explicit local files only** — `GLINER_MODEL_PATH` + `GLINER_TOKENIZER_PATH` +
+/// `GLINER_CONFIG_PATH` (the model's `gliner_config.json`, for the shape params). This is
+/// the airtight-privacy path (zero outbound calls); an `hf-hub` auto-download parity with
+/// the NER is a documented future addition. Tunables: `GLINER_LABELS` (comma-separated
+/// natural-language types; default person/organization/location/phone number/address),
+/// `GLINER_THRESHOLD`, `GLINER_POOL_SIZE`, `GLINER_INTRA_THREADS`. `Ok(None)` = not
+/// configured; `Err` = configured but failed to load (the caller decides if that's fatal).
+#[cfg(feature = "onnx")]
+async fn load_gliner() -> anyhow::Result<Option<Box<dyn PiiDetector>>> {
+    use crate::pii::gliner::{GLiNerDetector, GlinerParams, DEFAULT_THRESHOLD};
+    use crate::pii::gliner_decode::{default_gliner_labels, parse_gliner_labels};
+
+    let Ok(model) = std::env::var("GLINER_MODEL_PATH") else {
+        return Ok(None); // not configured
+    };
+    let (Some(tokenizer), Some(config)) = (
+        std::env::var("GLINER_TOKENIZER_PATH").ok(),
+        std::env::var("GLINER_CONFIG_PATH").ok(),
+    ) else {
+        return Ok(None); // partial config → unconfigured (NER_REQUIRED makes it fatal upstream)
+    };
+
+    let config_json = std::fs::read_to_string(&config)
+        .map_err(|e| anyhow::anyhow!("read GLiNER config {config}: {e}"))?;
+    let params = GlinerParams::from_config_json(&config_json)?;
+    let labels = match std::env::var("GLINER_LABELS") {
+        Ok(spec) => parse_gliner_labels(&spec).map_err(|e| anyhow::anyhow!(e))?,
+        Err(_) => default_gliner_labels(),
+    };
+    let threshold = std::env::var("GLINER_THRESHOLD")
+        .ok()
+        .and_then(|s| s.parse::<f32>().ok())
+        .unwrap_or(DEFAULT_THRESHOLD);
+    // Same pool/intra derivation as the NER (its own env), so an operator running both
+    // models controls each independently (the two knobs multiply — M7).
+    let (pool_size, intra_threads) = crate::pii::onnx::resolve_pool_and_intra(
+        std::env::var("GLINER_POOL_SIZE").ok().as_deref(),
+        std::env::var("GLINER_INTRA_THREADS").ok().as_deref(),
+        crate::pii::onnx::available_cores(),
+    );
+
+    let detector = GLiNerDetector::load(
+        &model,
+        &tokenizer,
+        labels,
+        params,
+        threshold,
+        pool_size,
+        intra_threads,
+    )?;
+    tracing::info!(
+        model,
+        pool_size,
+        intra_threads,
+        threshold,
+        "GLiNER detector loaded"
+    );
     Ok(Some(Box::new(detector)))
 }
 
