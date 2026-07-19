@@ -570,9 +570,13 @@ contract — GLiNER span-mode `markerV0`, six named inputs → `[1, num_words, m
 XLM-R:** measured on the shipped **int8** model its Person recall (~0.58) is below XLM-R's (~0.83), so it
 does not replace the NER — it *adds* what XLM-R can't do, the contextual kinds the deterministic layer
 can't anchor (a **bare national phone** with no `+CC`, a free-form address). It maps
-`"phone number" → Phone` / `"address" → Location` on purpose (email stays deterministic); a GLiNER guess
-overlapping a checksum-backed match loses in `overlap`, and a false positive is an over-mask, never a
-leak. `NER_REQUIRED` means "**≥1** ML detector (XLM-R and/or GLiNER) must load and run unwrapped".
+`"phone number" → Phone` / `"address" → Location` on purpose (email stays deterministic). Its overlap
+behaviour follows the kind, not the engine: a GLiNER **name** guess (`Person`/`Organization`/`Location`,
+so also `address`) is an NER kind and is **dropped whole** when it overlaps a structured span (M2-R7),
+while a GLiNER **`Phone`** is `is_structured()`, so `overlap` **union-merges** it with any overlapping
+structured span rather than dropping it — the checksum-backed kind still *names* the union, and both
+spans are masked. Either way a GLiNER false positive is an **over-mask, never a leak** — the standing
+tie-breaker. `NER_REQUIRED` means "**≥1** ML detector (XLM-R and/or GLiNER) must load and run unwrapped".
 Tunables: `GLINER_LABELS`, `GLINER_THRESHOLD` (default **0.15** — int8 confidences run low, set by a
 measured sweep), `GLINER_POOL_SIZE`, `GLINER_INTRA_THREADS`. Explicit local paths only for now (the
 airtight-privacy path). Decision + numbers: `docs/DEVLOG.md` 2026-07-19.

@@ -16,9 +16,10 @@
 //! reason to exist (M8) is **contextual PII the deterministic layer cannot catch** — a
 //! bare national phone with no `+CC` anchor, a free-form address. So it *is* allowed to
 //! emit `Phone`/`Location` for those. This is safe because the hybrid
-//! [`resolve_overlaps`](super::overlap::resolve_overlaps) dedups a GLiNER guess against a
-//! deterministic match (the checksum-backed one wins), and an ML false positive is an
-//! **over-mask, never a leak** — the standing tradeoff. Email is deliberately *not*
+//! [`resolve_overlaps`](super::overlap::resolve_overlaps) reconciles a GLiNER guess against a
+//! deterministic match by **kind**: a name guess (`Person`/`Organization`/`Location`) is dropped
+//! whole (M2-R7), while a `Phone` is `is_structured()` and is union-merged under the checksum-backed
+//! kind — either way an ML false positive is an **over-mask, never a leak**. Email is deliberately *not*
 //! mapped: the deterministic email regex is authoritative and reliable, so a GLiNER email
 //! would only add false positives.
 
@@ -406,6 +407,32 @@ mod tests {
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].kind, PiiKind::Phone);
         assert_eq!(got[0].text, "020 7946 0958");
+    }
+
+    #[test]
+    fn decode_is_deterministic_on_tied_scores() {
+        // Placeholder minting downstream follows encounter order, so the decode must be a
+        // deterministic function of its inputs even when spans tie on probability. Two
+        // non-overlapping equal-score spans always come back in **span** order, regardless of
+        // the order they were scored in.
+        let text = "Anna Bianchi met Carla Verdi";
+        let words = split_words(text); // [Anna][Bianchi][met][Carla][Verdi]
+        let labels = default_gliner_labels();
+        let person = labels
+            .iter()
+            .position(|l| l.kind == PiiKind::Person)
+            .unwrap();
+        // Same logit, reversed input order.
+        let scores = [s(3, 4, person, 2.0), s(0, 1, person, 2.0)];
+        let got: Vec<_> = decode_spans(text, &words, &labels, &scores, 0.5)
+            .into_iter()
+            .map(|e| e.text)
+            .collect();
+        assert_eq!(
+            got,
+            vec!["Anna Bianchi", "Carla Verdi"],
+            "output must be span-ordered, not input-ordered"
+        );
     }
 
     #[test]

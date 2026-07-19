@@ -175,12 +175,12 @@ impl GLiNerDetector {
         if words.is_empty() {
             return Ok(Vec::new());
         }
-        // Budget for text tokens = max_len − prompt − the tokenizer's special tokens
-        // (mDeBERTa adds [CLS]/[SEP] = 2). Guard against an underflow if the label set is
-        // so large the prompt alone fills the model.
+        // The model's own ceiling: max_len − prompt − the tokenizer's special tokens (mDeBERTa
+        // adds [CLS]/[SEP] = 2). Guards against an underflow if the label set is so large the
+        // prompt alone fills the model.
         let prompt_len = self.prompt_token_len()?;
         let overhead = prompt_len + SPECIAL_TOKENS;
-        let text_budget = self
+        let max_from_model = self
             .params
             .max_len
             .checked_sub(overhead)
@@ -192,8 +192,19 @@ impl GLiNerDetector {
                     self.params.max_len
                 )
             })?;
+        // **Cap the window well below that ceiling.** GLiNER int8's per-span confidence *dilutes
+        // with preceding context* (measured — an entity near a window's start scores ~0.35 at
+        // seq≈100, ~0.25 at seq≈170, and collapses past ~270; at `max_len` the model returns
+        // all-low logits, unusable — DEVLOG M8). So a small window is not a latency trade but a
+        // **recall** one: it keeps every entity close to *some* window's start (via the overlap),
+        // where it still scores. A model swap (esp. fp32) re-opens this number.
+        let text_budget = max_from_model.min(MAX_WINDOW_TEXT_TOKENS);
 
-        let windows = plan_word_windows(&self.word_token_lens(text, &words)?, text_budget);
+        let windows = plan_word_windows(
+            &self.word_token_lens(text, &words)?,
+            text_budget,
+            WINDOW_OVERLAP_WORDS,
+        );
         let mut entities = Vec::new();
         for (w_start, w_end) in windows {
             entities.extend(self.infer_window(text, &words[w_start..w_end])?);
@@ -248,6 +259,21 @@ impl GLiNerDetector {
         let ids: Vec<i64> = enc.get_ids().iter().map(|&i| i as i64).collect();
         let attn: Vec<i64> = enc.get_attention_mask().iter().map(|&i| i as i64).collect();
         let seq = ids.len();
+
+        // **The single choke point — enforce `max_len` here, before the session (M8-R1, the
+        // M5-R7 discipline).** [`infer`] plans windows in the per-word-alone token count, but this
+        // re-tokenizes the window **jointly** with the prompt, which can drift at the cut edges. A
+        // planned bound is not a checked one: if the joint `seq` ever exceeds the model's usable
+        // length the ONNX graph fails outright (the M5 `Expand`-overflow class). Reject it as an
+        // `Err` — value-free, counts only — and let the **caller's** posture decide (fail open to
+        // structured-only, or block under `NER_REQUIRED`); a detector never decides that itself.
+        if seq > self.params.max_len {
+            return Err(anyhow!(
+                "GLiNER sequence is {seq} tokens, over the model's max_len of {}; refusing to run it \
+                 (the posture — fail open, or block under NER_REQUIRED — is the caller's)",
+                self.params.max_len
+            ));
+        }
 
         // words_mask: 1-based index of the TEXT word a token starts, else 0. Only the
         // first subtoken of each text word is marked (subtoken_pooling = "first").
@@ -364,14 +390,34 @@ const SPECIAL_TOKENS: usize = 2;
 /// The smallest text-token budget worth running; below this the label set is misconfigured.
 const MIN_TEXT_TOKEN_BUDGET: usize = 16;
 
-/// Plan word windows so each window's text tokens fit `budget`, overlapping by one word so
-/// an entity on a boundary is whole in at least one window. `word_token_lens[i]` is word
-/// `i`'s subtoken count. Greedy: extend a window until the next word would overflow, then
-/// start the next window one word back.
+/// The largest **text**-token window handed to the model, capped **far below** `max_len`.
 ///
-/// Pure and model-independent (takes token counts, not a tokenizer) so it is unit-tested
-/// without a model — the S3 discipline carried from M5's chunking.
-pub fn plan_word_windows(word_token_lens: &[usize], budget: usize) -> Vec<(usize, usize)> {
+/// GLiNER int8's per-span confidence dilutes with context — measured (DEVLOG M8): a clear name
+/// keeps a score ≳0.2 (above the 0.15 threshold) while its window stays ≲100 text tokens, drifts to
+/// ~0.15 by ~130, and at `max_len` (384) the model returns all-low logits (unusable). So the window
+/// is *not* sized to the model's nominal budget — a smaller window is a **recall** choice: it keeps
+/// every entity near *some* window's start (via [`WINDOW_OVERLAP_WORDS`]) with little enough context
+/// that it still scores. Long-field recall is still weaker than short-field — a documented model
+/// property, not a bug; the default XLM-R NER covers long system prompts. Tuned to the shipped int8
+/// model; a swap (esp. fp32) re-opens it.
+pub const MAX_WINDOW_TEXT_TOKENS: usize = 100;
+
+/// Words of overlap between consecutive windows, so an entity spanning a boundary is whole — and
+/// close to the *start* — in the next window. Comfortably above a typical multi-word name.
+pub const WINDOW_OVERLAP_WORDS: usize = 8;
+
+/// Plan word windows so each window's text tokens fit `budget`, overlapping the previous window by
+/// `overlap` words so an entity on a boundary is whole (and near the start) in the next window.
+/// `word_token_lens[i]` is word `i`'s subtoken count. Greedy: extend a window until the next word
+/// would overflow, then start the next `overlap` words back.
+///
+/// Pure and model-independent (takes token counts, not a tokenizer) so it is unit-tested without a
+/// model — the S3 discipline carried from M5's chunking.
+pub fn plan_word_windows(
+    word_token_lens: &[usize],
+    budget: usize,
+    overlap: usize,
+) -> Vec<(usize, usize)> {
     let n = word_token_lens.len();
     if n == 0 {
         return Vec::new();
@@ -396,8 +442,10 @@ pub fn plan_word_windows(word_token_lens: &[usize], budget: usize) -> Vec<(usize
         if end >= n {
             break;
         }
-        // Overlap by one word (unless that would not advance).
-        start = if end > start + 1 { end - 1 } else { end };
+        // Step back `overlap` words, but always advance by at least one (else a window whose length
+        // is ≤ overlap would loop forever).
+        let step_back = overlap.min(end.saturating_sub(start).saturating_sub(1));
+        start = end - step_back;
     }
     windows
 }
@@ -447,21 +495,21 @@ mod tests {
     #[test]
     fn a_short_text_is_one_window() {
         let lens = vec![1, 2, 1, 3, 1]; // 8 tokens
-        assert_eq!(plan_word_windows(&lens, 100), vec![(0, 5)]);
+        assert_eq!(plan_word_windows(&lens, 100, 8), vec![(0, 5)]);
     }
 
     #[test]
-    fn windows_split_on_the_token_budget_and_overlap_by_one_word() {
-        // Each word = 1 token; budget 3 → windows of 3 words, overlapping by 1.
-        let lens = vec![1, 1, 1, 1, 1, 1, 1]; // 7 words
-        let w = plan_word_windows(&lens, 3);
-        // [0,3) [2,5) [4,7)
-        assert_eq!(w, vec![(0, 3), (2, 5), (4, 7)]);
-        // Consecutive windows overlap (never leave a gap).
+    fn windows_split_on_the_token_budget_and_overlap_by_the_given_words() {
+        // Each word = 1 token; budget 5, overlap 2 → 5-word windows stepping back 2.
+        let lens = vec![1; 10]; // 10 words
+        let w = plan_word_windows(&lens, 5, 2);
+        // [0,5) [3,8) [6,10)
+        assert_eq!(w, vec![(0, 5), (3, 8), (6, 10)]);
+        // Consecutive windows overlap by exactly `overlap` (never leave a gap).
         for pair in w.windows(2) {
             assert!(
-                pair[1].0 < pair[0].1,
-                "gap between {:?} and {:?}",
+                pair[1].0 + 2 == pair[0].1 || pair[1].1 == 10,
+                "windows {:?} -> {:?} must overlap by 2",
                 pair[0],
                 pair[1]
             );
@@ -470,9 +518,10 @@ mod tests {
 
     #[test]
     fn a_single_oversized_word_still_gets_its_own_window() {
-        // A 20-token word with budget 5 must not loop forever — it goes in alone.
+        // A 20-token word with budget 5 must not loop forever — it goes in alone (even with a
+        // large overlap, the step always advances by ≥1).
         let lens = vec![1, 20, 1];
-        let w = plan_word_windows(&lens, 5);
+        let w = plan_word_windows(&lens, 5, 8);
         assert!(!w.is_empty());
         assert_eq!(w.first().unwrap().0, 0);
         assert_eq!(w.last().unwrap().1, 3, "coverage must reach the last word");
@@ -480,6 +529,6 @@ mod tests {
 
     #[test]
     fn empty_input_plans_no_windows() {
-        assert!(plan_word_windows(&[], 10).is_empty());
+        assert!(plan_word_windows(&[], 10, 8).is_empty());
     }
 }

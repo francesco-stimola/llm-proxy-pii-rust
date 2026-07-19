@@ -156,6 +156,39 @@ fn gliner_placeholder_inertness_canary() {
     eprintln!("converged; masked = {masked:?}");
 }
 
+#[test]
+#[ignore = "requires the real GLiNER model (set GLINER_MODEL_PATH / GLINER_TOKENIZER_PATH / GLINER_CONFIG_PATH)"]
+fn gliner_chunks_a_large_field_and_keeps_recall() {
+    // M8-R2: exercise the **multi-window** path against the real model (every other gated input
+    // is one short sentence). A field far longer than one window (`MAX_WINDOW_TEXT_TOKENS`) must
+    //   (a) run **without error** — the chunker + the M8-R1 `max_len` choke-point guard don't
+    //       crash or spuriously fail on a field that spans several windows; and
+    //   (b) keep recall — a Person is still detected.
+    //
+    // The Person is placed **near the start** on purpose: GLiNER int8's confidence dilutes with
+    // preceding context (DEVLOG M8), so an entity buried at the *end* of a long field is a
+    // documented model weakness, not a chunking bug. What chunking must guarantee is that an
+    // entity lands near *some* window's start (here, window 0) and is found. The long tail forces
+    // the multi-window path around it.
+    let Some(gliner) = build_gliner() else {
+        panic!("set GLINER_MODEL_PATH / GLINER_TOKENIZER_PATH / GLINER_CONFIG_PATH to run this");
+    };
+    let tail = " the meeting notes describe the process and the steps to follow".repeat(80);
+    let text = format!("My colleague Mario Rossi will attend the review.{tail}");
+
+    let got: Vec<(PiiKind, String)> = gliner
+        .detect(&text)
+        .into_iter()
+        .map(|e| (e.kind, e.text))
+        .collect();
+    eprintln!("large field ({} bytes) → {got:?}", text.len());
+    assert!(
+        got.iter()
+            .any(|(k, t)| *k == PiiKind::Person && t == "Mario Rossi"),
+        "the multi-window path must run without error and keep the Person near window 0; got {got:?}"
+    );
+}
+
 // ---- full corpus eval (recall/precision/F1 through the hybrid) ----
 
 #[derive(Deserialize)]

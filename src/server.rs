@@ -275,21 +275,29 @@ fn wrap_ml(detector: Box<dyn PiiDetector>, ner_required: bool) -> Box<dyn PiiDet
 /// the airtight-privacy path (zero outbound calls); an `hf-hub` auto-download parity with
 /// the NER is a documented future addition. Tunables: `GLINER_LABELS` (comma-separated
 /// natural-language types; default person/organization/location/phone number/address),
-/// `GLINER_THRESHOLD`, `GLINER_POOL_SIZE`, `GLINER_INTRA_THREADS`. `Ok(None)` = not
-/// configured; `Err` = configured but failed to load (the caller decides if that's fatal).
+/// `GLINER_THRESHOLD`, `GLINER_POOL_SIZE`, `GLINER_INTRA_THREADS`. `Ok(None)` only when
+/// `GLINER_MODEL_PATH` is unset (opt-out); once it is set, a missing companion var or a broken
+/// `GLINER_THRESHOLD` is an **`Err`** (M8-R5) — never a silent disable — and the caller decides
+/// if that's fatal (`NER_REQUIRED`) or logged-and-skipped.
 #[cfg(feature = "onnx")]
 async fn load_gliner() -> anyhow::Result<Option<Box<dyn PiiDetector>>> {
     use crate::pii::gliner::{GLiNerDetector, GlinerParams, DEFAULT_THRESHOLD};
     use crate::pii::gliner_decode::{default_gliner_labels, parse_gliner_labels};
 
     let Ok(model) = std::env::var("GLINER_MODEL_PATH") else {
-        return Ok(None); // not configured
+        return Ok(None); // not configured — GLiNER is opt-in
     };
+    // `GLINER_MODEL_PATH` is set → GLiNER is *intended*. A missing companion is a config error,
+    // **not a silent opt-out** (M8-R5): a typo'd `GLINER_TOKENIZER_PATH` must surface, not quietly
+    // disable an opt-in security feature. `Err` flows to the caller's posture (fatal under
+    // `NER_REQUIRED`, else logged and skipped) rather than vanishing as `Ok(None)`.
     let (Some(tokenizer), Some(config)) = (
         std::env::var("GLINER_TOKENIZER_PATH").ok(),
         std::env::var("GLINER_CONFIG_PATH").ok(),
     ) else {
-        return Ok(None); // partial config → unconfigured (NER_REQUIRED makes it fatal upstream)
+        return Err(anyhow::anyhow!(
+            "GLINER_MODEL_PATH is set but GLINER_TOKENIZER_PATH and/or GLINER_CONFIG_PATH is missing"
+        ));
     };
 
     let config_json = std::fs::read_to_string(&config)
@@ -299,10 +307,22 @@ async fn load_gliner() -> anyhow::Result<Option<Box<dyn PiiDetector>>> {
         Ok(spec) => parse_gliner_labels(&spec).map_err(|e| anyhow::anyhow!(e))?,
         Err(_) => default_gliner_labels(),
     };
-    let threshold = std::env::var("GLINER_THRESHOLD")
-        .ok()
-        .and_then(|s| s.parse::<f32>().ok())
-        .unwrap_or(DEFAULT_THRESHOLD);
+    // A *set* threshold must parse and be a probability. Silently defaulting on a parse error, or
+    // accepting `2.0` (→ nothing ever masks), would quietly disable the detector (M8-R5). Unset =
+    // the measured default.
+    let threshold = match std::env::var("GLINER_THRESHOLD") {
+        Ok(s) => {
+            let t: f32 = s
+                .parse()
+                .map_err(|_| anyhow::anyhow!("GLINER_THRESHOLD is not a number: {s:?}"))?;
+            anyhow::ensure!(
+                (0.0..=1.0).contains(&t),
+                "GLINER_THRESHOLD must be a probability in [0.0, 1.0], got {t}"
+            );
+            t
+        }
+        Err(_) => DEFAULT_THRESHOLD,
+    };
     // Same pool/intra derivation as the NER (its own env), so an operator running both
     // models controls each independently (the two knobs multiply — M7).
     let (pool_size, intra_threads) = crate::pii::onnx::resolve_pool_and_intra(

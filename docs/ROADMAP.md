@@ -1096,11 +1096,11 @@ hardening / test-coverage / docs.
 
 | ID | Title | Sev | Status |
 |---|---|---|---|
-| [M8-R1](reviews/M8.md#m8-r1) | GLiNER chunking has no choke-point ceiling guard — re-tokenized `seq` never checked vs `max_len` (the S3 "port M5's discipline" item, only half-delivered) | hardening | [ ] |
-| [M8-R2](reviews/M8.md#m8-r2) | GLiNER's multi-window chunking path has never run against the real model (all gated inputs are single-window) | test-cov | [ ] |
-| [M8-R3](reviews/M8.md#m8-r3) | ARCHITECTURE says a GLiNER guess "loses in overlap" — false for its `Phone`, which is `is_structured()` and is union-merged | docs | [ ] |
-| [M8-R4](reviews/M8.md#m8-r4) | `gliner_decode.rs` has 11 unit tests; DEVLOG/TESTING say 12 | docs | [ ] |
-| [M8-R5](reviews/M8.md#m8-r5) | `load_gliner` silently disables GLiNER on partial config / an out-of-range `GLINER_THRESHOLD` | hardening | [ ] |
+| [M8-R1](reviews/M8.md#m8-r1) | GLiNER chunking has no choke-point ceiling guard — re-tokenized `seq` never checked vs `max_len` (the S3 "port M5's discipline" item, only half-delivered) | hardening | [x] |
+| [M8-R2](reviews/M8.md#m8-r2) | GLiNER's multi-window chunking path has never run against the real model (all gated inputs are single-window) | test-cov | [x] |
+| [M8-R3](reviews/M8.md#m8-r3) | ARCHITECTURE says a GLiNER guess "loses in overlap" — false for its `Phone`, which is `is_structured()` and is union-merged | docs | [x] |
+| [M8-R4](reviews/M8.md#m8-r4) | `gliner_decode.rs` had 11 unit tests; a 12th was added to match DEVLOG/TESTING | docs | [x] |
+| [M8-R5](reviews/M8.md#m8-r5) | `load_gliner` silently disables GLiNER on partial config / an out-of-range `GLINER_THRESHOLD` | hardening | [x] |
 
 <a id="m9"></a>
 ## M9 — GPU optimization

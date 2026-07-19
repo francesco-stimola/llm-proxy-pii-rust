@@ -64,6 +64,21 @@ layer). `NER_REQUIRED` now means "≥1 ML detector (XLM-R and/or GLiNER) must lo
 local paths only for now (the airtight-privacy path); an `hf-hub` auto-download parity with the NER is
 a documented future addition.
 
+**Reviewer round 1 (2026-07-19) — 5 findings, none a leak; all closed. One of them was load-bearing.**
+The reviewer independently reproduced the eval to the digit and confirmed no leak / no fail-open, then
+flagged that the **chunking path had never run against the real model** (M8-R2) and lacked a `max_len`
+choke-point guard (M8-R1). Acting on that pair exposed a real recall bug the pure-function unit test had
+hidden: a window filled to the `max_len` budget makes the model return **all-low logits at seq ≈ 384** (a
+313-word window scored *zero* on a clear name), and GLiNER int8's confidence **dilutes with context** well
+before that (a name at a window's start keeps ≳0.2 while the window stays ≲100 text tokens, ~0.15 by ~130).
+**Fix:** cap the window at `MAX_WINDOW_TEXT_TOKENS = 100` (far below the `max_len` budget) with an 8-word
+overlap, so every entity lands near *some* window's start where it still scores — plus the choke-point
+guard as the hard safety net. Long-field recall stays weaker than short-field (a documented model property;
+the default XLM-R covers long system prompts). The other three: the overlap invariant for a GLiNER `Phone`
+(`is_structured` → union-merged, not "loses") promoted to ARCHITECTURE (M8-R3), a 12th decode test
+(determinism, M8-R4), and `load_gliner` hardened to **fail loud** on partial config / a bad threshold
+rather than silently disabling an opt-in feature (M8-R5). Full record: `docs/reviews/M8.md`.
+
 ## 2026-07-18 — M8/M9 promoted from Backlog; the M8 GLiNER implementation plan
 
 **Post-`1.0.0` planning.** With `1.0.0` tagged and the ROADMAP's scheduled work all closed (the only open
