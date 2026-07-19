@@ -29,12 +29,12 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 use anyhow::{anyhow, Result};
-use ort::session::builder::GraphOptimizationLevel;
 use ort::session::Session;
 use ort::value::Tensor;
 use tokenizers::Tokenizer;
 
 use super::gliner_decode::{decode_spans, split_words, GlinerLabel, SpanScore};
+use super::onnx::{build_session, ExecutionProvider};
 use super::{DetectError, PiiDetector, PiiEntity};
 
 /// Default detection threshold on the per-span sigmoid probability — **0.15, chosen by
@@ -111,6 +111,7 @@ impl GLiNerDetector {
         threshold: f32,
         pool_size: usize,
         intra_threads: usize,
+        provider: ExecutionProvider,
     ) -> Result<Self> {
         anyhow::ensure!(!labels.is_empty(), "GLiNER needs at least one entity label");
         let tokenizer =
@@ -120,17 +121,12 @@ impl GLiNerDetector {
         let intra_threads = intra_threads.max(1);
         let mut sessions = Vec::with_capacity(pool_size);
         for _ in 0..pool_size {
-            let builder = Session::builder().map_err(|e| anyhow!("session builder: {e}"))?;
-            let builder = builder
-                .with_optimization_level(GraphOptimizationLevel::Level3)
-                .map_err(|e| anyhow!("optimization level: {e}"))?;
-            let mut builder = builder
-                .with_intra_threads(intra_threads)
-                .map_err(|e| anyhow!("intra threads: {e}"))?;
-            let session = builder
-                .commit_from_file(model_path)
-                .map_err(|e| anyhow!("load model {model_path}: {e}"))?;
-            sessions.push(Mutex::new(session));
+            // The EP-selection + CPU-fallback policy lives in one place, shared with the XLM-R NER.
+            sessions.push(Mutex::new(build_session(
+                model_path,
+                intra_threads,
+                provider,
+            )?));
         }
 
         Ok(Self {

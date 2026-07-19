@@ -31,8 +31,8 @@ use std::time::Instant;
 
 use llm_proxy_pii_rust::pii::anonymizer::Vault;
 use llm_proxy_pii_rust::pii::onnx::{
-    available_cores, chunk_char_ranges, OnnxNerDetector, CHUNK_OVERLAP_TOKENS, MAX_WINDOW_TOKENS,
-    MODEL_MAX_TOKENS,
+    available_cores, chunk_char_ranges, ExecutionProvider, OnnxNerDetector, CHUNK_OVERLAP_TOKENS,
+    MAX_WINDOW_TOKENS, MODEL_MAX_TOKENS,
 };
 use llm_proxy_pii_rust::pii::PiiDetector;
 
@@ -45,7 +45,16 @@ fn load_detector() -> OnnxNerDetector {
     // pool=1, intra=1: these guards measure *recall* and *pass counts*, not wall clock, so they
     // pin the historical single-threaded shape rather than inheriting M7's derived default (which
     // would make their numbers depend on the runner's core count).
-    OnnxNerDetector::load(&model, &tokenizer, id2label, 1, 1, false).expect("load NER model")
+    OnnxNerDetector::load(
+        &model,
+        &tokenizer,
+        id2label,
+        1,
+        1,
+        false,
+        ExecutionProvider::Cpu,
+    )
+    .expect("load NER model")
 }
 
 fn load_tokenizer() -> tokenizers::Tokenizer {
@@ -271,8 +280,16 @@ fn m7_r3_intra_threads_changes_speed_not_detection() {
     // `(kind, span.start, span.end)` per input — spans included, because a shifted span is a
     // different mask even when the count is identical.
     let fingerprint = |intra: usize| -> Vec<Vec<(String, usize, usize)>> {
-        let detector = OnnxNerDetector::load(&model, &tokenizer, id2label.clone(), 1, intra, false)
-            .expect("load NER model");
+        let detector = OnnxNerDetector::load(
+            &model,
+            &tokenizer,
+            id2label.clone(),
+            1,
+            intra,
+            false,
+            ExecutionProvider::Cpu,
+        )
+        .expect("load NER model");
         inputs
             .iter()
             .map(|input| {

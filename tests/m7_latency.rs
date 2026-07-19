@@ -39,7 +39,9 @@ use std::time::Instant;
 
 use llm_proxy_pii_rust::pii::anonymizer::Vault;
 use llm_proxy_pii_rust::pii::composite::CompositeDetector;
-use llm_proxy_pii_rust::pii::onnx::{available_cores, resolve_pool_and_intra, OnnxNerDetector};
+use llm_proxy_pii_rust::pii::onnx::{
+    available_cores, resolve_pool_and_intra, ExecutionProvider, OnnxNerDetector,
+};
 use llm_proxy_pii_rust::pii::recognizers::StructuredRecognizers;
 use llm_proxy_pii_rust::pii::{DetectError, PiiDetector, PiiEntity};
 
@@ -428,8 +430,16 @@ fn build_hybrid_with(pool: usize, intra: usize) -> CompositeDetector {
     let tokenizer = std::env::var("NER_TOKENIZER_PATH").expect("set NER_TOKENIZER_PATH");
     let labels = std::env::var("NER_LABELS").expect("set NER_LABELS");
     let id2label: Vec<String> = labels.split(',').map(str::to_string).collect();
-    let ner =
-        OnnxNerDetector::load(&model, &tokenizer, id2label, pool, intra, false).expect("load NER");
+    let ner = OnnxNerDetector::load(
+        &model,
+        &tokenizer,
+        id2label,
+        pool,
+        intra,
+        false,
+        ExecutionProvider::Cpu,
+    )
+    .expect("load NER");
     CompositeDetector::new(vec![Box::new(StructuredRecognizers::new()), Box::new(ner)])
 }
 

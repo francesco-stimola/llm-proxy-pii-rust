@@ -120,8 +120,18 @@ async fn build_detector(
         let mut detectors = vec![structured];
         let mut ml_loaded = 0usize;
 
+        // (M9) The execution backend both ML detectors run on — parsed ONCE, here, so the two
+        // loads cannot disagree. Default is CPU; an unknown value is a startup config error
+        // (fatal regardless of `NER_REQUIRED`), never a silent CPU run behind an operator who
+        // believes a GPU is engaged. A *known* provider that fails to initialize falls back to
+        // CPU later, in `build_session` — a different failure (see onnx::ExecutionProvider).
+        let provider = crate::pii::onnx::ExecutionProvider::parse(
+            &std::env::var("NER_EXECUTION_PROVIDER").unwrap_or_default(),
+        )
+        .map_err(|m| anyhow::anyhow!(m))?;
+
         // (a) Token-classification NER (M2).
-        match load_onnx_ner().await {
+        match load_onnx_ner(provider).await {
             Ok(Some(ner)) => {
                 detectors.push(wrap_ml(ner, ner_required));
                 ml_loaded += 1;
@@ -135,7 +145,7 @@ async fn build_detector(
             }
         }
         // (b) GLiNER contextual / open-label span detector (M8) — opt-in.
-        match load_gliner().await {
+        match load_gliner(provider).await {
             Ok(Some(gliner)) => {
                 detectors.push(wrap_ml(gliner, ner_required));
                 ml_loaded += 1;
@@ -185,33 +195,29 @@ async fn build_detector(
 /// Common to both: optional `NER_POOL_SIZE`, `NER_TOKEN_TYPE_IDS`. `Ok(None)` =
 /// unconfigured; `Err` = configured but failed to load/fetch (the caller decides
 /// if that's fatal). Async so the auto-download can run on the `tokio` runtime.
+/// Resolve the NER model source from env — **the one home of that priority order**, shared
+/// by the detector loader and the provider benchmark.
+///
+/// The benchmark must measure *the model the proxy would actually run*; a second copy of this
+/// resolution would let the two drift, and a benchmark that silently measured a different
+/// model than the server loads is worse than no benchmark (it answers confidently and wrong —
+/// the M7-R1 failure, in a new place).
+///
+/// `Ok(None)` = unconfigured (including a *partial* explicit config, where the companions are
+/// missing); `Err` = configured but the fetch failed.
 #[cfg(feature = "onnx")]
-async fn load_onnx_ner() -> anyhow::Result<Option<Box<dyn PiiDetector>>> {
-    use crate::pii::onnx::OnnxNerDetector;
-
-    // M7. Both knobs resolve in ONE place (`onnx::resolve_pool_and_intra`), which the latency
-    // harness calls too — when each read its own default they silently disagreed (2 vs 1) and M7's
-    // bar measured a config nobody ships (M7-R1). Explicit wins; otherwise `intra` is derived,
-    // because the two knobs multiply and a fixed number is wrong on a 2-core VM and a 64-core
-    // server alike. `0` is unset for both, never ONNX Runtime's "pick for me" (M7-R5).
-    let (pool_size, intra_threads) = crate::pii::onnx::resolve_pool_and_intra(
-        std::env::var("NER_POOL_SIZE").ok().as_deref(),
-        std::env::var("NER_INTRA_THREADS").ok().as_deref(),
-        crate::pii::onnx::available_cores(),
-    );
-    let needs_token_type_ids = env_flag("NER_TOKEN_TYPE_IDS");
+async fn resolve_ner_model() -> anyhow::Result<Option<(String, String, Vec<String>)>> {
     let labels_override = std::env::var("NER_LABELS").ok();
 
-    // Resolve (model path, tokenizer path, id2label) from one of the two sources.
-    let (model, tokenizer, id2label) = if let Ok(model) = std::env::var("NER_MODEL_PATH") {
+    if let Ok(model) = std::env::var("NER_MODEL_PATH") {
         // (1) Explicit local files — tokenizer + labels are required alongside.
         let (Some(tokenizer), Some(labels)) =
             (std::env::var("NER_TOKENIZER_PATH").ok(), labels_override)
         else {
-            return Ok(None); // partial config → unconfigured (NER_REQUIRED makes it fatal)
+            return Ok(None); // partial config → unconfigured
         };
         let id2label = labels.split(',').map(|s| s.trim().to_string()).collect();
-        (model, tokenizer, id2label)
+        Ok(Some((model, tokenizer, id2label)))
     } else if let Ok(repo) = std::env::var("NER_MODEL_REPO") {
         // (2) Opt-in, revision-pinned fetch into the standard HF cache (M2.5).
         let spec = crate::pii::hf::HfModelSpec {
@@ -227,13 +233,92 @@ async fn load_onnx_ner() -> anyhow::Result<Option<Box<dyn PiiDetector>>> {
             Some(labels) => labels.split(',').map(|s| s.trim().to_string()).collect(),
             None => resolved.id2label,
         };
-        (
+        Ok(Some((
             resolved.model_path.to_string_lossy().into_owned(),
             resolved.tokenizer_path.to_string_lossy().into_owned(),
             id2label,
-        )
+        )))
     } else {
-        return Ok(None); // not configured
+        Ok(None) // not configured
+    }
+}
+
+/// `--bench-providers`: measure every compiled-in execution provider against the configured
+/// NER model **on this machine**, print the report, and exit. Never serves.
+///
+/// This exists because the right backend is a **hardware** question the project cannot answer
+/// for the operator — M9 measured a box where the GPU *loses* to the CPU, and a different box
+/// would flip that. See [`crate::pii::bench`] for the reasoning and the quantization trap the
+/// report warns about.
+#[cfg(feature = "onnx")]
+pub async fn run_provider_benchmark() -> anyhow::Result<()> {
+    let Some((model, _tokenizer, _id2label)) = resolve_ner_model().await? else {
+        anyhow::bail!(
+            "no NER model configured — set NER_MODEL_PATH (with NER_TOKENIZER_PATH and \
+             NER_LABELS) or NER_MODEL_REPO. The benchmark deliberately measures the model the \
+             proxy would actually run, so it needs the same configuration the server does."
+        );
+    };
+
+    // The configured model, plus any extra variants to compare against it. The choice of
+    // backend and the choice of quantization are **coupled** (CPU wants int8, a GPU wants
+    // fp16), so answering "is the GPU worth it?" needs a matrix, not one model across
+    // providers — `NER_BENCH_MODELS` is how the operator supplies the other corner.
+    let mut models = vec![model];
+    if let Ok(extra) = std::env::var("NER_BENCH_MODELS") {
+        for candidate in extra.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+            let candidate = candidate.to_string();
+            if !models.contains(&candidate) {
+                models.push(candidate);
+            }
+        }
+    }
+
+    let results = crate::pii::bench::benchmark_matrix(&models);
+    println!("{}", crate::pii::bench::format_report(&models, &results));
+    Ok(())
+}
+
+/// Without the `onnx` feature there is no inference to accelerate. The command still
+/// **runs and explains** rather than failing: `--bench-providers` must behave the same way in
+/// every build, so an operator can always ask the question and always get a true, actionable
+/// answer — here, "nothing to accelerate, and this is how you get a build that has something".
+#[cfg(not(feature = "onnx"))]
+pub async fn run_provider_benchmark() -> anyhow::Result<()> {
+    println!(
+        "Execution-provider benchmark (M9)\n\n\
+         This binary was built WITHOUT the `onnx` feature, so it has no ML inference layer to\n\
+         accelerate. Detection here is the deterministic recognizers only (email, phone, SSN,\n\
+         credit card, IBAN, national ID) — plain CPU regex, unaffected by any execution\n\
+         provider. There is nothing to benchmark.\n\n\
+         To get the ML layer (the XLM-R NER) and compare backends:\n\
+         \x20 cargo build --features onnx          # CPU baseline\n\
+         \x20 cargo build --features ep-directml   # + an accelerator (see docs for your OS)\n\
+         then re-run with --bench-providers."
+    );
+    Ok(())
+}
+
+#[cfg(feature = "onnx")]
+async fn load_onnx_ner(
+    provider: crate::pii::onnx::ExecutionProvider,
+) -> anyhow::Result<Option<Box<dyn PiiDetector>>> {
+    use crate::pii::onnx::OnnxNerDetector;
+
+    // M7. Both knobs resolve in ONE place (`onnx::resolve_pool_and_intra`), which the latency
+    // harness calls too — when each read its own default they silently disagreed (2 vs 1) and M7's
+    // bar measured a config nobody ships (M7-R1). Explicit wins; otherwise `intra` is derived,
+    // because the two knobs multiply and a fixed number is wrong on a 2-core VM and a 64-core
+    // server alike. `0` is unset for both, never ONNX Runtime's "pick for me" (M7-R5).
+    let (pool_size, intra_threads) = crate::pii::onnx::resolve_pool_and_intra(
+        std::env::var("NER_POOL_SIZE").ok().as_deref(),
+        std::env::var("NER_INTRA_THREADS").ok().as_deref(),
+        crate::pii::onnx::available_cores(),
+    );
+    let needs_token_type_ids = env_flag("NER_TOKEN_TYPE_IDS");
+
+    let Some((model, tokenizer, id2label)) = resolve_ner_model().await? else {
+        return Ok(None); // not configured (NER_REQUIRED makes that fatal upstream)
     };
 
     let detector = OnnxNerDetector::load(
@@ -243,12 +328,19 @@ async fn load_onnx_ner() -> anyhow::Result<Option<Box<dyn PiiDetector>>> {
         pool_size,
         intra_threads,
         needs_token_type_ids,
+        provider,
     )?;
     // `intra_threads` is logged because it is *derived* by default: an operator debugging latency
     // must be able to see what was picked without reproducing the arithmetic. Both values are the
     // **effective** ones — resolved once, above, and handed to `load` unchanged — so this line can
     // never name a pool the process doesn't have (M7-R5).
-    tracing::info!(model, pool_size, intra_threads, "ONNX NER detector loaded");
+    tracing::info!(
+        model,
+        pool_size,
+        intra_threads,
+        provider = provider.as_str(),
+        "ONNX NER detector loaded"
+    );
     Ok(Some(Box::new(detector)))
 }
 
@@ -280,7 +372,9 @@ fn wrap_ml(detector: Box<dyn PiiDetector>, ner_required: bool) -> Box<dyn PiiDet
 /// `GLINER_THRESHOLD` is an **`Err`** (M8-R5) — never a silent disable — and the caller decides
 /// if that's fatal (`NER_REQUIRED`) or logged-and-skipped.
 #[cfg(feature = "onnx")]
-async fn load_gliner() -> anyhow::Result<Option<Box<dyn PiiDetector>>> {
+async fn load_gliner(
+    provider: crate::pii::onnx::ExecutionProvider,
+) -> anyhow::Result<Option<Box<dyn PiiDetector>>> {
     use crate::pii::gliner::{GLiNerDetector, GlinerParams, DEFAULT_THRESHOLD};
     use crate::pii::gliner_decode::{default_gliner_labels, parse_gliner_labels};
 
@@ -339,12 +433,14 @@ async fn load_gliner() -> anyhow::Result<Option<Box<dyn PiiDetector>>> {
         threshold,
         pool_size,
         intra_threads,
+        provider,
     )?;
     tracing::info!(
         model,
         pool_size,
         intra_threads,
         threshold,
+        provider = provider.as_str(),
         "GLiNER detector loaded"
     );
     Ok(Some(Box::new(detector)))

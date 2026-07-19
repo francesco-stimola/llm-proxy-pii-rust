@@ -27,6 +27,7 @@ use llm_proxy_pii_rust::pii::anonymizer::Vault;
 use llm_proxy_pii_rust::pii::composite::CompositeDetector;
 use llm_proxy_pii_rust::pii::gliner::{GLiNerDetector, GlinerParams, DEFAULT_THRESHOLD};
 use llm_proxy_pii_rust::pii::gliner_decode::{default_gliner_labels, parse_gliner_labels};
+use llm_proxy_pii_rust::pii::onnx::ExecutionProvider;
 use llm_proxy_pii_rust::pii::recognizers::StructuredRecognizers;
 use llm_proxy_pii_rust::pii::{PiiDetector, PiiEntity, PiiKind};
 
@@ -56,8 +57,17 @@ fn build_gliner() -> Option<GLiNerDetector> {
         .unwrap_or(DEFAULT_THRESHOLD);
     // pool=1, intra=1: recall harness, not latency — reproducible across boxes.
     Some(
-        GLiNerDetector::load(&model, &tokenizer, labels, params, threshold, 1, 1)
-            .expect("load GLiNER model"),
+        GLiNerDetector::load(
+            &model,
+            &tokenizer,
+            labels,
+            params,
+            threshold,
+            1,
+            1,
+            ExecutionProvider::Cpu,
+        )
+        .expect("load GLiNER model"),
     )
 }
 

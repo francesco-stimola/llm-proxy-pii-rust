@@ -81,6 +81,27 @@ hf-hub = { version = "1", optional = true }
 default = []
 onnx = ["dep:ort", "dep:tokenizers", "dep:hf-hub"]
 
+# Hardware-acceleration execution providers (M9) — each OPT-IN, each pulls the
+# matching ONNX Runtime backend binary via `ort`. The backend is chosen at
+# RUNTIME by `NER_EXECUTION_PROVIDER`; a provider whose feature wasn't compiled
+# in — or whose device/driver is absent — falls back to CPU at session build, so
+# a missing accelerator is never a startup failure (a privacy proxy must start,
+# and masking is identical on CPU).
+#
+# ONLY `ep-directml` is tested on this project's hardware (an AMD DX12 iGPU).
+# The rest are wired and compile, but are UNVERIFIED — an accepted trade-off so
+# an operator on the right hardware can turn one on. `download-binaries` (always
+# on for `ort`) covers the CPU + DirectML binaries; CUDA/ROCm/OpenVINO/TensorRT
+# pull heavier, platform-specific runtimes that must match the deployment host.
+# See docs/ARCHITECTURE.md → "Execution providers (hardware acceleration)".
+ep-directml = ["onnx", "ort/directml"]
+ep-cuda = ["onnx", "ort/cuda"]
+ep-tensorrt = ["onnx", "ort/tensorrt"]
+ep-coreml = ["onnx", "ort/coreml"]
+ep-rocm = ["onnx", "ort/rocm"]
+ep-openvino = ["onnx", "ort/openvino"]
+ep-webgpu = ["onnx", "ort/webgpu"]
+
 # Release profile — tuned for the shipped binary (the release workflow builds with this).
 #
 # The proxy is CPU-bound on the masking path (regex scans over every text field, plus NER

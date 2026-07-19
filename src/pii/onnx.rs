@@ -210,6 +210,187 @@ fn derive_intra_threads(pool_size: usize, cores: usize) -> usize {
     (cores / pool_size.max(1)).max(1)
 }
 
+/// The hardware backend an ONNX session runs on (M9).
+///
+/// `Cpu` is the universal, always-available, always-tested default. Every other
+/// variant is an **opt-in accelerator** chosen at runtime by
+/// `NER_EXECUTION_PROVIDER` and gated at build time by its `ep-*` cargo feature
+/// (which pulls the matching ONNX Runtime backend binary). **Only `DirectMl` is
+/// tested on this project's hardware** (an AMD DX12 iGPU); the rest are wired and
+/// compile, but are UNVERIFIED — they exist so an operator on the right hardware
+/// can turn one on, accepting that trade-off.
+///
+/// Whatever is selected, a session that cannot initialize the accelerator
+/// **falls back to CPU** (see [`build_session`]): a privacy proxy must never fail
+/// to *start* over a GPU that isn't there, and masking is identical on CPU.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExecutionProvider {
+    Cpu,
+    DirectMl,
+    Cuda,
+    TensorRt,
+    CoreMl,
+    Rocm,
+    OpenVino,
+    WebGpu,
+}
+
+impl ExecutionProvider {
+    /// Parse the `NER_EXECUTION_PROVIDER` value (case-insensitive; `""`/absent →
+    /// [`Cpu`](Self::Cpu)). An **unknown** name is an `Err`, never a silent CPU
+    /// fallback: a typo'd accelerator (`directl`, or a hopeful `vulkan` — not an
+    /// ONNX Runtime backend) must surface at startup, the same rule the GLiNER
+    /// companion-var check follows (M8-R5). "Failed to initialize" (→ CPU fallback)
+    /// and "you named something that doesn't exist" (→ config error) are different
+    /// failures and must not be conflated.
+    pub fn parse(s: &str) -> Result<Self, String> {
+        Ok(match s.trim().to_ascii_lowercase().as_str() {
+            "" | "cpu" => Self::Cpu,
+            "directml" | "dml" => Self::DirectMl,
+            "cuda" => Self::Cuda,
+            "tensorrt" | "trt" => Self::TensorRt,
+            "coreml" => Self::CoreMl,
+            "rocm" => Self::Rocm,
+            "openvino" | "vino" => Self::OpenVino,
+            "webgpu" => Self::WebGpu,
+            other => {
+                return Err(format!(
+                    "unknown NER_EXECUTION_PROVIDER {other:?} (expected one of: cpu, \
+                     directml, cuda, tensorrt, coreml, rocm, openvino, webgpu)"
+                ));
+            }
+        })
+    }
+
+    /// Stable lower-case name, for logs and for round-tripping through [`parse`](Self::parse).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Cpu => "cpu",
+            Self::DirectMl => "directml",
+            Self::Cuda => "cuda",
+            Self::TensorRt => "tensorrt",
+            Self::CoreMl => "coreml",
+            Self::Rocm => "rocm",
+            Self::OpenVino => "openvino",
+            Self::WebGpu => "webgpu",
+        }
+    }
+
+    /// The `ort` dispatch for an accelerated provider, or `None` for [`Cpu`](Self::Cpu).
+    ///
+    /// Every EP *type* is always compiled (only its `register()` is feature-gated
+    /// inside `ort`), so this needs no `#[cfg]` per arm — a provider whose `ep-*`
+    /// feature is off simply fails registration with `MissingFeature`, which
+    /// [`build_session`] turns into a CPU fallback.
+    ///
+    /// `.error_on_failure()` is deliberate: it makes a failed registration return
+    /// `Err` from the session build so the fallback can be **explicit and logged**.
+    /// ORT's default (`fail_silently`) would drop to CPU invisibly, hiding which
+    /// backend actually ran — unacceptable observability for a tool that logs its
+    /// effective config.
+    fn dispatch(self) -> Option<ort::ep::ExecutionProviderDispatch> {
+        use ort::ep;
+        Some(match self {
+            Self::Cpu => return None,
+            Self::DirectMl => ep::DirectML::default().build().error_on_failure(),
+            Self::Cuda => ep::CUDA::default().build().error_on_failure(),
+            Self::TensorRt => ep::TensorRT::default().build().error_on_failure(),
+            Self::CoreMl => ep::CoreML::default().build().error_on_failure(),
+            Self::Rocm => ep::ROCm::default().build().error_on_failure(),
+            Self::OpenVino => ep::OpenVINO::default().build().error_on_failure(),
+            Self::WebGpu => ep::WebGPU::default().build().error_on_failure(),
+        })
+    }
+}
+
+/// Build one ONNX session on `provider`, **falling back to CPU** if the
+/// accelerator can't initialize (feature not compiled, backend binary/driver
+/// missing, no device, registration error). The single home of the
+/// EP-selection + fallback policy — both [`OnnxNerDetector`] and the GLiNER
+/// detector build their pools through here, so the fallback behaves identically
+/// for every model (no second, drifting copy).
+///
+/// **The fallback covers *initialization*, not *numerical correctness*.** An
+/// accelerator that registers but computes subtly different logits than the CPU
+/// is not caught here — but its blast radius is bounded to **NER recall** (the
+/// best-effort layer): the deterministic structured recognizers run on CPU regex,
+/// independent of the EP, so the fail-closed layer is untouched no matter what
+/// backend the NER runs on. That bound is what makes an untested EP an acceptable
+/// opt-in, and it is *also* why the tested one (DirectML) still owes the
+/// cross-thread-determinism guard before it is trusted (see `ARCHITECTURE.md` →
+/// *Execution providers*).
+pub(crate) fn build_session(
+    model_path: &str,
+    intra_threads: usize,
+    provider: ExecutionProvider,
+) -> Result<Session> {
+    build_session_reporting(model_path, intra_threads, provider).map(|(session, _)| session)
+}
+
+/// As [`build_session`], but also reports the **effective** provider — what the session
+/// actually runs on, which is [`ExecutionProvider::Cpu`] whenever the requested accelerator
+/// fell back.
+///
+/// The provider benchmark ([`super::bench`]) needs this and the plain `build_session` cannot
+/// give it: a fallback that still reported the *requested* provider would make the report
+/// claim a GPU measurement that never touched the GPU — the one way a benchmark meant to
+/// answer "what is fastest here?" could confidently answer wrong.
+pub(crate) fn build_session_reporting(
+    model_path: &str,
+    intra_threads: usize,
+    provider: ExecutionProvider,
+) -> Result<(Session, ExecutionProvider)> {
+    let intra_threads = intra_threads.max(1);
+    if let Some(dispatch) = provider.dispatch() {
+        match build_session_inner(model_path, intra_threads, Some(dispatch)) {
+            Ok(session) => {
+                tracing::info!(
+                    provider = provider.as_str(),
+                    "NER session initialized on accelerated execution provider"
+                );
+                return Ok((session, provider));
+            }
+            Err(e) => {
+                // Never fail to start over an absent accelerator — drop to CPU, loudly.
+                tracing::warn!(
+                    provider = provider.as_str(),
+                    error = %e,
+                    "accelerated execution provider failed to initialize; falling back to CPU"
+                );
+            }
+        }
+    }
+    build_session_inner(model_path, intra_threads, None).map(|s| (s, ExecutionProvider::Cpu))
+}
+
+/// The actual `ort` builder chain. `dispatch = None` is the plain CPU session;
+/// `Some(ep)` registers the accelerator first (with `error_on_failure`, so a bad
+/// registration surfaces here for [`build_session`]'s fallback to catch).
+fn build_session_inner(
+    model_path: &str,
+    intra_threads: usize,
+    dispatch: Option<ort::ep::ExecutionProviderDispatch>,
+) -> Result<Session> {
+    // ort's builder errors aren't Send+Sync, so convert to a string at each step
+    // rather than chaining `?` into `anyhow` (the module-wide dance).
+    let builder = Session::builder().map_err(|e| anyhow!("session builder: {e}"))?;
+    let builder = match dispatch {
+        Some(ep) => builder
+            .with_execution_providers([ep])
+            .map_err(|e| anyhow!("register execution provider: {e}"))?,
+        None => builder,
+    };
+    let builder = builder
+        .with_optimization_level(GraphOptimizationLevel::Level3)
+        .map_err(|e| anyhow!("optimization level: {e}"))?;
+    let mut builder = builder
+        .with_intra_threads(intra_threads)
+        .map_err(|e| anyhow!("intra threads: {e}"))?;
+    builder
+        .commit_from_file(model_path)
+        .map_err(|e| anyhow!("load model {model_path}: {e}"))
+}
+
 /// NER-based detector backed by an ONNX Runtime session.
 ///
 /// Holds a small **pool** of sessions so inference isn't a single-threaded
@@ -232,7 +413,10 @@ impl OnnxNerDetector {
     /// `id2label` is the model's label list (index = class id); `pool_size` is
     /// clamped to at least 1; `intra_threads` is the per-session intra-op thread count (see
     /// [`default_intra_threads`] — the caller derives it, this only clamps);
-    /// `needs_token_type_ids` threads a zero `token_type_ids` input for BERT-family models.
+    /// `needs_token_type_ids` threads a zero `token_type_ids` input for BERT-family models;
+    /// `provider` selects the execution backend (M9) — [`ExecutionProvider::Cpu`] is the
+    /// default, any other value is an opt-in accelerator with CPU fallback (see
+    /// [`build_session`]).
     pub fn load(
         model_path: &str,
         tokenizer_path: &str,
@@ -240,31 +424,23 @@ impl OnnxNerDetector {
         pool_size: usize,
         intra_threads: usize,
         needs_token_type_ids: bool,
+        provider: ExecutionProvider,
     ) -> Result<Self> {
         let tokenizer =
             Tokenizer::from_file(tokenizer_path).map_err(|e| anyhow!("load tokenizer: {e}"))?;
 
-        // ort's builder errors aren't `Send + Sync` and each step carries a
-        // different error param, so convert to a string at every step rather
-        // than chaining/propagating them into `anyhow` directly.
         let pool_size = pool_size.max(1);
         // 0 would mean "ONNX Runtime picks", which on a 12-thread box is 12 *per session* — the
-        // oversubscription `default_intra_threads` exists to prevent. Never let it through.
+        // oversubscription `default_intra_threads` exists to prevent. `build_session` clamps it,
+        // but keep the clamp here too so the value handed to each session is unambiguous.
         let intra_threads = intra_threads.max(1);
         let mut sessions = Vec::with_capacity(pool_size);
         for _ in 0..pool_size {
-            let builder = Session::builder().map_err(|e| anyhow!("session builder: {e}"))?;
-            let builder = builder
-                .with_optimization_level(GraphOptimizationLevel::Level3)
-                .map_err(|e| anyhow!("optimization level: {e}"))?;
-            // `commit_from_file` takes `&mut self`, so this binding must be mut.
-            let mut builder = builder
-                .with_intra_threads(intra_threads)
-                .map_err(|e| anyhow!("intra threads: {e}"))?;
-            let session = builder
-                .commit_from_file(model_path)
-                .map_err(|e| anyhow!("load model {model_path}: {e}"))?;
-            sessions.push(Mutex::new(session));
+            sessions.push(Mutex::new(build_session(
+                model_path,
+                intra_threads,
+                provider,
+            )?));
         }
 
         Ok(Self {
@@ -810,5 +986,61 @@ mod chunk_tests {
         let offsets = fake_offsets(5);
         let ranges = chunk_char_ranges(&input, &offsets, 480, 32);
         assert_eq!(ranges, vec![(0, 5)]);
+    }
+}
+
+#[cfg(test)]
+mod ep_tests {
+    use super::ExecutionProvider as Ep;
+
+    #[test]
+    fn parses_known_providers_case_insensitively_and_trims() {
+        assert_eq!(Ep::parse("").unwrap(), Ep::Cpu);
+        assert_eq!(Ep::parse("cpu").unwrap(), Ep::Cpu);
+        assert_eq!(Ep::parse("  CPU ").unwrap(), Ep::Cpu);
+        assert_eq!(Ep::parse("DirectML").unwrap(), Ep::DirectMl);
+        assert_eq!(Ep::parse("dml").unwrap(), Ep::DirectMl);
+        assert_eq!(Ep::parse("cuda").unwrap(), Ep::Cuda);
+        assert_eq!(Ep::parse("TensorRT").unwrap(), Ep::TensorRt);
+        assert_eq!(Ep::parse("trt").unwrap(), Ep::TensorRt);
+        assert_eq!(Ep::parse("coreml").unwrap(), Ep::CoreMl);
+        assert_eq!(Ep::parse("rocm").unwrap(), Ep::Rocm);
+        assert_eq!(Ep::parse("openvino").unwrap(), Ep::OpenVino);
+        assert_eq!(Ep::parse("webgpu").unwrap(), Ep::WebGpu);
+    }
+
+    #[test]
+    fn an_unknown_provider_is_an_error_not_a_silent_cpu() {
+        // The fail-closed rule for the accelerator knob (M8-R5, applied here): a typo must
+        // surface at startup, not quietly run CPU while the operator believes a GPU is engaged.
+        let err = Ep::parse("directl").unwrap_err();
+        assert!(
+            err.contains("directl"),
+            "the error must name the bad value: {err}"
+        );
+        assert!(Ep::parse("gpu").is_err());
+        // Vulkan is NOT an ONNX Runtime backend (WebGPU is the nearest cross-vendor EP) — it must
+        // not look valid, or an operator would think they'd enabled an acceleration that isn't wired.
+        assert!(Ep::parse("vulkan").is_err());
+    }
+
+    #[test]
+    fn as_str_round_trips_through_parse() {
+        for ep in [
+            Ep::Cpu,
+            Ep::DirectMl,
+            Ep::Cuda,
+            Ep::TensorRt,
+            Ep::CoreMl,
+            Ep::Rocm,
+            Ep::OpenVino,
+            Ep::WebGpu,
+        ] {
+            assert_eq!(
+                Ep::parse(ep.as_str()).unwrap(),
+                ep,
+                "as_str/parse must round-trip for {ep:?}"
+            );
+        }
     }
 }

@@ -45,3 +45,14 @@ build-onnx = "build --features onnx --target-dir target/onnx"
 run-onnx = "run --features onnx --target-dir target/onnx"
 test-onnx = "test --features onnx --target-dir target/onnx"
 clippy-onnx = "clippy --all-targets --features onnx --target-dir target/onnx"
+
+# M9 — the DirectML build (onnx + the DirectML EP binary). Its own target dir for
+# the same reason as `target/onnx/`: `ep-directml` is a different, additive feature
+# set, so sharing a dir would full-recompile ort on every flip. This is the build
+# to `run-directml` when verifying GPU acceleration on this box (AMD DX12 iGPU);
+# set `NER_EXECUTION_PROVIDER=directml`. The default (`cpu`) makes this binary
+# behave exactly like the `onnx` one, so a plain `test-directml` run is a superset.
+build-directml = "build --features ep-directml --target-dir target/directml"
+run-directml = "run --features ep-directml --target-dir target/directml"
+test-directml = "test --features ep-directml --target-dir target/directml"
+clippy-directml = "clippy --all-targets --features ep-directml --target-dir target/directml"

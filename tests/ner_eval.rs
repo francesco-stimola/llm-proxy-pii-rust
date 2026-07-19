@@ -30,7 +30,7 @@ use std::time::Instant;
 use serde::Deserialize;
 
 use llm_proxy_pii_rust::pii::composite::CompositeDetector;
-use llm_proxy_pii_rust::pii::onnx::OnnxNerDetector;
+use llm_proxy_pii_rust::pii::onnx::{ExecutionProvider, OnnxNerDetector};
 use llm_proxy_pii_rust::pii::recognizers::StructuredRecognizers;
 use llm_proxy_pii_rust::pii::PiiKind;
 use llm_proxy_pii_rust::pii::{PiiDetector, PiiEntity};
@@ -130,8 +130,16 @@ fn evaluate_ner_model_against_corpus() {
     eprintln!("scoring model: {model}");
     // pool=1, intra=1: this harness scores *recall*, not latency — pinning both knobs keeps a
     // score reproducible across boxes with different core counts.
-    let ner = OnnxNerDetector::load(&model, &tokenizer, id2label, 1, 1, needs_tt)
-        .expect("load NER model");
+    let ner = OnnxNerDetector::load(
+        &model,
+        &tokenizer,
+        id2label,
+        1,
+        1,
+        needs_tt,
+        ExecutionProvider::Cpu,
+    )
+    .expect("load NER model");
     let detector =
         CompositeDetector::new(vec![Box::new(StructuredRecognizers::new()), Box::new(ner)]);
 

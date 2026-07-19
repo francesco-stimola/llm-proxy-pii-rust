@@ -14,6 +14,8 @@ pub mod overlap;
 pub mod recognizers;
 
 #[cfg(feature = "onnx")]
+pub mod bench;
+#[cfg(feature = "onnx")]
 pub mod gliner;
 #[cfg(feature = "onnx")]
 pub mod hf;
