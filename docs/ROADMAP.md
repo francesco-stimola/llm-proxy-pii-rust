@@ -39,6 +39,7 @@ completion**; findings, counts and closure notes live in each milestone's sectio
 | [**M7.1 — system-prompt cache + fixpoint NER fix**](#m71) | ✅ **complete (2026-07-18)** — **S4** (NER on pass 0 only) fixes the CC-05/CC-08 fail-closed 400, recall-validated (0 losses); **S3** (`CachingDetector`, exact-byte-keyed, can't mask less) memoizes the byte-identical system prompt's detection. 116 onnx lib tests, clippy clean, review-clean (round 9) |
 | [First tagged release `1.0.0`](#m6) | ✅ **released (2026-07-18)** — tag `v1.0.0` cut on `main` (`Cargo.toml` at `1.0.0`) after the CC battery closed. Every gate met: M6 route + M7 latency + M7.1 (S3/S4), both postures leak-clean, zero fixpoint 400 on the S4 binary |
 | [**M8 — GLiNER: contextual / open-label PII**](#m8) | ✅ **complete (2026-07-19), review-clean (3 rounds, 7 findings all closed)** — `GLiNerDetector` + `gliner_decode` built and **validated end-to-end against the real int8 model**; wired **opt-in** (`GLINER_MODEL_PATH`). **Measured verdict: addition, not successor** — matches XLM-R on Loc (0.91) / Org (1.00) but Person recall 0.58 < XLM-R 0.83, so XLM-R stays default; GLiNER adds contextual kinds (bare phone, address). 133 onnx / 109 default lib green, clippy clean. Numbers: [DEVLOG 2026-07-19](DEVLOG.md) |
+| [**M8.1 — national phone recognizer (opt-in, per-locale)**](#m81) | 🔨 **code-complete (2026-07-19), review pending** — fills the ex-Backlog "Locale phone national formats" gap **deterministically**, without a second ML model: the `fp_prone_recognizers` seam now carries GB/DE `0`-trunk phone recognizers gated by `PII_LOCALES`, validated by the pure-Rust **`phonenumber`** crate's `is_valid()` (real assigned-range check). Measured on an adversarial corpus: **GB precision 1.000, DE 0.909**. Native-dep-free bar holds (pure Rust); accepted cost ~3 MB binary. 115 default lib green, clippy clean |
 | [**M9 — GPU optimization**](#m9) | 📋 **planned (2026-07-18)** — promoted from Backlog. GPU execution provider (DirectML / CUDA) behind config; the M2 model choice is EP-agnostic, so this constrains nothing upstream. Likely pulled forward by M8 if GLiNER's CPU latency misses the lean bar |
 
 ---
@@ -203,7 +204,8 @@ upstream provider.
 - **Structured PII — three tiers:** **universal** (email, IBAN, card, secret, phone US + `+CC`) always on;
   **national IDs** always on **regardless of `PII_LOCALES`** (privacy-first — [M4-R1](reviews/M4.md#m4-r1));
   **FP-prone** recognizers opt-in via `PII_LOCALES`. So **`PII_LOCALES` gates *ambiguous* recognizers, not
-  "which countries"** — and today it is a documented **no-op** (the FP-prone seam is wired and empty).
+  "which countries"** — the FP-prone seam, empty at M4, now carries the GB/DE national-phone recognizers
+  ([M8.1](#m81)); other codes remain a no-op until vetted.
 
 - [x] Locale-parametrized recognizer architecture — universal / national-ID / FP-prone tiers (`with_locales`, `fp_prone_recognizers`)
 - [x] **National-ID packs for all XLM-R-aligned countries**, always-on, each checksum- or rule-gated: US SSN (keeps `PiiKind::Ssn`) · IT Codice Fiscale · GB NINO · ES DNI/NIE · FR NIR · DE Steuer-ID · NL BSN · PT NIF · LV personal code · zh Resident ID. **`ar` gets no pack** — the language spans ~20 countries with different ID schemes, so there is no single "Arabic" national ID; Arabic names/locations stay covered by the NER
@@ -211,7 +213,7 @@ upstream provider.
 - [x] **Validate the NER across its declared domain** — scored XLM-R int8 on all **10** languages: Person 0.83 / Org 1.00 / Loc 0.91 (per-language notes in DEVLOG 2026-07-13)
 - [x] Extend the corpus with multi-language cases (`multilingual_preview`) **and non-ASCII structured cases** (`non_ascii_scripts` — see M4-R13)
 - [x] Provider-agnostic verification — `e2e_masking_is_provider_agnostic`: `openai` vs `anthropic` presets → a byte-identical masked body upstream
-- **Locale phone national formats** → descoped from M4 (the FP-prone tier's first recognizer; the `+CC` arm already covers the unambiguous case) — now folded into [M8](#m8), where context (not a per-locale regex) is the clean path
+- [x] **Locale phone national formats** → descoped from M4 (the FP-prone tier's first recognizer; the `+CC` arm already covers the unambiguous case), pointed at [M8](#m8) as a context problem — but **resolved in [M8.1](#m81)** by a *deterministic* path instead: the pure-Rust `phonenumber` crate's `is_valid()` validates a loose `0`-trunk candidate against the region's real numbering plan, the assigned-range check a hand-written regex can't do. GB/DE shipped opt-in via `PII_LOCALES`
 
 ### Review ledger — M4 → [`reviews/M4.md`](reviews/M4.md)
 **Seven review rounds, 24 findings — all closed.** More than every other milestone combined, because
@@ -1016,10 +1018,11 @@ implementation plan*.** Model landscape in [`M2-NER-EVALUATION.md`](M2-NER-EVALU
 The two over-masks above are *precision*; GLiNER's larger prize is **recall on PII the platform cannot
 catch today**. A bare national phone with no `+CC` anchor (UK `020 …`, DE `030 …`) collides with ordinary
 number sequences, so the deterministic layer deliberately does **not** match it (the
-`fp_prone_recognizers(code)` seam is wired and empty, gated by `PII_LOCALES`) and XLM-R doesn't cover phone
-numbers at all — so it goes **upstream unmasked**. That is the gap a regex can't close without false
-positives and **context can**: GLiNER's `"phone number"` / `"address"` labels are the clean path (the
-un-anchored phone and the free-form address are exactly the new corpus cases the S2 eval must add).
+`fp_prone_recognizers(code)` seam was wired and empty then, gated by `PII_LOCALES`) and XLM-R doesn't cover
+phone numbers at all — so it goes **upstream unmasked**. GLiNER's `"phone number"` label was the presumed
+clean path here — but a post-merge study found a *deterministic* one that beats it, and **[M8.1](#m81)**
+filled the seam for GB/DE with the `phonenumber` crate's assigned-range validation instead (GLiNER keeps the
+free-form address, which genuinely needs context). The address remains the S2 eval's contextual case.
 
 **Measure first — the milestone is empowered to say no.** Same non-negotiable as M2: no heavy model
 pre-emptively. GLiNER is scored through the **hybrid resolver** (not the NER alone), int8, against the lean
@@ -1121,6 +1124,54 @@ findings, both low, neither a leak.
 R6 repro then confirmed 133/0 with the gated env set; R7 rationale corrected. No new findings. All seven
 M8 findings closed; no leak, fail-closed intact, fixpoint safe, window cap recall-preserving, decision
 honest.
+
+<a id="m81"></a>
+### M8.1 — national phone recognizer (opt-in, per-locale) 🔨
+
+**Post-merge follow-up to M8 (2026-07-19). M8 pointed the ex-Backlog *"Locale phone national formats"* gap
+at GLiNER's context as the clean path; a feasibility study found a *deterministic* path that is better on
+every axis, so M8.1 takes it instead.** The un-anchored domestic phone (GB `020 7946 0958`, DE
+`030 12345678`) has no `+CC` anchor and collides with order numbers / sort codes / national IDs, so the
+deterministic layer deliberately didn't match it and XLM-R doesn't cover phone at all — it went upstream in
+clear. The study (throwaway probe, then reproduced in-tree) showed the pure-Rust **`phonenumber`** crate
+(libphonenumber port) closes it: a loose `0`-trunk regex proposes a candidate, and `is_valid()` accepts it
+only if it is a **real, assigned number** for the region — the assigned-prefix + length check a
+hand-written regex can never do, which is exactly what makes the un-anchored form FP-prone.
+
+**Why deterministic beats GLiNER here (and doesn't make M8 wasted):** no second ML model to load, no
+inference latency, no recall gap — and it runs in the **default** build. GLiNER keeps its real role
+(names / orgs / free-form address — the open-label kinds no recognizer covers); only its *phone* motivation
+is now better served here. Measured, faithful two-stage model (loose regex → `is_valid`) on an adversarial
+corpus of 22 real GB/DE nationals + 22 phone-shaped non-phones (sequential digits, all-zeros, sort codes,
+refs, unassigned prefixes, national IDs, dates, a Luhn card):
+
+| locale | precision | recall | FP-rate | note |
+|---|---|---|---|---|
+| **GB** | **1.000** | 0.917 | **0.000** | one FN = the Ofcom fiction range `07700 900123` (libphonenumber rejects it — not a real number) |
+| **DE** | 0.909 | 1.000 | 0.100 | one "FP" = `0049301234` = `00 49 30 1234`, literally an international dial to Berlin |
+
+Numbers + the footprint analysis: **[DEVLOG 2026-07-19](DEVLOG.md) → *M8.1***.
+
+### Scope
+- [x] **Feasibility study first** — pure-Rust footprint (native-dep-free bar holds: no `*-sys`, nothing on
+  `dependency_footprint`'s forbidden list) + precision on an adversarial mixed corpus, per locale. Decision:
+  GO (deterministic, high precision, no second model).
+- [x] **`phonenumber` in the DEFAULT build.** Pure Rust, so it does not breach the native-dep-free guarantee;
+  accepted cost is ~3 MB embedded worldwide metadata + a few unmaintained transitive deps (`oncemutex`,
+  `regex-cache`) — recorded as a tradeoff in ARCHITECTURE, guard stays green.
+- [x] **GB/DE recognizers in `fp_prone_recognizers`, gated by `PII_LOCALES`.** A shared bounded-group
+  `0`-trunk regex (compact + 2-/3-group forms, so a match can't swallow an adjacent number) with a
+  per-locale `is_valid()` validator; `PiiKind::Phone`, `Scan::Overlapping` (length-bounded → linear).
+- [x] **Adversarial tests** — detection across shapes, `PII_LOCALES` gating (off ⇒ not masked), validator
+  rejects look-alikes, no adjacent-number swallowing, direct validator unit tests. 115 default lib green,
+  clippy + fmt clean.
+- [x] **Docs** — ARCHITECTURE (the recognizer + the accepted dep tradeoff + "the validator is not a locale
+  discriminator: numbering plans overlap, which is privacy-safe"), TESTING (the new cases), READMEs
+  (`PII_LOCALES` now enables GB/DE phone; the binary-size note), DEVLOG, this section.
+- [ ] **Builder→reviewer loop** — pending.
+
+### Review ledger — M8.1 → [`reviews/M8.md`](reviews/M8.md)
+_Reviewer loop pending; findings will land here as `M8-R8…` rows._
 
 <a id="m9"></a>
 ## M9 — GPU optimization

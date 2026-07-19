@@ -3,6 +3,70 @@
 Newest first. One entry per meaningful change — note *what* and *why*, not just
 *what*. This is the running history so context is never lost between sessions.
 
+## 2026-07-19 — M8.1: national phone recognizer (GB/DE), the deterministic path that beat GLiNER
+
+**M8 pointed the un-anchored national-phone gap at GLiNER's context. A post-merge feasibility study found
+a deterministic path that is better on every axis, so M8.1 takes it.** The gap: a domestic phone with no
+`+CC` (GB `020 7946 0958`, DE `030 12345678`) collides with order numbers / sort codes / national IDs, so
+the deterministic layer never matched it and XLM-R doesn't cover phone at all — it went upstream in clear.
+
+**The study (throwaway probe `scratchpad/phonestudy`, then reproduced in-tree).** Two questions:
+
+1. **Footprint — does `phonenumber` breach the native-dep-free default-build bar?** No. `cargo tree` on
+   `phonenumber v0.3.10+9.0.33`: **zero native/C deps** — no `*-sys`, no `cc`/bindgen, nothing on
+   `tests/dependency_footprint.rs`'s forbidden list (hf-hub / ort / tokenizers / aws-lc). Pure Rust, so it
+   ships in the **default** build without breaking the guarantee (guard stays green). Accepted costs, real
+   and recorded: ~15 net-new crates incl. a few **unmaintained** transitive ones (`oncemutex` 2016,
+   `regex-cache` 0.2.1, old `regex-syntax` 0.6.29 alongside 0.8); **+~3 MB** binary from the embedded
+   worldwide metadata (1.5 MB XML → postcard blob at *build* time via `quick-xml`, `include_bytes!`'d; at
+   runtime a one-time `Lazy` postcard deserialize on first validation — no XML parsing on the hot path).
+
+2. **Precision — is `is_valid()` precise enough on the FP-prone tier?** Yes, decisively. Faithful
+   two-stage model (loose `0`-anchored regex → `is_valid`) on an adversarial corpus of 22 real GB/DE
+   nationals + 22 phone-shaped non-phones:
+
+   | validator | precision | recall | FP-rate |
+   |---|---|---|---|
+   | `parse().is_ok` (loose, length-only) | 0.647 | 1.000 | 0.545 |
+   | **`is_valid()` (strict, assigned range)** | **0.955** | 0.955 | **0.045** |
+
+   Per-locale under strict: **GB precision 1.000 / recall 0.917 / FP-rate 0.000** (one FN = the Ofcom
+   fiction range `07700 900123`, which libphonenumber correctly rejects); **DE 0.909 / 1.000 / 0.100**
+   (one "FP" = `0049301234` = `00 49 30 1234`, a real international dial to Berlin). The loose→strict jump
+   is the whole point: `is_valid` checks the candidate against the region's **real numbering plan**
+   (assigned prefixes + lengths), the check a hand-written regex can't do — which is exactly why M4-R1
+   called the un-anchored form FP-prone and shelved it. That objection is now defused.
+
+**Why deterministic, not GLiNER:** no second ML model, no inference latency, no recall gap, runs in the
+default build. GLiNER keeps its real role (names / orgs / **free-form address** — genuinely contextual);
+only its *phone* motivation moves here. M8 is not wasted — the decision (addition, not successor) stands.
+
+**Design.** `fp_prone_recognizers("gb"|"de")` now returns a `PiiKind::Phone` recognizer sharing one
+bounded-group `0`-trunk regex — compact `0\d{6,11}` plus 2- and 3-group forms
+(`0\d{1,4}[ -]\d{3,4}[ -]\d{3,4}` …) — gated by a per-locale `is_valid()` validator. **Bounded groups on
+purpose:** an open `(?:[ -]?\d)+` would grab `020 7946 0958 0161 496 0000` as one over-long span that
+`is_valid` then rejects — a *leak*; enumerating a fixed group count means a match can't run across two
+adjacent numbers (the same guard the universal phone / IBAN patterns use). Max ~15 chars → length-bounded,
+so `Scan::Overlapping` stays linear (M4-R19). ASCII `(?-u:\b)` (M4-R13) keeps a `0`-run inside a longer
+ASCII token (`user0207946095@…`) from being a candidate. `validate` is `fn(&str) -> bool` (can't carry the
+region), so `gb_phone_valid` / `de_phone_valid` are thin wrappers over `national_phone_valid(Id, s)`.
+
+**Two things the in-tree tests surfaced that the isolated probe didn't:**
+- **The universal 3-3-4 phone arm already masks any 3-3-4 shape *unvalidated*.** So an adversarial "must
+  not mask" case has to be a **compact** `0`-run (no separators) — those reach the `phonenumber` validator
+  and are correctly rejected; a 3-3-4-shaped junk number would be masked by the pre-existing universal arm
+  regardless of M8.1. The tests use compact look-alikes (`0000000000`, `0123456789`, `0999999999`).
+- **The validator is not a locale *discriminator*.** National numbering plans overlap: `07911 123456`
+  (a GB mobile) also validates as DE. That is **privacy-safe** — over-masking a real phone is never a leak —
+  but it means "enable GB only" does not reject every DE number. Documented in ARCHITECTURE; a London
+  geographic number *is* rejected by the DE validator, so the plans aren't identical, just overlapping.
+
+**Tests (all in `recognizers.rs`):** detection across GB/DE shapes, `PII_LOCALES` gating (GB number not
+masked with `gb` off — using the 3-4-4 form the universal arm can't catch, so the gate is what's under
+test), validator rejects compact look-alikes, no adjacent-number swallowing, direct validator unit tests.
+**115 default lib green, clippy + fmt clean.** Version stays **1.1.0** (M8.1 is part of M8). Reviewer loop
+next.
+
 ## 2026-07-19 — M8 GLiNER implemented, measured, and shipped **opt-in** (not a successor on int8)
 
 **Built the whole M8 slice and validated it end-to-end against the real model**

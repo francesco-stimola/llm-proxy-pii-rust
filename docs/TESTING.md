@@ -200,6 +200,14 @@ false positive): `email`, `phone`, `ssn`, `credit_card`, `iban`, `secret`,
 - GLINER-EVAL *(live, `#[ignore]`d)* — `evaluate_gliner_against_corpus`: scores GLiNER int8 through the hybrid on `ner_cases.json`. **Run 2026-07-19** — the *not-a-successor* verdict (Person 0.58 < XLM-R 0.83; Loc 0.91 / Org 1.00 at the measured-optimal threshold 0.15). Numbers + sweep in DEVLOG.
 - GLINER-INERT-01 *(live, `#[ignore]`d)* — `gliner_placeholder_inertness_canary`: the **M5-R4 "GLiNER especially"** canary. Confirms GLiNER **does** tag `[KIND_N]` placeholders (unlike int8 XLM-R) yet `mask_all` **converges** on placeholder-dense text (`keep_maskable` drops exact hits by construction + S4 keeps it off later passes). The durable model-swap canary for GLiNER.
 
+### M8.1 — national phone recognizer (opt-in per `PII_LOCALES`, `phonenumber`-validated, `src/pii/recognizers.rs`)
+Default build, no model. The FP-prone tier's first recognizer: a loose `0`-trunk regex + a per-locale `is_valid()` validator. A miss here is a leak, so the cases are adversarial.
+- PHONE-NAT-01 — `gb_national_phone_detected_when_gb_enabled` / `de_national_phone_detected_when_de_enabled`: the domestic shapes the universal (US 3-3-4 / `+CC`) arm misses — GB 3-4-4 / 5-6 mobile / compact / freephone, DE geographic / mobile / compact — mask as `Phone` under `["gb"]` / `["de"]`.
+- PHONE-NAT-02 — `national_phone_is_gated_by_pii_locales`: a GB 3-4-4 number (`020 7946 0958`, which the universal arm can **not** catch and whose spaces break the contiguous 9/11-digit ID patterns) is masked by **nothing** with `gb` off (`["it","us"]`, `["de"]`) and only masked with `gb` on — proving the gate is real, not a coincidental universal hit.
+- PHONE-NAT-03 — `national_phone_validator_rejects_lookalikes`: **compact** `0`-leading runs of phone length (`0000000000`, `0123456789`, `0999999999`) reach the validator (the universal arm can't touch a separator-less run) and are rejected by `is_valid()` — the M4-R1 FP concern, defused. Compact on purpose: a 3-3-4-shaped junk number would be masked by the pre-existing universal arm regardless.
+- PHONE-NAT-04 — `national_phone_does_not_swallow_an_adjacent_number`: two real GB numbers separated by a **single space, no word** (`020 7946 0958 0161 496 0000`, both `0`-leading) must yield **two** spans — the bounded-group regex can't grab them as one over-long span that `is_valid` would then reject (a leak).
+- PHONE-NAT-05 — `national_phone_validators_accept_reals_reject_junk`: direct `gb_phone_valid` / `de_phone_valid` unit tests (reals accepted, compact junk rejected). Documents that the validator is **not a locale discriminator** — a GB mobile also validates as DE (numbering plans overlap; privacy-safe) — while a London geographic number is *not* a valid DE number.
+
 ### M2.5 — HuggingFace model management (feature `onnx`, no network)
 - HF-01 — `parse_id2label` orders labels by class id (not JSON order), matches the XLM-R config, and **fails closed** on non-contiguous ids / missing `id2label` / non-integer keys / **empty `id2label`** (`empty_id2label_is_an_error`, M2.5-R2) (`src/pii/hf.rs`).
 - HF-02 — `standard_hub_cache_dir` yields the conventional `<home>/.cache/huggingface/hub` tail (not `hf-hub`'s `/tmp` fallback).
@@ -835,7 +843,8 @@ PII). Placeholder-**presence** asserts are on the **specific masked field** (or 
   (email/IBAN/card/secret) always on; national IDs (US SSN, IT CF, GB NINO, ES DNI/NIE,
   FR NIR, DE Steuer-ID, NL BSN, PT NIF, LV code, zh Resident ID — full list in the mapping
   table above) **always on regardless of `PII_LOCALES`**; FP-prone recognizers (national *phone*
-  formats) opt-in via `PII_LOCALES` — none yet. Phone: US + `+CC` are universal.
+  formats) opt-in via `PII_LOCALES` — GB/DE since M8.1 (`phonenumber`-validated), other codes not yet.
+  Phone: US + `+CC` are universal.
 - **Placeholder format — DECIDED: `[KIND_N]`** (e.g. `[EMAIL_1]`), ASCII. Tests
   still assert invariants (raw absent, typed placeholder present, exact roundtrip)
   rather than literal tokens, so they stay robust to future tweaks.

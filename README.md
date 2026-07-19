@@ -100,9 +100,13 @@ rule-validated, so the false-positive rate stays near zero.
 |---|---|
 | **Universal** | email · phone (US + `+CC`) · credit card (Luhn) · IBAN (mod-97 + per-country length) · API keys & secrets (`sk-…`, `sk-ant-…`, `AKIA…`) |
 | **National IDs** *(10 countries)* | 🇺🇸 SSN · 🇮🇹 Codice Fiscale · 🇬🇧 NINO · 🇪🇸 DNI/NIE · 🇫🇷 NIR · 🇩🇪 Steuer-ID · 🇳🇱 BSN · 🇵🇹 NIF · 🇱🇻 personal code · 🇨🇳 Resident ID |
+| **National phone** *(opt-in via `PII_LOCALES`)* | 🇬🇧 GB · 🇩🇪 DE domestic numbers with no `+CC` (`020 7946 0958`, `030 12345678`) — validated against the real numbering plan, so order numbers and IDs aren't over-masked |
 
 National IDs are masked **regardless of locale configuration** — privacy-first: an ID that
-reaches the proxy gets masked even if its country isn't the one you configured.
+reaches the proxy gets masked even if its country isn't the one you configured. The **national
+phone** tier is the exception: a bare domestic number collides with ordinary digit sequences, so
+it is opt-in per locale via `PII_LOCALES` and gated by a real assigned-number check (the pure-Rust
+`phonenumber` library — no native dependency).
 
 **Unstructured entities — local ONNX NER (XLM-R int8, CPU).** People, organizations and
 locations across **ar · de · en · es · fr · it · lv · nl · pt · zh**. Runs on your own
@@ -306,7 +310,7 @@ Everything is environment-driven.
 | `UPSTREAM_FORWARD_HEADERS` | *(preset)* | Comma-separated client headers to pass through |
 | `UPSTREAM_EXTRA_HEADERS` | *(none)* | `Key=Value;Key2=Value2` static headers for every upstream request |
 | `MAX_BODY_BYTES` | `16777216` | Request body limit (16 MiB) |
-| `PII_LOCALES` | `it,us` | Gates only the *false-positive-prone* recognizer tier. **National IDs are always on regardless** |
+| `PII_LOCALES` | `it,us` | Gates only the *false-positive-prone* recognizer tier — currently the **national phone** recognizers (`gb`, `de`: domestic numbers with no `+CC`). Add `gb` / `de` to enable them. **National IDs are always on regardless** |
 | `PII_CACHE_ENTRIES` | `16` | Detection cache (S3): the byte-identical system prompt is scanned once and reused, saving the dominant NER pass. Keyed on exact bytes, so a hit can never mask *less* than a fresh scan. `0` disables it |
 | `RUST_LOG` | *(unset)* | e.g. `llm_proxy_pii_rust=debug` |
 

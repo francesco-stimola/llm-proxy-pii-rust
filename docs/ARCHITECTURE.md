@@ -46,8 +46,18 @@ unstructured-entity load.
   small fraction of arbitrary numbers on checksum alone (~18% of 9-digit tokens); this is an
   **accepted over-mask tradeoff** (M4-R6) — privacy-first, never a leak — not context-gated
   (that would leak); the contextual precision path is GLiNER ([M8](ROADMAP.md#m8)).
-- **FP-prone** — ambiguous recognizers (e.g. national *phone* formats with no `+CC`) —
-  **opt-in per locale** via `PII_LOCALES` (`fp_prone_recognizers`). None yet.
+- **FP-prone** — ambiguous recognizers **opt-in per locale** via `PII_LOCALES`
+  (`fp_prone_recognizers`). The **national phone with no `+CC`** (GB `020 7946 0958`, DE
+  `030 12345678`) lives here ([M8.1](ROADMAP.md#m81)): a `0`-trunk digit run looks like an
+  order number or a national ID, so it can't be always-on. A loose `0`-anchored regex proposes
+  a candidate and the pure-Rust **`phonenumber`** crate's `is_valid()` accepts it only if it is
+  a real, assigned number for the region — the assigned-prefix + length check no hand-written
+  regex can do, which is what defuses the FP concern (measured: GB precision 1.000, DE 0.909).
+  GB/DE ship; other codes stay a no-op until vetted. **The validator is not a locale
+  *discriminator*** — national numbering plans overlap, so a number valid in one region can be
+  valid in another (a GB mobile also validates as DE). That is **privacy-safe** (over-masking a
+  real phone is never a leak); it just means enabling one locale doesn't reject every other
+  locale's numbers. See also the accepted dependency tradeoff under *Supply-chain* below.
 
 So `PII_LOCALES` (default `it, us`, `Config.pii_locales`) gates only *ambiguous*
 recognizers, not "which countries". The **language** domain for the NER is the model's
@@ -813,13 +823,25 @@ all-target release build stays tag/manual-only (`release-build.yml`). This is wh
 are safe to run: the gate, not vigilance, catches a breaking bump — including the 0.x "minor" bumps Dependabot
 cannot recognise as breaking.
 
+**Accepted tradeoff — `phonenumber` in the DEFAULT build (M8.1).** The national-phone recognizers link the
+`phonenumber` crate (libphonenumber port) in the *default* build, not behind `onnx`. It is deliberately kept
+default-eligible because it is **pure Rust** — no `*-sys`, no `cc`/bindgen, nothing on the native-dep-free
+forbidden list — so `tests/dependency_footprint.rs` stays green. Two real costs are accepted and named here so
+a future `cargo-deny` advisory isn't a surprise: (1) **~3 MB** of binary from the embedded worldwide numbering
+metadata (converted to a postcard blob at build time, `Lazy`-deserialized once at runtime — no XML parsing on
+the hot path); (2) a few **unmaintained transitive deps** — `oncemutex` (2016), `regex-cache` 0.2.1, an old
+`regex-syntax` 0.6.29 alongside the modern 0.8. None is a known advisory today; if one is ever flagged, the
+recognizer is opt-in per `PII_LOCALES`, so the mitigation is bounded. The capability bought — an assigned-range
+phone check no regex can do — is judged worth it.
+
 ## Decisions & open points
 
 - **Placeholder format: `[KIND_N]`** (e.g. `[EMAIL_1]`) — ASCII, tokenizer-friendly.
 - **Coverage (M4, supersedes the original "IT + US")** — three tiers; see *Hybrid
   detection → Locale coverage* above. The NER's domain is its **model's** 10 languages;
   structured PII is language-independent and always on. `PII_LOCALES` gates only
-  *FP-prone* recognizers — of which there are none yet, so it is a documented **no-op**.
+  *FP-prone* recognizers — since [M8.1](ROADMAP.md#m81) the GB/DE national-phone
+  recognizers, `phonenumber`-validated; other codes remain a no-op until vetted.
 - **Over-mask, never leak** — the standing tie-breaker. Where precision and recall
   conflict, recall wins: the pure-numeric national IDs accept ~18% of arbitrary 9-digit
   tokens (M4-R6) and a union may swallow a bare `@domain`. Both are **accepted on
