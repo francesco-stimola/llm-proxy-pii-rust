@@ -355,8 +355,11 @@ NER invece di sostituirlo (decisione misurata: `docs/DEVLOG.md` 2026-07-19).
 | `GLINER_THRESHOLD` | `0.15` | Soglia di probabilità per span — bassa perché le confidenze del modello int8 sono basse (misurato); più bassa = più recall, più over-mask |
 | `GLINER_POOL_SIZE` / `GLINER_INTRA_THREADS` | `1` / *derivato* | Pool di sessioni + thread per sessione, stessa forma delle manopole del NER (si moltiplicano) |
 
-Il modello testato è `onnx-community/gliner_multi_pii-v1` (int8 `model_quantized.onnx`). Abilitare GLiNER
-**insieme** al NER XLM-R carica **due** modelli — considera la RAM di conseguenza.
+Il modello testato è `onnx-community/gliner_multi_pii-v1` (int8 `model_quantized.onnx`). Per **recall più
+alta sui nomi** a più RAM, punta invece `GLINER_MODEL_PATH` a `model_fp16.onnx` (~580 MB) — recall Person
+misurata **0.67 vs 0.58 di int8** (fp32 non dà guadagni ulteriori su CPU, dove ORT up-casta fp16→fp32).
+Nessuna raggiunge lo 0.83 di XLM-R, ed è per questo che GLiNER resta opt-in. Abilitare GLiNER **insieme**
+al NER XLM-R carica **due** modelli — considera la RAM di conseguenza.
 
 </details>
 

@@ -347,8 +347,11 @@ rather than replacing it (measured decision: `docs/DEVLOG.md` 2026-07-19).
 | `GLINER_THRESHOLD` | `0.15` | Per-span probability threshold — low because the int8 model's confidences run low (measured); lower = more recall, more over-mask |
 | `GLINER_POOL_SIZE` / `GLINER_INTRA_THREADS` | `1` / *derived* | Session pool + per-session threads, same shape as the NER's knobs (they multiply) |
 
-`onnx-community/gliner_multi_pii-v1` (int8 `model_quantized.onnx`) is the tested model. Enabling GLiNER
-**alongside** the XLM-R NER loads **two** models — budget the RAM accordingly.
+`onnx-community/gliner_multi_pii-v1` (int8 `model_quantized.onnx`) is the tested model. For **higher name
+recall** at more RAM, point `GLINER_MODEL_PATH` at `model_fp16.onnx` (~580 MB) instead — measured Person
+recall **0.67 vs int8's 0.58** (fp32 gives no further gain on CPU, where ORT up-casts fp16→fp32). Neither
+reaches XLM-R's 0.83, which is why GLiNER stays opt-in. Enabling GLiNER **alongside** the XLM-R NER loads
+**two** models — budget the RAM accordingly.
 
 </details>
 

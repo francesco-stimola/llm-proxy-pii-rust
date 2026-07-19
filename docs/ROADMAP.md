@@ -1035,8 +1035,11 @@ At the measured-optimal threshold (**0.15**) int8 GLiNER matches XLM-R on **Loca
 names it never scores), so replacing XLM-R would regress the most important kind. **So XLM-R stays the
 default NER; GLiNER ships off by default**, enabled to add the contextual, open-label kinds XLM-R can't — a
 **bare national phone** (no `+CC`) and a free-form address. Full numbers + threshold sweep + the decision:
-[DEVLOG 2026-07-19](DEVLOG.md). **fp32-as-successor is unmeasured** (1.16 GB, beyond the lean default) —
-future work. Review pending.
+[DEVLOG 2026-07-19](DEVLOG.md). **The verdict is now measured across the whole quantization spread**
+(int8 / fp16 / fp32): less aggressive quantization lifts Person recall 0.58 → 0.67 (fp16 ≡ fp32, since ORT
+up-casts fp16→fp32 on CPU — so fp16 is the higher-recall option, ~580 MB; fp32 is pointless on CPU) but is
+**still < XLM-R's 0.83** — the residual gap is the *model*, not the quantization. Review-clean (3 rounds,
+7 findings).
 
 ### Scope
 - [x] **The ONNX I/O contract, verified from the real export first (S0).** GLiNER is **not**

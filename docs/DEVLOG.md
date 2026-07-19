@@ -43,9 +43,28 @@ successor** — replacing XLM-R would regress name recall, i.e. more leaks, on t
 **Decision: ship it opt-in, off by default.** XLM-R stays the default NER; GLiNER is enabled via
 `GLINER_MODEL_PATH` (+ `_TOKENIZER_PATH` / `_CONFIG_PATH`), adding what XLM-R *can't* do — contextual,
 open-label kinds like a **bare national phone** (`"020 7946 0958"`, no `+CC`, the M8 recall gap) and a
-free-form address. Whether **fp32** GLiNER clears the successor bar is unmeasured (1.16 GB, beyond the
-lean default anyway) — future work. This is the "measure first, the milestone may say no [to
-successor]" gate doing its job, exactly like Piiranha at M2 and the stop-at-the-bar call at M7.
+free-form address. This is the "measure first, the milestone may say no [to successor]" gate doing its
+job, exactly like Piiranha at M2 and the stop-at-the-bar call at M7.
+
+**Quantization sweep (2026-07-19, follow-up) — is int8 the reason, or the model?** The low int8
+confidences prompted the obvious question: does *less aggressive* quantization clear the successor bar?
+Downloaded and scored all three variants through the hybrid on `ner_cases.json`:
+
+| variant | size | Person R/P | Org | Location R/P | note |
+|---|---|---|---|---|---|
+| **int8** | 349 MB | 0.583 / 0.778 (@0.15) | 1.00 | 0.909 / 1.00 | the lean default; highest precision |
+| **fp16** | 580 MB | **0.667** / 0.667 (@0.3) | 1.00 | 0.909 / 0.909 | +Caia, +Amsterdam; confidences run higher (Location already 0.909 at the nominal 0.5) |
+| **fp32** | 1.16 GB | **0.667** / 0.667 | 1.00 | 0.909 | **identical to fp16** |
+
+**Two conclusions.** (1) Less aggressive quantization *does* help — Person recall **0.58 → 0.67** and the
+scores calibrate better — so int8 was hiding some of GLiNER's ability. (2) But **the verdict holds at full
+precision**: even fp32's Person recall (0.667) is below XLM-R's 0.83. Quantization explains ~half the int8
+gap; the rest is the **model** — single-word / CJK / Arabic names (Tizio, 张伟, محمد أحمد) it doesn't score
+at *any* precision. The gain also costs ~0.11 precision (pronoun false positives — `She`/`I`/`me` → Person).
+**fp32 ≡ fp16 because ORT up-casts fp16→fp32 on CPU**, so fp16 already delivers fp32 accuracy: **fp16 is the
+higher-recall GLiNER option, and fp32 is pointless on CPU** (2× the RAM for the same result). int8 stays the
+lean default; an operator wanting max GLiNER recall uses **fp16** (`GLINER_MODEL_PATH=…/model_fp16.onnx`,
+~580 MB). "Not a successor" is now measured across the whole quantization spread, not just int8.
 
 **The inertness canary — "GLiNER especially" (M5-R4) confirmed, and safe.** Run directly on
 placeholder-dense text, GLiNER **does** tag our own `[PERSON_1]` / `[ORG_1]` tokens as entities (int8
