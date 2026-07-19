@@ -38,7 +38,7 @@ completion**; findings, counts and closure notes live in each milestone's sectio
 | [**M7 — NER latency**](#m7) | 🔨 **code-complete, review ledger closed** (21 findings / 8 rounds, all closed): **≥1.5× faster than pre-M7** (asserted floor; typically ~1.7–2.3×, scales with the box, **not asserted below 4 cores** — a strict no-op only at 1 core since the 2026-07-17 `NER_POOL_SIZE` default flip to `pool=1`). A realistic turn masks in **~4.7 s** at the shipped default on the reference box — **the ~3 s bar was missed; we stopped anyway** ([M7-R12](reviews/M7.md#m7-r12)). **CC battery — CLOSED (2026-07-18):** both postures, DBG-02 = 0 throughout; the fail-closed non-convergence 400 (CC-08/CC-05/CC-09, NER **sub-word fragmentation** on the dense system prompt) fixed by **[S4](#m71)** — re-run on the S4 binary, all three converge, **zero fixpoint 400** |
 | [**M7.1 — system-prompt cache + fixpoint NER fix**](#m71) | ✅ **complete (2026-07-18)** — **S4** (NER on pass 0 only) fixes the CC-05/CC-08 fail-closed 400, recall-validated (0 losses); **S3** (`CachingDetector`, exact-byte-keyed, can't mask less) memoizes the byte-identical system prompt's detection. 116 onnx lib tests, clippy clean, review-clean (round 9) |
 | [First tagged release `1.0.0`](#m6) | ✅ **released (2026-07-18)** — tag `v1.0.0` cut on `main` (`Cargo.toml` at `1.0.0`) after the CC battery closed. Every gate met: M6 route + M7 latency + M7.1 (S3/S4), both postures leak-clean, zero fixpoint 400 on the S4 binary |
-| [**M8 — GLiNER: contextual / open-label PII**](#m8) | 🔨 **code-complete (2026-07-19), review-clean (3 rounds, 7 findings all closed)** — `GLiNerDetector` + `gliner_decode` built and **validated end-to-end against the real int8 model**; wired **opt-in** (`GLINER_MODEL_PATH`). **Measured verdict: addition, not successor** — matches XLM-R on Loc (0.91) / Org (1.00) but Person recall 0.58 < XLM-R 0.83, so XLM-R stays default; GLiNER adds contextual kinds (bare phone, address). 133 onnx / 109 default lib green, clippy clean. Numbers: [DEVLOG 2026-07-19](DEVLOG.md) |
+| [**M8 — GLiNER: contextual / open-label PII**](#m8) | ✅ **complete (2026-07-19), review-clean (3 rounds, 7 findings all closed)** — `GLiNerDetector` + `gliner_decode` built and **validated end-to-end against the real int8 model**; wired **opt-in** (`GLINER_MODEL_PATH`). **Measured verdict: addition, not successor** — matches XLM-R on Loc (0.91) / Org (1.00) but Person recall 0.58 < XLM-R 0.83, so XLM-R stays default; GLiNER adds contextual kinds (bare phone, address). 133 onnx / 109 default lib green, clippy clean. Numbers: [DEVLOG 2026-07-19](DEVLOG.md) |
 | [**M9 — GPU optimization**](#m9) | 📋 **planned (2026-07-18)** — promoted from Backlog. GPU execution provider (DirectML / CUDA) behind config; the M2 model choice is EP-agnostic, so this constrains nothing upstream. Likely pulled forward by M8 if GLiNER's CPU latency misses the lean bar |
 
 ---
@@ -986,7 +986,7 @@ less. With S4 in, the CC battery's non-convergence blocker is resolved (re-run p
     the fixpoint confirm). Fold in the latency win M4-R21 priced (~940 ms of a 4.2 s turn). Builder→reviewer.
 
 <a id="m8"></a>
-## M8 — GLiNER: contextual / open-label PII detection
+## M8 — GLiNER: contextual / open-label PII detection ✅
 
 **Promoted from Backlog 2026-07-18.** The path for **ambiguous, anchor-less PII** the deterministic layer
 can't disambiguate (a bare national phone, a free-form postal address) and the current XLM-R (PER/ORG/LOC
@@ -1075,7 +1075,7 @@ future work. Review pending.
   construction since S4, but the canary is how a filter-leaning idempotent model is caught.
 - [x] **Docs + builder→reviewer (S5).** ARCHITECTURE (the span decode, the label config, the not-a-successor
   decision), TESTING (the smoke / eval / inertness-canary harness), READMEs (the new env + the detection
-  matrix), DEVLOG. **Reviewer loop in progress** — see the ledger below.
+  matrix), DEVLOG. **Reviewer loop closed** (3 rounds, 7 findings, all closed — see the ledger below).
 
 > **If the CPU latency misses the lean bar, that is the trigger for [M9](#m9), not a reason to ship slow.**
 > GLiNER int8 is heavier than XLM-R int8; the escalation path
@@ -1083,7 +1083,8 @@ future work. Review pending.
 > its place — so M8's eval is what may *pull M9 forward*.
 
 ### Review ledger — M8 → [`reviews/M8.md`](reviews/M8.md)
-Builder→reviewer loop opened 2026-07-19. Findings recorded here as a compact ledger (id · title · sev ·
+**Builder→reviewer loop CLOSED (2026-07-19) — 7 findings across 3 rounds (5 → 2 → 0), all closed; none a
+leak, none a fail-open regression.** Findings recorded here as a compact ledger (id · title · sev ·
 status); the full entry + fix + closure note lives in [`reviews/M8.md`](reviews/M8.md).
 
 **Round 1 (2026-07-19): 5 findings — none a leak, none a fail-open regression.** Verified independently:

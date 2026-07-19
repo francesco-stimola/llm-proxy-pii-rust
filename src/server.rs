@@ -814,9 +814,11 @@ mod tests {
         // `build_detector` reads the model-source env vars, so "no model configured" must be made
         // true for this process rather than assumed (M8-R6): a developer who set `GLINER_MODEL_PATH`
         // / `NER_MODEL_PATH` to run the `#[ignore]`d gated tests would otherwise see this fail,
-        // because GLiNER/NER would actually load. Safe here: the gated tests live in a **separate**
-        // integration binary (its own process), so within the lib-test process this is the only
-        // reader of these vars — no concurrent access to race. (edition 2021 → `remove_var` is safe.)
+        // because GLiNER/NER would actually load. `remove_var` is safe here not because nothing else
+        // reads env concurrently (other lib tests read `HOME`/`HF_*`), but because every reader in
+        // this binary goes through `std::env`'s lock, and no **FFI/C** `getenv` reader (which would
+        // race off-lock) runs in the lib-test process — the ONNX session that could is only in the
+        // separate gated-test integration binary. (edition 2021 → `remove_var` is not `unsafe`.)
         for var in ["NER_MODEL_PATH", "NER_MODEL_REPO", "GLINER_MODEL_PATH"] {
             std::env::remove_var(var);
         }
