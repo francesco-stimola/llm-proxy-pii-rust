@@ -230,6 +230,50 @@ worth **~30% more throughput** (equivalently, `pool=1` is ~−23% under concurre
 > irrelevant (measured: 3%): the cost is inside ONNX Runtime, a prebuilt native library, so
 > compiling our Rust harder changes nothing.
 
+### GPU acceleration — measure, don't guess (`--bench-providers`)
+
+The NER can run on a GPU instead of the CPU (`NER_EXECUTION_PROVIDER`, M9). **Whether that is
+faster is a question about your hardware, so the tool measures it rather than telling you.**
+
+```powershell
+cargo build --features ep-directml        # Windows/DX12; see docs for your OS
+llm-proxy-pii-rust.exe --bench-providers
+```
+
+It runs the **model × provider matrix** on your machine and names the winner:
+
+```text
+provider     |    seq 128 |    seq 256 |    seq 512 | status
+  cpu        |      26.5ms |     47.1ms |    121.3ms | ok
+  directml   |      18.3ms |    104.7ms |    322.9ms | ok
+=> FASTEST: cpu on model_quantized (121.3ms). Keep the default.
+```
+
+Two things it will not let you get wrong — both mistakes this project made first:
+
+- **Backend and quantization are coupled.** int8 is a *CPU* format whose ops partition badly onto
+  GPUs; benchmarking the shipped int8 model on a GPU makes a perfectly good GPU look 2–5× slow.
+  fp16 is the GPU format (on CPU it's up-cast to fp32, so it only pays off on a GPU). Pass an fp16
+  export via `NER_BENCH_MODELS` to get the comparison that actually decides — the report refuses to
+  present an int8-only run as an answer.
+- **The decision is made at seq 512**, not on the average. Fields are chunked to 480 tokens, so the
+  inferences that dominate latency run near there. A backend that wins at seq 128 and loses at 512
+  has not won: seq 128 is already fast enough that the difference is invisible.
+
+Run it on an **idle machine, on AC** — a busy or throttled box inflates every row (we measured ~3×
+right after a heavy build; the ranking held, the absolute numbers didn't).
+
+**On our reference box (AMD DX12 iGPU) the CPU wins** and stays the default: DirectML-fp16 came out
+1.45× at seq 128 but **0.38× at seq 512**. A shared-memory iGPU is bandwidth-bound. That is a fact
+about *that* iGPU — a discrete GPU has 10–20× the bandwidth and would very likely win, which is why
+the selector exists. Yours may differ: that's what the benchmark is for.
+
+The flag works in **every** build. Without an accelerator compiled in it measures the CPU and tells
+you which `ep-*` feature fits your platform; without the `onnx` feature it explains there is no ML
+layer to accelerate. A provider that can't initialize never fails startup — it falls back to CPU
+(logged), and the benchmark reports that row as `unavailable — fell back to cpu` rather than passing
+CPU timings off as a GPU's.
+
 ---
 
 ## Providers & clients
@@ -326,6 +370,8 @@ Everything is environment-driven.
 | `NER_MODEL_REVISION` | `478a2a3` | Pinned revision for auto-download |
 | `NER_POOL_SIZE` | `1` | Concurrent ONNX session pool size. **Default `1`** = one session — the single-client shape (~563 MB, whole box per request). Raise to **`N`** for a centralizing proxy: ~30% more throughput at ~270 MB more RAM per session (see the latency note above) |
 | `NER_INTRA_THREADS` | *derived* | Threads **per session**. Defaults to `max(1, cores / NER_POOL_SIZE)` — the two knobs **multiply**, and the product must fit the box. Set it only if you know why |
+| `NER_EXECUTION_PROVIDER` | `cpu` | Hardware backend for the NER + GLiNER sessions (M9). `cpu` is the default; `directml` / `cuda` / `tensorrt` / `coreml` / `rocm` / `openvino` / `webgpu` are **opt-in**, each needing its `ep-*` cargo feature at build time. A provider that isn't compiled in — or whose device is absent — **falls back to CPU** (logged), never a startup failure. **Only `directml` is tested** (Windows DX12 GPU); the rest are wired but unverified. A typo (e.g. `vulkan`, not an ORT backend) fails startup. **Don't guess — run `--bench-providers`** (below) |
+| `NER_BENCH_MODELS` | *(unset)* | Extra model files (comma-separated) for `--bench-providers` to compare against the configured one — e.g. an fp16 export next to the shipped int8. Backend and quantization are **coupled**, so this is how you get the comparison that actually decides |
 | `NER_REQUIRED` | off | **Fail closed for names**: with it set, **at least one** ML detector (the NER and/or GLiNER below) must load, and every loaded one runs unwrapped — a failure blocks the request (400) instead of silently degrading to structured-only |
 
 With neither `NER_MODEL_PATH` nor `NER_MODEL_REPO` set, the build simply runs

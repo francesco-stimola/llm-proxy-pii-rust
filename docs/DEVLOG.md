@@ -3,6 +3,96 @@
 Newest first. One entry per meaningful change — note *what* and *why*, not just
 *what*. This is the running history so context is never lost between sessions.
 
+## 2026-07-19 — M9: execution-provider selector (all backends wired) + the DirectML spike
+
+**Opened M9 (GPU optimization).** The box has an **AMD Radeon DX12 iGPU** — which settles the
+backend choice by elimination: CUDA is NVIDIA-only, so on this hardware **DirectML is the only GPU
+path** (and, being D3D12, the only vendor-agnostic one on Windows). ONNX Runtime has **no Vulkan
+EP**, so the "most compatible" intuition maps to DirectML (Windows) / WebGPU (cross-OS), not Vulkan.
+
+**Spike first, per M9's own gate (`don't spend until the GPU actually beats the CPU here`).** A
+throwaway crate (`scratchpad/gpuspike`) ran the shipped XLM-R **int8** model on CPU vs DirectML:
+- **Stage A (power-independent): green.** The `directml` feature compiles, the ORT-with-DML binary
+  downloads and loads, the AMD DX12 device is accepted, int8 runs. Toolchain + hardware de-risked;
+  the make-or-break unknown (does `download-binaries` ship the DML EP? → **no, needs `ort/directml`**,
+  confirmed in `ep/directml.rs:103`) is answered.
+- **Stage B (on battery, indicative only): int8-on-DML is 2–5× *slower* than CPU** (0.20–0.46× at
+  seq 128/256/512). Expected and **not the verdict**: int8 is a CPU-optimized format, and int8 ops
+  fall back / partition badly on DirectML. The fair test is **fp16 on DML, on AC power** (Stage B').
+
+**Stage B' — the fair test, on AC power. Verdict: NO-GO for DirectML on this hardware.** fp32 XLM-R
+(`onnx/model.onnx`, 1.11 GB) was converted to fp16 (555 MB, `onnxruntime.transformers.float16`,
+`keep_io_types=True` so `logits` stays fp32) and the full matrix measured (ms/inference):
+
+| config | seq 128 | seq 256 | seq 512 |
+|---|---:|---:|---:|
+| **CPU int8** *(shipped)* | **26.5** | **47.1** | **121.3** |
+| CPU fp16 | 108.9 | 166.3 | 328.9 |
+| DML int8 | 104.8 | 344.3 | 607.6 |
+| DML fp16 | 18.3 | 104.7 | 322.9 |
+
+**DML-fp16 vs CPU-int8: 1.45× / 0.45× / 0.38×.** Three conclusions. (1) **fp16 was indeed the right
+test** — DML-fp16 crushes DML-int8 (18 vs 105 ms at seq 128), confirming the GPU really runs and that
+Stage B was a false negative. (2) **CPU-fp16 ≫ slower than CPU-int8** re-confirms ORT up-casts fp16→fp32
+on CPU (DEVLOG M8). (3) **But the iGPU wins only at short sequences and loses 2–2.6× where it matters:**
+fields are chunked to `MAX_WINDOW_TOKENS` = 480, so the latency-dominant inferences run at seq ~480–512,
+exactly where DML is ~2.6× slower. The seq-128 win is +8 ms on a case already at 26 ms — invisible.
+**Mechanism:** a shared-memory iGPU is bandwidth-bound, and attention cost grows quadratically with
+sequence; 12 CPU threads on int8 beat it. A hardware ceiling, not a code one — dimension-overrides or
+`HighPerformance` don't close 2.6×, and this box has no discrete GPU. **So CPU-int8 stays the default.**
+The verdict is about *this iGPU*: a discrete GPU (10–20× the bandwidth) would very likely win, and with
+the selector that is a config flip.
+
+**Landed the EP selector regardless — the multi-backend scaffolding is wanted independently of
+which GPU wins.** `NER_EXECUTION_PROVIDER` (default `cpu`) selects the backend for **both** the
+XLM-R NER and GLiNER, resolved once in `server.rs` and passed to `OnnxNerDetector::load` /
+`GLiNerDetector::load`. The selection + **CPU-fallback** policy has one home, `onnx::build_session`,
+which both detectors' pools now build through (this also deleted GLiNER's duplicate session-builder).
+
+- **All seven accelerators wired, only DirectML tested** — an accepted trade-off (we run DirectML).
+  Each EP is an `ep-*` cargo feature pulling the matching ORT binary; every EP *type* compiles on
+  every platform (only `register()` is feature-gated in `ort`), so an uncompiled/absent provider
+  just fails registration and **falls back to CPU, loudly** (`.error_on_failure()` → explicit `warn!`,
+  not ORT's silent drop). The tested/untested table lives in `ARCHITECTURE.md` → *Execution providers*.
+- **Fail-closed reasoning (why untested EPs are safe):** the fallback covers *initialization*, not
+  *numerical correctness* — but an EP that loads-and-computes-wrong can only cost **NER recall**
+  (best-effort); the deterministic structured layer runs on CPU regex, independent of the EP, so it
+  is untouched by any backend. Blast radius bounded to the layer that already tolerates misses.
+- **A typo fails startup, an absent-but-real GPU falls back** — two different failures, kept
+  distinct (`parse` rejects `vulkan`/`gpu`; `build_session` falls back for a real provider). M8-R5's
+  rule applied to the accelerator knob.
+- Tests: `onnx::ep_tests` (parse round-trips, case/alias handling, unknown→Err incl. `vulkan`).
+  Default build green; `clippy-onnx -D warnings` clean; 143 lib tests green; `cargo build-directml`
+  (new `.cargo` alias, own `target/directml` dir) compiles the DirectML build.
+
+**`--bench-providers`: ship the measurement, not the number (`src/pii/bench.rs`).** The M9 verdict is
+**hardware-specific** — it is true for this iGPU and probably false for a discrete GPU — so publishing
+our number would mislead every operator whose box differs. Instead the binary can measure the
+**model × provider matrix** on the machine it is running on and name the winner. Both axes are needed:
+backend and quantization are *coupled* (CPU wants int8, a GPU wants fp16), so a single-model sweep
+across providers — the first version of this — reproduces exactly the false negative that cost this
+milestone a round. The configured model plus `NER_BENCH_MODELS` (comma-separated extra variants) form
+the matrix; the report picks the winner at seq 512 (the chunked-field operating point).
+
+The report encodes the two things we got wrong before catching them: it **always** warns that an int8
+model makes a good GPU look 2–5× slow (and flags loudly when the run has int8 but no fp16, i.e. cannot
+answer "is the GPU worth it?"), and it warns to measure on an **idle** machine — the same box measured
+~3× slower right after a 13-minute LTO build, with the *ranking* intact but the absolute numbers not.
+
+**Validated against the spike it replaces.** Run on the same box, the shipped tool reproduced the
+throwaway harness's verdict — CPU-int8 fastest at seq 512 (296.9 ms) vs DML-fp16 (714.3 ms, 0.42×),
+DML-fp16 ahead at seq 128 (39.8 vs 66.1 ms, 1.66×), CPU-fp16 slow throughout, DML-int8 worst. Both
+runs also landed ~2–3× above the idle-machine numbers because each followed a long compile — the
+*ranking* was identical every time, which is exactly why the report leads with ranking and warns
+about absolutes rather than publishing a millisecond figure.
+
+**It works in every build.** Which providers exist is a build-time choice, so the report names the
+`ep-*` feature that fits *this* platform (DirectML on Windows, CoreML on macOS, CUDA/ROCm/OpenVINO on
+Linux) rather than a generic list, and a session that falls back is reported as **`unavailable — fell
+back to cpu`** rather than silently logged as a GPU measurement (`build_session_reporting` exposes the
+*effective* provider for exactly this). Without the `onnx` feature the flag still runs and explains
+that there is no ML layer to accelerate, instead of erroring — the command behaves the same everywhere.
+
 ## 2026-07-19 — M8.1: national phone recognizer (GB/DE), the deterministic path that beat GLiNER
 
 **M8 pointed the un-anchored national-phone gap at GLiNER's context. A post-merge feasibility study found

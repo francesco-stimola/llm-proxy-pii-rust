@@ -235,6 +235,52 @@ concorrente) — e *quello* è un trade reale, misurato, pagato a `N×` la RAM d
 > dentro ONNX Runtime, una libreria nativa precompilata, quindi compilare meglio il *nostro* Rust
 > non cambia niente.
 
+### Accelerazione GPU — misura, non indovinare (`--bench-providers`)
+
+Il NER può girare su GPU invece che su CPU (`NER_EXECUTION_PROVIDER`, M9). **Se sia più veloce è
+una domanda sul tuo hardware, quindi il tool la misura invece di risponderti a priori.**
+
+```powershell
+cargo build --features ep-directml        # Windows/DX12; per il tuo OS vedi i docs
+llm-proxy-pii-rust.exe --bench-providers
+```
+
+Esegue la matrice **modello × provider** sulla tua macchina e nomina il vincitore:
+
+```text
+provider     |    seq 128 |    seq 256 |    seq 512 | status
+  cpu        |      26.5ms |     47.1ms |    121.3ms | ok
+  directml   |      18.3ms |    104.7ms |    322.9ms | ok
+=> FASTEST: cpu on model_quantized (121.3ms). Keep the default.
+```
+
+Due errori che non ti lascia fare — entrambi commessi prima da questo progetto:
+
+- **Backend e quantizzazione sono accoppiati.** int8 è un formato *CPU*, i cui op si partizionano
+  male sulle GPU: misurare il modello int8 di serie su GPU fa sembrare lenta 2–5× una GPU ottima.
+  fp16 è il formato GPU (su CPU viene up-castato a fp32, quindi rende solo su GPU). Passa un export
+  fp16 via `NER_BENCH_MODELS` per ottenere il confronto che decide davvero — il report si rifiuta di
+  presentare una run solo-int8 come risposta.
+- **La decisione si prende a seq 512**, non sulla media. I campi sono spezzati in finestre da 480
+  token, quindi le inferenze che dominano la latenza girano lì attorno. Un backend che vince a seq
+  128 e perde a 512 non ha vinto: a seq 128 si è già abbastanza veloci che la differenza è invisibile.
+
+Eseguilo a **macchina scarica e collegata alla rete elettrica** — una macchina occupata o in
+throttling gonfia tutte le righe (misurato ~3× subito dopo una build pesante; il *ranking* ha retto,
+i valori assoluti no).
+
+**Sulla nostra macchina di riferimento (iGPU AMD DX12) vince la CPU**, che resta il default:
+DirectML-fp16 ha dato 1.45× a seq 128 ma **0.38× a seq 512**. Una iGPU a memoria condivisa è
+limitata dalla banda. È un fatto su *quella* iGPU — una GPU dedicata ha 10–20× la banda e molto
+probabilmente vincerebbe, ed è per questo che il selettore esiste. La tua può essere diversa: serve
+esattamente a questo il benchmark.
+
+Il flag funziona in **ogni** build. Senza acceleratori compilati misura la CPU e ti dice quale
+feature `ep-*` è adatta alla tua piattaforma; senza la feature `onnx` spiega che non c'è alcun layer
+ML da accelerare. Un provider che non si inizializza non fa mai fallire l'avvio — ricade su CPU
+(loggato), e il benchmark segna quella riga come `unavailable — fell back to cpu` invece di spacciare
+tempi CPU per tempi GPU.
+
 ---
 
 ## Provider e client
@@ -334,6 +380,8 @@ Tutto è pilotato da variabili d'ambiente.
 | `NER_MODEL_REVISION` | `478a2a3` | Revisione fissata per il download automatico |
 | `NER_POOL_SIZE` | `1` | Dimensione del pool di sessioni ONNX concorrenti. **Default `1`** = una sessione — la forma per singolo client (~563 MB, tutto il box per richiesta). Alzalo a **`N`** per un proxy centralizzato: ~30% di throughput in più a ~270 MB di RAM in più per sessione (vedi la nota sulla latenza sopra) |
 | `NER_INTRA_THREADS` | *derivato* | Thread **per sessione**. Default `max(1, core / NER_POOL_SIZE)` — le due manopole si **moltiplicano**, e il prodotto deve stare nella macchina. Impostala solo se sai perché |
+| `NER_EXECUTION_PROVIDER` | `cpu` | Backend hardware per le sessioni NER + GLiNER (M9). `cpu` è il default; `directml` / `cuda` / `tensorrt` / `coreml` / `rocm` / `openvino` / `webgpu` sono **opt-in**, ognuno richiede la sua feature cargo `ep-*` in fase di build. Un provider non compilato — o il cui device è assente — **ricade su CPU** (loggato), mai un fallimento all'avvio. **Solo `directml` è testato** (GPU DX12 Windows); gli altri sono cablati ma non verificati. Un refuso (es. `vulkan`, che non è un backend ORT) fa fallire l'avvio. **Non tirare a indovinare — usa `--bench-providers`** (sotto) |
+| `NER_BENCH_MODELS` | *(non impostato)* | Modelli aggiuntivi (separati da virgola) che `--bench-providers` confronta con quello configurato — es. un export fp16 accanto all'int8 di serie. Backend e quantizzazione sono **accoppiati**, quindi è così che si ottiene il confronto che decide davvero |
 | `NER_REQUIRED` | disattivato | **Fail closed per i nomi**: se impostato, **almeno un** detector ML (il NER e/o GLiNER sotto) deve caricarsi, e ognuno caricato gira "unwrapped" — un fallimento blocca la richiesta (400) invece di degradare silenziosamente al solo strutturato |
 
 Senza né `NER_MODEL_PATH` né `NER_MODEL_REPO`, la build esegue semplicemente il solo rilevamento

@@ -208,6 +208,14 @@ Default build, no model. The FP-prone tier's first recognizer: a loose `0`-trunk
 - PHONE-NAT-04 — `national_phone_does_not_swallow_an_adjacent_number`: two real GB numbers separated by a **single space, no word** (`020 7946 0958 0161 496 0000`, both `0`-leading) must yield **two** spans — the bounded-group regex can't grab them as one over-long span that `is_valid` would then reject (a leak).
 - PHONE-NAT-05 — `national_phone_validators_accept_reals_reject_junk`: direct `gb_phone_valid` / `de_phone_valid` unit tests (reals accepted, compact junk rejected). Documents that the validator is **not a locale discriminator** — a GB mobile also validates as DE (numbering plans overlap; privacy-safe) — while a London geographic number is *not* a valid DE number.
 
+### M9 — execution providers & the provider benchmark (feature `onnx`, no model needed)
+`src/pii/onnx.rs::ep_tests` — unit, runs in plain `cargo test-onnx`. The runtime knob is parsed here, and the two *failure modes must stay distinct*: a **typo** fails startup, a real-but-absent accelerator **falls back to CPU**. Conflating them would silently run CPU while the operator believed a GPU was engaged.
+- EP-01 — `parses_known_providers_case_insensitively_and_trims`: every provider name plus the aliases (`dml`, `trt`, `vino`) and `""` → `Cpu`, case- and whitespace-insensitive.
+- EP-02 — `an_unknown_provider_is_an_error_not_a_silent_cpu`: a typo (`directl`, `gpu`) is an `Err` naming the bad value — never a silent CPU run. Pins that **`vulkan` is rejected**: it is *not* an ONNX Runtime backend (WebGPU is the nearest cross-vendor EP), so it must not look valid to an operator who assumes it is.
+- EP-03 — `as_str_round_trips_through_parse`: `parse(as_str(p)) == p` for every variant, so the value logged at startup is always one an operator can paste back into `NER_EXECUTION_PROVIDER`.
+
+> **Not covered by an automated test, on purpose:** whether an accelerator is *faster* is hardware-specific and cannot be asserted in CI. That question is answered by the shipped `--bench-providers` mode (`src/pii/bench.rs`), which measures the **model × provider** matrix on the operator's own machine. The fallback path *is* exercised implicitly: a build without an `ep-*` feature that requests one falls back to CPU and still loads — which is what `cargo test-onnx` runs every time the harness passes `ExecutionProvider::Cpu`.
+
 ### M2.5 — HuggingFace model management (feature `onnx`, no network)
 - HF-01 — `parse_id2label` orders labels by class id (not JSON order), matches the XLM-R config, and **fails closed** on non-contiguous ids / missing `id2label` / non-integer keys / **empty `id2label`** (`empty_id2label_is_an_error`, M2.5-R2) (`src/pii/hf.rs`).
 - HF-02 — `standard_hub_cache_dir` yields the conventional `<home>/.cache/huggingface/hub` tail (not `hf-hub`'s `/tmp` fallback).

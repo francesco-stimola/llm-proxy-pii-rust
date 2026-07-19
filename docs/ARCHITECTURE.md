@@ -14,9 +14,11 @@ anonymized request upstream, and restores the original values in the response.
   without touching the core.
 - **Engine-agnostic detection** — everything sits behind the `PiiDetector` trait,
   so we can swap models or add engines without touching the proxy.
-- **CPU-first, GPU later** — correctness and reproducibility on CPU first; GPU is
-  a deferred ([M9](ROADMAP.md#m9)) optimization behind a feature flag. GPU behavior
-  isn't automatic — it depends on the model and quantization.
+- **CPU-first, GPU optional** — correctness and reproducibility on CPU first; CPU stays the
+  default and the only universally-trusted path. Hardware acceleration ([M9](ROADMAP.md#m9)) is
+  **opt-in** behind `NER_EXECUTION_PROVIDER` + an `ep-*` feature, and **falls back to CPU** if the
+  accelerator isn't there — GPU behavior isn't automatic (it depends on the model, quantization,
+  and hardware). See *Execution providers — hardware acceleration (M9)* below.
 - **Textbook & lean** — idiomatic Rust, low RAM/CPU, no over-engineering.
 
 ## Hybrid detection (key decision)
@@ -660,8 +662,9 @@ the default's target does not have, while the RAM it saves is certain. This is t
 > across threads; floating-point addition is **not associative**, so a different partition can move
 > a logit in its last bits — and the BIO decode is a per-token `argmax`, where a near-tie flips on
 > nothing but thread count. A flipped `B-PER` is lost recall, and here a miss is what makes a leak.
-> **A model swap or an execution-provider swap must re-run that guard** — the Backlog's DirectML/CUDA
-> item is exactly where cross-thread non-determinism stops being theoretical. This is
+> **A model swap or an execution-provider swap must re-run that guard** — the M9 DirectML/CUDA
+> work is exactly where cross-thread non-determinism stops being theoretical (GPU floating-point
+> diverges from CPU further than thread count does; see *Execution providers* below). This is
 > [M5-R4](reviews/M5.md#m5-r4)'s rule about the same layer: *the NER's convenient properties are
 > measured, never proved.*
 
@@ -683,6 +686,97 @@ argument. Two things make it worth writing down rather than filing under M4-R6 a
 
 Nobody had seen it until M7 ran the NER over a realistic system prompt — the S0 lesson (*a corpus
 has a shape, and the shape is the blind spot*) one level down.
+
+**Execution providers — hardware acceleration (M9).** The NER and GLiNER sessions run on an
+`ort` **execution provider (EP)** selected at runtime by `NER_EXECUTION_PROVIDER` (both models
+share the one knob). `cpu` is the default and the only provider the CPU-first design depends on;
+the rest are **opt-in accelerators**, each gated at build time by an `ep-*` cargo feature that
+pulls the matching ONNX Runtime backend binary. The selection + fallback policy has **one home**,
+`onnx::build_session` — both detectors build their session pools through it, so the behavior
+cannot drift between them (the `resolve_pool_and_intra` discipline, applied to the backend).
+
+**Falling back to CPU is the fail-closed move, not a compromise.** A requested accelerator that
+cannot initialize — feature not compiled, backend library/driver missing, no device, registration
+error — drops to CPU with a `warn!`, because *a privacy proxy must start*, and masking is
+bit-identical on any backend (only slower). The dispatch is registered with `.error_on_failure()`
+precisely so this fallback is **explicit and logged**, never ORT's silent per-session CPU drop
+that would hide which backend actually ran. Two failures are kept distinct: a **typo** in
+`NER_EXECUTION_PROVIDER` (e.g. `vulkan`, which is *not* an ORT backend) is a config error that
+**fails startup**; a **known** provider that won't initialize **falls back**. Conflating them —
+silently running CPU when an operator named a real-but-absent GPU — is the move `onnx::ExecutionProvider::parse`
+refuses (M8-R5's rule, applied to the accelerator knob).
+
+> **The fallback covers *initialization*, not *numerical correctness* — and that bound is what
+> makes an untested EP acceptable.** An accelerator that registers but computes subtly different
+> logits than the CPU is *not* caught by the fallback. But its blast radius is bounded to **NER
+> recall**: the deterministic structured recognizers (email, phone, SSN, credit card, IBAN) run on
+> CPU regex, independent of the EP, so **the fail-closed layer is untouched no matter what backend
+> the NER runs on**. An untested EP can therefore only (a) fail to load → CPU, or (b) slightly
+> degrade the best-effort NER layer — never leak through the deterministic layer, never crash. This
+> is why the tested-vs-untested split below is a *safe* trade, and why the tested one still owes
+> the cross-thread-determinism guard above: **an execution-provider swap must re-run it** before
+> the backend is trusted, because GPU floating-point diverges from CPU further than thread count does.
+
+Every EP *type* compiles on every platform (only its `register()` is feature-gated inside `ort`),
+so the selector needs no per-provider `#[cfg]` — an uncompiled `ep-*` simply fails registration
+and falls back. What differs is the **binary** each feature pulls and the hardware it needs, so
+only what we can test on this project's box is trusted:
+
+| Provider (`NER_EXECUTION_PROVIDER`) | Cargo feature | Natural OS / hardware | Status |
+|---|---|---|---|
+| `cpu` (default) | `onnx` | any | ✅ **tested** — the always-on baseline |
+| `directml` | `ep-directml` | Windows, any DX12 GPU (AMD/NVIDIA/Intel/iGPU) | ✅ **tested** — this box's AMD DX12 iGPU |
+| `cuda` | `ep-cuda` | Linux/Windows, NVIDIA | ⚠️ **wired, untested** — no NVIDIA hardware here |
+| `tensorrt` | `ep-tensorrt` | Linux/Windows, NVIDIA | ⚠️ **wired, untested** |
+| `coreml` | `ep-coreml` | macOS, Apple Silicon / AMD | ⚠️ **wired, untested** — needs a Mac |
+| `rocm` | `ep-rocm` | Linux, AMD | ⚠️ **wired, untested** |
+| `openvino` | `ep-openvino` | Linux/Windows, Intel | ⚠️ **wired, untested** |
+| `webgpu` | `ep-webgpu` | any (Vulkan/Metal/D3D12 via Dawn) | ⚠️ **wired, untested** — the nearest thing to a cross-vendor EP |
+
+**On "the most compatible backend".** ONNX Runtime has **no Vulkan EP** — Vulkan is a
+vendor-agnostic GPU API in general, but not one of ORT's backends, so using it would mean leaving
+ORT for a different engine. The ORT-native cross-vendor answers are: **DirectML** on Windows (D3D12,
+so *any* vendor's GPU, which is why it is this box's pick), and **WebGPU** everywhere (it sits on
+Vulkan/Metal/D3D12 under the hood) — the latter still experimental, hence untested. There is no
+single native GPU EP that spans all OSes; the universal path is, and remains, **CPU**.
+
+**Measured on this project's box: CPU-int8 wins, so it stays the default.** DirectML-fp16 vs the
+shipped CPU-int8 on the AMD DX12 iGPU came out **1.45× at seq 128, 0.45× at seq 256, 0.38× at seq
+512** (DEVLOG 2026-07-19). The GPU wins only where latency is already invisible and loses ~2.6×
+where it is not: fields are chunked to `MAX_WINDOW_TOKENS` = 480, so the latency-dominant
+inferences run at seq ~480–512. A shared-memory iGPU is bandwidth-bound and attention grows
+quadratically with sequence — 12 CPU threads on int8 beat it. **This is a fact about this iGPU, not
+about GPUs**: a discrete GPU has 10–20× the bandwidth and would very likely win, which is precisely
+why the selector exists even though the default did not move.
+
+> **Quantization and backend are COUPLED, and measuring one while holding the other fixed is how
+> M9 produced a confident wrong answer.** The CPU's format is int8; a GPU's is fp16 (on CPU, ORT
+> up-casts fp16→fp32, so fp16 only pays off on a GPU). The first measurement ran the *shipped int8
+> model* on DirectML, saw 2–5× slower, and looked like a verdict — it was a **false negative**: int8
+> ops partition badly onto GPU providers. Re-run at fp16, the same GPU went from 5× slower to 1.45×
+> faster at short sequences. Any future "is backend X worth it?" must vary **both** axes.
+
+**`--bench-providers` — ship the measurement, not the number (`pii::bench`).** Because the answer
+above is hardware-specific, publishing it as guidance would mislead every operator whose box
+differs. The binary therefore measures the **model × provider matrix** on the machine running it
+and names the winner at seq 512. The configured NER model plus `NER_BENCH_MODELS` (extra variants,
+comma-separated) form the matrix, so an operator can compare CPU-int8 against GPU-fp16 — the
+comparison that actually decides. Three properties make the report trustworthy rather than merely
+informative:
+
+- **A fallback is reported, never counted.** `build_session_reporting` returns the *effective*
+  provider, so a row whose accelerator did not engage prints `unavailable — fell back to cpu`
+  instead of quietly presenting CPU timings under a GPU's name.
+- **It refuses to let the int8 trap repeat.** The report always carries the quantization warning,
+  and flags loudly when a run contains int8 but no fp16 — i.e. when it *cannot* answer "is the GPU
+  worth it?".
+- **It warns about the measurement itself.** The same box measured ~3× slower immediately after a
+  long compile; the ranking survived, the absolute numbers did not. So the report says to measure
+  idle and on AC.
+
+It behaves identically in every build: which providers exist is a build-time choice, so the report
+names the `ep-*` feature that fits *this* platform, and without the `onnx` feature it still runs and
+explains that there is no ML layer to accelerate rather than failing.
 
 **NER chunking (M5, PERF-01).** `OnnxNerDetector` tokenizes a field once; if it fits, it runs
 exactly as before (M2). A field that doesn't is split into overlapping token windows

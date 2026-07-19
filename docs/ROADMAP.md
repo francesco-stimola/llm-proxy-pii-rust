@@ -40,7 +40,7 @@ this table can't drift. A **release tag** is noted next to the milestone it was 
 | [M7.1 — system-prompt cache + fixpoint NER fix](#m71) | ✅ complete · tag `v1.0.0` |
 | [M8 — GLiNER: contextual / open-label PII](#m8) | ✅ complete |
 | [M8.1 — national phone recognizer (opt-in)](#m81) | ✅ complete |
-| [M9 — GPU optimization](#m9) | 📋 planned |
+| [M9 — GPU optimization](#m9) | 🔨 code-complete |
 
 ---
 
@@ -1204,20 +1204,39 @@ ARCHITECTURE (next to `Scan`/fixpoint). **116 default lib green. M8.1 review-cle
 <a id="m9"></a>
 ## M9 — GPU optimization
 
-**Promoted from Backlog 2026-07-18** *(was slated for M4, deferred 2026-07-12)*. Faster inference once the
-model is locked. **Deferred on purpose, and still correctly deferred:** the M2 model choice is
-**execution-provider-agnostic** (standard ONNX, runs on any `ort` EP), so GPU constrains nothing upstream —
-no reason to spend on it until real latency/load demands it. On this Windows/no-admin box the natural EP is
-**DirectML** (any DX12 GPU, no CUDA/admin); going to GPU is mostly a config change (swap the EP; int8 → the
-pre-shipped `model_fp16.onnx`).
+**Opened 2026-07-19** *(promoted from Backlog 2026-07-18; was slated for M4, deferred 2026-07-12)*.
+Faster inference once the model is locked. The M2 model choice is **execution-provider-agnostic**
+(standard ONNX, runs on any `ort` EP), so GPU constrains nothing upstream. This box has an **AMD DX12
+iGPU**, which decides the backend by elimination: CUDA is NVIDIA-only, ONNX Runtime has no Vulkan EP,
+so **DirectML is the only GPU path here** (and the only vendor-agnostic one on Windows, being D3D12).
 
-- [ ] GPU execution provider (CUDA / DirectML) behind config
-- [ ] Quantization tuning; benchmark against the CPU baseline
+- [x] GPU execution provider behind config — `NER_EXECUTION_PROVIDER` selects the backend for both
+  the NER and GLiNER; **all seven `ort` EPs wired, DirectML tested, the rest opt-in + untested**,
+  each with a logged **CPU fallback** (`onnx::build_session`). Design + tested/untested table:
+  [ARCHITECTURE](ARCHITECTURE.md) → *Execution providers*. (DEVLOG 2026-07-19.)
+- [x] Quantization tuning; benchmark GPU-fp16 vs the CPU-int8 baseline — **measured: NO-GO on this
+  iGPU** (below). CPU-int8 stays the default.
+- [x] `--bench-providers` — the binary measures the **model × provider** matrix on the operator's own
+  machine and names the winner, because the answer is hardware-specific. (DEVLOG 2026-07-19.)
 
-> **The likely trigger is [M8](#m8).** GLiNER int8 is heavier than XLM-R int8; if its measured CPU latency
-> misses the lean bar, the escalation path ([`M2-NER-EVALUATION.md`](M2-NER-EVALUATION.md)) is to pull this
-> forward — a GPU EP + the `model_fp16.onnx` variant is how a heavier model becomes viable. On CPU, fp16 is
-> up-cast to fp32 (no speedup), so fp16 only pays off *here*.
+> **Verdict: DirectML is NO-GO on this hardware, and that is a completed milestone, not a failure.**
+> DML-fp16 vs CPU-int8 measured **1.45× / 0.45× / 0.38×** at seq 128 / 256 / 512. The GPU wins only
+> where latency is already invisible and loses ~2.6× at the **operating point** — fields are chunked
+> to 480 tokens, so the latency-dominant inferences run at seq ~480–512. A shared-memory iGPU is
+> bandwidth-bound; 12 CPU threads on int8 beat it. **This is a fact about this iGPU, not about GPUs:**
+> a discrete GPU would very likely win, and the selector makes that a config flip. Full matrix and
+> mechanism: DEVLOG 2026-07-19; design: [ARCHITECTURE](ARCHITECTURE.md) → *Execution providers*.
+
+> **The measurement that nearly went wrong, now encoded in the tool.** Benchmarking the *shipped int8*
+> model on DirectML showed 2–5× slower and looked like the verdict; it was a **false negative** (int8
+> partitions badly onto GPU providers). At fp16 the same GPU went from 5× slower to 1.45× faster.
+> Backend and quantization are **coupled**, so `--bench-providers` measures both axes and refuses to
+> present an int8-only run as an answer to "is the GPU worth it?".
+
+> **The M8 trigger did not fire as anticipated.** GLiNER was rejected as a successor on **recall**,
+> not latency ([M8](#m8)), and shipped opt-in — so M9 is an **enabler** (make fp16-GLiNER's
+> higher-recall path viable at speed; optionally cut the ~4.7 s XLM-R turn), not a latency rescue.
+> XLM-R has no pre-shipped `model_fp16.onnx` (only `model.onnx` fp32 + int8); GLiNER's fp16 is on HF.
 
 <a id="backlog"></a>
 ## Backlog — documented, not scheduled
