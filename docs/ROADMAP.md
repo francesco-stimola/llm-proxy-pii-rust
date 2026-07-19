@@ -33,8 +33,8 @@ this table can't drift. A **release tag** is noted next to the milestone it was 
 | [M2.5 — HuggingFace model management](#m25) | ✅ complete |
 | [M2.6 — Debug & observability modes](#m26) | ✅ complete |
 | [M3 — Streaming & multi-provider routing](#m3) | ✅ complete |
-| [M4 — Broad locale & language coverage](#m4) | ✅ complete · tag `v0.4.0` (interim badge release) |
-| [M5 — Integration & performance testing](#m5) | ✅ complete |
+| [M4 — Broad locale & language coverage](#m4) | ✅ complete |
+| [M5 — Integration & performance testing](#m5) | ✅ complete · tag `v0.4.0` (interim badge) |
 | [M6 — Native Anthropic `/v1/messages`](#m6) | ✅ complete |
 | [M7 — NER latency](#m7) | ✅ complete |
 | [M7.1 — system-prompt cache + fixpoint NER fix](#m71) | ✅ complete · tag `v1.0.0` |
