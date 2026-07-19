@@ -151,6 +151,14 @@ Memoria residente (Windows, build debug, a riposo dopo l'avvio; solo-strutturato
 | **solo strutturato** (feature di default) | **~10 MB** | ~36 MB | niente — sono regex |
 | **ibrido**, default `NER_POOL_SIZE=1` (`--features onnx`, XLM-R int8) | **~563 MB** | ~585 MB | il NER: **una** sessione ONNX |
 | **ibrido**, `NER_POOL_SIZE=2` | ~834 MB | ~856 MB | **due** sessioni — il modello tenuto due volte; ogni sessione aggiunge **~270 MB** |
+| **ibrido + GLiNER int8** solo (opt-in, `GLINER_MODEL_PATH`, XLM-R spento) | ~537 MB | ~560 MB | la singola sessione di GLiNER — paragonabile a XLM-R da solo (M8) |
+| **ibrido, XLM-R + GLiNER int8** (entrambi, opt-in) | **~1073 MB** | ~1094 MB | **due modelli caricati** — GLiNER aggiunge **~510 MB** sopra XLM-R (M8) |
+
+> **GLiNER (M8) è opt-in e *additivo*** — **non** sostituisce il NER (misurato: su int8 la sua recall
+> sui nomi è sotto quella di XLM-R — vedi [ROADMAP M8](docs/ROADMAP.md#m8)). Abilitato insieme a XLM-R
+> carica un **secondo** modello, quindi considera la RAM: **~1,07 GB** per entrambi contro ~563 MB per
+> il solo XLM-R (misurato). Esegui GLiNER *al posto* di XLM-R (~537 MB) solo se vuoi specificamente le
+> sue categorie contestuali e accetti la recall più debole sui nomi.
 
 Il livello deterministico è sostanzialmente gratis; **il modello è tutto il costo**, e scala col
 pool: **~290 MB di base condivisa più ~270 MB per sessione** (misurato — 563 MB a `pool=1`, 834 MB a
@@ -264,7 +272,8 @@ strumenti cambia in fretta; verifica la doc corrente di ciascuno prima di farci 
 | **pi** (`@earendil-works/pi`) | ✅ | un provider con `"api": "openai-completions"`, `"baseUrl": ".../v1"` |
 | **GitHub Copilot CLI** | ✅ | BYOK: `COPILOT_PROVIDER_BASE_URL=http://127.0.0.1:8080/v1` (il modello deve supportare tool + streaming) |
 | **GitHub Copilot Chat** (VS Code) | ✅ | BYOK → un provider "OpenAI Compatible" puntato al proxy (solo chat) |
-| **Claude Code** · SDK Anthropic | ✅ novità (M6) | puntalo al proxy con `UPSTREAM_PROVIDER=anthropic`; il body nativo `/v1/messages` è mascherato **in place** (nessuna traduzione OpenAI). *La verifica end-to-end dal vivo contro Anthropic reale è il [gate `1.0.0`](docs/ROADMAP.md#m6) ancora aperto.* |
+| **Claude Code** · SDK Anthropic | ✅ (M6) | puntalo al proxy con `UPSTREAM_PROVIDER=anthropic`; il body nativo `/v1/messages` è mascherato **in place** (nessuna traduzione OpenAI). Verificato dal vivo end-to-end contro Anthropic reale. |
+| **Client nativi di altri vendor** — es. la **Gemini CLI** (API Gemini nativa), gli SDK nativi Bedrock / Vertex | ❌ **non supportati** | parlano il protocollo **nativo** di un vendor che il proxy non serve. Il proxy maschera i client OpenAI-compatibili (sopra) e il `/v1/messages` nativo di Anthropic (M6) — *nient'altro*. Aggiungere un altro schema nativo richiede un adapter per-provider — **[Opzione B, Backlog](docs/ROADMAP.md#backlog)** (Gemini è il prossimo candidato nominato). |
 
 > **Il discrimine è il base URL, non il brand.** GitHub Copilot compare su *entrambi* gli assi — un
 > preset *upstream* (`UPSTREAM_PROVIDER=copilot`) **e**, via BYOK, un *client* (Copilot CLI / Chat):
@@ -277,6 +286,16 @@ anche come *client nativo*** — **M6** serve il `/v1/messages` nativo di Anthro
 contenuto, `tool_use`/`tool_result`, streaming), così un client nativo come Claude Code è mascherato
 senza una modalità OpenAI-compat. La rotta è registrata solo quando `UPSTREAM_PROVIDER=anthropic`; su
 qualsiasi altro upstream `/v1/messages` restituisce ancora 404.
+
+> **Detto chiaramente: esistono solo due superfici native — OpenAI-compatibile e Anthropic
+> `/v1/messages`.** Un coding agent legato al protocollo **nativo di un altro vendor** **non** è
+> mascherato. Il caso concreto oggi è la **Gemini CLI** (`generateContent` nativo di Gemini); gli SDK
+> nativi Bedrock / Vertex sono la stessa classe. Un client simile richiederebbe un **adapter nativo
+> per-provider schema-aware**, e un campo di schema mancato è un leak — quindi è lavoro deliberato e
+> **non schedulato**, tracciato come [**Opzione B — adapter provider nativi**](docs/ROADMAP.md#backlog)
+> (con Gemini indicato come il più probabile prossimo). Finché non esiste un adapter, usa un agente del
+> genere solo tramite una modalità OpenAI-compatibile / BYOK se ne ha una; se parla solo l'API nativa
+> del suo vendor, il proxy non può ancora proteggerlo.
 
 ---
 
