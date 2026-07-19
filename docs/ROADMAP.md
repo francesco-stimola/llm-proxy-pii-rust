@@ -1110,8 +1110,8 @@ findings, both low, neither a leak.
 
 | ID | Title | Sev | Status |
 |---|---|---|---|
-| [M8-R6](reviews/M8.md#m8-r6) | `required_ner_is_fatal_when_absent` is non-hermetic — ambient `GLINER_MODEL_PATH` (the M8 gated-test env) breaks the onnx lib suite | test-quality | [ ] |
-| [M8-R7](reviews/M8.md#m8-r7) | window-cap recall rationale mis-explains *why* it works (measured: bounded context, not overlap-near-start); the two knobs have different jobs | docs | [ ] |
+| [M8-R6](reviews/M8.md#m8-r6) | `required_ner_is_fatal_when_absent` is non-hermetic — ambient `GLINER_MODEL_PATH` (the M8 gated-test env) breaks the onnx lib suite | test-quality | [x] |
+| [M8-R7](reviews/M8.md#m8-r7) | window-cap recall rationale mis-explains *why* it works (measured: bounded context, not overlap-near-start); the two knobs have different jobs | docs | [x] |
 
 <a id="m9"></a>
 ## M9 — GPU optimization

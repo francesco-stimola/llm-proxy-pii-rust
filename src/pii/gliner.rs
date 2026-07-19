@@ -193,11 +193,11 @@ impl GLiNerDetector {
                 )
             })?;
         // **Cap the window well below that ceiling.** GLiNER int8's per-span confidence *dilutes
-        // with preceding context* (measured — an entity near a window's start scores ~0.35 at
-        // seq≈100, ~0.25 at seq≈170, and collapses past ~270; at `max_len` the model returns
-        // all-low logits, unusable — DEVLOG M8). So a small window is not a latency trade but a
-        // **recall** one: it keeps every entity close to *some* window's start (via the overlap),
-        // where it still scores. A model swap (esp. fp32) re-opens this number.
+        // with the window's total context* (measured — a clear name keeps ≳0.2 while its window
+        // stays ≲100 text tokens, ~0.15 by ~130; at `max_len` the model returns all-low logits,
+        // unusable — DEVLOG M8), and this is position-*independent*: a small window scores an entity
+        // at any offset. So a small window is not a latency trade but a **recall** one — it bounds
+        // the context every span is scored against. A model swap (esp. fp32) re-opens this number.
         let text_budget = max_from_model.min(MAX_WINDOW_TEXT_TOKENS);
 
         let windows = plan_word_windows(
@@ -392,18 +392,22 @@ const MIN_TEXT_TOKEN_BUDGET: usize = 16;
 
 /// The largest **text**-token window handed to the model, capped **far below** `max_len`.
 ///
-/// GLiNER int8's per-span confidence dilutes with context — measured (DEVLOG M8): a clear name
-/// keeps a score ≳0.2 (above the 0.15 threshold) while its window stays ≲100 text tokens, drifts to
-/// ~0.15 by ~130, and at `max_len` (384) the model returns all-low logits (unusable). So the window
-/// is *not* sized to the model's nominal budget — a smaller window is a **recall** choice: it keeps
-/// every entity near *some* window's start (via [`WINDOW_OVERLAP_WORDS`]) with little enough context
-/// that it still scores. Long-field recall is still weaker than short-field — a documented model
-/// property, not a bug; the default XLM-R NER covers long system prompts. Tuned to the shipped int8
-/// model; a swap (esp. fp32) re-opens it.
+/// GLiNER int8's per-span confidence dilutes with the **total context in the window** — measured
+/// (DEVLOG M8): a clear name keeps a score ≳0.2 (above the 0.15 threshold) while its window stays
+/// ≲100 text tokens, drifts to ~0.15 by ~130, and at `max_len` (384) the model returns all-low
+/// logits (unusable). The dilution is a function of the window's *size*, **not the entity's position
+/// in it** — a name is detected at any offset (start, middle, or mid multi-window field) as long as
+/// the window is small. So the window is *not* sized to the model's nominal budget: a smaller window
+/// is a **recall** choice that bounds the context every span is scored against. (This is a different
+/// job from [`WINDOW_OVERLAP_WORDS`], which only guarantees a boundary-crossing entity is *whole* in
+/// some window.) Long-field recall is still weaker than short-field — a documented model property,
+/// not a bug; the default XLM-R NER covers long system prompts. Tuned to the shipped int8 model; a
+/// swap (esp. fp32) re-opens it.
 pub const MAX_WINDOW_TEXT_TOKENS: usize = 100;
 
-/// Words of overlap between consecutive windows, so an entity spanning a boundary is whole — and
-/// close to the *start* — in the next window. Comfortably above a typical multi-word name.
+/// Words of overlap between consecutive windows, so an entity spanning a window boundary is **whole**
+/// in at least one window (it is scored across its full span there). Comfortably above a typical
+/// multi-word name. Distinct from [`MAX_WINDOW_TEXT_TOKENS`], which is what governs the *score*.
 pub const WINDOW_OVERLAP_WORDS: usize = 8;
 
 /// Plan word windows so each window's text tokens fit `budget`, overlapping the previous window by

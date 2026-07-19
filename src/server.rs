@@ -809,7 +809,17 @@ mod tests {
     #[tokio::test]
     async fn required_ner_is_fatal_when_absent() {
         // M2-R1: requiring a NER that can't be present (no `onnx` feature, or —
-        // with the feature — no model configured in the test env) is fatal.
+        // with the feature — no model configured) is fatal.
+        //
+        // `build_detector` reads the model-source env vars, so "no model configured" must be made
+        // true for this process rather than assumed (M8-R6): a developer who set `GLINER_MODEL_PATH`
+        // / `NER_MODEL_PATH` to run the `#[ignore]`d gated tests would otherwise see this fail,
+        // because GLiNER/NER would actually load. Safe here: the gated tests live in a **separate**
+        // integration binary (its own process), so within the lib-test process this is the only
+        // reader of these vars — no concurrent access to race. (edition 2021 → `remove_var` is safe.)
+        for var in ["NER_MODEL_PATH", "NER_MODEL_REPO", "GLINER_MODEL_PATH"] {
+            std::env::remove_var(var);
+        }
         assert!(build_detector(true, &[]).await.is_err());
         // Not requiring it always yields a structured-only detector.
         assert!(build_detector(false, &[]).await.is_ok());

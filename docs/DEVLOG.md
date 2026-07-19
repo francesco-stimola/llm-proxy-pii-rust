@@ -71,9 +71,10 @@ choke-point guard (M8-R1). Acting on that pair exposed a real recall bug the pur
 hidden: a window filled to the `max_len` budget makes the model return **all-low logits at seq ≈ 384** (a
 313-word window scored *zero* on a clear name), and GLiNER int8's confidence **dilutes with context** well
 before that (a name at a window's start keeps ≳0.2 while the window stays ≲100 text tokens, ~0.15 by ~130).
-**Fix:** cap the window at `MAX_WINDOW_TEXT_TOKENS = 100` (far below the `max_len` budget) with an 8-word
-overlap, so every entity lands near *some* window's start where it still scores — plus the choke-point
-guard as the hard safety net. Long-field recall stays weaker than short-field (a documented model property;
+**Fix:** cap the window at `MAX_WINDOW_TEXT_TOKENS = 100` (far below the `max_len` budget), which bounds
+the context every span is scored against — the dilution is a function of window *size*, not the entity's
+position in it (M8-R7), so a small window scores an entity at any offset; an 8-word overlap keeps a
+boundary-crossing entity whole; plus the M5-R7 choke-point guard as the hard safety net. Long-field recall stays weaker than short-field (a documented model property;
 the default XLM-R covers long system prompts). The other three: the overlap invariant for a GLiNER `Phone`
 (`is_structured` → union-merged, not "loses") promoted to ARCHITECTURE (M8-R3), a 12th decode test
 (determinism, M8-R4), and `load_gliner` hardened to **fail loud** on partial config / a bad threshold
