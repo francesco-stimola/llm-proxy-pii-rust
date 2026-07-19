@@ -38,7 +38,7 @@ completion**; findings, counts and closure notes live in each milestone's sectio
 | [**M7 — NER latency**](#m7) | 🔨 **code-complete, review ledger closed** (21 findings / 8 rounds, all closed): **≥1.5× faster than pre-M7** (asserted floor; typically ~1.7–2.3×, scales with the box, **not asserted below 4 cores** — a strict no-op only at 1 core since the 2026-07-17 `NER_POOL_SIZE` default flip to `pool=1`). A realistic turn masks in **~4.7 s** at the shipped default on the reference box — **the ~3 s bar was missed; we stopped anyway** ([M7-R12](reviews/M7.md#m7-r12)). **CC battery — CLOSED (2026-07-18):** both postures, DBG-02 = 0 throughout; the fail-closed non-convergence 400 (CC-08/CC-05/CC-09, NER **sub-word fragmentation** on the dense system prompt) fixed by **[S4](#m71)** — re-run on the S4 binary, all three converge, **zero fixpoint 400** |
 | [**M7.1 — system-prompt cache + fixpoint NER fix**](#m71) | ✅ **complete (2026-07-18)** — **S4** (NER on pass 0 only) fixes the CC-05/CC-08 fail-closed 400, recall-validated (0 losses); **S3** (`CachingDetector`, exact-byte-keyed, can't mask less) memoizes the byte-identical system prompt's detection. 116 onnx lib tests, clippy clean, review-clean (round 9) |
 | [First tagged release `1.0.0`](#m6) | ✅ **released (2026-07-18)** — tag `v1.0.0` cut on `main` (`Cargo.toml` at `1.0.0`) after the CC battery closed. Every gate met: M6 route + M7 latency + M7.1 (S3/S4), both postures leak-clean, zero fixpoint 400 on the S4 binary |
-| [**M8 — GLiNER: contextual / open-label PII**](#m8) | 🔨 **code-complete (2026-07-19), review in progress** — `GLiNerDetector` + `gliner_decode` built and **validated end-to-end against the real int8 model**; wired **opt-in** (`GLINER_MODEL_PATH`). **Measured verdict: addition, not successor** — matches XLM-R on Loc (0.91) / Org (1.00) but Person recall 0.58 < XLM-R 0.83, so XLM-R stays default; GLiNER adds contextual kinds (bare phone, address). 132 onnx / 108 default lib green, clippy clean. Numbers: [DEVLOG 2026-07-19](DEVLOG.md) |
+| [**M8 — GLiNER: contextual / open-label PII**](#m8) | 🔨 **code-complete (2026-07-19), review-clean (3 rounds, 7 findings all closed)** — `GLiNerDetector` + `gliner_decode` built and **validated end-to-end against the real int8 model**; wired **opt-in** (`GLINER_MODEL_PATH`). **Measured verdict: addition, not successor** — matches XLM-R on Loc (0.91) / Org (1.00) but Person recall 0.58 < XLM-R 0.83, so XLM-R stays default; GLiNER adds contextual kinds (bare phone, address). 133 onnx / 109 default lib green, clippy clean. Numbers: [DEVLOG 2026-07-19](DEVLOG.md) |
 | [**M9 — GPU optimization**](#m9) | 📋 **planned (2026-07-18)** — promoted from Backlog. GPU execution provider (DirectML / CUDA) behind config; the M2 model choice is EP-agnostic, so this constrains nothing upstream. Likely pulled forward by M8 if GLiNER's CPU latency misses the lean bar |
 
 ---
@@ -1112,6 +1112,11 @@ findings, both low, neither a leak.
 |---|---|---|---|
 | [M8-R6](reviews/M8.md#m8-r6) | `required_ner_is_fatal_when_absent` is non-hermetic — ambient `GLINER_MODEL_PATH` (the M8 gated-test env) breaks the onnx lib suite | test-quality | [x] |
 | [M8-R7](reviews/M8.md#m8-r7) | window-cap recall rationale mis-explains *why* it works (measured: bounded context, not overlap-near-start); the two knobs have different jobs | docs | [x] |
+
+**Round 3 (2026-07-19): both closures verified — [M8 review-clean](reviews/M8.md#review-3).** Reproduced the
+R6 repro then confirmed 133/0 with the gated env set; R7 rationale corrected. No new findings. All seven
+M8 findings closed; no leak, fail-closed intact, fixpoint safe, window cap recall-preserving, decision
+honest.
 
 <a id="m9"></a>
 ## M9 — GPU optimization
