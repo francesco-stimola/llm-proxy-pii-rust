@@ -120,27 +120,30 @@ pub fn available_providers() -> Vec<ExecutionProvider> {
 /// platforms (DirectML is Windows-only, CoreML is Apple-only, Linux is vendor-split), so the
 /// report names the one that fits the machine actually running it rather than dumping a
 /// generic list the operator then has to filter.
-pub fn suggested_provider_for_platform() -> Option<(&'static str, &'static str, &'static str)> {
+/// What to tell an operator whose build measured **no** accelerator.
+///
+/// **This must not advise a rebuild that would change nothing (M9-R14).** The platform's
+/// accelerator is wired per-target in `Cargo.toml`, so on every platform where one exists it is
+/// *already compiled in* — telling that operator to `cargo build --features ep-cuda` sends them
+/// to rebuild something they already have, and the likeliest place the message fires is arm64
+/// Linux, i.e. exactly where that advice cannot help. So the guidance is the platform's real
+/// situation, not a feature flag.
+fn no_accelerator_guidance() -> &'static str {
     if cfg!(target_os = "windows") {
-        Some((
-            "directml",
-            "ep-directml",
-            "any DX12 GPU (AMD/NVIDIA/Intel, incl. integrated) — no CUDA, no admin",
-        ))
+        "DirectML is compiled into every Windows build of this proxy, so a missing row means the \
+         GPU/driver did not present a DX12 device to ONNX Runtime — check the vendor driver."
     } else if cfg!(target_os = "macos") {
-        Some((
-            "coreml",
-            "ep-coreml",
-            "Apple Neural Engine / GPU — built into the OS",
-        ))
+        "CoreML is compiled into every macOS build of this proxy, so a missing row means ONNX \
+         Runtime did not initialize it on this machine."
+    } else if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        "CUDA is compiled into x86_64 Linux builds of this proxy, so a missing row usually means \
+         the CUDA runtime is not installed or no NVIDIA device is visible."
     } else if cfg!(target_os = "linux") {
-        Some((
-            "cuda",
-            "ep-cuda",
-            "NVIDIA (needs the CUDA runtime); for AMD use `ep-rocm`, for Intel `ep-openvino`",
-        ))
+        "On this architecture (non-x86_64 Linux) no accelerator is wired: ONNX Runtime ships no \
+         CUDA prebuilt for it, so `cpu` is the supported path. A from-source ONNX Runtime build \
+         would be required to change that."
     } else {
-        None
+        "No accelerator is known for this platform; `cpu` is the supported path."
     }
 }
 
@@ -435,27 +438,12 @@ pub fn format_report(
         let _ = writeln!(
             out,
             "\nNo accelerator is present in this build, so only `cpu` could be measured.\n\
-             That is decided by the ONNX Runtime distribution linked at build time: one\n\
-             distribution, one set of providers — enabling several `ep-*` features does not\n\
-             combine them."
+             Which providers exist is decided by the ONNX Runtime distribution linked at build\n\
+             time: one distribution, one set of providers — enabling several `ep-*` features does\n\
+             not combine them.\n\n\
+             \x20 {}",
+            no_accelerator_guidance()
         );
-        match suggested_provider_for_platform() {
-            Some((provider, feature, why)) => {
-                let _ = writeln!(
-                    out,
-                    "\n  On this platform, try:  cargo build --features {feature}\n\
-                     \x20   ({why})\n\
-                     \x20 then re-run with --bench-providers to compare it against cpu,\n\
-                     \x20 and enable it at runtime with NER_EXECUTION_PROVIDER={provider}."
-                );
-            }
-            None => {
-                let _ = writeln!(
-                    out,
-                    "\n  No accelerator is known for this platform; `cpu` is the supported path."
-                );
-            }
-        }
     }
 
     out

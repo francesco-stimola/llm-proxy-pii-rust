@@ -55,5 +55,8 @@ clippy-onnx = "clippy --all-targets --features onnx --target-dir target/onnx"
 #
 # A separate alias existed briefly and was removed: it implied a special build was
 # needed to touch the GPU, which is the exact misreading the READMEs had to be
-# rewritten to kill. The other `ep-*` features remain for platforms whose
-# accelerator is not wired per-target yet (see Cargo.toml).
+# rewritten to kill. Every platform now gets its own accelerator the same way
+# (DirectML on Windows, CoreML on macOS, CUDA on x86_64 Linux — see Cargo.toml);
+# the remaining `ep-*` features are escape hatches for backends that are NOT
+# obtainable from the prebuilt distribution, and mostly cannot be (ARCHITECTURE →
+# "Execution providers" says which).

@@ -90,24 +90,39 @@ hf-hub = { version = "1", optional = true }
 # applies to a developer's `--features onnx` build and to CI, with no flag to
 # remember and no way for the two to drift.
 #
-# ONE accelerator per platform — the natural one for that OS. Every release
-# target uses a PREBUILT ONNX Runtime (`download-binaries`); none builds it from
-# source, so this is a choice of which prebuilt to fetch, not a toolchain burden.
+# ONE accelerator per platform — the natural one for that OS, so `--features onnx`
+# carries the platform's GPU with no special build and a dev build cannot disagree
+# with CI. Only one per platform: a single ONNX Runtime distribution carries a
+# single provider set, so listing several fetches one and leaves the rest
+# reporting unavailable — noise, not coverage. `ep-webgpu` is never wired here: it
+# does not link on Windows (no `webgpu_dawn.lib`).
 #
-# Only ONE per platform, deliberately: since a single distribution carries a
-# single provider set, listing several would fetch one and leave the rest
-# reporting unavailable — noise, not coverage. `ep-webgpu` is never wired here:
-# it does not link on Windows (no `webgpu_dawn.lib`).
+# **THE RULE BEFORE WIRING A NEW ONE (M9-R13):** adding an EP feature per-target is
+# free ONLY when `ort-sys` does not key its *distribution* on it. `resolve_dist`
+# (ort-sys `build/download/resolve.rs`) builds the download key from `training`,
+# `webgpu`, `cuda|tensorrt`, `nvrtx`, `rocm` — and nothing else. Check that list
+# first: a feature outside it changes only which `register()` compiles; a feature
+# inside it changes which tarball every build on that platform downloads, and a
+# combination with no row in `dist.txt` **silently falls back** to the plain
+# distribution — it builds green and the accelerator is simply absent.
 #
-# Windows  -> DirectML  (any DX12 GPU: AMD/NVIDIA/Intel/integrated; no CUDA, no admin)
-# macOS    -> CoreML    (Apple Neural Engine / GPU; part of the OS)
-# Linux    -> CUDA      (the common server accelerator; the CUDA runtime is loaded
-#                        dynamically, so a box without it simply falls back to CPU)
+# Windows -> DirectML. NOT a distribution key, and `build/static_link/mod.rs` links
+#            DirectML on every Windows target unconditionally ("pyke libs always
+#            ship compiled with DirectML on Windows"). So this is a no-op on the
+#            artifact — provably safe on both x64 and arm64, no CI run needed.
+# macOS   -> CoreML. Also not a distribution key: same tarball as before. No-op on
+#            the artifact, same reasoning.
+# Linux   -> CUDA, x86_64 ONLY. `cuda` IS a key, so this genuinely swaps the
+#            download to `x86_64-unknown-linux-gnu+cu12` on every Linux build,
+#            NVIDIA hardware or not. It is deliberately NOT applied to
+#            `aarch64-unknown-linux-gnu` (a shipped release target): `dist.txt` has
+#            no `cu12` row for arm64, so requesting it there would silently resolve
+#            to the plain distribution and promise an accelerator that isn't in the
+#            binary. Better to claim nothing than to claim it and not deliver.
 #
-# A machine that lacks the device just falls back to CPU at session build, so the
-# worst case of a wrong guess here is a wasted download, never a broken runtime.
-# `--bench-providers` reports what each box actually got. Anything else stays
-# reachable through the `ep-*` features below.
+# A machine that lacks the *device* just falls back to CPU at session build, so a
+# wrong guess costs latency, never a broken runtime. `--bench-providers` reports
+# what each box actually got. Anything else stays reachable via `ep-*` below.
 # See docs/ARCHITECTURE.md → "Execution providers".
 [target.'cfg(windows)'.dependencies]
 ort = { version = "=2.0.0-rc.12", optional = true, features = ["directml"] }
@@ -115,7 +130,7 @@ ort = { version = "=2.0.0-rc.12", optional = true, features = ["directml"] }
 [target.'cfg(target_os = "macos")'.dependencies]
 ort = { version = "=2.0.0-rc.12", optional = true, features = ["coreml"] }
 
-[target.'cfg(target_os = "linux")'.dependencies]
+[target.'cfg(all(target_os = "linux", target_arch = "x86_64"))'.dependencies]
 ort = { version = "=2.0.0-rc.12", optional = true, features = ["cuda"] }
 
 [features]

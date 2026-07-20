@@ -246,20 +246,19 @@ una domanda sul tuo hardware, quindi il tool la misura invece di risponderti a p
 llm-proxy-pii-rust.exe --bench-providers
 ```
 
-**Su Windows x64 la GPU c'è già** — la build `onnx` include DirectML (qualsiasi GPU DX12: AMD,
-NVIDIA, Intel, integrata), quindi non c'è nulla da compilare in più e il benchmark confronta CPU e
-GPU da subito.
+**La GPU della tua piattaforma è già nella build `onnx`** — non c'è nulla da compilare in più:
 
-Altrove quello che può confrontare *dipende* dalla build, perché **una distribuzione ONNX Runtime
-porta un solo set di backend** — abilitare più feature `ep-*` non li combina, e cross-piattaforma è
-comunque impossibile (CoreML esiste solo nelle build macOS, DirectML solo in quelle Windows). Quindi
-le altre piattaforme scelgono la propria a build time:
+| piattaforma | acceleratore incluso |
+|---|---|
+| Windows (x64 e arm64) | **DirectML** — qualsiasi GPU DX12: AMD, NVIDIA, Intel, integrata |
+| macOS | **CoreML** — Apple Neural Engine / GPU |
+| Linux x86_64 | **CUDA** — usato se sono presenti un device NVIDIA e il runtime CUDA |
+| Linux arm64 | nessuno — ONNX Runtime non ha un prebuilt CUDA per quell'arch, quindi la via è `cpu` |
 
-```powershell
-cargo build --features ep-coreml     # macOS.  Linux: ep-cuda / ep-rocm / ep-openvino
-```
-
-Senza la feature `onnx` il flag gira comunque e spiega che non c'è alcun layer ML da accelerare.
+Uno solo per piattaforma, perché **una distribuzione ONNX Runtime porta un solo set di backend** —
+abilitare più feature `ep-*` non li combina, e cross-piattaforma è comunque impossibile (CoreML
+esiste solo nelle build macOS, DirectML solo in quelle Windows). Senza la feature `onnx` il flag
+gira comunque e spiega che non c'è alcun layer ML da accelerare.
 
 Esegue la matrice **modello × provider** sulla tua macchina e nomina il vincitore:
 

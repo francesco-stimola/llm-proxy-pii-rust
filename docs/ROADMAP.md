@@ -1218,11 +1218,14 @@ so **DirectML is the only GPU path here** (and the only vendor-agnostic one on W
   iGPU** (below). CPU-int8 stays the default.
 - [x] `--bench-providers` — the binary measures the **model × provider** matrix on the operator's own
   machine and names the winner, because the answer is hardware-specific. (DEVLOG 2026-07-19.)
-- [x] **Per-platform accelerator, wired per-target** — `--features onnx` on Windows x64 now ships
-  DirectML, so the GPU needs no special build and a dev build cannot disagree with the release
-  pipeline. Measured first: "compile in every backend" is impossible — one ONNX Runtime
-  distribution carries one provider set (six `ep-*` features link, but five report unavailable at
-  runtime; `ep-webgpu` doesn't link). Provider discovery is therefore a **runtime** query
+- [x] **Per-platform accelerator, wired per-target** — `--features onnx` ships the platform's GPU
+  (DirectML on Windows both arches, CoreML on macOS, CUDA on `x86_64` Linux), so it needs no special
+  build and a dev build cannot disagree with the release pipeline. Measured first: "compile in every
+  backend" is impossible — one ONNX Runtime distribution carries one provider set (six `ep-*`
+  features link, but five report unavailable at runtime; `ep-webgpu` doesn't link). Which platforms
+  were safe to wire came from `ort-sys`'s `resolve_dist`, not from guessing: DirectML/CoreML are not
+  distribution keys (no-ops on the artifact), CUDA is — and has no arm64-Linux prebuilt, so that
+  target is deliberately left alone. Provider discovery is therefore a **runtime** query
   (`is_available`), not a cargo-feature inference. (DEVLOG 2026-07-20.)
 
 > **Verdict: DirectML is NO-GO on this hardware, and that is a completed milestone, not a failure.**
@@ -1265,10 +1268,10 @@ so **DirectML is the only GPU path here** (and the only vendor-agnostic one on W
 | [M9-R9](reviews/M9.md#m9-r9) | The README sample output is fabricated, and demonstrates the exact coupled-axes error the section warns against | docs | [x] |
 | [M9-R10](reviews/M9.md#m9-r10) | Source doc drift: `onnx.rs` still says GPU "comes later (M4)"; `load_onnx_ner`'s doc block was orphaned onto `resolve_ner_model` | docs | [x] |
 | [M9-R11](reviews/M9.md#m9-r11) | The CPU fallback is **initialization-only**; a mid-life EP failure degrades silently and never re-arms, while SETUP says "always safe to try" | docs | [x] |
-| [M9-R12](reviews/M9.md#m9-r12) | The per-target accelerator now covers three platforms; ARCHITECTURE / DEVLOG / ROADMAP / both READMEs still say "Windows x64 only", and the design doc contradicts itself twelve lines apart | docs | [ ] |
-| [M9-R13](reviews/M9.md#m9-r13) | The three per-target wirings aren't equivalent: only Linux/CUDA changes the downloaded ONNX Runtime, and it doesn't apply to `aarch64-unknown-linux-gnu` — a shipped release target | correctness | [ ] |
-| [M9-R14](reviews/M9.md#m9-r14) | `--bench-providers` still advises rebuilding with an `ep-*` feature the per-target dependency already enables | diagnostics | [ ] |
-| [M9-R15](reviews/M9.md#m9-r15) | The table offers `ep-rocm` / `ep-openvino` as escape hatches, but `download-binaries` has no distribution for either — and on Linux `ep-rocm` now loses CUDA too | docs | [ ] |
+| [M9-R12](reviews/M9.md#m9-r12) | The per-target accelerator now covers three platforms; ARCHITECTURE / DEVLOG / ROADMAP / both READMEs still say "Windows x64 only", and the design doc contradicts itself twelve lines apart | docs | [x] |
+| [M9-R13](reviews/M9.md#m9-r13) | The three per-target wirings aren't equivalent: only Linux/CUDA changes the downloaded ONNX Runtime, and it doesn't apply to `aarch64-unknown-linux-gnu` — a shipped release target | correctness | [x] |
+| [M9-R14](reviews/M9.md#m9-r14) | `--bench-providers` still advises rebuilding with an `ep-*` feature the per-target dependency already enables | diagnostics | [x] |
+| [M9-R15](reviews/M9.md#m9-r15) | The table offers `ep-rocm` / `ep-openvino` as escape hatches, but `download-binaries` has no distribution for either — and on Linux `ep-rocm` now loses CUDA too | docs | [x] |
 
 <a id="backlog"></a>
 ## Backlog — documented, not scheduled

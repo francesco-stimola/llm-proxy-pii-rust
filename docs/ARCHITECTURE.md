@@ -770,28 +770,36 @@ would say the opposite of the paragraph above, and a future builder scans the ta
 | Provider (`NER_EXECUTION_PROVIDER`) | How it gets in | Natural OS / hardware | Status |
 |---|---|---|---|
 | `cpu` (default) | always | any | ✅ **trusted** — the reference implementation; the only provider that has passed the determinism guard |
-| `directml` | **automatic** on Windows (per-target `ort` feature) | Windows, any DX12 GPU (AMD/NVIDIA/Intel/iGPU) | 📊 **benchmarked, not trusted** — measured on this box's AMD DX12 iGPU (a NO-GO there); determinism guard **not** re-run |
+| `directml` | **automatic** on Windows, both arches (per-target `ort` feature) | Windows, any DX12 GPU (AMD/NVIDIA/Intel/iGPU) | 📊 **benchmarked, not trusted** — measured on this box's AMD DX12 iGPU (a NO-GO there); determinism guard **not** re-run |
 | `coreml` | **automatic** on macOS (per-target) | macOS, Apple Silicon / AMD | ⚠️ **wired, unverified** — needs a Mac |
-| `cuda` | **automatic** on Linux (per-target) | Linux/Windows, NVIDIA | ⚠️ **wired, unverified** — no NVIDIA hardware here |
+| `cuda` | **automatic on `x86_64` Linux only** (per-target) | Linux, NVIDIA | ⚠️ **wired, unverified** — no NVIDIA hardware here. **Not on `aarch64-unknown-linux-gnu`**: `ort-sys` has no `cu12` prebuilt for arm64, so requesting it would resolve back to the plain distribution and the provider would simply be absent |
 | `tensorrt` | `ep-tensorrt` | Linux/Windows, NVIDIA | ⚠️ **wired, unverified** |
-| `rocm` | `ep-rocm` | Linux, AMD | ⚠️ **wired, unverified** |
-| `openvino` | `ep-openvino` | Linux/Windows, Intel | ⚠️ **wired, unverified** |
+| `rocm` | `ep-rocm` | Linux, AMD | ❌ **not obtainable via `download-binaries`** — `ort-sys`'s `dist.txt` has no ROCm row for any target, and on Linux the feature combines into a key (`cu12,rocm`) that matches nothing, silently falling back to the plain distribution: **strictly fewer providers than plain `--features onnx`**. Needs a from-source ORT |
+| `openvino` | `ep-openvino` | Linux/Windows, Intel | ❌ **not obtainable via `download-binaries`** — not a distribution key, so the feature compiles `register()` against a runtime that isn't in the tarball |
 | `webgpu` | `ep-webgpu` | any (Vulkan/Metal/D3D12 via Dawn) | ❌ **does not link on Windows** (`webgpu_dawn.lib` absent) |
+
+> **The rule that governs every future wiring (M9-R13).** Adding an EP feature per-target is free
+> **only when `ort-sys` does not key its *distribution* on it.** `resolve_dist` builds the download
+> key from `training`, `webgpu`, `cuda|tensorrt`, `nvrtx`, `rocm` — and nothing else. Outside that
+> list (DirectML, CoreML) the feature changes only which `register()` compiles, so it cannot break
+> or even change a build; *inside* it, the feature swaps the downloaded tarball for every build on
+> that platform, and a combination with **no row in `dist.txt` silently falls back** to the plain
+> distribution — green build, absent accelerator. That asymmetry is why Windows and macOS could be
+> wired without a CI run while Linux had to be scoped to `x86_64`. **Check `resolve_dist` before
+> wiring a new one.**
 
 Nothing in the table above `cpu` should be read as "safe to trust blindly": they are safe to *try*
 (the fallback and the bounded blast radius above see to that), and `--bench-providers` tells you
 whether trying is worth it on your box. Trusting one for masking quality means re-running the
 determinism guard under it first.
 
-**Only Windows x64 is wired per-target, and the reason is testability — not toolchain.** Every
-release target uses a **prebuilt** ONNX Runtime (`download-binaries`); none builds it from source.
-Windows x64 is simply the platform this project develops and validates on, so it is the only one
-whose accelerator has been *proven* to load and run. Wiring `ep-coreml` for `aarch64-apple-darwin`,
-or DirectML for `aarch64-pc-windows-msvc`, would be a guess about which providers those prebuilts
-contain — and a wrong guess breaks the release build for that target, which costs more than a
-missing accelerator. A `manual-build` run is the way to confirm before switching one on (that is
-how `aarch64-pc-windows-msvc` itself was validated, 2026-07-15). Until then they stay reachable
-through the `ep-*` features.
+**Every release target uses a *prebuilt* ONNX Runtime** (`download-binaries`); none builds it from
+source. So wiring an accelerator per-target is a question of *which tarball is fetched*, and the
+rule above decides whether a given feature changes that at all. Windows (both arches) and macOS
+were wired without needing a CI run because their features are provably no-ops on the artifact;
+`x86_64` Linux was wired knowing it genuinely swaps the download; `aarch64` Linux was left alone
+because the swap has nowhere to land. **Only DirectML has actually been run** — on this project's
+box — which is why it is the only non-CPU row marked *benchmarked* rather than *unverified*.
 
 **On "the most compatible backend".** ONNX Runtime has **no Vulkan EP** — Vulkan is a
 vendor-agnostic GPU API in general, but not one of ORT's backends, so using it would mean leaving

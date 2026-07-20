@@ -98,18 +98,31 @@ ships only in macOS builds, DirectML only in Windows ones. (Pleasing side note: 
 reporting built earlier in this milestone caught all five, so not one CPU row was presented as a
 GPU. The honesty machinery worked in exactly the condition it was built for.)
 
-**So: one natural accelerator per platform, set per-target rather than per-command.** DirectML is
-now a `[target.'cfg(all(windows, target_arch = "x86_64"))'.dependencies]` feature on `ort`, which
-means **the plain `--features onnx` build has the GPU on Windows x64** — no special build, and no
-way for a developer build and the release pipeline to disagree about the accelerator (they read the
-same manifest). Only Windows x64 is wired, for a **testability** reason and not a toolchain one —
-every release target uses a prebuilt ONNX Runtime, none builds it from source. Windows x64 is just
-the platform this project validates on, so it is the only one whose accelerator is *proven* to load
-here; wiring `ep-coreml` for `aarch64-apple-darwin` or DirectML for `aarch64-pc-windows-msvc` would
-be a guess about those prebuilts' contents, and a wrong guess breaks that target's release build. A
-`manual-build` run is how to confirm first (it is how `aarch64-pc-windows-msvc` was validated). The
-now-redundant `*-directml` cargo aliases were deleted — they implied a special build was needed to
-touch the GPU, the same misreading the READMEs had to be rewritten to kill.
+**So: one natural accelerator per platform, set per-target rather than per-command.** Each platform
+declares its own `ort` feature in `Cargo.toml`, so **the plain `--features onnx` build carries the
+GPU** — no special build, and no way for a developer build and the release pipeline to disagree
+about the accelerator (they read the same manifest). The now-redundant `*-directml` cargo aliases
+were deleted: they implied a special build was needed to touch the GPU, the same misreading the
+READMEs had to be rewritten to kill.
+
+**Which platforms could be wired *without* a CI run turned out to be answerable from `ort-sys`'s
+source, not from guessing (M9-R13).** `resolve_dist` keys the downloaded prebuilt on `training`,
+`webgpu`, `cuda|tensorrt`, `nvrtx`, `rocm` — and nothing else. So:
+
+- **DirectML is not a key**, and `build/static_link/mod.rs` links it on *every* Windows target
+  unconditionally ("pyke libs always ship compiled with DirectML on Windows"). Wiring it is a
+  **no-op on the artifact** — provably safe on both Windows arches, no CI run needed.
+- **CoreML is not a key** either: macOS fetches the same tarball as before. Same reasoning.
+- **CUDA *is* a key.** On Linux the key becomes `cu12`, so `x86_64-unknown-linux-gnu` genuinely
+  downloads a different, larger prebuilt on every build — NVIDIA hardware or not. And `dist.txt`
+  has **no `cu12` row for `aarch64-unknown-linux-gnu`**, a shipped release target: requesting it
+  there resolves to nothing and **silently falls back** to the plain distribution, so the build is
+  green and the accelerator is simply absent. Hence CUDA is wired for **x86_64 Linux only** —
+  better to claim nothing than to claim an accelerator that isn't in the binary.
+
+The general rule now lives next to the provider table in ARCHITECTURE: **wiring an EP per-target is
+free only when `ort-sys` does not key its distribution on it — check `resolve_dist` first.** A green
+CI run would not have caught the arm64 case; both Linux legs compile either way.
 
 **That forced the provider list to become a runtime question.** With the accelerator arriving via a
 per-target dependency, `#[cfg(feature = "ep-directml")]` is *false* on the very machine that has
