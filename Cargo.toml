@@ -27,6 +27,13 @@ license = "AGPL-3.0-or-later"
 description = "A fast, privacy-preserving LLM proxy that anonymizes PII locally before requests reach any provider."
 repository = "https://github.com/francesco-stimola/llm-proxy-pii-rust"
 readme = "README.md"
+# Not published to crates.io yet — kept ready for when it is. Categories are validated
+# against crates.io's fixed slug list (https://crates.io/category_slugs) at publish time; these
+# four are the ones that actually match what the binary does (an HTTP proxy/server, a CLI tool,
+# text-scanning detection) rather than an aspirational "privacy"/"security" category, which
+# crates.io doesn't have.
+keywords = ["pii", "privacy", "llm", "proxy", "redaction"]
+categories = ["network-programming", "web-programming::http-server", "command-line-utilities", "text-processing"]
 
 # NOTE: dependency versions are a starting point and must be verified on the
 # first `cargo build` once the toolchain is installed (see docs/ROADMAP.md M0).
