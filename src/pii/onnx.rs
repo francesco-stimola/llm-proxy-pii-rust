@@ -1,14 +1,21 @@
 //! ONNX NER detector for UNSTRUCTURED entities (names, organizations,
 //! locations) — milestone M2. Enabled by the `onnx` feature.
 //!
-//! CPU execution provider first (maximum compatibility/reproducibility); GPU
-//! (CUDA / DirectML) comes later (M4) and is not automatic — it depends on the
-//! model and its quantization.
+//! **Execution providers (M9).** CPU is the default and the reference
+//! implementation; an accelerator is opt-in via `NER_EXECUTION_PROVIDER` and is
+//! **not** automatic — whether it is faster depends on the model, its
+//! quantization, and the hardware (on this project's AMD iGPU the CPU wins; see
+//! `ARCHITECTURE.md` → *Execution providers*, and `--bench-providers` for
+//! measuring it on a given box). [`ExecutionProvider`] is the knob;
+//! [`build_session_pool`] is the single home of the selection + CPU-fallback
+//! policy, shared with [`gliner`](super::gliner); [`bench`](super::bench) is the
+//! measurement tool built on top of it.
 //!
 //! This module owns only the model I/O: tokenize (with a HF fast tokenizer),
 //! run the ONNX session, and turn per-token logits into label ids. The actual
-//! label→[`PiiKind`] mapping and BIO→span merge live in the model-independent
-//! [`ner_decode`](super::ner_decode), which is unit-tested without a model.
+//! label→[`PiiKind`](super::PiiKind) mapping and BIO→span merge live in the
+//! model-independent [`ner_decode`](super::ner_decode), which is unit-tested
+//! without a model.
 //!
 //! **Model contract:** a token-classification model with input `input_ids` +
 //! `attention_mask` (and `token_type_ids` when `NER_TOKEN_TYPE_IDS` is set, e.g.
@@ -221,7 +228,7 @@ fn derive_intra_threads(pool_size: usize, cores: usize) -> usize {
 /// can turn one on, accepting that trade-off.
 ///
 /// Whatever is selected, a session that cannot initialize the accelerator
-/// **falls back to CPU** (see [`build_session`]): a privacy proxy must never fail
+/// **falls back to CPU** (see [`build_session_reporting`]): a privacy proxy must never fail
 /// to *start* over a GPU that isn't there, and masking is identical on CPU.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExecutionProvider {
@@ -281,7 +288,7 @@ impl ExecutionProvider {
     /// Every EP *type* is always compiled (only its `register()` is feature-gated
     /// inside `ort`), so this needs no `#[cfg]` per arm — a provider whose `ep-*`
     /// feature is off simply fails registration with `MissingFeature`, which
-    /// [`build_session`] turns into a CPU fallback.
+    /// [`build_session_reporting`] turns into a CPU fallback.
     ///
     /// `.error_on_failure()` is deliberate: it makes a failed registration return
     /// `Err` from the session build so the fallback can be **explicit and logged**.
@@ -303,38 +310,29 @@ impl ExecutionProvider {
     }
 }
 
-/// Build one ONNX session on `provider`, **falling back to CPU** if the
-/// accelerator can't initialize (feature not compiled, backend binary/driver
-/// missing, no device, registration error). The single home of the
-/// EP-selection + fallback policy — both [`OnnxNerDetector`] and the GLiNER
-/// detector build their pools through here, so the fallback behaves identically
-/// for every model (no second, drifting copy).
+/// Build one ONNX session on `provider`, **falling back to CPU** if the accelerator can't
+/// initialize (feature not compiled, backend binary/driver missing, no device, registration
+/// error), and report the **effective** provider — what the session actually runs on, which is
+/// [`ExecutionProvider::Cpu`] whenever the requested accelerator fell back.
 ///
-/// **The fallback covers *initialization*, not *numerical correctness*.** An
-/// accelerator that registers but computes subtly different logits than the CPU
-/// is not caught here — but its blast radius is bounded to **NER recall** (the
-/// best-effort layer): the deterministic structured recognizers run on CPU regex,
-/// independent of the EP, so the fail-closed layer is untouched no matter what
-/// backend the NER runs on. That bound is what makes an untested EP an acceptable
-/// opt-in, and it is *also* why the tested one (DirectML) still owes the
-/// cross-thread-determinism guard before it is trusted (see `ARCHITECTURE.md` →
-/// *Execution providers*).
-pub(crate) fn build_session(
-    model_path: &str,
-    intra_threads: usize,
-    provider: ExecutionProvider,
-) -> Result<Session> {
-    build_session_reporting(model_path, intra_threads, provider).map(|(session, _)| session)
-}
-
-/// As [`build_session`], but also reports the **effective** provider — what the session
-/// actually runs on, which is [`ExecutionProvider::Cpu`] whenever the requested accelerator
-/// fell back.
+/// The single home of the EP-selection + fallback policy. Both detectors reach it through
+/// [`build_session_pool`] and the benchmark ([`super::bench`]) calls it directly, so the
+/// fallback behaves identically everywhere (no second, drifting copy).
 ///
-/// The provider benchmark ([`super::bench`]) needs this and the plain `build_session` cannot
-/// give it: a fallback that still reported the *requested* provider would make the report
-/// claim a GPU measurement that never touched the GPU — the one way a benchmark meant to
-/// answer "what is fastest here?" could confidently answer wrong.
+/// **Reporting the effective provider is not optional bookkeeping.** A caller that echoed the
+/// *requested* one would log a GPU the process is not using (M9-R1) and would let a benchmark
+/// claim a GPU measurement that never touched the GPU — the one way a tool meant to answer
+/// "what is fastest here?" could confidently answer wrong.
+///
+/// **The fallback covers *initialization*, not *numerical correctness*, and not the session's
+/// later life.** An accelerator that registers but computes subtly different logits than the
+/// CPU is not caught here; neither is one that dies mid-process (M9-R11 — that surfaces as an
+/// ordinary inference error and follows the `NER_REQUIRED` posture). The blast radius is bounded
+/// to **NER recall** (the best-effort layer): the deterministic structured recognizers run on CPU
+/// regex, independent of the EP, so the fail-closed layer is untouched no matter what backend the
+/// NER runs on. That bound is what makes an untested EP an acceptable opt-in, and it is *also*
+/// why even the benchmarked one (DirectML) still owes the cross-thread-determinism guard before
+/// it is trusted (see `ARCHITECTURE.md` → *Execution providers*).
 pub(crate) fn build_session_reporting(
     model_path: &str,
     intra_threads: usize,
@@ -363,9 +361,70 @@ pub(crate) fn build_session_reporting(
     build_session_inner(model_path, intra_threads, None).map(|s| (s, ExecutionProvider::Cpu))
 }
 
+/// Build a pool of `pool_size` sessions that all run on the **same** backend, and report which
+/// one that is (M9-R1, M9-R2).
+///
+/// **Homogeneity is the point, not a nicety.** Each session decides independently whether the
+/// accelerator initializes, so a naive loop can produce a pool that is part GPU and part CPU —
+/// and this is not exotic on the hardware M9 targets: ORT reports **512 MB** of video memory on
+/// this box's iGPU while the fp16 XLM-R export is **555 MB**, so at `NER_POOL_SIZE=2` the second
+/// session failing on VRAM is the *expected* outcome. Sessions are then dispatched round-robin,
+/// which would make the backend a **per-request variable**: the same text could be scanned by
+/// DirectML on one request and the CPU on the next, so a name masked once could be missed next
+/// time, inside one process, with no configuration change. That is a strictly stronger condition
+/// than `m7_r3_intra_threads_changes_speed_not_detection` was ever run against.
+///
+/// So the **first** session decides, the rest are built on whatever it actually got, and if a
+/// later one cannot match it the **whole pool** is rebuilt on CPU. Mixed is never served.
+pub(crate) fn build_session_pool(
+    model_path: &str,
+    pool_size: usize,
+    intra_threads: usize,
+    provider: ExecutionProvider,
+) -> Result<(Vec<Mutex<Session>>, ExecutionProvider)> {
+    let pool_size = pool_size.max(1);
+    let (first, effective) = build_session_reporting(model_path, intra_threads, provider)?;
+
+    let mut sessions = Vec::with_capacity(pool_size);
+    sessions.push(Mutex::new(first));
+    for _ in 1..pool_size {
+        // Ask for what the first session GOT, not what the caller wanted: if the accelerator
+        // already fell back, there is nothing to retry.
+        let (session, got) = build_session_reporting(model_path, intra_threads, effective)?;
+        if got != effective {
+            tracing::warn!(
+                pool_provider = effective.as_str(),
+                degraded_to = got.as_str(),
+                "a later NER session could not use the pool's execution provider; rebuilding the \
+                 whole pool on CPU rather than serving a mixed pool"
+            );
+            return build_cpu_pool(model_path, pool_size, intra_threads);
+        }
+        sessions.push(Mutex::new(session));
+    }
+    Ok((sessions, effective))
+}
+
+/// Every session on the CPU — the uniform fallback shape for [`build_session_pool`].
+fn build_cpu_pool(
+    model_path: &str,
+    pool_size: usize,
+    intra_threads: usize,
+) -> Result<(Vec<Mutex<Session>>, ExecutionProvider)> {
+    let mut sessions = Vec::with_capacity(pool_size);
+    for _ in 0..pool_size {
+        sessions.push(Mutex::new(build_session_inner(
+            model_path,
+            intra_threads.max(1),
+            None,
+        )?));
+    }
+    Ok((sessions, ExecutionProvider::Cpu))
+}
+
 /// The actual `ort` builder chain. `dispatch = None` is the plain CPU session;
 /// `Some(ep)` registers the accelerator first (with `error_on_failure`, so a bad
-/// registration surfaces here for [`build_session`]'s fallback to catch).
+/// registration surfaces here for [`build_session_reporting`]'s fallback to catch).
 fn build_session_inner(
     model_path: &str,
     intra_threads: usize,
@@ -404,6 +463,11 @@ pub struct OnnxNerDetector {
     id2label: Vec<String>,
     /// Whether the model expects a `token_type_ids` input (BERT-family).
     needs_token_type_ids: bool,
+    /// The backend every session in the pool actually runs on — **not** the one that was
+    /// requested (M9-R1). The pool is homogeneous by construction ([`build_session_pool`]), so
+    /// one value describes it. Exposed via [`provider`](Self::provider) so the caller logs what
+    /// is running rather than what was asked for.
+    provider: ExecutionProvider,
     next: AtomicUsize,
 }
 
@@ -416,7 +480,7 @@ impl OnnxNerDetector {
     /// `needs_token_type_ids` threads a zero `token_type_ids` input for BERT-family models;
     /// `provider` selects the execution backend (M9) — [`ExecutionProvider::Cpu`] is the
     /// default, any other value is an opt-in accelerator with CPU fallback (see
-    /// [`build_session`]).
+    /// [`build_session_reporting`]).
     pub fn load(
         model_path: &str,
         tokenizer_path: &str,
@@ -431,25 +495,30 @@ impl OnnxNerDetector {
 
         let pool_size = pool_size.max(1);
         // 0 would mean "ONNX Runtime picks", which on a 12-thread box is 12 *per session* — the
-        // oversubscription `default_intra_threads` exists to prevent. `build_session` clamps it,
-        // but keep the clamp here too so the value handed to each session is unambiguous.
+        // oversubscription `default_intra_threads` exists to prevent. `build_session_pool` clamps
+        // it, but keep the clamp here too so the value handed to each session is unambiguous.
         let intra_threads = intra_threads.max(1);
-        let mut sessions = Vec::with_capacity(pool_size);
-        for _ in 0..pool_size {
-            sessions.push(Mutex::new(build_session(
-                model_path,
-                intra_threads,
-                provider,
-            )?));
-        }
+        // One backend for the whole pool, and we keep the one it actually got (M9-R1/R2).
+        let (sessions, provider) =
+            build_session_pool(model_path, pool_size, intra_threads, provider)?;
 
         Ok(Self {
             sessions,
             tokenizer,
             id2label,
             needs_token_type_ids,
+            provider,
             next: AtomicUsize::new(0),
         })
+    }
+
+    /// The backend this detector's sessions **actually** run on.
+    ///
+    /// Differs from the requested provider whenever the accelerator could not initialize. The
+    /// caller logs *this*, never the request: a startup line that names a GPU the process is not
+    /// using is the failure M7-R5 established the rule against, and M9 reintroduced it (M9-R1).
+    pub fn provider(&self) -> ExecutionProvider {
+        self.provider
     }
 
     /// Tokenize `input`; dispatch to one model call when it fits the model's
@@ -1022,6 +1091,25 @@ mod ep_tests {
         // Vulkan is NOT an ONNX Runtime backend (WebGPU is the nearest cross-vendor EP) — it must
         // not look valid, or an operator would think they'd enabled an acceleration that isn't wired.
         assert!(Ep::parse("vulkan").is_err());
+    }
+
+    #[test]
+    fn requesting_an_unavailable_provider_yields_cpu_as_the_effective_one() {
+        // M9-R1's seam, without a model: `dispatch()` is what decides whether an accelerated
+        // build is even attempted, and `Cpu` must produce `None` so the pool builder takes the
+        // plain CPU path and reports `Cpu`. The full "requested vs effective" behaviour needs a
+        // real model (see NER-EP-01 in tests/ner_perf.rs); this pins the branch it rests on.
+        assert!(
+            Ep::Cpu.dispatch().is_none(),
+            "cpu must never build an accelerated session"
+        );
+        for ep in [Ep::DirectMl, Ep::Cuda, Ep::CoreMl, Ep::Rocm] {
+            assert!(
+                ep.dispatch().is_some(),
+                "{ep:?} must produce a dispatch to attempt — its availability is decided by ORT, \
+                 not by us skipping the attempt"
+            );
+        }
     }
 
     #[test]

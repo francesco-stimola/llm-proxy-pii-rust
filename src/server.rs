@@ -124,7 +124,7 @@ async fn build_detector(
         // loads cannot disagree. Default is CPU; an unknown value is a startup config error
         // (fatal regardless of `NER_REQUIRED`), never a silent CPU run behind an operator who
         // believes a GPU is engaged. A *known* provider that fails to initialize falls back to
-        // CPU later, in `build_session` — a different failure (see onnx::ExecutionProvider).
+        // CPU later, in `build_session_reporting` — a different failure (see onnx::ExecutionProvider).
         let provider = crate::pii::onnx::ExecutionProvider::parse(
             &std::env::var("NER_EXECUTION_PROVIDER").unwrap_or_default(),
         )
@@ -177,8 +177,8 @@ async fn build_detector(
     }
 }
 
-/// Load the ONNX NER detector from env. The model source is resolved in priority
-/// order (fail-closed defaults, no surprise outbound calls):
+/// Resolve the NER **model source** from env — **the one home of that priority order**, shared
+/// by the detector loader and the provider benchmark:
 ///
 /// 1. **Explicit local files** — `NER_MODEL_PATH` + `NER_TOKENIZER_PATH` +
 ///    `NER_LABELS` (comma-separated, class-id order). Zero outbound calls; this
@@ -192,19 +192,18 @@ async fn build_detector(
 ///    `NER_LABELS` is optional here — derived from the model's `config.json`
 ///    `id2label` unless set explicitly.
 ///
-/// Common to both: optional `NER_POOL_SIZE`, `NER_TOKEN_TYPE_IDS`. `Ok(None)` =
-/// unconfigured; `Err` = configured but failed to load/fetch (the caller decides
-/// if that's fatal). Async so the auto-download can run on the `tokio` runtime.
-/// Resolve the NER model source from env — **the one home of that priority order**, shared
-/// by the detector loader and the provider benchmark.
-///
 /// The benchmark must measure *the model the proxy would actually run*; a second copy of this
 /// resolution would let the two drift, and a benchmark that silently measured a different
 /// model than the server loads is worse than no benchmark (it answers confidently and wrong —
-/// the M7-R1 failure, in a new place).
+/// the M7-R1 failure, in a new place). **Only the model *source* lives here** — the knobs that
+/// shape how it is *run* (`NER_POOL_SIZE` / `NER_INTRA_THREADS` via `resolve_pool_and_intra`,
+/// and `NER_TOKEN_TYPE_IDS`) are read by each caller, which must therefore read *all* of them:
+/// carrying the path across but not the input contract is what made the benchmark unable to run
+/// a BERT-family model (M9-R8).
 ///
 /// `Ok(None)` = unconfigured (including a *partial* explicit config, where the companions are
-/// missing); `Err` = configured but the fetch failed.
+/// missing); `Err` = configured but the fetch failed. Async so the auto-download can run on the
+/// `tokio` runtime.
 #[cfg(feature = "onnx")]
 async fn resolve_ner_model() -> anyhow::Result<Option<(String, String, Vec<String>)>> {
     let labels_override = std::env::var("NER_LABELS").ok();
@@ -274,8 +273,24 @@ pub async fn run_provider_benchmark() -> anyhow::Result<()> {
         }
     }
 
-    let results = crate::pii::bench::benchmark_matrix(&models);
-    println!("{}", crate::pii::bench::format_report(&models, &results));
+    // Resolve the thread shape through the SAME function the server uses (M9-R3). Measuring the
+    // CPU with `available_cores()` when the operator set `NER_POOL_SIZE`/`NER_INTRA_THREADS`
+    // benchmarks a configuration nobody runs — M7-R1's failure verbatim, and the reason
+    // `resolve_pool_and_intra` has one home.
+    let (pool_size, intra_threads) = crate::pii::onnx::resolve_pool_and_intra(
+        std::env::var("NER_POOL_SIZE").ok().as_deref(),
+        std::env::var("NER_INTRA_THREADS").ok().as_deref(),
+        crate::pii::onnx::available_cores(),
+    );
+    // The model's input contract has to travel with the model path (M9-R8): a BERT-family model
+    // needs a third graph input, and omitting it makes every row fail with a raw ORT error.
+    let needs_token_type_ids = env_flag("NER_TOKEN_TYPE_IDS");
+
+    let results = crate::pii::bench::benchmark_matrix(&models, intra_threads, needs_token_type_ids);
+    println!(
+        "{}",
+        crate::pii::bench::format_report(&models, &results, pool_size, intra_threads)
+    );
     Ok(())
 }
 
@@ -299,6 +314,16 @@ pub async fn run_provider_benchmark() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Load the token-classification NER detector (M2, XLM-R) from env.
+///
+/// Resolves the model through [`resolve_ner_model`] (the shared priority order), the thread
+/// shape through `onnx::resolve_pool_and_intra`, and runs it on `provider` — an accelerator that
+/// cannot initialize falls back to CPU rather than failing startup, so what is *logged* is the
+/// provider the detector reports back, never the one requested (M9-R1).
+///
+/// `Ok(None)` = unconfigured; `Err` = configured but failed to load/fetch (the caller decides if
+/// that is fatal, per `NER_REQUIRED`). Async so the opt-in auto-download can run on the `tokio`
+/// runtime.
 #[cfg(feature = "onnx")]
 async fn load_onnx_ner(
     provider: crate::pii::onnx::ExecutionProvider,
@@ -330,18 +355,53 @@ async fn load_onnx_ner(
         needs_token_type_ids,
         provider,
     )?;
-    // `intra_threads` is logged because it is *derived* by default: an operator debugging latency
-    // must be able to see what was picked without reproducing the arithmetic. Both values are the
-    // **effective** ones — resolved once, above, and handed to `load` unchanged — so this line can
-    // never name a pool the process doesn't have (M7-R5).
-    tracing::info!(
-        model,
+    // EVERY field on this line is the **effective** value — that is the contract (M7-R5), and it
+    // is why `provider` is read back off the detector rather than echoed from the request: a
+    // requested accelerator that failed to initialize falls back to CPU, and a startup line
+    // naming a GPU the process is not using is precisely the defect this rule exists to prevent
+    // (M9-R1). The pool is homogeneous by construction, so one provider describes all of it.
+    log_ml_detector_loaded(
+        "ONNX NER",
+        &model,
         pool_size,
         intra_threads,
-        provider = provider.as_str(),
-        "ONNX NER detector loaded"
+        provider,
+        detector.provider(),
     );
     Ok(Some(Box::new(detector)))
+}
+
+/// Log a loaded ML detector's **effective** configuration, naming the requested provider only
+/// when it differs from what was obtained — so a fallback is legible on the one line that claims
+/// to describe the running config, instead of only in a `warn!` 300 lines earlier that is
+/// invisible at `RUST_LOG=error` (M9-R1).
+#[cfg(feature = "onnx")]
+fn log_ml_detector_loaded(
+    what: &str,
+    model: &str,
+    pool_size: usize,
+    intra_threads: usize,
+    requested: crate::pii::onnx::ExecutionProvider,
+    effective: crate::pii::onnx::ExecutionProvider,
+) {
+    if requested == effective {
+        tracing::info!(
+            model,
+            pool_size,
+            intra_threads,
+            provider = effective.as_str(),
+            "{what} detector loaded"
+        );
+    } else {
+        tracing::warn!(
+            model,
+            pool_size,
+            intra_threads,
+            provider = effective.as_str(),
+            requested = requested.as_str(),
+            "{what} detector loaded on a FALLBACK backend — the requested accelerator is not in use"
+        );
+    }
 }
 
 /// Wrap an ML detector for the composite: **unwrapped** under `NER_REQUIRED` (its errors
@@ -435,13 +495,15 @@ async fn load_gliner(
         intra_threads,
         provider,
     )?;
-    tracing::info!(
-        model,
+    // Effective, not requested — same contract as the NER's line (M9-R1).
+    tracing::info!(threshold, "GLiNER threshold");
+    log_ml_detector_loaded(
+        "GLiNER",
+        &model,
         pool_size,
         intra_threads,
-        threshold,
-        provider = provider.as_str(),
-        "GLiNER detector loaded"
+        provider,
+        detector.provider(),
     );
     Ok(Some(Box::new(detector)))
 }

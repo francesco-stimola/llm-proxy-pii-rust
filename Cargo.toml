@@ -90,18 +90,33 @@ hf-hub = { version = "1", optional = true }
 # applies to a developer's `--features onnx` build and to CI, with no flag to
 # remember and no way for the two to drift.
 #
-# Windows x64 only, deliberately — and the reason is testability, not toolchain.
-# Every release target uses a PREBUILT ONNX Runtime (`download-binaries`); none
-# builds it from source. This is simply the platform the project develops and
-# validates on (DirectML: any DX12 GPU, no CUDA, no admin), so it is the only one
-# whose accelerator has been proven to load and run here. Wiring `ep-coreml` for
-# `aarch64-apple-darwin` or DirectML for `aarch64-pc-windows-msvc` would be a
-# guess about which providers those prebuilts contain, and a wrong guess breaks
-# the release build for that target — worth a `manual-build` run to confirm
-# first. Until then they stay reachable via the `ep-*` features below.
+# ONE accelerator per platform — the natural one for that OS. Every release
+# target uses a PREBUILT ONNX Runtime (`download-binaries`); none builds it from
+# source, so this is a choice of which prebuilt to fetch, not a toolchain burden.
+#
+# Only ONE per platform, deliberately: since a single distribution carries a
+# single provider set, listing several would fetch one and leave the rest
+# reporting unavailable — noise, not coverage. `ep-webgpu` is never wired here:
+# it does not link on Windows (no `webgpu_dawn.lib`).
+#
+# Windows  -> DirectML  (any DX12 GPU: AMD/NVIDIA/Intel/integrated; no CUDA, no admin)
+# macOS    -> CoreML    (Apple Neural Engine / GPU; part of the OS)
+# Linux    -> CUDA      (the common server accelerator; the CUDA runtime is loaded
+#                        dynamically, so a box without it simply falls back to CPU)
+#
+# A machine that lacks the device just falls back to CPU at session build, so the
+# worst case of a wrong guess here is a wasted download, never a broken runtime.
+# `--bench-providers` reports what each box actually got. Anything else stays
+# reachable through the `ep-*` features below.
 # See docs/ARCHITECTURE.md → "Execution providers".
-[target.'cfg(all(windows, target_arch = "x86_64"))'.dependencies]
+[target.'cfg(windows)'.dependencies]
 ort = { version = "=2.0.0-rc.12", optional = true, features = ["directml"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+ort = { version = "=2.0.0-rc.12", optional = true, features = ["coreml"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+ort = { version = "=2.0.0-rc.12", optional = true, features = ["cuda"] }
 
 [features]
 default = []

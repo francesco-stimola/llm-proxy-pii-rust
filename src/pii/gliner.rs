@@ -34,7 +34,7 @@ use ort::value::Tensor;
 use tokenizers::Tokenizer;
 
 use super::gliner_decode::{decode_spans, split_words, GlinerLabel, SpanScore};
-use super::onnx::{build_session, ExecutionProvider};
+use super::onnx::{build_session_pool, ExecutionProvider};
 use super::{DetectError, PiiDetector, PiiEntity};
 
 /// Default detection threshold on the per-span sigmoid probability — **0.15, chosen by
@@ -96,6 +96,9 @@ pub struct GLiNerDetector {
     labels: Vec<GlinerLabel>,
     params: GlinerParams,
     threshold: f32,
+    /// The backend every session actually runs on — see
+    /// [`OnnxNerDetector::provider`](super::onnx::OnnxNerDetector::provider) (M9-R1).
+    provider: ExecutionProvider,
     next: AtomicUsize,
 }
 
@@ -119,15 +122,11 @@ impl GLiNerDetector {
 
         let pool_size = pool_size.max(1);
         let intra_threads = intra_threads.max(1);
-        let mut sessions = Vec::with_capacity(pool_size);
-        for _ in 0..pool_size {
-            // The EP-selection + CPU-fallback policy lives in one place, shared with the XLM-R NER.
-            sessions.push(Mutex::new(build_session(
-                model_path,
-                intra_threads,
-                provider,
-            )?));
-        }
+        // The EP-selection + CPU-fallback policy lives in one place, shared with the XLM-R NER —
+        // including the guarantee that the pool is homogeneous (M9-R2) and that we keep the
+        // provider it actually got, not the one requested (M9-R1).
+        let (sessions, provider) =
+            build_session_pool(model_path, pool_size, intra_threads, provider)?;
 
         Ok(Self {
             sessions,
@@ -135,8 +134,15 @@ impl GLiNerDetector {
             labels,
             params,
             threshold,
+            provider,
             next: AtomicUsize::new(0),
         })
+    }
+
+    /// The backend this detector's sessions **actually** run on — see
+    /// [`OnnxNerDetector::provider`](super::onnx::OnnxNerDetector::provider) (M9-R1).
+    pub fn provider(&self) -> ExecutionProvider {
+        self.provider
     }
 
     /// The prompt token count: `<<ENT>> type` per label + one `<<SEP>>`, tokenized. This

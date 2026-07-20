@@ -62,6 +62,57 @@ fn load_tokenizer() -> tokenizers::Tokenizer {
     tokenizers::Tokenizer::from_file(path).expect("load tokenizer")
 }
 
+/// **NER-EP-01 (M9-R1, M9-R2).** A requested-but-unavailable accelerator must (a) still load,
+/// (b) report **CPU** as its effective provider, and (c) do so for a *multi-session* pool.
+///
+/// (a) is the fail-closed promise — a privacy proxy must start even when the named GPU isn't
+/// there. (b) is the honesty promise M9 exists for: the detector must surface what it is
+/// *running on*, because the startup log derives its `provider=` field from this, and a line
+/// naming a GPU the process is not using is exactly the M7-R5 defect M9 reintroduced. (c) is the
+/// homogeneity guarantee: each session decides independently whether the accelerator
+/// initializes, so a pool could otherwise end up part-GPU/part-CPU with round-robin dispatch
+/// making the backend a per-request variable — and detection would silently vary per request.
+///
+/// `Rocm` is requested because it is never present on this project's platforms, so the fallback
+/// path is the one under test on every box. Run:
+/// `cargo test-onnx --test ner_perf -- --ignored ner_ep_01`
+#[test]
+#[ignore = "requires the real NER model (set NER_MODEL_PATH / NER_TOKENIZER_PATH / NER_LABELS)"]
+fn ner_ep_01_unavailable_provider_falls_back_to_cpu_for_the_whole_pool() {
+    let model =
+        std::env::var("NER_MODEL_PATH").expect("set NER_MODEL_PATH (see this file's doc comment)");
+    let tokenizer = std::env::var("NER_TOKENIZER_PATH").expect("set NER_TOKENIZER_PATH");
+    let labels = std::env::var("NER_LABELS").expect("set NER_LABELS");
+    let id2label: Vec<String> = labels.split(',').map(str::to_string).collect();
+
+    for pool_size in [1usize, 2] {
+        let detector = OnnxNerDetector::load(
+            &model,
+            &tokenizer,
+            id2label.clone(),
+            pool_size,
+            1,
+            false,
+            ExecutionProvider::Rocm,
+        )
+        .expect("an unavailable accelerator must fall back to CPU, never fail to load");
+
+        assert_eq!(
+            detector.provider(),
+            ExecutionProvider::Cpu,
+            "pool_size={pool_size}: the detector must report the EFFECTIVE provider (cpu after \
+             fallback), not the requested one — the startup log derives `provider=` from this"
+        );
+
+        // And it must still actually detect: falling back is a latency change, not a masking one.
+        let hits = detector.detect("My name is Angela Merkel and I live in Berlin.");
+        assert!(
+            !hits.is_empty(),
+            "pool_size={pool_size}: the post-fallback CPU detector must still detect entities"
+        );
+    }
+}
+
 /// One natural-language sentence carrying a name, repeated to build up field
 /// size — the realistic shape (prose), not a degenerate repeated token.
 const SENTENCE: &str = "Mario Rossi from Acme Corporation visited Milan yesterday. ";

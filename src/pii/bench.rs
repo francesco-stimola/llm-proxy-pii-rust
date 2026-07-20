@@ -147,19 +147,40 @@ pub fn suggested_provider_for_platform() -> Option<(&'static str, &'static str, 
 /// One forward pass at `seq` tokens. Token *values* don't change the graph work, so
 /// synthetic ids of the right shape measure exactly what real text would — and, unlike real
 /// text, they cannot put PII in a benchmark harness.
-fn run_once(session: &mut Session, seq: usize) -> Result<()> {
+///
+/// **The input set must match the detector's, or the benchmark cannot run the model at all
+/// (M9-R8).** A BERT-family model (`NER_TOKEN_TYPE_IDS=1`, e.g. Piiranha) declares a third
+/// required graph input, and ORT rejects a `run()` that omits it — so every row would fail with
+/// a raw ORT error that never names the real cause. `resolve_ner_model` was extracted so the
+/// model *path* could not drift between the server and this tool; the model's *input contract*
+/// has to travel with it.
+fn run_once(session: &mut Session, seq: usize, needs_token_type_ids: bool) -> Result<()> {
     let ids: Vec<i64> = (0..seq).map(|i| (i % 250_000) as i64).collect();
     let mask: Vec<i64> = vec![1; seq];
     let input_ids =
         Tensor::from_array(([1, seq], ids)).map_err(|e| anyhow!("input_ids tensor: {e}"))?;
     let attention_mask =
         Tensor::from_array(([1, seq], mask)).map_err(|e| anyhow!("attention_mask tensor: {e}"))?;
-    session
-        .run(ort::inputs![
-            "input_ids" => input_ids,
-            "attention_mask" => attention_mask,
-        ])
-        .map_err(|e| anyhow!("ONNX run: {e}"))?;
+    if needs_token_type_ids {
+        // Zeros, exactly as `run_and_decode` sends for a single-segment sequence.
+        let type_ids: Vec<i64> = vec![0; seq];
+        let token_type_ids = Tensor::from_array(([1, seq], type_ids))
+            .map_err(|e| anyhow!("token_type_ids tensor: {e}"))?;
+        session
+            .run(ort::inputs![
+                "input_ids" => input_ids,
+                "attention_mask" => attention_mask,
+                "token_type_ids" => token_type_ids,
+            ])
+            .map_err(|e| anyhow!("ONNX run: {e}"))?;
+    } else {
+        session
+            .run(ort::inputs![
+                "input_ids" => input_ids,
+                "attention_mask" => attention_mask,
+            ])
+            .map_err(|e| anyhow!("ONNX run: {e}"))?;
+    }
     Ok(())
 }
 
@@ -168,6 +189,7 @@ fn benchmark_one(
     model_path: &str,
     intra_threads: usize,
     provider: ExecutionProvider,
+    needs_token_type_ids: bool,
 ) -> ProviderResult {
     let failed = |effective, e: String| ProviderResult {
         model: model_path.to_string(),
@@ -186,13 +208,13 @@ fn benchmark_one(
     let mut ms = Vec::with_capacity(BENCH_SEQS.len());
     for &seq in &BENCH_SEQS {
         for _ in 0..WARMUP {
-            if let Err(e) = run_once(&mut session, seq) {
+            if let Err(e) = run_once(&mut session, seq, needs_token_type_ids) {
                 return failed(effective, e.to_string());
             }
         }
         let start = Instant::now();
         for _ in 0..RUNS {
-            if let Err(e) = run_once(&mut session, seq) {
+            if let Err(e) = run_once(&mut session, seq, needs_token_type_ids) {
                 return failed(effective, e.to_string());
             }
         }
@@ -215,13 +237,27 @@ fn benchmark_one(
 /// quantizations (CPU-int8 vs GPU-fp16), not within one. Benchmarking a single model across
 /// providers — the first version of this — can only say "for this file, which backend wins",
 /// which is exactly how int8-on-GPU produced a confident wrong answer during M9.
-pub fn benchmark_matrix(model_paths: &[String]) -> Vec<ProviderResult> {
-    let intra_threads = available_cores();
+/// `intra_threads` is the **server's** resolved per-session thread count, not the core count
+/// (M9-R3). Measuring the CPU with more threads than production gives it makes the baseline
+/// optimistic and biases the recommendation *against* the accelerator — on exactly the tuned,
+/// centralized deployment where an accelerator is most likely to be worth having. This is
+/// [M7-R1](../../docs/reviews/M7.md)'s failure class, and `resolve_pool_and_intra` exists to
+/// make it impossible, so the caller resolves through it.
+pub fn benchmark_matrix(
+    model_paths: &[String],
+    intra_threads: usize,
+    needs_token_type_ids: bool,
+) -> Vec<ProviderResult> {
     let providers = available_providers();
     let mut results = Vec::with_capacity(model_paths.len() * providers.len());
     for model in model_paths {
         for &provider in &providers {
-            results.push(benchmark_one(model, intra_threads, provider));
+            results.push(benchmark_one(
+                model,
+                intra_threads,
+                provider,
+                needs_token_type_ids,
+            ));
         }
     }
     results
@@ -243,14 +279,21 @@ fn model_label(path: &str) -> &str {
 /// Render the human-facing report: one table section per model, what actually engaged, the
 /// **overall** recommendation across the model × provider matrix, and the caveats that keep
 /// a bad number from being misread.
-pub fn format_report(model_paths: &[String], results: &[ProviderResult]) -> String {
+pub fn format_report(
+    model_paths: &[String],
+    results: &[ProviderResult],
+    pool_size: usize,
+    intra_threads: usize,
+) -> String {
     use std::fmt::Write as _;
     let mut out = String::new();
 
     let _ = writeln!(out, "Execution-provider benchmark (M9)");
+    // The EFFECTIVE server shape, resolved through `resolve_pool_and_intra` — not the raw core
+    // count, which is only the same thing at the shipped default (M9-R3).
     let _ = writeln!(
         out,
-        "  cores : {} (CPU intra-op threads)",
+        "  threads: {intra_threads} intra-op per session, pool {pool_size} (of {} cores)",
         available_cores()
     );
     let _ = writeln!(

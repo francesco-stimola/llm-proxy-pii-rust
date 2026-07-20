@@ -149,3 +149,77 @@ async fn binary_boots_and_does_the_pii_roundtrip() {
         "secret not restored: {content}"
     );
 }
+
+/// **CLI-01 (M9-R4).** An unrecognized argument must be **refused**, not ignored.
+///
+/// Before M9 the binary took no arguments, so discarding them was harmless. Once
+/// `--bench-providers` existed, a near-miss (`--bench-provider`, `--bench-providers=1`, `--help`
+/// before it was handled) fell through to `Config::from_env` + `run` and started a **live proxy
+/// pointed at the configured upstream**, while the operator believed they had run a diagnostic.
+/// That is fail-*open* on unexpected input, which nothing else in this codebase does — including
+/// this milestone's own `NER_EXECUTION_PROVIDER` typo check.
+///
+/// Both halves matter: a non-zero exit alone would still pass for a binary that served for a
+/// while and then exited, so this also asserts the port **never becomes healthy**.
+#[tokio::test]
+async fn unknown_cli_argument_is_refused_and_never_binds() {
+    let port = free_port();
+    let base = format!("http://127.0.0.1:{port}");
+
+    let child = Command::new(env!("CARGO_BIN_EXE_llm-proxy-pii-rust"))
+        .arg("--bench-provider") // the singular typo — the way this is actually hit
+        .env("LISTEN_ADDR", format!("127.0.0.1:{port}"))
+        .env("RUST_LOG", "warn")
+        .spawn()
+        .expect("failed to spawn the proxy binary");
+    let mut guard = ChildGuard(child);
+
+    // It must exit, and exit non-zero.
+    let status = {
+        let mut waited = None;
+        for _ in 0..100 {
+            match guard.0.try_wait().expect("try_wait failed") {
+                Some(status) => {
+                    waited = Some(status);
+                    break;
+                }
+                None => tokio::time::sleep(Duration::from_millis(100)).await,
+            }
+        }
+        waited.expect("binary did not exit after an unrecognized argument — it is still running")
+    };
+    assert!(
+        !status.success(),
+        "an unrecognized argument must exit non-zero, got {status:?}"
+    );
+
+    // And it must never have served: nothing ever answers on the port it was given.
+    let client = reqwest::Client::new();
+    assert!(
+        client.get(format!("{base}/healthz")).send().await.is_err(),
+        "a proxy became reachable on {base} after an unrecognized argument — it fell through to \
+         serving instead of refusing"
+    );
+}
+
+/// **CLI-02 (M9-R4).** `--help` prints usage and exits **0** — the companion to refusing unknown
+/// arguments, so the natural way to ask "what does this take?" is not itself an error.
+#[tokio::test]
+async fn help_prints_usage_and_exits_zero() {
+    let out = Command::new(env!("CARGO_BIN_EXE_llm-proxy-pii-rust"))
+        .arg("--help")
+        .env("RUST_LOG", "warn")
+        .output()
+        .expect("failed to spawn the proxy binary");
+
+    assert!(
+        out.status.success(),
+        "--help must exit 0, got {:?}",
+        out.status
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("--bench-providers"),
+        "usage must document the flags, got: {stdout}"
+    );
+}
