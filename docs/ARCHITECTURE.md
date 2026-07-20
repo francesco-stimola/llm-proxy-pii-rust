@@ -801,6 +801,25 @@ were wired without needing a CI run because their features are provably no-ops o
 because the swap has nowhere to land. **Only DirectML has actually been run** — on this project's
 box — which is why it is the only non-CPU row marked *benchmarked* rather than *unverified*.
 
+> **What "unverified" means for the Linux/CUDA row, concretely — the pre-tag check (M9-R13).** Two
+> things about that row are *unknown*, not *believed*, and neither can be settled from this project's
+> hardware (no NVIDIA device, no Linux runner):
+>
+> 1. **Does the `+cu12` distribution actually get fetched?** `cuda` is a distribution key, so an
+>    `x86_64` Linux build should download `x86_64-unknown-linux-gnu+cu12` rather than the plain
+>    tarball. A build that resolved to the plain one still compiles green — that silence is the whole
+>    hazard the per-target rule above exists to name.
+> 2. **Does CUDA survive packaging?** `release-build.yml` packages a **single file**
+>    (`target/<triple>/release/<bin>`), while `ort`'s `copy-dylibs` places sidecar shared objects next
+>    to the *build* output. Whether `NER_EXECUTION_PROVIDER=cuda` works from the **packaged artifact**
+>    has never been observed. This project deliberately does **not** claim the CUDA runtime is
+>    dynamically loaded — the claim was removed rather than restated, because it was never tested here.
+>
+> The check is cheap and already exists: on the manual release build, confirm `+cu12` in the build log,
+> then run `--bench-providers` **on the downloaded artifact** (not the build tree) and confirm a `cuda`
+> row. On `aarch64-unknown-linux-gnu`, expect **no** `cuda` row — it is not wired, by design. Until
+> someone does this, the row stays ⚠️ and the docs must not promise more.
+
 **On "the most compatible backend".** ONNX Runtime has **no Vulkan EP** — Vulkan is a
 vendor-agnostic GPU API in general, but not one of ORT's backends, so using it would mean leaving
 ORT for a different engine. The ORT-native cross-vendor answers are: **DirectML** on Windows (D3D12,

@@ -1252,8 +1252,13 @@ so **DirectML is the only GPU path here** (and the only vendor-agnostic one on W
   DirectML verdict **reproduced with the shipped tool** (CPU-int8 27.1/46.5/108.4 ms vs DML-int8
   101.1/346.1/599.3 ms). Round 2 ([reviews/M9.md](reviews/M9.md#review-2)): **all 11 closed and
   verified on the real binary** (the fallback line now reads `provider="cpu" requested="rocm"`);
-  4 new findings on the per-target accelerator, **none a leak**. Full record:
-  [reviews/M9.md](reviews/M9.md).
+  4 new findings on the per-target accelerator, **none a leak**. Round 3
+  ([reviews/M9.md](reviews/M9.md#review-3)): R12–R15 closed, and the CUDA narrowing **verified against
+  the resolver** — `cargo tree` per release triple confirms `directml` on both Windows arches, `cuda`
+  on `x86_64` Linux, `coreml` on macOS, and **no accelerator on `aarch64-unknown-linux-gnu`**, exactly
+  as claimed; R1/R2 re-verified un-regressed on the real binary. 4 new findings, **none a leak** —
+  three are one stale description of the EP layer surviving in places the closures didn't grep. Full
+  record: [reviews/M9.md](reviews/M9.md).
 
 | Finding | Title | Severity | Done |
 |---|---|---|---|
@@ -1272,6 +1277,10 @@ so **DirectML is the only GPU path here** (and the only vendor-agnostic one on W
 | [M9-R13](reviews/M9.md#m9-r13) | The three per-target wirings aren't equivalent: only Linux/CUDA changes the downloaded ONNX Runtime, and it doesn't apply to `aarch64-unknown-linux-gnu` — a shipped release target | correctness | [x] |
 | [M9-R14](reviews/M9.md#m9-r14) | `--bench-providers` still advises rebuilding with an `ep-*` feature the per-target dependency already enables | diagnostics | [x] |
 | [M9-R15](reviews/M9.md#m9-r15) | The table offers `ep-rocm` / `ep-openvino` as escape hatches, but `download-binaries` has no distribution for either — and on Linux `ep-rocm` now loses CUDA too | docs | [x] |
+| [M9-R16](reviews/M9.md#m9-r16) | The non-`onnx` build still advises `cargo build --features ep-directml` — M9-R14's defect in the sibling branch, and on Linux/macOS the advice names a Windows-only backend | diagnostics | [ ] |
+| [M9-R17](reviews/M9.md#m9-r17) | `no_accelerator_guidance()` inherited the deleted function's rustdoc — it promises a tuple it no longer returns and the cargo feature it was written to stop naming | docs | [ ] |
+| [M9-R18](reviews/M9.md#m9-r18) | The pre-per-target "seven opt-in `ep-*` accelerators" framing survives in four places — `ExecutionProvider`'s rustdoc, `Cargo.toml`, ARCHITECTURE's opening paragraph, ROADMAP — contradicting M9-R12 and M9-R15 | docs | [ ] |
+| [M9-R19](reviews/M9.md#m9-r19) | ARCHITECTURE and ROADMAP name `onnx::build_session` as the "one home" of the fallback policy; M9-R1's own closure deleted that function | docs | [ ] |
 
 <a id="backlog"></a>
 ## Backlog — documented, not scheduled
