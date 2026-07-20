@@ -498,10 +498,20 @@ cargo test-onnx    # + the NER path         (target/onnx/)
 
 Copyright (C) 2026 Francesco Stimola.
 
-**GNU Affero General Public License v3.0 or later** (`AGPL-3.0-or-later`) — see
-[LICENSE](LICENSE). As a network-served privacy proxy, AGPL ensures anyone who runs a
-**modified** version as a service shares their changes. Running it unmodified carries no
-such obligation.
+Dual-licensed:
+
+- **Open source** — [GNU Affero General Public License v3.0 or later](LICENSE)
+  (`AGPL-3.0-or-later`). As a network-served privacy proxy, AGPL ensures anyone who runs a
+  **modified** version as a service shares their changes. Running it unmodified carries no such
+  obligation — for anyone, companies included; the AGPL itself is free, always.
+- **Commercial** — for cases the AGPL doesn't cover for you (embedding a modified version, or
+  linking the crate into a closed-source product, without the network-copyleft obligation), a
+  separate commercial license is available. [Open a commercial-license
+  issue](https://github.com/francesco-stimola/llm-proxy-pii-rust/issues/new?template=commercial-license.md)
+  to discuss.
+
+Contributions are welcome under the terms in [CONTRIBUTING.md](CONTRIBUTING.md), which is what
+keeps dual-licensing possible.
 
 ---
 

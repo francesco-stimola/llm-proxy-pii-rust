@@ -3,6 +3,26 @@
 Newest first. One entry per meaningful change — note *what* and *why*, not just
 *what*. This is the running history so context is never lost between sessions.
 
+## 2026-07-20 — Dual licensing (AGPL + commercial)
+
+**Decision.** Sole-contributor project, sole copyright holder — no CLA backlog to clear, so
+dual-licensing is a documentation change, not a legal migration. Kept `AGPL-3.0-or-later`
+(`Cargo.toml`, `LICENSE`) as the open-source track unchanged; added a commercial track for use
+cases the AGPL's network-copyleft doesn't cover (embedding a modified version, or linking the
+crate into a closed-source product). AGPL itself stays free for everyone, companies included —
+running the proxy unmodified never triggers anything to release.
+
+**Added `CONTRIBUTING.md` / `CONTRIBUTING.it.md`** with a copyright-assignment clause: an
+external contribution assigns copyright to the maintainer (with a grant-back of the same rights
+any AGPL user gets), which is what keeps "sell a commercial license on the whole codebase"
+possible once contributions aren't 100% solo-authored. Agreement is indicated via a signed-off
+commit (`git commit -s`) plus a checkbox in the new `.github/PULL_REQUEST_TEMPLATE.md` — silence
+isn't treated as consent.
+
+**Added `.github/ISSUE_TEMPLATE/commercial-license.md`** as the inbound channel for commercial
+inquiries (chosen over a public email address). README / README.it's License section now states
+the dual-license model and links both.
+
 ## 2026-07-19 — M9: execution-provider selector (all backends wired) + the DirectML spike
 
 **Opened M9 (GPU optimization).** The box has an **AMD Radeon DX12 iGPU** — which settles the
