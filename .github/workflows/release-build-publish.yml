@@ -55,10 +55,17 @@ jobs:
           set -euo pipefail
           tag="${GITHUB_REF_NAME}"
           table="docs/ROADMAP.md"
-          if grep -qE "tag \`${tag}\`( |\`|$)" "$table" && \
-             ! grep -qE "tag \`${tag}\`.*\(planned\)" "$table"; then
+          # ONLY the Status table's milestone rows are evidence. Scoping this matters and was
+          # caught by a dry run before the first real use: the prose that *documents* this
+          # convention necessarily contains an example of the `(planned)` form, and a whole-file
+          # grep read that sentence as a statement about the release being cut. Prose must never
+          # be able to move a guard — so the guard reads the table, which is the artifact the
+          # claim actually lives in.
+          rows=$(grep -E '^\| \[M' "$table" || true)
+          if printf '%s\n' "$rows" | grep -qE "tag \`${tag}\`( |\`|$)" && \
+             ! printf '%s\n' "$rows" | grep -qE "tag \`${tag}\`.*\(planned\)"; then
             echo "OK: $table names $tag as a cut release."
-            grep -nE "tag \`${tag}\`" "$table"
+            printf '%s\n' "$rows" | grep -E "tag \`${tag}\`"
           else
             echo "::error::$table does not name $tag as a cut release."
             echo "Add it to the Status table on the milestone it was cut from, e.g."
@@ -66,7 +73,7 @@ jobs:
             echo "If the tag is still only intended, the table may say 'tag \`${tag}\` (planned)' —"
             echo "but then it is not ready to be published."
             echo "--- current tag notations in the Status table ---"
-            grep -nE "tag \`v[0-9]" "$table" || echo "(none at all)"
+            printf '%s\n' "$rows" | grep -E "tag \`v[0-9]" || echo "(none at all)"
             exit 1
           fi
 

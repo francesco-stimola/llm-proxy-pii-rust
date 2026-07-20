@@ -24,12 +24,13 @@ The Status column is a **single label** — ✅ complete · 🔨 code-complete �
 findings, counts, dates and closure notes live in each milestone's section and in [`reviews/`](reviews/), so
 this table can't drift. A **release tag** is noted next to the milestone it was cut from, never as its own row.
 
-**A tag that isn't cut yet is written `tag `v1.2.0` (planned)`.** That exists so the table can always
+**A tag that isn't cut yet is written `tag `vX.Y.Z` (planned)`.** That exists so the table can always
 name the version it is heading for without asserting something false — the alternative, leaving it out
 until the tag exists, is what let `v1.2.0` be cut once with the docs silent about it. Drop `(planned)`
 when the tag is real. This is **enforced, not remembered**: `release-build-publish.yml` refuses to
 publish a `v*` tag the Status table does not name as cut, so a release the docs cannot explain cannot
-happen.
+happen. The guard reads the **table rows only** — prose like this sentence must never be able to move
+it, which a first dry run proved was not a hypothetical.
 
 | Milestone | Status |
 |---|---|
@@ -48,7 +49,7 @@ happen.
 | [M8 — GLiNER: contextual / open-label PII](#m8) | ✅ complete |
 | [M8.1 — national phone recognizer (opt-in)](#m81) | ✅ complete · tag `v1.1.0` |
 | [M9 — GPU optimization](#m9) | ✅ complete |
-| [M9.1 — one release binary per backend](#m91) | ✅ complete · tag `v1.2.0` (planned) |
+| [M9.1 — one release binary per backend](#m91) | ✅ complete · tag `v1.2.0` |
 
 ---
 
