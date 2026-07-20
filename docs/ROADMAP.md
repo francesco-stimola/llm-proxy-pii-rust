@@ -1289,9 +1289,9 @@ so **DirectML is the only GPU path here** (and the only vendor-agnostic one on W
 | [M9-R17](reviews/M9.md#m9-r17) | `no_accelerator_guidance()` inherited the deleted function's rustdoc — it promises a tuple it no longer returns and the cargo feature it was written to stop naming | docs | [x] |
 | [M9-R18](reviews/M9.md#m9-r18) | The pre-per-target "seven opt-in `ep-*` accelerators" framing survives in four places — `ExecutionProvider`'s rustdoc, `Cargo.toml`, ARCHITECTURE's opening paragraph, ROADMAP — contradicting M9-R12 and M9-R15 | docs | [x] |
 | [M9-R19](reviews/M9.md#m9-r19) | ARCHITECTURE and ROADMAP name `onnx::build_session` as the "one home" of the fallback policy; M9-R1's own closure deleted that function | docs | [x] |
-| [M9-R20](reviews/M9.md#m9-r20) | CLI-03 is **vacuous in the `onnx` build** — `--bench-providers` bails at the unconfigured-model check, so the guard never reaches the branch M9-R14 fixed | test-coverage | [ ] |
-| [M9-R21](reviews/M9.md#m9-r21) | The pre-per-target "`NER_EXECUTION_PROVIDER` + an `ep-*` feature" claim survives in ARCHITECTURE's design-principles bullet and its `--bench-providers` section, plus two DEVLOG sites — the design doc now contradicts CLI-03 | docs | [ ] |
-| [M9-R22](reviews/M9.md#m9-r22) | "`ep-webgpu` does not link on Windows" is generalized from a seven-feature build whose combined key resolved to `none`; `dist.txt` has an `x86_64-pc-windows-msvc+wgpu` row | docs | [ ] |
+| [M9-R20](reviews/M9.md#m9-r20) | CLI-03 is **vacuous in the `onnx` build** — `--bench-providers` bails at the unconfigured-model check, so the guard never reaches the branch M9-R14 fixed | test-coverage | [x] |
+| [M9-R21](reviews/M9.md#m9-r21) | The pre-per-target "`NER_EXECUTION_PROVIDER` + an `ep-*` feature" claim survives in ARCHITECTURE's design-principles bullet and its `--bench-providers` section, plus two DEVLOG sites — the design doc now contradicts CLI-03 | docs | [x] |
+| [M9-R22](reviews/M9.md#m9-r22) | "`ep-webgpu` does not link on Windows" is generalized from a seven-feature build whose combined key resolved to `none`; `dist.txt` has an `x86_64-pc-windows-msvc+wgpu` row | docs | [x] |
 
 <a id="backlog"></a>
 ## Backlog — documented, not scheduled

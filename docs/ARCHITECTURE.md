@@ -16,9 +16,10 @@ anonymized request upstream, and restores the original values in the response.
   so we can swap models or add engines without touching the proxy.
 - **CPU-first, GPU optional** — correctness and reproducibility on CPU first; CPU stays the
   default and the only universally-trusted path. Hardware acceleration ([M9](ROADMAP.md#m9)) is
-  **opt-in** behind `NER_EXECUTION_PROVIDER` + an `ep-*` feature, and **falls back to CPU** if the
-  accelerator isn't there — GPU behavior isn't automatic (it depends on the model, quantization,
-  and hardware). See *Execution providers — hardware acceleration (M9)* below.
+  **opt-in at runtime** behind `NER_EXECUTION_PROVIDER` (the platform's accelerator is already in
+  the `onnx` build), and **falls back to CPU** if it isn't there — GPU behavior isn't automatic
+  (it depends on the model, quantization, and hardware). See *Execution providers — hardware
+  acceleration (M9)* below.
 - **Textbook & lean** — idiomatic Rust, low RAM/CPU, no over-engineering.
 
 ## Hybrid detection (key decision)
@@ -752,8 +753,7 @@ registration and falls back.
 > exist; a cargo feature only decides whether our `register()` is compiled. **Measured**:
 > enabling six `ep-*` features at once on Windows x64 builds and links fine, but the binary is
 > still the DirectML distribution — at runtime `cuda` / `tensorrt` / `coreml` / `rocm` /
-> `openvino` all report unavailable and fall back to CPU, and `ep-webgpu` does not even link
-> (no `webgpu_dawn.lib`). Cross-platform it is impossible by construction anyway: CoreML exists
+> `openvino` all report unavailable and fall back to CPU. Cross-platform it is impossible by construction anyway: CoreML exists
 > only in macOS builds, DirectML only in Windows ones. So the only meaningful choice is **one
 > natural accelerator per platform**, set as a per-target `ort` feature in `Cargo.toml` rather
 > than a flag on the build command — which also means a developer's `--features onnx` build and
@@ -780,7 +780,7 @@ would say the opposite of the paragraph above, and a future builder scans the ta
 | `tensorrt` | `ep-tensorrt` | Linux/Windows, NVIDIA | ⚠️ **wired, unverified** |
 | `rocm` | `ep-rocm` | Linux, AMD | ❌ **not obtainable via `download-binaries`** — `ort-sys`'s `dist.txt` has no ROCm row for any target, and on Linux the feature combines into a key (`cu12,rocm`) that matches nothing, silently falling back to the plain distribution: **strictly fewer providers than plain `--features onnx`**. Needs a from-source ORT |
 | `openvino` | `ep-openvino` | Linux/Windows, Intel | ❌ **not obtainable via `download-binaries`** — not a distribution key, so the feature compiles `register()` against a runtime that isn't in the tarball |
-| `webgpu` | `ep-webgpu` | any (Vulkan/Metal/D3D12 via Dawn) | ❌ **does not link on Windows** (`webgpu_dawn.lib` absent) |
+| `webgpu` | `ep-webgpu` | any (Vulkan/Metal/D3D12 via Dawn) | ⚠️ **wired, unverified — but obtainable**: `dist.txt` has `wgpu` rows for Windows x64, Linux x64 and macOS arm64, so `ep-webgpu` **alone** resolves to a real WebGPU prebuilt. It only failed to link here because it was measured *combined* with other `ep-*` features — see the warning below |
 
 > **The rule that governs every future wiring (M9-R13).** Adding an EP feature per-target is free
 > **only when `ort-sys` does not key its *distribution* on it.** `resolve_dist` builds the download
@@ -791,6 +791,15 @@ would say the opposite of the paragraph above, and a future builder scans the ta
 > distribution — green build, absent accelerator. That asymmetry is why Windows and macOS could be
 > wired without a CI run while Linux had to be scoped to `x86_64`. **Check `resolve_dist` before
 > wiring a new one.**
+>
+> **Corollary, learned by getting it wrong (M9-R22): a result measured with several `ep-*`
+> features enabled says nothing about any one of them.** `resolve_dist` keys on the *combination*,
+> so a seven-feature build resolves to a key like `wgpu,cu12,rocm` — which matches no row, silently
+> falls back to the plain distribution, and then fails to link because `static_link` still emits
+> the WebGPU link directive from `cfg!(feature = "webgpu")`. That experiment produced the confident
+> and **false** conclusion "`ep-webgpu` does not link on Windows"; `dist.txt` in fact carries `wgpu`
+> rows for Windows x64, Linux x64 and macOS arm64, so `ep-webgpu` *alone* resolves fine. **Measure
+> one feature at a time, or measure nothing.**
 
 Nothing in the table above `cpu` should be read as "safe to trust blindly": they are safe to *try*
 (the fallback and the bounded blast radius above see to that), and `--bench-providers` tells you
@@ -871,9 +880,12 @@ informative:
   long compile; the ranking survived, the absolute numbers did not. So the report says to measure
   idle and on AC.
 
-It behaves identically in every build: which providers exist is a build-time choice, so the report
-names the `ep-*` feature that fits *this* platform, and without the `onnx` feature it still runs and
-explains that there is no ML layer to accelerate rather than failing.
+It behaves identically in every build, and **never advises a rebuild**: the platform's accelerator
+is already wired per-target, so when no accelerator was measured the report explains *this
+machine's* situation (device/driver missing, or — on arm64 Linux — that none is wired for that
+architecture) rather than naming a cargo feature the operator already has. Without the `onnx`
+feature it still runs and explains that there is no ML layer to accelerate rather than failing.
+`CLI-03` pins that no `ep-*` feature name appears in its output, in either build.
 
 **NER chunking (M5, PERF-01).** `OnnxNerDetector` tokenizes a field once; if it fits, it runs
 exactly as before (M2). A field that doesn't is split into overlapping token windows

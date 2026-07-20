@@ -447,3 +447,63 @@ pub fn format_report(
 
     out
 }
+
+#[cfg(test)]
+mod report_tests {
+    use super::*;
+
+    /// **BENCH-01 (M9-R20).** The "no accelerator" guidance must never name an `ep-*` feature.
+    ///
+    /// `CLI-03` spawns the real binary, but with no `NER_*` configured it bails at model
+    /// resolution and never reaches `format_report` — and on a box whose platform accelerator IS
+    /// present, `!measured_an_accelerator` is false anyway. So the branch that actually prints
+    /// the guidance was unreachable from that test in the `onnx` build: a guard written so "only
+    /// the branch a finding quoted" could not recur, itself covering only one branch.
+    ///
+    /// This drives `format_report` directly with a CPU-only result set, which is the only way to
+    /// reach it deterministically on any machine. Asserting the seven concrete names rather than
+    /// the string `ep-` matters: the report legitimately says "enabling several `ep-*` features
+    /// does not combine them", and that sentence must stay.
+    #[test]
+    fn the_no_accelerator_guidance_never_names_a_cargo_feature() {
+        let results = vec![ProviderResult {
+            model: "model_quantized.onnx".to_string(),
+            requested: ExecutionProvider::Cpu,
+            effective: ExecutionProvider::Cpu,
+            ms: vec![1.0; BENCH_SEQS.len()],
+            error: None,
+        }];
+        let report = format_report(&["model_quantized.onnx".to_string()], &results, 1, 4);
+
+        // Non-vacuity: this really is the branch under test.
+        assert!(
+            report.contains("No accelerator is present in this build"),
+            "the CPU-only result set must reach the no-accelerator branch; got:\n{report}"
+        );
+        for feature in [
+            "ep-directml",
+            "ep-cuda",
+            "ep-coreml",
+            "ep-rocm",
+            "ep-openvino",
+            "ep-tensorrt",
+            "ep-webgpu",
+        ] {
+            assert!(
+                !report.contains(feature),
+                "the report advised `{feature}`, but the platform accelerator is wired per-target \
+                 and needs no such rebuild (M9-R14/R16/R20). Report was:\n{report}"
+            );
+        }
+    }
+
+    /// The header must echo the **resolved** shape it measured with, not the core count (M9-R3).
+    #[test]
+    fn the_header_reports_the_resolved_thread_shape() {
+        let report = format_report(&["m.onnx".to_string()], &[], 2, 6);
+        assert!(
+            report.contains("6 intra-op per session, pool 2"),
+            "header must state the resolved (pool, intra) the benchmark actually used; got:\n{report}"
+        );
+    }
+}

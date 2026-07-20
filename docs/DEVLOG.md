@@ -49,11 +49,13 @@ XLM-R NER and GLiNER, resolved once in `server.rs` and passed to `OnnxNerDetecto
 `GLiNerDetector::load`. The selection + **CPU-fallback** policy has one home, `onnx::build_session_pool`,
 which both detectors' pools now build through (this also deleted GLiNER's duplicate session-builder).
 
-- **All seven accelerators wired, only DirectML tested** — an accepted trade-off (we run DirectML).
-  Each EP is an `ep-*` cargo feature pulling the matching ORT binary; every EP *type* compiles on
-  every platform (only `register()` is feature-gated in `ort`), so an uncompiled/absent provider
-  just fails registration and **falls back to CPU, loudly** (`.error_on_failure()` → explicit `warn!`,
-  not ORT's silent drop). The tested/untested table lives in `ARCHITECTURE.md` → *Execution providers*.
+- **All seven accelerators reachable, only DirectML tested** — an accepted trade-off (we run
+  DirectML). Every EP *type* compiles on every platform (only `register()` is feature-gated in
+  `ort`), so an absent provider just fails registration and **falls back to CPU, loudly**
+  (`.error_on_failure()` → explicit `warn!`, not ORT's silent drop). *(Superseded the next day: the
+  platform's accelerator moved into a per-target `ort` feature, so `--features onnx` carries it and
+  the `ep-*` features became escape hatches — see the 2026-07-20 entry.)* The measured/trusted table
+  lives in `ARCHITECTURE.md` → *Execution providers*.
 - **Fail-closed reasoning (why untested EPs are safe):** the fallback covers *initialization*, not
   *numerical correctness* — but an EP that loads-and-computes-wrong can only cost **NER recall**
   (best-effort); the deterministic structured layer runs on CPU regex, independent of the EP, so it
@@ -131,12 +133,14 @@ linked distribution actually contains. A feature-derived list was wrong in both 
 showed five GPU rows that were CPU in the six-feature experiment, and it would miss the per-target
 accelerator entirely. Asking the binary cannot lie either way.
 
-**It works in every build.** Which providers exist is a build-time choice, so the report names the
-`ep-*` feature that fits *this* platform (DirectML on Windows, CoreML on macOS, CUDA/ROCm/OpenVINO on
-Linux) rather than a generic list, and a session that falls back is reported as **`unavailable — fell
-back to cpu`** rather than silently logged as a GPU measurement (`build_session_reporting` exposes the
-*effective* provider for exactly this). Without the `onnx` feature the flag still runs and explains
-that there is no ML layer to accelerate, instead of erroring — the command behaves the same everywhere.
+**It works in every build, and never advises a rebuild.** Which providers exist is a build-time
+choice, but the platform's accelerator is already wired per-target — so when none was measured the
+report explains *this machine's* situation rather than naming a cargo feature the operator already
+has (that mistake shipped twice, in both branches, and `CLI-03` now pins it shut). A session that
+falls back is reported as **`unavailable — fell back to cpu`** rather than silently logged as a GPU
+measurement (`build_session_reporting` exposes the *effective* provider for exactly this). Without
+the `onnx` feature the flag still runs and explains that there is no ML layer to accelerate,
+instead of erroring — the command behaves the same everywhere.
 
 ## 2026-07-19 — M8.1: national phone recognizer (GB/DE), the deterministic path that beat GLiNER
 
