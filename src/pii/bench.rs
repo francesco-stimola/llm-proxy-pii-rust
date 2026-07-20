@@ -113,14 +113,12 @@ pub fn available_providers() -> Vec<ExecutionProvider> {
     providers
 }
 
-/// The accelerator worth trying on **this** platform, as
-/// `(NER_EXECUTION_PROVIDER value, cargo feature)`, plus a one-line reason.
+/// What to tell an operator whose build measured **no** accelerator.
 ///
 /// The right answer is OS-specific — there is no single GPU execution provider that spans
-/// platforms (DirectML is Windows-only, CoreML is Apple-only, Linux is vendor-split), so the
-/// report names the one that fits the machine actually running it rather than dumping a
-/// generic list the operator then has to filter.
-/// What to tell an operator whose build measured **no** accelerator.
+/// platforms (DirectML is Windows-only, CoreML is Apple-only, Linux is vendor-split *and* has no
+/// prebuilt for arm64), so this names the situation on the machine actually running it rather
+/// than dumping a generic list the operator then has to filter.
 ///
 /// **This must not advise a rebuild that would change nothing (M9-R14).** The platform's
 /// accelerator is wired per-target in `Cargo.toml`, so on every platform where one exists it is
@@ -431,9 +429,10 @@ pub fn format_report(
              \x20    honest matrix (CPU-int8 vs GPU-fp16)."
         );
     }
-    // Which accelerators exist is decided by the ONNX Runtime distribution this binary linked,
-    // so when none is present the actionable next step is a rebuild — named for *this*
-    // platform, since the right EP differs per OS.
+    // Which accelerators exist is decided by the ONNX Runtime distribution this binary linked.
+    // When none is present the answer is NOT "rebuild with a feature" — the platform's
+    // accelerator is already wired per-target — so the guidance describes what is actually true
+    // of this machine (M9-R14/M9-R16).
     if !measured_an_accelerator {
         let _ = writeln!(
             out,

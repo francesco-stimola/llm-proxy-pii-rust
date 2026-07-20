@@ -137,18 +137,19 @@ ort = { version = "=2.0.0-rc.12", optional = true, features = ["cuda"] }
 default = []
 onnx = ["dep:ort", "dep:tokenizers", "dep:hf-hub"]
 
-# Hardware-acceleration execution providers (M9) — each OPT-IN, each pulls the
-# matching ONNX Runtime backend binary via `ort`. The backend is chosen at
-# RUNTIME by `NER_EXECUTION_PROVIDER`; a provider whose feature wasn't compiled
-# in — or whose device/driver is absent — falls back to CPU at session build, so
-# a missing accelerator is never a startup failure (a privacy proxy must start,
-# and masking is identical on CPU).
+# ESCAPE HATCHES, not the normal path (M9). Your platform's accelerator is
+# already wired per-target ABOVE, so `--features onnx` carries it and none of
+# these is needed for it. They exist to force a non-default combination — a
+# different backend than the platform's, or one on a platform that has none.
 #
-# ONLY `ep-directml` is tested on this project's hardware (an AMD DX12 iGPU).
-# The rest are wired and compile, but are UNVERIFIED — an accepted trade-off so
-# an operator on the right hardware can turn one on. `download-binaries` (always
-# on for `ort`) covers the CPU + DirectML binaries; CUDA/ROCm/OpenVINO/TensorRT
-# pull heavier, platform-specific runtimes that must match the deployment host.
+# Reaching for one is usually a mistake, and two of them cannot work at all with
+# the prebuilt distribution: `ort-sys`'s `dist.txt` has no ROCm row for any
+# target (and on Linux `ep-rocm` combines into a `cu12,rocm` key matching
+# nothing, so it silently resolves to the plain distribution — STRICTLY FEWER
+# providers than plain `--features onnx`), and `openvino` is not a distribution
+# key at all. `ep-webgpu` does not link on Windows (no `webgpu_dawn.lib`).
+# Making those work needs a from-source ONNX Runtime, which this project does
+# not build. Run `--bench-providers` to see what a given binary really has.
 # See docs/ARCHITECTURE.md → "Execution providers (hardware acceleration)".
 ep-directml = ["onnx", "ort/directml"]
 ep-cuda = ["onnx", "ort/cuda"]

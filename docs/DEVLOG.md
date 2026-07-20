@@ -46,7 +46,7 @@ the selector that is a config flip.
 **Landed the EP selector regardless — the multi-backend scaffolding is wanted independently of
 which GPU wins.** `NER_EXECUTION_PROVIDER` (default `cpu`) selects the backend for **both** the
 XLM-R NER and GLiNER, resolved once in `server.rs` and passed to `OnnxNerDetector::load` /
-`GLiNerDetector::load`. The selection + **CPU-fallback** policy has one home, `onnx::build_session`,
+`GLiNerDetector::load`. The selection + **CPU-fallback** policy has one home, `onnx::build_session_pool`,
 which both detectors' pools now build through (this also deleted GLiNER's duplicate session-builder).
 
 - **All seven accelerators wired, only DirectML tested** — an accepted trade-off (we run DirectML).
@@ -59,7 +59,7 @@ which both detectors' pools now build through (this also deleted GLiNER's duplic
   (best-effort); the deterministic structured layer runs on CPU regex, independent of the EP, so it
   is untouched by any backend. Blast radius bounded to the layer that already tolerates misses.
 - **A typo fails startup, an absent-but-real GPU falls back** — two different failures, kept
-  distinct (`parse` rejects `vulkan`/`gpu`; `build_session` falls back for a real provider). M8-R5's
+  distinct (`parse` rejects `vulkan`/`gpu`; `build_session_reporting` falls back for a real provider). M8-R5's
   rule applied to the accelerator knob.
 - Tests: `onnx::ep_tests` (parse round-trips, case/alias handling, unknown→Err incl. `vulkan`).
   Default build green; `clippy-onnx -D warnings` clean; 143 lib tests green; `cargo build-directml`

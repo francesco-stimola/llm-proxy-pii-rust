@@ -219,13 +219,22 @@ fn derive_intra_threads(pool_size: usize, cores: usize) -> usize {
 
 /// The hardware backend an ONNX session runs on (M9).
 ///
-/// `Cpu` is the universal, always-available, always-tested default. Every other
-/// variant is an **opt-in accelerator** chosen at runtime by
-/// `NER_EXECUTION_PROVIDER` and gated at build time by its `ep-*` cargo feature
-/// (which pulls the matching ONNX Runtime backend binary). **Only `DirectMl` is
-/// tested on this project's hardware** (an AMD DX12 iGPU); the rest are wired and
-/// compile, but are UNVERIFIED — they exist so an operator on the right hardware
-/// can turn one on, accepting that trade-off.
+/// `Cpu` is the universal, always-available, always-trusted default — the reference
+/// implementation, and the only provider that has passed the cross-thread determinism
+/// guard. Every other variant is an **opt-in accelerator** chosen at runtime by
+/// `NER_EXECUTION_PROVIDER`.
+///
+/// Whether one *exists* in a given binary is a build-time fact decided by the linked ONNX
+/// Runtime distribution, not by this enum: each platform's natural accelerator is wired
+/// per-target in `Cargo.toml` (DirectML on Windows, CoreML on macOS, CUDA on x86_64 Linux), so
+/// `--features onnx` already carries it. Selecting a variant the distribution does not contain
+/// is not an error — it falls back to CPU. Ask [`super::bench::available_providers`] what is
+/// actually present rather than inferring it from cargo features.
+///
+/// **Only `DirectMl` has been benchmarked** (on this project's AMD DX12 iGPU, where it lost to
+/// the CPU); the rest are reachable but UNVERIFIED, and *none* of them — DirectML included —
+/// has been run against the determinism guard. See `ARCHITECTURE.md` → *Execution providers*
+/// for the measured/trusted split.
 ///
 /// Whatever is selected, a session that cannot initialize the accelerator
 /// **falls back to CPU** (see [`build_session_reporting`]): a privacy proxy must never fail

@@ -300,6 +300,10 @@ pub async fn run_provider_benchmark() -> anyhow::Result<()> {
 /// answer — here, "nothing to accelerate, and this is how you get a build that has something".
 #[cfg(not(feature = "onnx"))]
 pub async fn run_provider_benchmark() -> anyhow::Result<()> {
+    // The advice must not name an `ep-*` feature (M9-R16, M9-R14's defect in this sibling
+    // branch): each platform's accelerator is wired per-target in Cargo.toml, so `--features
+    // onnx` already carries it — and `ep-directml` in particular is Windows-only, so naming it
+    // to a macOS or Linux operator points at a backend no hardware of theirs can provide.
     println!(
         "Execution-provider benchmark (M9)\n\n\
          This binary was built WITHOUT the `onnx` feature, so it has no ML inference layer to\n\
@@ -307,9 +311,10 @@ pub async fn run_provider_benchmark() -> anyhow::Result<()> {
          credit card, IBAN, national ID) — plain CPU regex, unaffected by any execution\n\
          provider. There is nothing to benchmark.\n\n\
          To get the ML layer (the XLM-R NER) and compare backends:\n\
-         \x20 cargo build --features onnx          # CPU baseline\n\
-         \x20 cargo build --features ep-directml   # + an accelerator (see docs for your OS)\n\
-         then re-run with --bench-providers."
+         \x20 cargo build --features onnx\n\n\
+         That is all it takes — your platform's accelerator is included in that build (DirectML\n\
+         on Windows, CoreML on macOS, CUDA on x86_64 Linux), so there is no second feature to\n\
+         enable. Then re-run with --bench-providers."
     );
     Ok(())
 }

@@ -202,6 +202,46 @@ async fn unknown_cli_argument_is_refused_and_never_binds() {
     );
 }
 
+/// **CLI-03 (M9-R14, M9-R16).** `--bench-providers` must never tell an operator to rebuild with
+/// an `ep-*` cargo feature.
+///
+/// Every platform's accelerator is wired **per-target** in `Cargo.toml`, so `--features onnx`
+/// already carries it — advice naming a feature sends the operator to rebuild something they
+/// have. Worse, `ep-directml` is Windows-only, so naming it to a macOS or Linux operator points
+/// at a backend no hardware of theirs can provide. M9-R14 fixed this in the `onnx` branch and
+/// **left the `cfg(not(onnx))` branch saying it verbatim** — the defect survived because the test
+/// M9-R14 asked for was never written. This is that test, and it is deliberately written to run
+/// in **both** builds so neither branch can drift back.
+#[tokio::test]
+async fn bench_providers_never_advises_an_ep_feature_rebuild() {
+    let out = Command::new(env!("CARGO_BIN_EXE_llm-proxy-pii-rust"))
+        .arg("--bench-providers")
+        .env("RUST_LOG", "error")
+        .output()
+        .expect("failed to spawn the proxy binary");
+
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    for feature in [
+        "ep-directml",
+        "ep-cuda",
+        "ep-coreml",
+        "ep-rocm",
+        "ep-openvino",
+        "ep-tensorrt",
+        "ep-webgpu",
+    ] {
+        assert!(
+            !text.contains(feature),
+            "--bench-providers advised `{feature}`, but the platform accelerator is wired \
+             per-target and needs no such rebuild (M9-R14/M9-R16). Output was:\n{text}"
+        );
+    }
+}
+
 /// **CLI-02 (M9-R4).** `--help` prints usage and exits **0** — the companion to refusing unknown
 /// arguments, so the natural way to ask "what does this take?" is not itself an error.
 #[tokio::test]

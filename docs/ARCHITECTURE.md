@@ -690,10 +690,14 @@ has a shape, and the shape is the blind spot*) one level down.
 **Execution providers — hardware acceleration (M9).** The NER and GLiNER sessions run on an
 `ort` **execution provider (EP)** selected at runtime by `NER_EXECUTION_PROVIDER` (both models
 share the one knob). `cpu` is the default and the only provider the CPU-first design depends on;
-the rest are **opt-in accelerators**, each gated at build time by an `ep-*` cargo feature that
-pulls the matching ONNX Runtime backend binary. The selection + fallback policy has **one home**,
-`onnx::build_session` — both detectors build their session pools through it, so the behavior
-cannot drift between them (the `resolve_pool_and_intra` discipline, applied to the backend).
+the rest are **opt-in accelerators**. Which ones a binary *has* is decided by the linked ONNX
+Runtime distribution: each platform's natural accelerator is wired **per-target** in `Cargo.toml`
+(table below), so `--features onnx` already carries it — the `ep-*` features are escape hatches
+for non-default combinations, not the normal path. The selection + fallback policy has **one
+home**, `onnx::build_session_pool` (built on `build_session_reporting`) — both detectors build
+their session pools through it, so the behavior cannot drift between them, and the pool it returns
+is homogeneous with a single known-effective provider (the `resolve_pool_and_intra` discipline,
+applied to the backend).
 
 **Falling back to CPU is the fail-closed move, not a compromise.** A requested accelerator that
 cannot initialize — not present in the linked distribution, driver/device missing, registration
