@@ -1247,7 +1247,10 @@ so **DirectML is the only GPU path here** (and the only vendor-agnostic one on W
 - [ ] **Builder→reviewer loop** — round 1 (2026-07-20): 11 findings, **none a leak**. Verified
   independently: 143 lib + all integration tests green, `clippy-onnx` / `clippy-directml` clean, and the
   DirectML verdict **reproduced with the shipped tool** (CPU-int8 27.1/46.5/108.4 ms vs DML-int8
-  101.1/346.1/599.3 ms). Full record: [reviews/M9.md](reviews/M9.md).
+  101.1/346.1/599.3 ms). Round 2 ([reviews/M9.md](reviews/M9.md#review-2)): **all 11 closed and
+  verified on the real binary** (the fallback line now reads `provider="cpu" requested="rocm"`);
+  4 new findings on the per-target accelerator, **none a leak**. Full record:
+  [reviews/M9.md](reviews/M9.md).
 
 | Finding | Title | Severity | Done |
 |---|---|---|---|
@@ -1262,6 +1265,10 @@ so **DirectML is the only GPU path here** (and the only vendor-agnostic one on W
 | [M9-R9](reviews/M9.md#m9-r9) | The README sample output is fabricated, and demonstrates the exact coupled-axes error the section warns against | docs | [x] |
 | [M9-R10](reviews/M9.md#m9-r10) | Source doc drift: `onnx.rs` still says GPU "comes later (M4)"; `load_onnx_ner`'s doc block was orphaned onto `resolve_ner_model` | docs | [x] |
 | [M9-R11](reviews/M9.md#m9-r11) | The CPU fallback is **initialization-only**; a mid-life EP failure degrades silently and never re-arms, while SETUP says "always safe to try" | docs | [x] |
+| [M9-R12](reviews/M9.md#m9-r12) | The per-target accelerator now covers three platforms; ARCHITECTURE / DEVLOG / ROADMAP / both READMEs still say "Windows x64 only", and the design doc contradicts itself twelve lines apart | docs | [ ] |
+| [M9-R13](reviews/M9.md#m9-r13) | The three per-target wirings aren't equivalent: only Linux/CUDA changes the downloaded ONNX Runtime, and it doesn't apply to `aarch64-unknown-linux-gnu` — a shipped release target | correctness | [ ] |
+| [M9-R14](reviews/M9.md#m9-r14) | `--bench-providers` still advises rebuilding with an `ep-*` feature the per-target dependency already enables | diagnostics | [ ] |
+| [M9-R15](reviews/M9.md#m9-r15) | The table offers `ep-rocm` / `ep-openvino` as escape hatches, but `download-binaries` has no distribution for either — and on Linux `ep-rocm` now loses CUDA too | docs | [ ] |
 
 <a id="backlog"></a>
 ## Backlog — documented, not scheduled
