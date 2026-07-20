@@ -37,6 +37,39 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v7
+
+      # **A release must not exist that the docs cannot explain.** The ROADMAP status table is
+      # where a reader looks to answer "what is the latest version, and what is in it?", and
+      # nothing forced the two to agree: v1.2.0 was cut once while the table said nothing about
+      # it. Remembering is not a mechanism, so this is checked at the one moment it matters —
+      # tag push, before anything is published — and a release that would leave the docs silent
+      # simply does not happen.
+      #
+      # The convention that makes a *future* tag legal rather than a lie: write
+      # `tag vX.Y.Z (planned)` while it is intended but not yet cut, and drop `(planned)` when it
+      # exists. So the table can always name the version it is heading for; only an unqualified
+      # claim asserts the tag is real, and only that is checked here.
+      - name: The ROADMAP must name this release
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          table="docs/ROADMAP.md"
+          if grep -qE "tag \`${tag}\`( |\`|$)" "$table" && \
+             ! grep -qE "tag \`${tag}\`.*\(planned\)" "$table"; then
+            echo "OK: $table names $tag as a cut release."
+            grep -nE "tag \`${tag}\`" "$table"
+          else
+            echo "::error::$table does not name $tag as a cut release."
+            echo "Add it to the Status table on the milestone it was cut from, e.g."
+            echo "    | [M9.1 — …](#m91) | ✅ complete · tag \`${tag}\` |"
+            echo "If the tag is still only intended, the table may say 'tag \`${tag}\` (planned)' —"
+            echo "but then it is not ready to be published."
+            echo "--- current tag notations in the Status table ---"
+            grep -nE "tag \`v[0-9]" "$table" || echo "(none at all)"
+            exit 1
+          fi
+
       # v8 is the current major on Node 24 (v6 still targets Node 20; v7 was the first on Node 24).
       - uses: actions/download-artifact@v8
         with:

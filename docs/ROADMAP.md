@@ -24,6 +24,13 @@ The Status column is a **single label** — ✅ complete · 🔨 code-complete �
 findings, counts, dates and closure notes live in each milestone's section and in [`reviews/`](reviews/), so
 this table can't drift. A **release tag** is noted next to the milestone it was cut from, never as its own row.
 
+**A tag that isn't cut yet is written `tag `v1.2.0` (planned)`.** That exists so the table can always
+name the version it is heading for without asserting something false — the alternative, leaving it out
+until the tag exists, is what let `v1.2.0` be cut once with the docs silent about it. Drop `(planned)`
+when the tag is real. This is **enforced, not remembered**: `release-build-publish.yml` refuses to
+publish a `v*` tag the Status table does not name as cut, so a release the docs cannot explain cannot
+happen.
+
 | Milestone | Status |
 |---|---|
 | [M0 — Project setup](#m0) | ✅ complete |
@@ -41,7 +48,7 @@ this table can't drift. A **release tag** is noted next to the milestone it was 
 | [M8 — GLiNER: contextual / open-label PII](#m8) | ✅ complete |
 | [M8.1 — national phone recognizer (opt-in)](#m81) | ✅ complete · tag `v1.1.0` |
 | [M9 — GPU optimization](#m9) | ✅ complete |
-| [M9.1 — one release binary per backend](#m91) | 🔨 code-complete |
+| [M9.1 — one release binary per backend](#m91) | ✅ complete · tag `v1.2.0` (planned) |
 
 ---
 
@@ -1359,8 +1366,17 @@ user, NVIDIA device or not. Key-ed accelerators now get **their own artifact** i
   overwrite that publishes fewer binaries than were built. It now fails loudly instead.
 - [x] CUDA removed from the per-target block; only the free accelerators remain there.
 - [x] README (+ `.it`) carries the operator-facing table: *your machine → which binary → what you get*.
-- [ ] **Verify on a real CI run** — the matrix is derived from `dist.txt` rather than guessed, but no
-  leg except Windows x64 has been built here. A `manual-build` run is what turns this ✅.
+- [x] **Verified on a real CI run** — `manual-build` on `f410c7b`, **10/10 legs green**
+  ([run 29741374043](https://github.com/francesco-stimola/llm-proxy-pii-rust/actions/runs/29741374043)),
+  including all five that had never been compiled anywhere: `cuda` on Windows x64 and Linux x64, and
+  `webgpu` on Windows x64, Linux x64 and macOS arm64. The matrix was derived from `dist.txt` rather
+  than guessed, and every derived pair built.
+- [x] **The docs can no longer go silent about a release.** `v1.2.0` was once cut with the Status
+  table saying nothing about it — and the fix for that was itself a trap: writing a tag before it
+  exists is a false claim, leaving it out until it exists means the docs always lag. Resolved by
+  making the *intent* expressible — `tag `vX.Y.Z` (planned)` — and by **enforcing the rest**:
+  `release-build-publish.yml` refuses to publish a `v*` tag this table does not name as cut, so a
+  release the documentation cannot explain simply cannot happen.
 
 > **Tests deliberately run on the standard legs only.** Their purpose in this workflow is per-**arch**
 > coverage (`ci.yml` only tests x86_64 Linux), and the five standard rows already cover every

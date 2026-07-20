@@ -14,6 +14,10 @@ A privacy proxy in front of an OpenAI-compatible LLM: it masks PII locally
   **single label** — ✅ complete · 🔨 code-complete · 📋 planned — never a prose paragraph.
   All detail (findings, counts, dates, caveats) lives in the milestone's own section, not the
   table. It's easy to forget and let a row grow verbose — don't.
+  **A tag not yet cut is written `tag `vX.Y.Z` (planned)`** — so the table can name the version it
+  is heading for without claiming something false, and you never face the choice between a premature
+  claim and a silent release. Drop `(planned)` when the tag exists. Don't rely on remembering:
+  `release-build-publish.yml` **refuses to publish** a `v*` tag this table doesn't name as cut.
 - `docs/ARCHITECTURE.md` — design, the fail-closed model, and **the invariants the
   detection layer rests on** (no-abandoned-bytes, mask-to-a-fixpoint, ASCII word
   boundaries). `docs/TESTING.md` — test strategy & catalog, incl. the property
