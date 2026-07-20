@@ -1266,7 +1266,16 @@ so **DirectML is the only GPU path here** (and the only vendor-agnostic one on W
   `Cargo.toml` block's `ort-sys` claims re-derived from the crate source — three of four exact.
   3 new findings, **none a leak**: a guard that passes vacuously, the same stale sentence in two more
   documents, and one inherited factual claim the experiment behind it doesn't support. **The M9 code
-  is finished; what remains is docs and one test.** Full record: [reviews/M9.md](reviews/M9.md).
+  is finished; what remains is docs and one test.**
+  Round 5 ([reviews/M9.md](reviews/M9.md#review-5)): R20–R22 closed at the sites they quoted, but two
+  closures stopped short of their own prescribed site lists — 3 new findings, **none a leak**.
+  Round 6 ([reviews/M9.md](reviews/M9.md#review-6)): R23–R25 closed, R25 fixed **structurally** (the
+  messages moved onto the testable side of `cfg!`); green bar reproduced (116 / 147 lib, zero warnings,
+  `fmt --check` and both clippy legs clean) and mask → inject → restore re-driven on the **real binary**
+  with no raw PII in the logs. The `webgpu` sweep holds for every phrasing of the literal claim.
+  2 new findings, **none a leak**: the one site R24 itself numbered "Sixth", and a guard whose
+  distinctness assertion cannot see the failure its own comment cites — reproduced by mutation.
+  Full record: [reviews/M9.md](reviews/M9.md).
 
 | Finding | Title | Severity | Done |
 |---|---|---|---|
@@ -1295,6 +1304,8 @@ so **DirectML is the only GPU path here** (and the only vendor-agnostic one on W
 | [M9-R23](reviews/M9.md#m9-r23) | M9-R20's own closure commit added a new ARCHITECTURE sentence crediting `CLI-03` with pinning the guidance "in either build" — the coverage M9-R20 disproved — and TESTING's CLI-03 entry was never narrowed | docs | [x] |
 | [M9-R24](reviews/M9.md#m9-r24) | M9-R22's retraction reached ARCHITECTURE only: four of the six sites it named by `file:line` still say "`ep-webgpu` does not link", and `Cargo.toml` now files `webgpu` in the from-source ❌ tier that ARCHITECTURE moved it out of | docs | [x] |
 | [M9-R25](reviews/M9.md#m9-r25) | `no_accelerator_guidance()` is a five-arm `cfg!` chain; BENCH-01 asserts only the arm compiled for the running platform, leaving three shipped arms guarded on no machine | test-coverage | [x] |
+| [M9-R26](reviews/M9.md#m9-r26) | The site M9-R24 numbered "Sixth" is the one the sweep missed: `.cargo/config.toml` still files every non-default `ep-*` as "NOT obtainable", contradicting the `Cargo.toml` block rewritten beside it | docs | [ ] |
+| [M9-R27](reviews/M9.md#m9-r27) | BENCH-02's distinctness assertion catches a **collapsed** chain but not a **permuted** one, so the "Mac user told about DirectML" failure it names as its own reason passes it; the `cfg!`→`Platform` selection is now the untested half | test-coverage | [ ] |
 
 <a id="backlog"></a>
 ## Backlog — documented, not scheduled
