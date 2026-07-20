@@ -396,37 +396,80 @@ mod tests {
     use crate::pii::recognizers::StructuredRecognizers;
     use crate::pii::{Confidence, DetectError, PiiDetector, PiiEntity, PiiKind};
 
-    /// Capture this crate's `debug`-and-up logs emitted while `f` runs, as one string. A
-    /// **scoped** subscriber (`with_default`, thread-local) so it never fights the process-global
-    /// one `tests/log_safety.rs` installs — different binary, and different mechanism regardless.
+    /// Capture this crate's `debug`-and-up logs emitted while `f` runs, as one string.
+    ///
+    /// **Serialized across callers, and that is load-bearing (M9-R28).** The subscriber is scoped
+    /// (`with_default`, thread-local), which is why this looks like it cannot race — the original
+    /// comment here claimed exactly that. It can: `tracing`'s **max-level gating is
+    /// process-global**, so two threads each installing a thread-local subscriber interfere, and
+    /// the loser's buffer comes back **completely empty** rather than partial. Measured before this
+    /// lock: the canary test failed **11.2%** of the time (168/1500) when run concurrently with its
+    /// siblings, and **0/1500** alone — the race needs a second concurrent caller, and there are
+    /// exactly two.
+    ///
+    /// An empty buffer is the dangerous outcome, not a noisy one: a test that asserts only the
+    /// *absence* of a string passes vacuously against it. Hence the lock here **and** the
+    /// non-vacuity assertion in [`a_clean_convergence_stays_silent`].
     fn capture_debug_logs(f: impl FnOnce()) -> String {
         type Buf = Arc<Mutex<Vec<u8>>>;
-        #[derive(Clone)]
-        struct BufMaker(Buf);
-        struct BufSink(Buf);
-        impl std::io::Write for BufSink {
+
+        // Where the current thread's capture goes, if it is capturing. Every other thread's log
+        // lines are discarded, so concurrent tests neither pollute nor steal each other's buffers.
+        thread_local! {
+            static SINK: std::cell::RefCell<Option<Buf>> = const { std::cell::RefCell::new(None) };
+        }
+
+        struct ThreadSink;
+        impl std::io::Write for ThreadSink {
             fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
-                self.0.lock().unwrap().extend_from_slice(data);
+                SINK.with(|s| {
+                    if let Some(buf) = s.borrow().as_ref() {
+                        buf.lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .extend_from_slice(data);
+                    }
+                });
                 Ok(data.len())
             }
             fn flush(&mut self) -> std::io::Result<()> {
                 Ok(())
             }
         }
-        impl<'a> MakeWriter<'a> for BufMaker {
-            type Writer = BufSink;
+        #[derive(Clone)]
+        struct ThreadMaker;
+        impl<'a> MakeWriter<'a> for ThreadMaker {
+            type Writer = ThreadSink;
             fn make_writer(&'a self) -> Self::Writer {
-                BufSink(self.0.clone())
+                ThreadSink
             }
         }
+
+        // Installed ONCE, process-globally, at DEBUG. That is the fix, not a nicety: `tracing`
+        // caches per-callsite interest and derives it from a PROCESS-GLOBAL max level, so a
+        // thread-local `with_default` subscriber (what this used to be) races every other test in
+        // the binary — a callsite evaluated while no debug subscriber existed stays disabled, and
+        // the capturing thread gets a **completely empty** buffer rather than a partial one.
+        // Measured on the old shape: 168/1500 failures (11.2%) concurrent, 0/1500 alone; a
+        // serializing lock around the two callers did NOT fix it (7/30), because the interference
+        // comes from the other ~114 tests, not from the sibling. A permanent global subscriber
+        // keeps every callsite enabled for the whole binary; routing is then per-thread.
+        static INIT: std::sync::Once = std::sync::Once::new();
+        INIT.call_once(|| {
+            let subscriber = tracing_subscriber::fmt()
+                .with_max_level(tracing::Level::DEBUG)
+                .with_writer(ThreadMaker)
+                .with_ansi(false)
+                .finish();
+            // Only fails if something else already installed one in this binary; nothing does.
+            let _ = tracing::subscriber::set_global_default(subscriber);
+        });
+
         let buf: Buf = Arc::new(Mutex::new(Vec::new()));
-        let subscriber = tracing_subscriber::fmt()
-            .with_max_level(tracing::Level::DEBUG)
-            .with_writer(BufMaker(buf.clone()))
-            .with_ansi(false)
-            .finish();
-        tracing::subscriber::with_default(subscriber, f);
-        let bytes = buf.lock().unwrap().clone();
+        SINK.with(|s| *s.borrow_mut() = Some(buf.clone()));
+        f();
+        SINK.with(|s| *s.borrow_mut() = None);
+
+        let bytes = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
         String::from_utf8(bytes).unwrap()
     }
 
@@ -711,13 +754,27 @@ mod tests {
     fn a_clean_convergence_stays_silent() {
         // Nothing re-tagged → nothing suppressed → no canary line. It must not fire spuriously on
         // the overwhelmingly common case (the shipped model suppresses zero).
+        //
+        // **This test asserts an ABSENCE, so it needs proof the capture worked (M9-R28).** Its
+        // correct outcome is a near-empty buffer, and a *broken* capture also yields an empty
+        // buffer — so on its own it can never tell "correctly silent" from "capture dead", and it
+        // reported `ok` in a run where its sibling proved the capture had failed. The sibling only
+        // escaped because its first assertion is positive. Same non-vacuity discipline as
+        // M4-R13/M4-R24, and as `BENCH-01`: a guard must first show it observed anything at all.
         let detector = StructuredRecognizers::new();
         let logs = capture_debug_logs(|| {
             let mut vault = Vault::new();
             let _ = vault
                 .mask_all("mail bob@test.com", &detector)
                 .expect("converges");
+            // Emitted through the same subscriber the assertions below read, so it is present iff
+            // capture is live. Value-free, like everything this crate logs.
+            tracing::debug!("capture-liveness-probe");
         });
+        assert!(
+            logs.contains("capture-liveness-probe"),
+            "log capture produced nothing, so the silence below would be vacuous; logs:\n{logs}"
+        );
         assert!(
             !logs.contains("placeholder_tags_suppressed"),
             "a clean convergence must stay silent; logs:\n{logs}"
