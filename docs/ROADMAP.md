@@ -40,7 +40,7 @@ this table can't drift. A **release tag** is noted next to the milestone it was 
 | [M7.1 — system-prompt cache + fixpoint NER fix](#m71) | ✅ complete · tag `v1.0.0` |
 | [M8 — GLiNER: contextual / open-label PII](#m8) | ✅ complete |
 | [M8.1 — national phone recognizer (opt-in)](#m81) | ✅ complete · tag `v1.1.0` |
-| [M9 — GPU optimization](#m9) | 🔨 code-complete |
+| [M9 — GPU optimization](#m9) | ✅ complete |
 
 ---
 
@@ -1249,7 +1249,8 @@ so **DirectML is the only GPU path here** (and the only vendor-agnostic one on W
 > higher-recall path viable at speed; optionally cut the ~4.7 s XLM-R turn), not a latency rescue.
 > XLM-R has no pre-shipped `model_fp16.onnx` (only `model.onnx` fp32 + int8); GLiNER's fp16 is on HF.
 
-- [ ] **Builder→reviewer loop** — round 1 (2026-07-20): 11 findings, **none a leak**. Verified
+- [x] **Builder→reviewer loop CLOSED (2026-07-20) — 29 findings across 9 rounds, all closed; none a leak.**
+  Round 1 (2026-07-20): 11 findings, **none a leak**. Verified
   independently: 143 lib + all integration tests green, `clippy-onnx` / `clippy-directml` clean, and the
   DirectML verdict **reproduced with the shipped tool** (CPU-int8 27.1/46.5/108.4 ms vs DML-int8
   101.1/346.1/599.3 ms). Round 2 ([reviews/M9.md](reviews/M9.md#review-2)): **all 11 closed and
@@ -1291,6 +1292,12 @@ so **DirectML is the only GPU path here** (and the only vendor-agnostic one on W
   `--test-threads` settings; and the de-vacuified guard confirmed by running the same dead-capture **mutation**
   against both revisions — the old test reports `ok`, the new one fails loudly. 1 new finding, **not a leak**:
   the helper's rustdoc still documents the abandoned lock ([M9-R29](reviews/M9.md#m9-r29)).
+  Round 9 ([reviews/M9.md](reviews/M9.md#review-9)): **R29 closed, no new findings — M9 is review-clean and
+  complete.** The rustdoc matches the code claim by claim, the abandoned design survives nowhere in `src/`,
+  `tests/` or the design docs, and the closure commit is verified **docs-only** at the byte level, so round
+  8's stress result stands. Green bar reproduced (116 lib + every suite, zero warnings, `fmt --check` and
+  clippy clean); 20/20 clean lib runs. R29's rule promoted to TESTING.md — *re-read surviving prose against
+  the new code, not the old defect* — the shape shared by R10, R17 and R19.
   Full record: [reviews/M9.md](reviews/M9.md).
 
 | Finding | Title | Severity | Done |
