@@ -81,6 +81,28 @@ model makes a good GPU look 2–5× slow (and flags loudly when the run has int8
 answer "is the GPU worth it?"), and it warns to measure on an **idle** machine — the same box measured
 ~3× slower right after a 13-minute LTO build, with the *ranking* intact but the absolute numbers not.
 
+**The review tail — nine rounds, 29 findings, none a leak.** Worth recording because the *shape* was
+consistent and the code was rarely the problem. M9's own scope was review-clean by round 7; rounds 1–6
+were mostly **incomplete sweeps**: a claim would be corrected in the file the finding cited while the same
+sentence stood in three others, twice leaving two documents giving **opposite verdicts on the same
+feature**. That produced the rule now in ARCHITECTURE — *fix every site that makes a claim, not the site
+the finding cited; grep the claim, and the category* — and its sibling in TESTING: *when a fix changes
+mechanism, re-read the surviving prose against the new code, not against the old defect.* Three
+measurement errors of the same family (int8-on-GPU, the ~3× inflated absolutes, the seven-feature WebGPU
+link failure) produced the other: **a result measured with several `ep-*` features says nothing about any
+one of them.**
+
+**The one real bug the review surfaced was not M9's** (M9-R28). Running both suites back-to-back under
+load exposed a pre-existing flake in `anonymizer`'s log-capture helper — and behind it something worse:
+`a_clean_convergence_stays_silent` asserts only an *absence*, and a broken capture also yields an empty
+buffer, so it could never distinguish "correctly silent" from "capture dead". It reported `ok` in a run
+where its sibling proved the capture had failed. Fixing it took two attempts: a `Mutex` serializing the
+two callers **did not work (7/30)** because the interference comes from the other ~114 tests, not the
+sibling — `tracing` caches per-callsite interest off a **process-global** max level. A global subscriber
+installed once with per-thread routing did (0/30, then 0/10 full-suite; the reviewer independently ran
+178 clean against a validated 7.5% pre-fix baseline). The absence-test now carries a liveness probe.
+**Any assert-absence test needs a positive control** — promoted to TESTING.
+
 **Validated against the spike it replaces.** Run on the same box, the shipped tool reproduced the
 throwaway harness's verdict — CPU-int8 fastest at seq 512 (296.9 ms) vs DML-fp16 (714.3 ms, 0.42×),
 DML-fp16 ahead at seq 128 (39.8 vs 66.1 ms, 1.66×), CPU-fp16 slow throughout, DML-int8 worst. Both

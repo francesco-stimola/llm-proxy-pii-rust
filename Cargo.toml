@@ -1,6 +1,6 @@
 [package]
 name = "llm-proxy-pii-rust"
-version = "1.1.0"
+version = "1.2.0"
 edition = "2021"
 # MSRV (M4-R22, corrected by M5-R5 — see docs/reviews/M5.md#m5-r5).
 #
