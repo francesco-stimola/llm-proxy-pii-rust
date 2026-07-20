@@ -1275,6 +1275,14 @@ so **DirectML is the only GPU path here** (and the only vendor-agnostic one on W
   with no raw PII in the logs. The `webgpu` sweep holds for every phrasing of the literal claim.
   2 new findings, **none a leak**: the one site R24 itself numbered "Sixth", and a guard whose
   distinctness assertion cannot see the failure its own comment cites — reproduced by mutation.
+  Round 7 ([reviews/M9.md](reviews/M9.md#review-7)): **R26 and R27 closed — M9's own work is review-clean.**
+  R27 re-verified by re-running the reviewer's mutation (BENCH-02 now fails it) plus a new one on the
+  selection half (BENCH-03 fails an inverted Linux ordering); green bar reproduced (116 / **148** lib, zero
+  warnings, `fmt --check` and both clippy legs clean); mask → inject → restore driven on the **real binary**
+  at `RUST_LOG=debug` with reviewer-chosen values — byte-exact restore, no raw PII anywhere. The `obtainable`
+  predicate grep comes back clean for the **first time**: all three build-config/design files now agree.
+  1 new finding, **not a leak and not M9's** — a pre-existing race in the test log-capture helper
+  ([M9-R28](reviews/M9.md#m9-r28)), reproduced at 11%, whose real cost is a sibling guard that goes vacuous.
   Full record: [reviews/M9.md](reviews/M9.md).
 
 | Finding | Title | Severity | Done |
@@ -1306,6 +1314,7 @@ so **DirectML is the only GPU path here** (and the only vendor-agnostic one on W
 | [M9-R25](reviews/M9.md#m9-r25) | `no_accelerator_guidance()` is a five-arm `cfg!` chain; BENCH-01 asserts only the arm compiled for the running platform, leaving three shipped arms guarded on no machine | test-coverage | [x] |
 | [M9-R26](reviews/M9.md#m9-r26) | The site M9-R24 numbered "Sixth" is the one the sweep missed: `.cargo/config.toml` still files every non-default `ep-*` as "NOT obtainable", contradicting the `Cargo.toml` block rewritten beside it | docs | [x] |
 | [M9-R27](reviews/M9.md#m9-r27) | BENCH-02's distinctness assertion catches a **collapsed** chain but not a **permuted** one, so the "Mac user told about DirectML" failure it names as its own reason passes it; the `cfg!`→`Platform` selection is now the untested half | test-coverage | [x] |
+| [M9-R28](reviews/M9.md#m9-r28) | **Pre-existing, not M9:** `capture_debug_logs` races under the multi-threaded runner — the buffer can come back empty, failing FC-08's canary test (11% under load) and passing its absence-only sibling vacuously | test-integrity | [ ] |
 
 <a id="backlog"></a>
 ## Backlog — documented, not scheduled
