@@ -1283,6 +1283,14 @@ so **DirectML is the only GPU path here** (and the only vendor-agnostic one on W
   predicate grep comes back clean for the **first time**: all three build-config/design files now agree.
   1 new finding, **not a leak and not M9's** — a pre-existing race in the test log-capture helper
   ([M9-R28](reviews/M9.md#m9-r28)), reproduced at 11%, whose real cost is a sibling guard that goes vacuous.
+  Round 8 ([reviews/M9.md](reviews/M9.md#review-8)): **R28 verified closed on both halves.** The builder's
+  first fix (the `Mutex` this review had prescribed) was measured failing at 7/30 and replaced with a
+  process-global subscriber — the right call, and the mechanism is confirmed in the vendored `tracing-core`,
+  not merely inferred. Verified with a **validated** instrument: the flake reproduced on the pre-fix binary at
+  **7.5%** (3/40), then **178 clean runs** on the fix across default, CPU-saturated, `onnx`, and eight
+  `--test-threads` settings; and the de-vacuified guard confirmed by running the same dead-capture **mutation**
+  against both revisions — the old test reports `ok`, the new one fails loudly. 1 new finding, **not a leak**:
+  the helper's rustdoc still documents the abandoned lock ([M9-R29](reviews/M9.md#m9-r29)).
   Full record: [reviews/M9.md](reviews/M9.md).
 
 | Finding | Title | Severity | Done |
@@ -1315,6 +1323,7 @@ so **DirectML is the only GPU path here** (and the only vendor-agnostic one on W
 | [M9-R26](reviews/M9.md#m9-r26) | The site M9-R24 numbered "Sixth" is the one the sweep missed: `.cargo/config.toml` still files every non-default `ep-*` as "NOT obtainable", contradicting the `Cargo.toml` block rewritten beside it | docs | [x] |
 | [M9-R27](reviews/M9.md#m9-r27) | BENCH-02's distinctness assertion catches a **collapsed** chain but not a **permuted** one, so the "Mac user told about DirectML" failure it names as its own reason passes it; the `cfg!`→`Platform` selection is now the untested half | test-coverage | [x] |
 | [M9-R28](reviews/M9.md#m9-r28) | **Pre-existing, not M9:** `capture_debug_logs` races under the multi-threaded runner — the buffer can come back empty, failing FC-08's canary test (11% under load) and passing its absence-only sibling vacuously | test-integrity | [x] |
+| [M9-R29](reviews/M9.md#m9-r29) | `capture_debug_logs`'s rustdoc documents the `Mutex` fix that was measured **not** to work — it calls a nonexistent lock "load-bearing", says the subscriber is scoped when it is process-global, and contradicts the body comment 35 lines below | docs | [ ] |
 
 <a id="backlog"></a>
 ## Backlog — documented, not scheduled
