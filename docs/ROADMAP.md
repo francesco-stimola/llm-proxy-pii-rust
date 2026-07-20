@@ -41,6 +41,7 @@ this table can't drift. A **release tag** is noted next to the milestone it was 
 | [M8 — GLiNER: contextual / open-label PII](#m8) | ✅ complete |
 | [M8.1 — national phone recognizer (opt-in)](#m81) | ✅ complete · tag `v1.1.0` |
 | [M9 — GPU optimization](#m9) | ✅ complete |
+| [M9.1 — one release binary per backend](#m91) | 🔨 code-complete |
 
 ---
 
@@ -1331,6 +1332,42 @@ so **DirectML is the only GPU path here** (and the only vendor-agnostic one on W
 | [M9-R27](reviews/M9.md#m9-r27) | BENCH-02's distinctness assertion catches a **collapsed** chain but not a **permuted** one, so the "Mac user told about DirectML" failure it names as its own reason passes it; the `cfg!`→`Platform` selection is now the untested half | test-coverage | [x] |
 | [M9-R28](reviews/M9.md#m9-r28) | **Pre-existing, not M9:** `capture_debug_logs` races under the multi-threaded runner — the buffer can come back empty, failing FC-08's canary test (11% under load) and passing its absence-only sibling vacuously | test-integrity | [x] |
 | [M9-R29](reviews/M9.md#m9-r29) | `capture_debug_logs`'s rustdoc documents the `Mutex` fix that was measured **not** to work — it calls a nonexistent lock "load-bearing", says the subscriber is scoped when it is process-global, and contradicts the body comment 35 lines below | docs | [x] |
+
+<a id="m91"></a>
+## M9.1 — one release binary per backend
+
+**Opened 2026-07-20**, straight out of M9's own measurement. M9 established that **one ONNX Runtime
+distribution carries one set of execution providers** — so no single build can contain them all, and
+the choice has to move to *which artifact the operator downloads*. M9 shipped the selector and the
+benchmark; this makes the release match what they imply.
+
+**The partition THE RULE produces, and the mistake it corrects.** `ort-sys` keys the downloaded
+prebuilt on `training` / `webgpu` / `cuda|tensorrt` / `nvrtx` / `rocm` — and nothing else. So:
+DirectML and CoreML are **free** (not keys; already inside their platform's plain tarball) and stay
+wired per-target, in everyone's standard binary at zero cost. CUDA and WebGPU **are** keys — M9 had
+wired CUDA per-target for `x86_64` Linux, which handed a heavier CUDA runtime to **every** Linux x64
+user, NVIDIA device or not. Key-ed accelerators now get **their own artifact** instead.
+
+- [x] `release-build.yml`: a `(target, variant)` matrix — **10 legs**, every one a pair `dist.txt`
+  actually has a prebuilt for. Standard (5, all targets) + `cuda` (2) + `webgpu` (3). arm64 Linux and
+  arm64 Windows appear once because no second backend exists for them.
+- [x] Standard artifacts keep their historical unsuffixed name; variants get `-cuda` / `-webgpu`, and
+  the artifact *name* carries the variant too, or two legs sharing a target would overwrite each
+  other's upload.
+- [x] `release-build-publish.yml` flattens with a **collision check** — the suffixing that keeps
+  basenames distinct lives in the *build* workflow, so a mistake there would land here as a silent
+  overwrite that publishes fewer binaries than were built. It now fails loudly instead.
+- [x] CUDA removed from the per-target block; only the free accelerators remain there.
+- [x] README (+ `.it`) carries the operator-facing table: *your machine → which binary → what you get*.
+- [ ] **Verify on a real CI run** — the matrix is derived from `dist.txt` rather than guessed, but no
+  leg except Windows x64 has been built here. A `manual-build` run is what turns this ✅.
+
+> **Tests deliberately run on the standard legs only.** Their purpose in this workflow is per-**arch**
+> coverage (`ci.yml` only tests x86_64 Linux), and the five standard rows already cover every
+> architecture shipped. A variant differs solely in which ONNX Runtime tarball is linked — backend
+> selection is a *runtime* choice defaulting to `cpu`, so it adds no code path the suite exercises.
+> What can break on a variant (a download resolving to nothing, a link failure) is caught by the
+> build step, which every leg runs.
 
 <a id="backlog"></a>
 ## Backlog — documented, not scheduled

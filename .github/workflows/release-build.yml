@@ -59,27 +59,81 @@ env:
 
 jobs:
   build:
-    name: build (${{ matrix.target }})
+    name: build (${{ matrix.target }} / ${{ matrix.variant }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
+      # ONE BINARY PER BACKEND (M9.1). A single ONNX Runtime distribution carries a single set of
+      # execution providers, so "one build with every accelerator" is not a thing — the choice has
+      # to move to *which artifact you download*. Each row below is a (target, backend) pair that
+      # `ort-sys`'s `build/download/dist.txt` actually has a prebuilt for; nothing here is
+      # speculative, and a combination with no row would silently resolve back to the plain
+      # distribution and ship an accelerator that isn't in the binary (M9-R13).
+      #
+      #   standard — the platform's FREE accelerator, already inside its plain tarball:
+      #              DirectML on Windows (both arches), CoreML on macOS, CPU-only on Linux.
+      #              Wired per-target in Cargo.toml, so this is just `--features onnx`.
+      #   cuda     — NVIDIA. A distribution key: swaps the download to `…+cu12`, which is why it
+      #              is its own artifact instead of everyone's default.
+      #   webgpu   — cross-vendor (Vulkan/Metal/D3D12 via Dawn). Also a key.
+      #
+      # arm64 Linux and arm64 Windows appear ONCE on purpose: `dist.txt` has only the plain
+      # distribution for them, so there is no second backend to offer.
       matrix:
         include:
+          # ---- standard: every shipped target ----
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             bin: llm-proxy-pii-rust
+            variant: standard
+            features: onnx
           - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
             bin: llm-proxy-pii-rust
+            variant: standard
+            features: onnx
           - os: macos-latest
             target: aarch64-apple-darwin
             bin: llm-proxy-pii-rust
+            variant: standard
+            features: onnx
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             bin: llm-proxy-pii-rust.exe
+            variant: standard
+            features: onnx
           - os: windows-11-arm
             target: aarch64-pc-windows-msvc
             bin: llm-proxy-pii-rust.exe
+            variant: standard
+            features: onnx
+          # ---- cuda: the two targets with a `cu12` row ----
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            bin: llm-proxy-pii-rust
+            variant: cuda
+            features: ep-cuda
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            bin: llm-proxy-pii-rust.exe
+            variant: cuda
+            features: ep-cuda
+          # ---- webgpu: the three targets with a `wgpu` row ----
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            bin: llm-proxy-pii-rust
+            variant: webgpu
+            features: ep-webgpu
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            bin: llm-proxy-pii-rust
+            variant: webgpu
+            features: ep-webgpu
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            bin: llm-proxy-pii-rust.exe
+            variant: webgpu
+            features: ep-webgpu
     steps:
       - uses: actions/checkout@v7
 
@@ -107,16 +161,29 @@ jobs:
       # move the package path AND push the artifacts into a nested target dir that
       # Swatinem/rust-cache does not manage, so the cache would silently stop covering the build.
       # Keep the explicit flags.
+      # Standard legs only — and that is a coverage statement, not a shortcut. The purpose of
+      # testing here is per-ARCH coverage (ci.yml only tests x86_64 Linux), and the five standard
+      # rows already cover every architecture this project ships. An accelerator variant differs
+      # solely in which ONNX Runtime tarball gets linked; it adds no Rust code path the suite
+      # exercises, because backend selection is a RUNTIME choice (`NER_EXECUTION_PROVIDER`) that
+      # defaults to `cpu` in every build. What *can* break on a variant — the download resolving
+      # to nothing, or a link failure like the one `ep-webgpu` produced in combination — is caught
+      # by the build step below, which every leg runs.
       - name: Test (--features onnx)
+        if: ${{ matrix.variant == 'standard' }}
         run: cargo test --features onnx
 
       # The release profile (Cargo.toml) is the max-optimization one: opt-level 3, fat LTO,
       # codegen-units = 1, symbols stripped. `panic` stays `unwind` ON PURPOSE — `abort` would
       # turn a caught masking panic (which currently blocks ONE request, fail-closed) into a
       # process abort, i.e. an outage. See the profile's comment.
-      - name: Build (release, --features onnx)
-        run: cargo build --release --features onnx --target ${{ matrix.target }}
+      - name: Build (release, --features ${{ matrix.features }})
+        run: cargo build --release --features ${{ matrix.features }} --target ${{ matrix.target }}
 
+      # The `standard` artifact keeps the historical unsuffixed name, so existing download links
+      # and scripts do not break; accelerator variants get a `-cuda` / `-webgpu` suffix. What
+      # "standard" contains differs per platform (DirectML on Windows, CoreML on macOS, CPU on
+      # Linux) — the README's table is the operator-facing map of that.
       - name: Package
         shell: bash
         run: |
@@ -124,6 +191,9 @@ jobs:
           mkdir -p dist
           src="target/${{ matrix.target }}/release/${{ matrix.bin }}"
           dest="dist/llm-proxy-pii-rust-${{ matrix.target }}"
+          if [[ "${{ matrix.variant }}" != "standard" ]]; then
+            dest="${dest}-${{ matrix.variant }}"
+          fi
           if [[ "${{ matrix.bin }}" == *.exe ]]; then
             dest="${dest}.exe"
           fi
@@ -132,9 +202,11 @@ jobs:
       # v7 is the current major on Node 24 (v5 still targets the deprecated Node 20, v6 was the
       # first on Node 24). upload- and download-artifact carry different latest majors because
       # they are separate repos — both are Node 24.
+      # The artifact NAME must carry the variant too: two legs share a target, and identical
+      # names would have them overwrite each other's upload.
       - uses: actions/upload-artifact@v7
         if: ${{ inputs.upload-artifacts }}
         with:
-          name: llm-proxy-pii-rust-${{ matrix.target }}
+          name: llm-proxy-pii-rust-${{ matrix.target }}-${{ matrix.variant }}
           path: dist/*
           retention-days: ${{ inputs.retention-days }}

@@ -774,13 +774,13 @@ would say the opposite of the paragraph above, and a future builder scans the ta
 | Provider (`NER_EXECUTION_PROVIDER`) | How it gets in | Natural OS / hardware | Status |
 |---|---|---|---|
 | `cpu` (default) | always | any | ✅ **trusted** — the reference implementation; the only provider that has passed the determinism guard |
-| `directml` | **automatic** on Windows, both arches (per-target `ort` feature) | Windows, any DX12 GPU (AMD/NVIDIA/Intel/iGPU) | 📊 **benchmarked, not trusted** — measured on this box's AMD DX12 iGPU (a NO-GO there); determinism guard **not** re-run |
-| `coreml` | **automatic** on macOS (per-target) | macOS, Apple Silicon / AMD | ⚠️ **wired, unverified** — needs a Mac |
-| `cuda` | **automatic on `x86_64` Linux only** (per-target) | Linux, NVIDIA | ⚠️ **wired, unverified** — no NVIDIA hardware here. **Not on `aarch64-unknown-linux-gnu`**: `ort-sys` has no `cu12` prebuilt for arm64, so requesting it would resolve back to the plain distribution and the provider would simply be absent |
+| `directml` | **automatic** on Windows, both arches (per-target `ort` feature — it is *free*, see below) | Windows, any DX12 GPU (AMD/NVIDIA/Intel/iGPU) | 📊 **benchmarked, not trusted** — measured on this box's AMD DX12 iGPU (a NO-GO there); determinism guard **not** re-run |
+| `coreml` | **automatic** on macOS (per-target — also free) | macOS, Apple Silicon / AMD | ⚠️ **wired, unverified** — needs a Mac |
+| `cuda` | `ep-cuda` → its **own release binary** (`-cuda`), Windows x64 + Linux x64 | Linux/Windows, NVIDIA | ⚠️ **wired, unverified** — no NVIDIA hardware here. No `cu12` prebuilt exists for either arm64 target, so no artifact is offered there |
+| `webgpu` | `ep-webgpu` → its **own release binary** (`-webgpu`), Windows x64 + Linux x64 + macOS arm64 | any (Vulkan/Metal/D3D12 via Dawn) | ⚠️ **wired, unverified** — obtainable, unlike ROCm/OpenVINO |
 | `tensorrt` | `ep-tensorrt` | Linux/Windows, NVIDIA | ⚠️ **wired, unverified** |
 | `rocm` | `ep-rocm` | Linux, AMD | ❌ **not obtainable via `download-binaries`** — `ort-sys`'s `dist.txt` has no ROCm row for any target, and on Linux the feature combines into a key (`cu12,rocm`) that matches nothing, silently falling back to the plain distribution: **strictly fewer providers than plain `--features onnx`**. Needs a from-source ORT |
 | `openvino` | `ep-openvino` | Linux/Windows, Intel | ❌ **not obtainable via `download-binaries`** — not a distribution key, so the feature compiles `register()` against a runtime that isn't in the tarball |
-| `webgpu` | `ep-webgpu` | any (Vulkan/Metal/D3D12 via Dawn) | ⚠️ **wired, unverified — but obtainable**: `dist.txt` has `wgpu` rows for Windows x64, Linux x64 and macOS arm64, so `ep-webgpu` **alone** resolves to a real WebGPU prebuilt. It only failed to link here because it was measured *combined* with other `ep-*` features — see the warning below |
 
 > **The rule that governs every future wiring (M9-R13).** Adding an EP feature per-target is free
 > **only when `ort-sys` does not key its *distribution* on it.** `resolve_dist` builds the download
@@ -814,11 +814,23 @@ whether trying is worth it on your box. Trusting one for masking quality means r
 determinism guard under it first.
 
 **Every release target uses a *prebuilt* ONNX Runtime** (`download-binaries`); none builds it from
-source. So wiring an accelerator per-target is a question of *which tarball is fetched*, and the
-rule above decides whether a given feature changes that at all. Windows (both arches) and macOS
-were wired without needing a CI run because their features are provably no-ops on the artifact;
-`x86_64` Linux was wired knowing it genuinely swaps the download; `aarch64` Linux was left alone
-because the swap has nowhere to land. **Only DirectML has actually been run** — on this project's
+source. So THE RULE above does more than warn — it **partitions the accelerators**, and the release
+shape follows from that partition (M9.1):
+
+- **Free** (not a distribution key): DirectML, CoreML. Enabling them cannot change which tarball is
+  fetched — they are already *inside* their platform's plain distribution. So they are wired
+  **per-target** in `Cargo.toml` and every standard binary has them, at zero cost and with no CI run
+  needed to prove it.
+- **Key-ed** (changes the download): CUDA, WebGPU, TensorRT, nvrtx. Wiring one per-target would
+  impose a different, heavier runtime on **every** user of that platform — which is what an earlier
+  version of this section did with CUDA on x86_64 Linux, handing a CUDA-laden runtime to every Linux
+  user with or without an NVIDIA device. A key-ed accelerator therefore belongs in **its own release
+  artifact**: `release-build.yml` builds one binary per backend, and the operator downloads the one
+  their machine can run (the README carries that table).
+
+Which pairs exist is not a judgement call — it is `dist.txt`. There is no CUDA or WebGPU prebuilt for
+either arm64 target, and none at all for ROCm or OpenVINO, so no artifact is offered for those and
+the matrix says nothing speculative. **Only DirectML has actually been run** — on this project's
 box — which is why it is the only non-CPU row marked *benchmarked* rather than *unverified*.
 
 > **What "unverified" means for the Linux/CUDA row, concretely — the pre-tag check (M9-R13).** Two

@@ -42,10 +42,25 @@ jobs:
         with:
           path: artifacts
 
+      # Flattening is only safe while every binary has a unique basename. Since M9.1 there are
+      # several artifacts per target (standard / cuda / webgpu), and the suffixing that keeps them
+      # distinct lives in the *build* workflow — so a mistake there would land here as a silent
+      # overwrite, publishing fewer binaries than were built with nothing to show it went wrong.
+      # Fail loudly instead: a release missing an accelerator build is worse than a failed job.
       - name: Flatten artifacts
         run: |
+          set -euo pipefail
           mkdir -p out
-          find artifacts -type f -exec cp {} out/ \;
+          built=$(find artifacts -type f | wc -l)
+          find artifacts -type f -exec cp -n {} out/ \;
+          published=$(find out -type f | wc -l)
+          if [ "$built" -ne "$published" ]; then
+            echo "::error::basename collision: $built artifacts built but only $published published."
+            find artifacts -type f -printf '%f\n' | sort | uniq -d
+            exit 1
+          fi
+          echo "published $published binaries:"
+          find out -type f -printf '  %f\n' | sort
 
       - uses: softprops/action-gh-release@v3
         with:

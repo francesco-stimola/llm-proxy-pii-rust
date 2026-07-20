@@ -246,19 +246,38 @@ una domanda sul tuo hardware, quindi il tool la misura invece di risponderti a p
 llm-proxy-pii-rust.exe --bench-providers
 ```
 
-**La GPU della tua piattaforma è già nella build `onnx`** — non c'è nulla da compilare in più:
+**Un binario di release per backend — scarichi quello che la tua macchina può eseguire.** Una
+distribuzione ONNX Runtime porta un solo set di execution provider, quindi nessuna build può
+contenerli tutti: la scelta si sposta su *quale artefatto prendi*. Ogni combinazione qui sotto è una
+per cui ONNX Runtime pubblica davvero un prebuilt:
 
-| piattaforma | acceleratore incluso |
-|---|---|
-| Windows (x64 e arm64) | **DirectML** — qualsiasi GPU DX12: AMD, NVIDIA, Intel, integrata |
-| macOS | **CoreML** — Apple Neural Engine / GPU |
-| Linux x86_64 | **CUDA** — usato se sono presenti un device NVIDIA e il runtime CUDA |
-| Linux arm64 | nessuno — ONNX Runtime non ha un prebuilt CUDA per quell'arch, quindi la via è `cpu` |
+| la tua macchina | scarica | acceleratore che ottieni |
+|---|---|---|
+| **Windows x64** | `…-x86_64-pc-windows-msvc` | **DirectML** — qualsiasi GPU DX12 (AMD/NVIDIA/Intel, anche integrata) |
+| Windows x64, NVIDIA | `…-x86_64-pc-windows-msvc-cuda` | **CUDA** |
+| Windows x64, cross-vendor | `…-x86_64-pc-windows-msvc-webgpu` | **WebGPU** (D3D12/Vulkan via Dawn) |
+| **Windows arm64** | `…-aarch64-pc-windows-msvc` | **DirectML** |
+| **macOS (Apple Silicon)** | `…-aarch64-apple-darwin` | **CoreML** — Neural Engine / GPU |
+| macOS, cross-vendor | `…-aarch64-apple-darwin-webgpu` | **WebGPU** (Metal via Dawn) |
+| **Linux x64** | `…-x86_64-unknown-linux-gnu` | solo CPU |
+| Linux x64, NVIDIA | `…-x86_64-unknown-linux-gnu-cuda` | **CUDA** |
+| Linux x64, cross-vendor | `…-x86_64-unknown-linux-gnu-webgpu` | **WebGPU** (Vulkan via Dawn) |
+| **Linux arm64** | `…-aarch64-unknown-linux-gnu` | solo CPU |
 
-Uno solo per piattaforma, perché **una distribuzione ONNX Runtime porta un solo set di backend** —
-abilitare più feature `ep-*` non li combina, e cross-piattaforma è comunque impossibile (CoreML
-esiste solo nelle build macOS, DirectML solo in quelle Windows). Senza la feature `onnx` il flag
-gira comunque e spiega che non c'è alcun layer ML da accelerare.
+La riga in **grassetto** è la scelta di default per ogni piattaforma. Le righe mancanti sono quelle
+per cui ONNX Runtime non ha un prebuilt: non esiste build CUDA né WebGPU per nessuna delle due
+piattaforme arm64, né build ROCm o OpenVINO per **alcun** target — servirebbe un ONNX Runtime
+compilato da sorgente, che questo progetto non distribuisce.
+
+Nota che DirectML e CoreML sono gratis: stanno già dentro la distribuzione base della loro
+piattaforma, quindi il binario standard li ha. CUDA e WebGPU no — cambiano quale runtime viene
+scaricato, ed è esattamente per questo che sono artefatti separati invece che peso nella build di
+tutti.
+
+Qualunque tu esegua, il backend resta comunque **spento finché non lo chiedi**
+(`NER_EXECUTION_PROVIDER`), ricade su CPU se il device non c'è, e `--bench-providers` ti dice se
+conviene davvero usarlo. Senza la feature `onnx` il flag gira lo stesso e spiega che non c'è alcun
+layer ML da accelerare.
 
 Esegue la matrice **modello × provider** sulla tua macchina e nomina il vincitore:
 

@@ -105,32 +105,33 @@ hf-hub = { version = "1", optional = true }
 # combination with no row in `dist.txt` **silently falls back** to the plain
 # distribution — it builds green and the accelerator is simply absent.
 #
-# Windows -> DirectML. NOT a distribution key, and `build/static_link/mod.rs` links
-#            DirectML on every Windows target unconditionally ("pyke libs always
-#            ship compiled with DirectML on Windows"). So this is a no-op on the
-#            artifact — provably safe on both x64 and arm64, no CI run needed.
-# macOS   -> CoreML. Also not a distribution key: same tarball as before. No-op on
-#            the artifact, same reasoning.
-# Linux   -> CUDA, x86_64 ONLY. `cuda` IS a key, so this genuinely swaps the
-#            download to `x86_64-unknown-linux-gnu+cu12` on every Linux build,
-#            NVIDIA hardware or not. It is deliberately NOT applied to
-#            `aarch64-unknown-linux-gnu` (a shipped release target): `dist.txt` has
-#            no `cu12` row for arm64, so requesting it there would silently resolve
-#            to the plain distribution and promise an accelerator that isn't in the
-#            binary. Better to claim nothing than to claim it and not deliver.
+# **Only the FREE ones live here** — the accelerators that are not distribution
+# keys, so wiring them cannot change which tarball is downloaded:
+#
+# Windows -> DirectML. Not a key, and `build/static_link/mod.rs` links DirectML on
+#            every Windows target unconditionally ("pyke libs always ship compiled
+#            with DirectML on Windows"). A no-op on the artifact — provably safe on
+#            both arches, no CI run needed.
+# macOS   -> CoreML. Also not a key: the same tarball as before.
+#
+# **CUDA/WebGPU are deliberately NOT here, and that is the whole design (M9.1).**
+# They ARE distribution keys, so putting `cuda` in this block swapped the download
+# to `…+cu12` for *every* x86_64 Linux build — a heavier, CUDA-laden runtime
+# imposed on every user whether or not they own an NVIDIA device. A key-ed
+# accelerator therefore belongs in its **own release artifact**, not in everyone's
+# default build: `release-build.yml` produces one binary per backend and the user
+# downloads the one their machine can run. Locally the same is reachable with
+# `--features ep-cuda` / `ep-webgpu`.
 #
 # A machine that lacks the *device* just falls back to CPU at session build, so a
 # wrong guess costs latency, never a broken runtime. `--bench-providers` reports
-# what each box actually got. Anything else stays reachable via `ep-*` below.
+# what each box actually got.
 # See docs/ARCHITECTURE.md → "Execution providers".
 [target.'cfg(windows)'.dependencies]
 ort = { version = "=2.0.0-rc.12", optional = true, features = ["directml"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 ort = { version = "=2.0.0-rc.12", optional = true, features = ["coreml"] }
-
-[target.'cfg(all(target_os = "linux", target_arch = "x86_64"))'.dependencies]
-ort = { version = "=2.0.0-rc.12", optional = true, features = ["cuda"] }
 
 [features]
 default = []
