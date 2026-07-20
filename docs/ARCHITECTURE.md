@@ -801,6 +801,13 @@ would say the opposite of the paragraph above, and a future builder scans the ta
 > rows for Windows x64, Linux x64 and macOS arm64, so `ep-webgpu` *alone* resolves fine. **Measure
 > one feature at a time, or measure nothing.**
 
+> **And the process rule M9 paid four review rounds to learn (M9-R21/R24):** when a claim is found
+> wrong, **fix every site that makes it, not the site the finding cited.** Grep the *claim* — and
+> the *category* it belongs to, not just the exact words. M9 corrected a claim in one file five
+> separate times while the same sentence stood in three others, twice leaving two documents giving
+> **opposite verdicts on the same feature**. A finding that hands over a `file:line` list is naming
+> where the reviewer stopped looking, not where the claim stops.
+
 Nothing in the table above `cpu` should be read as "safe to trust blindly": they are safe to *try*
 (the fallback and the bounded blast radius above see to that), and `--bench-providers` tells you
 whether trying is worth it on your box. Trusting one for masking quality means re-running the
@@ -885,7 +892,11 @@ is already wired per-target, so when no accelerator was measured the report expl
 machine's* situation (device/driver missing, or — on arm64 Linux — that none is wired for that
 architecture) rather than naming a cargo feature the operator already has. Without the `onnx`
 feature it still runs and explains that there is no ML layer to accelerate rather than failing.
-`CLI-03` pins that no `ep-*` feature name appears in its output, in either build.
+Two guards pin that, and the split matters: **`BENCH-01`** drives `format_report` directly with a
+CPU-only result set, because it is the only way to reach the no-accelerator branch on a machine
+whose platform accelerator *is* present; **`CLI-03`** spawns the real binary and covers the
+`cfg(not(onnx))` message end-to-end, which no unit test in `bench` can reach (that module is
+`onnx`-gated). Neither alone is sufficient — assuming otherwise is what let this defect ship twice.
 
 **NER chunking (M5, PERF-01).** `OnnxNerDetector` tokenizes a field once; if it fits, it runs
 exactly as before (M2). A field that doesn't is split into overlapping token windows

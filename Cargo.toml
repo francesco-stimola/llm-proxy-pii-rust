@@ -83,7 +83,7 @@ hf-hub = { version = "1", optional = true }
 # so "compile in every backend" is not a thing. MEASURED: enabling six `ep-*`
 # features on Windows still links against the DirectML distribution, and at
 # runtime cuda/tensorrt/coreml/rocm/openvino all report unavailable and fall
-# back to CPU (`ep-webgpu` doesn't even link — no `webgpu_dawn.lib`). The only
+# back to CPU. The only
 # meaningful choice is therefore ONE natural accelerator per platform.
 #
 # Setting it here rather than in the release workflow means the same rule
@@ -94,8 +94,7 @@ hf-hub = { version = "1", optional = true }
 # carries the platform's GPU with no special build and a dev build cannot disagree
 # with CI. Only one per platform: a single ONNX Runtime distribution carries a
 # single provider set, so listing several fetches one and leaves the rest
-# reporting unavailable — noise, not coverage. `ep-webgpu` is never wired here: it
-# does not link on Windows (no `webgpu_dawn.lib`).
+# reporting unavailable — noise, not coverage.
 #
 # **THE RULE BEFORE WIRING A NEW ONE (M9-R13):** adding an EP feature per-target is
 # free ONLY when `ort-sys` does not key its *distribution* on it. `resolve_dist`
@@ -142,14 +141,17 @@ onnx = ["dep:ort", "dep:tokenizers", "dep:hf-hub"]
 # these is needed for it. They exist to force a non-default combination — a
 # different backend than the platform's, or one on a platform that has none.
 #
-# Reaching for one is usually a mistake, and two of them cannot work at all with
+# Reaching for one is usually a mistake, and TWO of them cannot work at all with
 # the prebuilt distribution: `ort-sys`'s `dist.txt` has no ROCm row for any
 # target (and on Linux `ep-rocm` combines into a `cu12,rocm` key matching
 # nothing, so it silently resolves to the plain distribution — STRICTLY FEWER
 # providers than plain `--features onnx`), and `openvino` is not a distribution
-# key at all. `ep-webgpu` does not link on Windows (no `webgpu_dawn.lib`).
-# Making those work needs a from-source ONNX Runtime, which this project does
-# not build. Run `--bench-providers` to see what a given binary really has.
+# key at all. `ep-webgpu` is NOT one of the two: `dist.txt` has `wgpu` rows for
+# Windows x64, Linux x64 and macOS arm64, so it resolves fine **on its own** —
+# the link failure once recorded here came from combining it with other `ep-*`
+# features (see THE RULE's corollary above). Making ROCm/OpenVINO work needs a
+# from-source ONNX Runtime, which this project does not build.
+# Run `--bench-providers` to see what a given binary really has.
 # See docs/ARCHITECTURE.md → "Execution providers (hardware acceleration)".
 ep-directml = ["onnx", "ort/directml"]
 ep-cuda = ["onnx", "ort/cuda"]

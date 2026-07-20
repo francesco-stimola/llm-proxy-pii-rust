@@ -1224,7 +1224,7 @@ so **DirectML is the only GPU path here** (and the only vendor-agnostic one on W
   (DirectML on Windows both arches, CoreML on macOS, CUDA on `x86_64` Linux), so it needs no special
   build and a dev build cannot disagree with the release pipeline. Measured first: "compile in every
   backend" is impossible — one ONNX Runtime distribution carries one provider set (six `ep-*`
-  features link, but five report unavailable at runtime; `ep-webgpu` doesn't link). Which platforms
+  features link, but five report unavailable at runtime). Which platforms
   were safe to wire came from `ort-sys`'s `resolve_dist`, not from guessing: DirectML/CoreML are not
   distribution keys (no-ops on the artifact), CUDA is — and has no arm64-Linux prebuilt, so that
   target is deliberately left alone. Provider discovery is therefore a **runtime** query
@@ -1292,9 +1292,9 @@ so **DirectML is the only GPU path here** (and the only vendor-agnostic one on W
 | [M9-R20](reviews/M9.md#m9-r20) | CLI-03 is **vacuous in the `onnx` build** — `--bench-providers` bails at the unconfigured-model check, so the guard never reaches the branch M9-R14 fixed | test-coverage | [x] |
 | [M9-R21](reviews/M9.md#m9-r21) | The pre-per-target "`NER_EXECUTION_PROVIDER` + an `ep-*` feature" claim survives in ARCHITECTURE's design-principles bullet and its `--bench-providers` section, plus two DEVLOG sites — the design doc now contradicts CLI-03 | docs | [x] |
 | [M9-R22](reviews/M9.md#m9-r22) | "`ep-webgpu` does not link on Windows" is generalized from a seven-feature build whose combined key resolved to `none`; `dist.txt` has an `x86_64-pc-windows-msvc+wgpu` row | docs | [x] |
-| [M9-R23](reviews/M9.md#m9-r23) | M9-R20's own closure commit added a new ARCHITECTURE sentence crediting `CLI-03` with pinning the guidance "in either build" — the coverage M9-R20 disproved — and TESTING's CLI-03 entry was never narrowed | docs | [ ] |
-| [M9-R24](reviews/M9.md#m9-r24) | M9-R22's retraction reached ARCHITECTURE only: four of the six sites it named by `file:line` still say "`ep-webgpu` does not link", and `Cargo.toml` now files `webgpu` in the from-source ❌ tier that ARCHITECTURE moved it out of | docs | [ ] |
-| [M9-R25](reviews/M9.md#m9-r25) | `no_accelerator_guidance()` is a five-arm `cfg!` chain; BENCH-01 asserts only the arm compiled for the running platform, leaving three shipped arms guarded on no machine | test-coverage | [ ] |
+| [M9-R23](reviews/M9.md#m9-r23) | M9-R20's own closure commit added a new ARCHITECTURE sentence crediting `CLI-03` with pinning the guidance "in either build" — the coverage M9-R20 disproved — and TESTING's CLI-03 entry was never narrowed | docs | [x] |
+| [M9-R24](reviews/M9.md#m9-r24) | M9-R22's retraction reached ARCHITECTURE only: four of the six sites it named by `file:line` still say "`ep-webgpu` does not link", and `Cargo.toml` now files `webgpu` in the from-source ❌ tier that ARCHITECTURE moved it out of | docs | [x] |
+| [M9-R25](reviews/M9.md#m9-r25) | `no_accelerator_guidance()` is a five-arm `cfg!` chain; BENCH-01 asserts only the arm compiled for the running platform, leaving three shipped arms guarded on no machine | test-coverage | [x] |
 
 <a id="backlog"></a>
 ## Backlog — documented, not scheduled

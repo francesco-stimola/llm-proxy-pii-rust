@@ -90,8 +90,12 @@ about absolutes rather than publishing a millisecond figure.
 
 **"Can we just compile in every backend?" — measured, and no (2026-07-20).** The obvious wish, and
 worth an experiment rather than an opinion. `cargo check` with all seven `ep-*` features passes;
-`cargo build` then fails at **link** on `ep-webgpu` alone (`LNK1181: cannot open input file
-'webgpu_dawn.lib'`). Drop WebGPU and the other **six link fine** — which looked like a yes, until
+`cargo build` then fails at **link** with `LNK1181: cannot open input file 'webgpu_dawn.lib'`, which
+I read at the time as "`ep-webgpu` does not link on Windows". **That inference was wrong** — see the
+2026-07-20 correction below: `resolve_dist` keys on the *combination*, the seven-feature key matches
+no row and falls back to the plain tarball while `static_link` still emits the WebGPU link directive,
+and `ep-webgpu` **alone** resolves to a real prebuilt. Drop WebGPU and the other **six link fine** —
+which looked like a yes, until
 the binary ran: `cpu` and `directml` report `ok`, while **`cuda` / `tensorrt` / `coreml` / `rocm` /
 `openvino` all report `unavailable — fell back to cpu`**. The reason is that `download-binaries`
 fetches **one** ONNX Runtime distribution and *that* decides which EPs exist; a cargo feature only
@@ -136,7 +140,8 @@ accelerator entirely. Asking the binary cannot lie either way.
 **It works in every build, and never advises a rebuild.** Which providers exist is a build-time
 choice, but the platform's accelerator is already wired per-target — so when none was measured the
 report explains *this machine's* situation rather than naming a cargo feature the operator already
-has (that mistake shipped twice, in both branches, and `CLI-03` now pins it shut). A session that
+has (that mistake shipped twice, in both branches; `BENCH-01` and `CLI-03` together pin it shut —
+one per branch, because neither can reach the other's). A session that
 falls back is reported as **`unavailable — fell back to cpu`** rather than silently logged as a GPU
 measurement (`build_session_reporting` exposes the *effective* provider for exactly this). Without
 the `onnx` feature the flag still runs and explains that there is no ML layer to accelerate,

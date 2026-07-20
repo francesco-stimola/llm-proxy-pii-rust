@@ -127,21 +127,56 @@ pub fn available_providers() -> Vec<ExecutionProvider> {
 /// Linux, i.e. exactly where that advice cannot help. So the guidance is the platform's real
 /// situation, not a feature flag.
 fn no_accelerator_guidance() -> &'static str {
-    if cfg!(target_os = "windows") {
-        "DirectML is compiled into every Windows build of this proxy, so a missing row means the \
-         GPU/driver did not present a DX12 device to ONNX Runtime — check the vendor driver."
+    // `cfg!` only selects WHICH platform we are; the message for each is chosen by the pure
+    // function below, so all five arms are reachable from a test on any machine (M9-R25). A bare
+    // `cfg!` chain would compile only the running platform's arm, leaving the other four —
+    // shipped, and on platforms CI never runs — guarded nowhere. That is the shape of M9-R16.
+    let platform = if cfg!(target_os = "windows") {
+        Platform::Windows
     } else if cfg!(target_os = "macos") {
-        "CoreML is compiled into every macOS build of this proxy, so a missing row means ONNX \
-         Runtime did not initialize it on this machine."
+        Platform::MacOs
     } else if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
-        "CUDA is compiled into x86_64 Linux builds of this proxy, so a missing row usually means \
-         the CUDA runtime is not installed or no NVIDIA device is visible."
+        Platform::LinuxX86
     } else if cfg!(target_os = "linux") {
-        "On this architecture (non-x86_64 Linux) no accelerator is wired: ONNX Runtime ships no \
-         CUDA prebuilt for it, so `cpu` is the supported path. A from-source ONNX Runtime build \
-         would be required to change that."
+        Platform::LinuxOther
     } else {
-        "No accelerator is known for this platform; `cpu` is the supported path."
+        Platform::Unknown
+    };
+    guidance_for(platform)
+}
+
+/// The platforms [`no_accelerator_guidance`] distinguishes. Separate from `cfg!` so every arm is
+/// testable everywhere.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Platform {
+    Windows,
+    MacOs,
+    LinuxX86,
+    LinuxOther,
+    Unknown,
+}
+
+/// The message for each platform — pure, total, and exhaustively tested.
+fn guidance_for(platform: Platform) -> &'static str {
+    match platform {
+        Platform::Windows => {
+            "DirectML is compiled into every Windows build of this proxy, so a missing row means \
+             the GPU/driver did not present a DX12 device to ONNX Runtime — check the vendor driver."
+        }
+        Platform::MacOs => {
+            "CoreML is compiled into every macOS build of this proxy, so a missing row means ONNX \
+             Runtime did not initialize it on this machine."
+        }
+        Platform::LinuxX86 => {
+            "CUDA is compiled into x86_64 Linux builds of this proxy, so a missing row usually \
+             means the CUDA runtime is not installed or no NVIDIA device is visible."
+        }
+        Platform::LinuxOther => {
+            "On this architecture (non-x86_64 Linux) no accelerator is wired: ONNX Runtime ships \
+             no CUDA prebuilt for it, so `cpu` is the supported path. A from-source ONNX Runtime \
+             build would be required to change that."
+        }
+        Platform::Unknown => "No accelerator is known for this platform; `cpu` is the supported path.",
     }
 }
 
@@ -495,6 +530,52 @@ mod report_tests {
                  and needs no such rebuild (M9-R14/R16/R20). Report was:\n{report}"
             );
         }
+    }
+
+    /// **BENCH-02 (M9-R25).** *Every* platform's guidance is checked, not just the running one.
+    ///
+    /// `no_accelerator_guidance` is a five-way `cfg!` chain, so a test that only calls it sees
+    /// the single arm compiled for this machine — three of the five ship on platforms CI never
+    /// runs. That is exactly the shape of M9-R16: a message that was wrong for macOS and Linux
+    /// survived because nothing on Windows could observe it. Splitting the pure `guidance_for`
+    /// out of the `cfg!` makes all five reachable here.
+    #[test]
+    fn every_platforms_guidance_is_sound_not_only_this_ones() {
+        let all = [
+            Platform::Windows,
+            Platform::MacOs,
+            Platform::LinuxX86,
+            Platform::LinuxOther,
+            Platform::Unknown,
+        ];
+        for platform in all {
+            let msg = guidance_for(platform);
+            assert!(!msg.is_empty(), "{platform:?}: guidance must not be empty");
+            for feature in [
+                "ep-directml",
+                "ep-cuda",
+                "ep-coreml",
+                "ep-rocm",
+                "ep-openvino",
+                "ep-tensorrt",
+                "ep-webgpu",
+            ] {
+                assert!(
+                    !msg.contains(feature),
+                    "{platform:?}: guidance named `{feature}` — the platform accelerator is wired \
+                     per-target, so no rebuild advice is correct (M9-R14/R16/R25). Got: {msg}"
+                );
+            }
+        }
+        // And the arms must actually differ: a chain that collapsed to one message would pass
+        // every assertion above while telling a Mac user about DirectML.
+        let distinct: std::collections::BTreeSet<_> =
+            all.iter().map(|p| guidance_for(*p)).collect();
+        assert_eq!(
+            distinct.len(),
+            all.len(),
+            "each platform must get its own message; duplicates mean an arm is mis-wired"
+        );
     }
 
     /// The header must echo the **resolved** shape it measured with, not the core count (M9-R3).
