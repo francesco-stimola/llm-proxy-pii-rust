@@ -57,6 +57,8 @@ clippy-onnx = "clippy --all-targets --features onnx --target-dir target/onnx"
 # needed to touch the GPU, which is the exact misreading the READMEs had to be
 # rewritten to kill. Every platform now gets its own accelerator the same way
 # (DirectML on Windows, CoreML on macOS, CUDA on x86_64 Linux — see Cargo.toml);
-# the remaining `ep-*` features are escape hatches for backends that are NOT
-# obtainable from the prebuilt distribution, and mostly cannot be (ARCHITECTURE →
-# "Execution providers" says which).
+# the remaining `ep-*` features are escape hatches for NON-DEFAULT combinations.
+# Some of them are obtainable from the prebuilt distribution (`tensorrt`,
+# `webgpu`) and some are not (`rocm`, `openvino` — no matching row / not a
+# distribution key at all). ARCHITECTURE → "Execution providers" says which, and
+# why the distinction is a property of `ort-sys`'s `resolve_dist`, not of us.

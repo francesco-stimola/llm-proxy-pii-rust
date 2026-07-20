@@ -127,26 +127,30 @@ pub fn available_providers() -> Vec<ExecutionProvider> {
 /// Linux, i.e. exactly where that advice cannot help. So the guidance is the platform's real
 /// situation, not a feature flag.
 fn no_accelerator_guidance() -> &'static str {
-    // `cfg!` only selects WHICH platform we are; the message for each is chosen by the pure
-    // function below, so all five arms are reachable from a test on any machine (M9-R25). A bare
-    // `cfg!` chain would compile only the running platform's arm, leaving the other four —
-    // shipped, and on platforms CI never runs — guarded nowhere. That is the shape of M9-R16.
-    let platform = if cfg!(target_os = "windows") {
-        Platform::Windows
-    } else if cfg!(target_os = "macos") {
-        Platform::MacOs
-    } else if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
-        Platform::LinuxX86
-    } else if cfg!(target_os = "linux") {
-        Platform::LinuxOther
-    } else {
-        Platform::Unknown
-    };
-    guidance_for(platform)
+    guidance_for(platform_from(std::env::consts::OS, std::env::consts::ARCH))
 }
 
-/// The platforms [`no_accelerator_guidance`] distinguishes. Separate from `cfg!` so every arm is
-/// testable everywhere.
+/// Classify a target from `(os, arch)` strings — **the selection half, kept testable (M9-R27).**
+///
+/// M9-R25 moved the *messages* onto the testable side of `cfg!` and left the *selection* on the
+/// untestable side, so nothing on any machine asserted that macOS maps to [`Platform::MacOs`], or
+/// that the `x86_64` Linux case is matched **before** bare Linux — invert that order and every
+/// x86_64 Linux operator is told no accelerator is wired for their architecture, on a build that
+/// has CUDA. Taking `std::env::consts::{OS, ARCH}` instead of `cfg!` is behaviour-identical (both
+/// are fixed for the compiled target) and makes the mapping a pure, testable function.
+fn platform_from(os: &str, arch: &str) -> Platform {
+    match os {
+        "windows" => Platform::Windows,
+        "macos" => Platform::MacOs,
+        // Order matters, and it is the one thing the `cfg!` chain hid from tests.
+        "linux" if arch == "x86_64" => Platform::LinuxX86,
+        "linux" => Platform::LinuxOther,
+        _ => Platform::Unknown,
+    }
+}
+
+/// The platforms [`no_accelerator_guidance`] distinguishes. Separate from the target constants so
+/// every arm is testable everywhere.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Platform {
     Windows,
@@ -567,14 +571,42 @@ mod report_tests {
                 );
             }
         }
-        // And the arms must actually differ: a chain that collapsed to one message would pass
-        // every assertion above while telling a Mac user about DirectML.
-        let distinct: std::collections::BTreeSet<_> =
-            all.iter().map(|p| guidance_for(*p)).collect();
-        assert_eq!(
-            distinct.len(),
-            all.len(),
-            "each platform must get its own message; duplicates mean an arm is mis-wired"
+        // **Positive, per-case (M9-R27).** A distinctness check is invariant under PERMUTATION:
+        // swap the Windows and macOS bodies and a set-size assertion still passes while a Mac user
+        // is told about DirectML — the exact failure this test claims to prevent. (The reviewer
+        // demonstrated it by mutating the function and watching the old assertion pass; the
+        // assertions below were then re-verified against that same mutation, and they fail it.)
+        assert!(guidance_for(Platform::Windows).contains("DirectML"));
+        assert!(guidance_for(Platform::MacOs).contains("CoreML"));
+        assert!(guidance_for(Platform::LinuxX86).contains("CUDA is compiled into x86_64 Linux"));
+        assert!(guidance_for(Platform::LinuxOther).contains("no accelerator is wired"));
+        assert!(guidance_for(Platform::Unknown).contains("No accelerator is known"));
+    }
+
+    /// **BENCH-03 (M9-R27).** The *selection* half, which M9-R25's refactor left untestable.
+    ///
+    /// Nothing asserted that macOS maps to `MacOs`, nor — the one that bites — that the `x86_64`
+    /// Linux case is matched **before** bare Linux. Invert that order and every x86_64 Linux
+    /// operator is told no accelerator is wired for their architecture, on a build that has CUDA.
+    #[test]
+    fn platform_classification_covers_every_target_and_orders_linux_correctly() {
+        assert_eq!(platform_from("windows", "x86_64"), Platform::Windows);
+        assert_eq!(platform_from("windows", "aarch64"), Platform::Windows);
+        assert_eq!(platform_from("macos", "aarch64"), Platform::MacOs);
+        assert_eq!(platform_from("macos", "x86_64"), Platform::MacOs);
+        // The ordering guard: same OS, different arch, different answer.
+        assert_eq!(platform_from("linux", "x86_64"), Platform::LinuxX86);
+        assert_eq!(platform_from("linux", "aarch64"), Platform::LinuxOther);
+        assert_eq!(platform_from("freebsd", "x86_64"), Platform::Unknown);
+
+        // And the real target classifies to something we have a message for — the seam between
+        // this pure function and `std::env::consts` that no table can cover.
+        let actual = platform_from(std::env::consts::OS, std::env::consts::ARCH);
+        assert!(
+            !guidance_for(actual).is_empty(),
+            "the running target ({}/{}) must classify to a platform with guidance",
+            std::env::consts::OS,
+            std::env::consts::ARCH
         );
     }
 

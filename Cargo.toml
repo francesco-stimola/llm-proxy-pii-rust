@@ -83,8 +83,8 @@ hf-hub = { version = "1", optional = true }
 # so "compile in every backend" is not a thing. MEASURED: enabling six `ep-*`
 # features on Windows still links against the DirectML distribution, and at
 # runtime cuda/tensorrt/coreml/rocm/openvino all report unavailable and fall
-# back to CPU. The only
-# meaningful choice is therefore ONE natural accelerator per platform.
+# back to CPU. (That is a claim about the COMBINATION — see THE RULE's corollary
+# below.) The only meaningful choice is therefore ONE accelerator per platform.
 #
 # Setting it here rather than in the release workflow means the same rule
 # applies to a developer's `--features onnx` build and to CI, with no flag to
