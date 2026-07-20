@@ -77,6 +77,32 @@ tokenizers = { version = "0.23", optional = true, default-features = false, feat
 # alternative is unmaintained) — see docs/reviews/M2.5.md#m25-r1.
 hf-hub = { version = "1", optional = true }
 
+# ---------------------------------------------------------------------------
+# Per-platform accelerator (M9). `download-binaries` fetches ONE ONNX Runtime
+# distribution, and that distribution decides which execution providers exist —
+# so "compile in every backend" is not a thing. MEASURED: enabling six `ep-*`
+# features on Windows still links against the DirectML distribution, and at
+# runtime cuda/tensorrt/coreml/rocm/openvino all report unavailable and fall
+# back to CPU (`ep-webgpu` doesn't even link — no `webgpu_dawn.lib`). The only
+# meaningful choice is therefore ONE natural accelerator per platform.
+#
+# Setting it here rather than in the release workflow means the same rule
+# applies to a developer's `--features onnx` build and to CI, with no flag to
+# remember and no way for the two to drift.
+#
+# Windows x64 only, deliberately — and the reason is testability, not toolchain.
+# Every release target uses a PREBUILT ONNX Runtime (`download-binaries`); none
+# builds it from source. This is simply the platform the project develops and
+# validates on (DirectML: any DX12 GPU, no CUDA, no admin), so it is the only one
+# whose accelerator has been proven to load and run here. Wiring `ep-coreml` for
+# `aarch64-apple-darwin` or DirectML for `aarch64-pc-windows-msvc` would be a
+# guess about which providers those prebuilts contain, and a wrong guess breaks
+# the release build for that target — worth a `manual-build` run to confirm
+# first. Until then they stay reachable via the `ep-*` features below.
+# See docs/ARCHITECTURE.md → "Execution providers".
+[target.'cfg(all(windows, target_arch = "x86_64"))'.dependencies]
+ort = { version = "=2.0.0-rc.12", optional = true, features = ["directml"] }
+
 [features]
 default = []
 onnx = ["dep:ort", "dep:tokenizers", "dep:hf-hub"]

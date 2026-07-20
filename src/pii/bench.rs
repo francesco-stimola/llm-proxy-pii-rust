@@ -57,31 +57,59 @@ impl ProviderResult {
     }
 }
 
-/// The providers this binary can actually use: CPU plus every accelerator whose `ep-*`
-/// feature was compiled in.
+/// The providers this binary can actually use: CPU plus every accelerator the **linked ONNX
+/// Runtime distribution was compiled with**.
 ///
-/// Benchmarking an *uncompiled* provider would silently measure the CPU fallback under a
-/// GPU's name — a row that looks like evidence and is not. So the list is built from the
-/// features, not from the enum.
-pub fn compiled_providers() -> Vec<ExecutionProvider> {
-    // `mut` goes unused in a build with no `ep-*` feature: every push below is cfg'd out and
-    // the list stays `[Cpu]`. That is the *default* shape, not an oversight.
-    #[allow(unused_mut)]
-    let mut providers = vec![ExecutionProvider::Cpu];
-    #[cfg(feature = "ep-directml")]
-    providers.push(ExecutionProvider::DirectMl);
-    #[cfg(feature = "ep-cuda")]
-    providers.push(ExecutionProvider::Cuda);
-    #[cfg(feature = "ep-tensorrt")]
-    providers.push(ExecutionProvider::TensorRt);
-    #[cfg(feature = "ep-coreml")]
-    providers.push(ExecutionProvider::CoreMl);
-    #[cfg(feature = "ep-rocm")]
-    providers.push(ExecutionProvider::Rocm);
-    #[cfg(feature = "ep-openvino")]
-    providers.push(ExecutionProvider::OpenVino);
-    #[cfg(feature = "ep-webgpu")]
-    providers.push(ExecutionProvider::WebGpu);
+/// **Asked of the runtime, not inferred from cargo features — and the difference is not
+/// academic.** `download-binaries` fetches ONE ONNX Runtime distribution, and *that* decides
+/// which execution providers exist; a cargo feature only decides whether our `register()` is
+/// compiled. The two can disagree in both directions:
+///
+/// - Enabling six `ep-*` features on Windows still links the DirectML distribution —
+///   **measured**: cuda / tensorrt / coreml / rocm / openvino then report unavailable and fall
+///   back to CPU. A feature-derived list would have shown five GPU rows that were CPU.
+/// - The platform accelerator is set per-target in `Cargo.toml` (Windows x64 → DirectML), so
+///   it is present *without* the `ep-directml` feature being named. A cfg-derived list would
+///   miss the one accelerator the machine actually has.
+///
+/// [`ExecutionProvider::is_available`](ort::ep::ExecutionProvider::is_available) answers the
+/// only question that matters — is it in the binary — so the list cannot lie in either
+/// direction. It is still not a promise the EP will *run* a given model (ORT may reject it at
+/// session creation, or partition nodes back to CPU); that is why the per-row fallback
+/// reporting stays.
+pub fn available_providers() -> Vec<ExecutionProvider> {
+    // Import the ort trait anonymously: its name collides with our own enum, and we want only
+    // the `is_available` method, not the type.
+    use ort::ep::ExecutionProvider as _;
+
+    let all = [
+        ExecutionProvider::DirectMl,
+        ExecutionProvider::Cuda,
+        ExecutionProvider::TensorRt,
+        ExecutionProvider::CoreMl,
+        ExecutionProvider::Rocm,
+        ExecutionProvider::OpenVino,
+        ExecutionProvider::WebGpu,
+    ];
+
+    let mut providers = vec![ExecutionProvider::Cpu]; // always present, always the baseline
+    for provider in all {
+        let available = match provider {
+            ExecutionProvider::DirectMl => ort::ep::DirectML::default().is_available(),
+            ExecutionProvider::Cuda => ort::ep::CUDA::default().is_available(),
+            ExecutionProvider::TensorRt => ort::ep::TensorRT::default().is_available(),
+            ExecutionProvider::CoreMl => ort::ep::CoreML::default().is_available(),
+            ExecutionProvider::Rocm => ort::ep::ROCm::default().is_available(),
+            ExecutionProvider::OpenVino => ort::ep::OpenVINO::default().is_available(),
+            ExecutionProvider::WebGpu => ort::ep::WebGPU::default().is_available(),
+            ExecutionProvider::Cpu => Ok(true),
+        };
+        // An error here means ORT itself is unhealthy; treat it as "not available" rather than
+        // failing the benchmark — the CPU row still gives the operator something.
+        if available.unwrap_or(false) {
+            providers.push(provider);
+        }
+    }
     providers
 }
 
@@ -189,7 +217,7 @@ fn benchmark_one(
 /// which is exactly how int8-on-GPU produced a confident wrong answer during M9.
 pub fn benchmark_matrix(model_paths: &[String]) -> Vec<ProviderResult> {
     let intra_threads = available_cores();
-    let providers = compiled_providers();
+    let providers = available_providers();
     let mut results = Vec::with_capacity(model_paths.len() * providers.len());
     for model in model_paths {
         for &provider in &providers {
@@ -343,7 +371,12 @@ pub fn format_report(model_paths: &[String], results: &[ProviderResult]) -> Stri
          GPU format (on CPU it is up-cast to fp32, so it only pays off on a GPU). For a fair\n\
          GPU comparison, re-run this against an fp16 export of the same model."
     );
-    if looks_int8 && !has_fp16 && compiled_providers().len() > 1 {
+    // Read the shape off the results rather than re-querying ORT: the rows ARE the record of
+    // what this run could measure.
+    let measured_an_accelerator = results
+        .iter()
+        .any(|r| r.requested != ExecutionProvider::Cpu);
+    if looks_int8 && !has_fp16 && measured_an_accelerator {
         let _ = writeln!(
             out,
             "\n  !! An int8/quantized model is in this run and NO fp16 model is, so every GPU\n\
@@ -352,15 +385,16 @@ pub fn format_report(model_paths: &[String], results: &[ProviderResult]) -> Stri
              \x20    honest matrix (CPU-int8 vs GPU-fp16)."
         );
     }
-    // Which accelerators this binary could even try is fixed at BUILD time, so when none was
-    // compiled in, the actionable next step is a rebuild — named for *this* platform, since
-    // the right EP differs per OS.
-    if compiled_providers().len() == 1 {
+    // Which accelerators exist is decided by the ONNX Runtime distribution this binary linked,
+    // so when none is present the actionable next step is a rebuild — named for *this*
+    // platform, since the right EP differs per OS.
+    if !measured_an_accelerator {
         let _ = writeln!(
             out,
-            "\nNo accelerator is compiled into this binary, so only `cpu` could be measured.\n\
-             Which providers are available is a BUILD-time choice (each `ep-*` feature pulls a\n\
-             different ONNX Runtime backend binary)."
+            "\nNo accelerator is present in this build, so only `cpu` could be measured.\n\
+             That is decided by the ONNX Runtime distribution linked at build time: one\n\
+             distribution, one set of providers — enabling several `ep-*` features does not\n\
+             combine them."
         );
         match suggested_provider_for_platform() {
             Some((provider, feature, why)) => {

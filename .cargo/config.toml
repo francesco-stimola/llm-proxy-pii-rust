@@ -46,13 +46,14 @@ run-onnx = "run --features onnx --target-dir target/onnx"
 test-onnx = "test --features onnx --target-dir target/onnx"
 clippy-onnx = "clippy --all-targets --features onnx --target-dir target/onnx"
 
-# M9 — the DirectML build (onnx + the DirectML EP binary). Its own target dir for
-# the same reason as `target/onnx/`: `ep-directml` is a different, additive feature
-# set, so sharing a dir would full-recompile ort on every flip. This is the build
-# to `run-directml` when verifying GPU acceleration on this box (AMD DX12 iGPU);
-# set `NER_EXECUTION_PROVIDER=directml`. The default (`cpu`) makes this binary
-# behave exactly like the `onnx` one, so a plain `test-directml` run is a superset.
-build-directml = "build --features ep-directml --target-dir target/directml"
-run-directml = "run --features ep-directml --target-dir target/directml"
-test-directml = "test --features ep-directml --target-dir target/directml"
-clippy-directml = "clippy --all-targets --features ep-directml --target-dir target/directml"
+# M9 note — there are deliberately NO `*-directml` aliases. On this platform
+# (Windows x64) DirectML is part of the `onnx` build already: it is set as a
+# per-target `ort` feature in Cargo.toml, precisely so that a developer build and
+# a CI build cannot disagree about the accelerator. So `cargo run-onnx` IS the
+# DirectML build here — just set `NER_EXECUTION_PROVIDER=directml` (the default
+# stays `cpu`), and `cargo run-onnx -- --bench-providers` compares them.
+#
+# A separate alias existed briefly and was removed: it implied a special build was
+# needed to touch the GPU, which is the exact misreading the READMEs had to be
+# rewritten to kill. The other `ep-*` features remain for platforms whose
+# accelerator is not wired per-target yet (see Cargo.toml).
