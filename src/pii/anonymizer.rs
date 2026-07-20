@@ -398,18 +398,26 @@ mod tests {
 
     /// Capture this crate's `debug`-and-up logs emitted while `f` runs, as one string.
     ///
-    /// **Serialized across callers, and that is load-bearing (M9-R28).** The subscriber is scoped
-    /// (`with_default`, thread-local), which is why this looks like it cannot race — the original
-    /// comment here claimed exactly that. It can: `tracing`'s **max-level gating is
-    /// process-global**, so two threads each installing a thread-local subscriber interfere, and
-    /// the loser's buffer comes back **completely empty** rather than partial. Measured before this
-    /// lock: the canary test failed **11.2%** of the time (168/1500) when run concurrently with its
-    /// siblings, and **0/1500** alone — the race needs a second concurrent caller, and there are
-    /// exactly two.
+    /// **The subscriber is installed ONCE, process-globally, and routing is per-thread — both
+    /// halves are load-bearing (M9-R28).** The obvious implementation, and what this was, is a
+    /// *scoped* subscriber (`with_default`, thread-local), which looks race-free because each
+    /// thread has its own. It is not: `tracing` caches per-callsite interest and derives it from a
+    /// **process-global** max level, so a callsite first evaluated while no debug subscriber
+    /// existed stays disabled — and the capturing thread then gets a **completely empty** buffer,
+    /// not a partial one.
     ///
-    /// An empty buffer is the dangerous outcome, not a noisy one: a test that asserts only the
-    /// *absence* of a string passes vacuously against it. Hence the lock here **and** the
-    /// non-vacuity assertion in [`a_clean_convergence_stays_silent`].
+    /// **The other party is the rest of the binary, not the sibling test.** That distinction cost a
+    /// wrong fix: serializing the two callers with a lock was tried and **did not work (7/30
+    /// failures)**, because the ~114 other tests are what evaluate the callsite first. Measured on
+    /// the scoped shape: **11.2%** failures (168/1500) concurrent, **0/1500** alone; on this shape,
+    /// 0/30 and then 0/10 full-suite runs, independently reproduced at 178 runs against a validated
+    /// 7.5% pre-fix baseline. A permanent global subscriber keeps every callsite enabled for the
+    /// binary's whole life (it is never dropped, so the max level never falls back); each thread
+    /// reads only its own buffer, so concurrent tests neither pollute nor steal each other's.
+    ///
+    /// **An empty buffer is the dangerous outcome, not a noisy one:** a test asserting only the
+    /// *absence* of a string passes vacuously against it. Hence the liveness probe in
+    /// [`a_clean_convergence_stays_silent`], which must stay.
     fn capture_debug_logs(f: impl FnOnce()) -> String {
         type Buf = Arc<Mutex<Vec<u8>>>;
 
@@ -444,15 +452,10 @@ mod tests {
             }
         }
 
-        // Installed ONCE, process-globally, at DEBUG. That is the fix, not a nicety: `tracing`
-        // caches per-callsite interest and derives it from a PROCESS-GLOBAL max level, so a
-        // thread-local `with_default` subscriber (what this used to be) races every other test in
-        // the binary — a callsite evaluated while no debug subscriber existed stays disabled, and
-        // the capturing thread gets a **completely empty** buffer rather than a partial one.
-        // Measured on the old shape: 168/1500 failures (11.2%) concurrent, 0/1500 alone; a
-        // serializing lock around the two callers did NOT fix it (7/30), because the interference
-        // comes from the other ~114 tests, not from the sibling. A permanent global subscriber
-        // keeps every callsite enabled for the whole binary; routing is then per-thread.
+        // Installed once, process-globally, at DEBUG — never dropped, so the global max level
+        // never falls back and every callsite stays enabled. This is the fix, not a nicety; the
+        // mechanism and the measurements are in this function's doc comment. Do NOT make this
+        // scoped (`with_default`) again.
         static INIT: std::sync::Once = std::sync::Once::new();
         INIT.call_once(|| {
             let subscriber = tracing_subscriber::fmt()
