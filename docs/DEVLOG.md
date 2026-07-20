@@ -86,6 +86,38 @@ runs also landed ~2–3× above the idle-machine numbers because each followed a
 *ranking* was identical every time, which is exactly why the report leads with ranking and warns
 about absolutes rather than publishing a millisecond figure.
 
+**"Can we just compile in every backend?" — measured, and no (2026-07-20).** The obvious wish, and
+worth an experiment rather than an opinion. `cargo check` with all seven `ep-*` features passes;
+`cargo build` then fails at **link** on `ep-webgpu` alone (`LNK1181: cannot open input file
+'webgpu_dawn.lib'`). Drop WebGPU and the other **six link fine** — which looked like a yes, until
+the binary ran: `cpu` and `directml` report `ok`, while **`cuda` / `tensorrt` / `coreml` / `rocm` /
+`openvino` all report `unavailable — fell back to cpu`**. The reason is that `download-binaries`
+fetches **one** ONNX Runtime distribution and *that* decides which EPs exist; a cargo feature only
+decides whether our `register()` is compiled. Cross-platform it is impossible regardless — CoreML
+ships only in macOS builds, DirectML only in Windows ones. (Pleasing side note: the fallback
+reporting built earlier in this milestone caught all five, so not one CPU row was presented as a
+GPU. The honesty machinery worked in exactly the condition it was built for.)
+
+**So: one natural accelerator per platform, set per-target rather than per-command.** DirectML is
+now a `[target.'cfg(all(windows, target_arch = "x86_64"))'.dependencies]` feature on `ort`, which
+means **the plain `--features onnx` build has the GPU on Windows x64** — no special build, and no
+way for a developer build and the release pipeline to disagree about the accelerator (they read the
+same manifest). Only Windows x64 is wired, for a **testability** reason and not a toolchain one —
+every release target uses a prebuilt ONNX Runtime, none builds it from source. Windows x64 is just
+the platform this project validates on, so it is the only one whose accelerator is *proven* to load
+here; wiring `ep-coreml` for `aarch64-apple-darwin` or DirectML for `aarch64-pc-windows-msvc` would
+be a guess about those prebuilts' contents, and a wrong guess breaks that target's release build. A
+`manual-build` run is how to confirm first (it is how `aarch64-pc-windows-msvc` was validated). The
+now-redundant `*-directml` cargo aliases were deleted — they implied a special build was needed to
+touch the GPU, the same misreading the READMEs had to be rewritten to kill.
+
+**That forced the provider list to become a runtime question.** With the accelerator arriving via a
+per-target dependency, `#[cfg(feature = "ep-directml")]` is *false* on the very machine that has
+DirectML — so `available_providers()` now asks `ort::ep::ExecutionProvider::is_available()` what the
+linked distribution actually contains. A feature-derived list was wrong in both directions: it
+showed five GPU rows that were CPU in the six-feature experiment, and it would miss the per-target
+accelerator entirely. Asking the binary cannot lie either way.
+
 **It works in every build.** Which providers exist is a build-time choice, so the report names the
 `ep-*` feature that fits *this* platform (DirectML on Windows, CoreML on macOS, CUDA/ROCm/OpenVINO on
 Linux) rather than a generic list, and a session that falls back is reported as **`unavailable — fell

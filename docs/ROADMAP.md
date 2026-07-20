@@ -1218,6 +1218,12 @@ so **DirectML is the only GPU path here** (and the only vendor-agnostic one on W
   iGPU** (below). CPU-int8 stays the default.
 - [x] `--bench-providers` — the binary measures the **model × provider** matrix on the operator's own
   machine and names the winner, because the answer is hardware-specific. (DEVLOG 2026-07-19.)
+- [x] **Per-platform accelerator, wired per-target** — `--features onnx` on Windows x64 now ships
+  DirectML, so the GPU needs no special build and a dev build cannot disagree with the release
+  pipeline. Measured first: "compile in every backend" is impossible — one ONNX Runtime
+  distribution carries one provider set (six `ep-*` features link, but five report unavailable at
+  runtime; `ep-webgpu` doesn't link). Provider discovery is therefore a **runtime** query
+  (`is_available`), not a cargo-feature inference. (DEVLOG 2026-07-20.)
 
 > **Verdict: DirectML is NO-GO on this hardware, and that is a completed milestone, not a failure.**
 > DML-fp16 vs CPU-int8 measured **1.45× / 0.45× / 0.38×** at seq 128 / 256 / 512. The GPU wins only

@@ -718,20 +718,47 @@ refuses (M8-R5's rule, applied to the accelerator knob).
 > the backend is trusted, because GPU floating-point diverges from CPU further than thread count does.
 
 Every EP *type* compiles on every platform (only its `register()` is feature-gated inside `ort`),
-so the selector needs no per-provider `#[cfg]` — an uncompiled `ep-*` simply fails registration
-and falls back. What differs is the **binary** each feature pulls and the hardware it needs, so
-only what we can test on this project's box is trusted:
+so the selector needs no per-provider `#[cfg]` — an unavailable provider simply fails
+registration and falls back.
 
-| Provider (`NER_EXECUTION_PROVIDER`) | Cargo feature | Natural OS / hardware | Status |
+> **ONE ONNX Runtime distribution, ONE set of providers — "compile in every backend" is not a
+> thing.** `download-binaries` fetches a single ORT distribution and *that* decides which EPs
+> exist; a cargo feature only decides whether our `register()` is compiled. **Measured**:
+> enabling six `ep-*` features at once on Windows x64 builds and links fine, but the binary is
+> still the DirectML distribution — at runtime `cuda` / `tensorrt` / `coreml` / `rocm` /
+> `openvino` all report unavailable and fall back to CPU, and `ep-webgpu` does not even link
+> (no `webgpu_dawn.lib`). Cross-platform it is impossible by construction anyway: CoreML exists
+> only in macOS builds, DirectML only in Windows ones. So the only meaningful choice is **one
+> natural accelerator per platform**, set as a per-target `ort` feature in `Cargo.toml` rather
+> than a flag on the build command — which also means a developer's `--features onnx` build and
+> the release pipeline cannot disagree about the accelerator.
+
+**Consequently the provider list is asked of the *runtime*, not derived from cargo features**
+(`bench::available_providers` → `ort::ep::ExecutionProvider::is_available`). A feature-derived
+list is wrong in both directions: it would have shown five GPU rows that were really CPU in the
+six-feature experiment above, and it would *miss* the per-target accelerator, which is present
+without `ep-directml` ever being named. Asking the binary what it contains cannot lie either way.
+
+| Provider (`NER_EXECUTION_PROVIDER`) | How it gets in | Natural OS / hardware | Status |
 |---|---|---|---|
-| `cpu` (default) | `onnx` | any | ✅ **tested** — the always-on baseline |
-| `directml` | `ep-directml` | Windows, any DX12 GPU (AMD/NVIDIA/Intel/iGPU) | ✅ **tested** — this box's AMD DX12 iGPU |
+| `cpu` (default) | always | any | ✅ **tested** — the always-on baseline |
+| `directml` | **automatic** on Windows x64 (per-target `ort` feature) | Windows, any DX12 GPU (AMD/NVIDIA/Intel/iGPU) | ✅ **tested** — this box's AMD DX12 iGPU |
 | `cuda` | `ep-cuda` | Linux/Windows, NVIDIA | ⚠️ **wired, untested** — no NVIDIA hardware here |
 | `tensorrt` | `ep-tensorrt` | Linux/Windows, NVIDIA | ⚠️ **wired, untested** |
 | `coreml` | `ep-coreml` | macOS, Apple Silicon / AMD | ⚠️ **wired, untested** — needs a Mac |
 | `rocm` | `ep-rocm` | Linux, AMD | ⚠️ **wired, untested** |
 | `openvino` | `ep-openvino` | Linux/Windows, Intel | ⚠️ **wired, untested** |
-| `webgpu` | `ep-webgpu` | any (Vulkan/Metal/D3D12 via Dawn) | ⚠️ **wired, untested** — the nearest thing to a cross-vendor EP |
+| `webgpu` | `ep-webgpu` | any (Vulkan/Metal/D3D12 via Dawn) | ⚠️ **wired, does not link on Windows x64** (`webgpu_dawn.lib`) |
+
+**Only Windows x64 is wired per-target, and the reason is testability — not toolchain.** Every
+release target uses a **prebuilt** ONNX Runtime (`download-binaries`); none builds it from source.
+Windows x64 is simply the platform this project develops and validates on, so it is the only one
+whose accelerator has been *proven* to load and run. Wiring `ep-coreml` for `aarch64-apple-darwin`,
+or DirectML for `aarch64-pc-windows-msvc`, would be a guess about which providers those prebuilts
+contain — and a wrong guess breaks the release build for that target, which costs more than a
+missing accelerator. A `manual-build` run is the way to confirm before switching one on (that is
+how `aarch64-pc-windows-msvc` itself was validated, 2026-07-15). Until then they stay reachable
+through the `ep-*` features.
 
 **On "the most compatible backend".** ONNX Runtime has **no Vulkan EP** — Vulkan is a
 vendor-agnostic GPU API in general, but not one of ORT's backends, so using it would mean leaving

@@ -107,32 +107,28 @@ Common knobs (both modes): `NER_POOL_SIZE` (session pool for concurrency),
 `NER_TOKEN_TYPE_IDS=1` (BERT-family models), `NER_REQUIRED=1` (fail closed if the model
 can't load — a missing NER then blocks startup instead of silently downgrading).
 
-**GPU acceleration (M9, opt-in).** The default runs on CPU. To use the GPU on this
-Windows box (any DX12 GPU, no admin/CUDA), build with the DirectML feature and select it:
+**GPU acceleration (M9).** Inference runs on CPU by default. On **Windows x64 the GPU needs no
+extra build**: DirectML (any DX12 GPU — AMD, NVIDIA, Intel, integrated; no CUDA, no admin) is a
+per-target `ort` feature, so `cargo run-onnx` already has it. Just select it:
 
 ```powershell
-cargo run-directml   # = --features ep-directml, own target dir (see .cargo/config.toml)
 $env:NER_EXECUTION_PROVIDER = "directml"
+cargo run-onnx
 ```
 
-The accelerator **falls back to CPU** (with a warning) if it can't initialize, so this is
-always safe to try. Other backends (`cuda`, `coreml`, `rocm`, `openvino`, …) have matching
-`ep-*` features but are **wired-not-tested** — see `docs/ARCHITECTURE.md` → *Execution providers*.
+The accelerator **falls back to CPU** (with a warning) if it can't initialize, so this is always
+safe to try. Other platforms pick their own backend at build time (`ep-coreml` on macOS;
+`ep-cuda` / `ep-rocm` / `ep-openvino` on Linux) and are **wired-not-tested** — one ONNX Runtime
+distribution carries one set of backends, so enabling several does not combine them. See
+`docs/ARCHITECTURE.md` → *Execution providers*.
 
 **Don't guess whether the GPU helps — measure it.** Whether an accelerator beats the CPU is a
 property of *your* hardware (on our AMD iGPU the CPU wins). `--bench-providers` **works in every
-build** — no special one is needed to ask the question:
-
-```powershell
-cargo run -- --bench-providers          # any build; here, CPU-only + what to build next
-```
-
-What it can *compare* depends on the build, since each backend is a separate ONNX Runtime binary
-picked at compile time. To include an accelerator, run the build that has one:
+build**, and on Windows x64 it compares CPU against DirectML with no special build:
 
 ```powershell
 $env:NER_BENCH_MODELS = "C:\path\model_fp16.onnx"   # optional but important (see below)
-cargo run-directml -- --bench-providers
+cargo run-onnx -- --bench-providers
 ```
 
 Pass an **fp16** export via `NER_BENCH_MODELS`: backend and quantization are coupled — int8 is a
