@@ -235,12 +235,22 @@ worth **~30% more throughput** (equivalently, `pool=1` is ~−23% under concurre
 The NER can run on a GPU instead of the CPU (`NER_EXECUTION_PROVIDER`, M9). **Whether that is
 faster is a question about your hardware, so the tool measures it rather than telling you.**
 
+**`--bench-providers` works in every build** — you never need a special one to ask the question:
+
 ```powershell
-cargo build --features ep-directml        # Windows/DX12; see docs for your OS
 llm-proxy-pii-rust.exe --bench-providers
 ```
 
-It runs the **model × provider matrix** on your machine and names the winner:
+What it can *compare* does depend on the build, because each backend is a **different ONNX Runtime
+binary chosen at compile time**. With no accelerator compiled in, it measures the CPU and names the
+`ep-*` feature that fits your platform; without the `onnx` feature it explains there is no ML layer
+to accelerate at all. To put a GPU **into** the comparison, build with its feature:
+
+```powershell
+cargo build --features ep-directml   # Windows/DX12. macOS: ep-coreml. Linux: ep-cuda / ep-rocm / ep-openvino
+```
+
+It then runs the **model × provider matrix** on your machine and names the winner:
 
 ```text
 provider     |    seq 128 |    seq 256 |    seq 512 | status
@@ -268,11 +278,11 @@ right after a heavy build; the ranking held, the absolute numbers didn't).
 about *that* iGPU — a discrete GPU has 10–20× the bandwidth and would very likely win, which is why
 the selector exists. Yours may differ: that's what the benchmark is for.
 
-The flag works in **every** build. Without an accelerator compiled in it measures the CPU and tells
-you which `ep-*` feature fits your platform; without the `onnx` feature it explains there is no ML
-layer to accelerate. A provider that can't initialize never fails startup — it falls back to CPU
-(logged), and the benchmark reports that row as `unavailable — fell back to cpu` rather than passing
-CPU timings off as a GPU's.
+A provider that can't initialize never fails startup — it falls back to CPU (logged), and the
+benchmark marks that row `unavailable — fell back to cpu` instead of passing CPU timings off as a
+GPU's. Note the limit of that check: it catches a provider that fails to **initialize**, not ONNX
+Runtime's per-node partitioning, which can still run individual nodes on the CPU inside a provider
+that did register. Read `ok` as "the backend was engaged", not "every node ran on it".
 
 ---
 

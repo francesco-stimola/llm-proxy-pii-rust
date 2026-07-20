@@ -120,18 +120,24 @@ always safe to try. Other backends (`cuda`, `coreml`, `rocm`, `openvino`, …) h
 `ep-*` features but are **wired-not-tested** — see `docs/ARCHITECTURE.md` → *Execution providers*.
 
 **Don't guess whether the GPU helps — measure it.** Whether an accelerator beats the CPU is a
-property of *your* hardware (on our AMD iGPU the CPU wins). The binary measures it:
+property of *your* hardware (on our AMD iGPU the CPU wins). `--bench-providers` **works in every
+build** — no special one is needed to ask the question:
 
 ```powershell
-# The model x provider matrix on THIS machine, then a recommendation.
+cargo run -- --bench-providers          # any build; here, CPU-only + what to build next
+```
+
+What it can *compare* depends on the build, since each backend is a separate ONNX Runtime binary
+picked at compile time. To include an accelerator, run the build that has one:
+
+```powershell
 $env:NER_BENCH_MODELS = "C:\path\model_fp16.onnx"   # optional but important (see below)
 cargo run-directml -- --bench-providers
 ```
 
 Pass an **fp16** export via `NER_BENCH_MODELS`: backend and quantization are coupled — int8 is a
 CPU format that partitions badly onto GPUs, so an int8-only run makes any GPU look slow and the
-report will tell you it cannot answer the question. Run it on an idle machine, on AC. The flag
-works in every build (without `onnx` it simply explains there is nothing to accelerate).
+report will tell you it cannot answer the question. Run it on an idle machine, on AC.
 
 ## 5. Debug & observability (M2.6, off by default)
 
