@@ -116,11 +116,16 @@ $env:NER_EXECUTION_PROVIDER = "directml"
 cargo run-onnx
 ```
 
-The accelerator **falls back to CPU** (with a warning) if it can't initialize, so this is always
-safe to try. Other platforms pick their own backend at build time (`ep-coreml` on macOS;
-`ep-cuda` / `ep-rocm` / `ep-openvino` on Linux) and are **wired-not-tested** — one ONNX Runtime
-distribution carries one set of backends, so enabling several does not combine them. See
-`docs/ARCHITECTURE.md` → *Execution providers*.
+The accelerator **falls back to CPU** (with a warning) if it can't **initialize**, so trying it
+cannot stop the proxy from starting. Know the boundary, though: the fallback happens *once, at
+load*. A provider that dies **later** (a GPU device-removed/TDR event) is not re-initialized — it
+surfaces as an ordinary inference error and follows your posture: silently structured-only by
+default, or 400s under `NER_REQUIRED`. Check the startup line, which reports the **effective**
+backend and says `requested=` when it differs.
+
+Other platforms get their own backend automatically (CoreML on macOS, CUDA on Linux) and are
+**wired-not-verified** — one ONNX Runtime distribution carries one set of backends, so enabling
+several does not combine them. See `docs/ARCHITECTURE.md` → *Execution providers*.
 
 **Don't guess whether the GPU helps — measure it.** Whether an accelerator beats the CPU is a
 property of *your* hardware (on our AMD iGPU the CPU wins). `--bench-providers` **works in every

@@ -258,12 +258,36 @@ Without the `onnx` feature the flag still runs and explains there is no ML layer
 
 It runs the **model × provider matrix** on your machine and names the winner:
 
+Real output from this project's box (an AMD DX12 iGPU), abridged only where marked:
+
 ```text
-provider     |    seq 128 |    seq 256 |    seq 512 | status
-  cpu        |      26.5ms |     47.1ms |    121.3ms | ok
-  directml   |      18.3ms |    104.7ms |    322.9ms | ok
-=> FASTEST: cpu on model_quantized (121.3ms). Keep the default.
+Execution-provider benchmark (M9)
+  threads: 12 intra-op per session, pool 1 (of 12 cores)
+  models: model_quantized
+
+…/onnx/model_quantized.onnx
+  provider     |    seq 128 |    seq 256 |    seq 512 | status
+  ---------------------------------------------------------------------------------
+  cpu          |      26.4ms |      45.9ms |     109.7ms | ok
+  directml     |     121.4ms |     380.2ms |     691.7ms | ok
+
+Decision is made at seq 512 — fields are chunked to 480 tokens, so a full window
+runs near there, and long fields are what make a slow turn.
+
+=> FASTEST: cpu on model_quantized (109.7ms).
+   Keep the default — leave NER_EXECUTION_PROVIDER unset, and point
+   NER_MODEL_PATH at that model.
+
+[… MEASUREMENT and NOTE ON QUANTIZATION blocks …]
+
+  !! An int8/quantized model is in this run and NO fp16 model is, so every GPU
+     row here is very likely an UNDERESTIMATE — this comparison cannot answer
+     'is the GPU worth it?'. Add an fp16 export via NER_BENCH_MODELS to get the
+     honest matrix (CPU-int8 vs GPU-fp16).
 ```
+
+Note what that run does **not** do: it does not conclude the GPU is bad. It measured the shipped
+int8 model, so it says so and tells you the comparison is unfinished — which is the whole point.
 
 Two things it will not let you get wrong — both mistakes this project made first:
 

@@ -263,12 +263,36 @@ Senza la feature `onnx` il flag gira comunque e spiega che non c'è alcun layer 
 
 Esegue la matrice **modello × provider** sulla tua macchina e nomina il vincitore:
 
+Output reale dalla macchina di questo progetto (iGPU AMD DX12), abbreviato solo dove indicato:
+
 ```text
-provider     |    seq 128 |    seq 256 |    seq 512 | status
-  cpu        |      26.5ms |     47.1ms |    121.3ms | ok
-  directml   |      18.3ms |    104.7ms |    322.9ms | ok
-=> FASTEST: cpu on model_quantized (121.3ms). Keep the default.
+Execution-provider benchmark (M9)
+  threads: 12 intra-op per session, pool 1 (of 12 cores)
+  models: model_quantized
+
+…/onnx/model_quantized.onnx
+  provider     |    seq 128 |    seq 256 |    seq 512 | status
+  ---------------------------------------------------------------------------------
+  cpu          |      26.4ms |      45.9ms |     109.7ms | ok
+  directml     |     121.4ms |     380.2ms |     691.7ms | ok
+
+Decision is made at seq 512 — fields are chunked to 480 tokens, so a full window
+runs near there, and long fields are what make a slow turn.
+
+=> FASTEST: cpu on model_quantized (109.7ms).
+   Keep the default — leave NER_EXECUTION_PROVIDER unset, and point
+   NER_MODEL_PATH at that model.
+
+[… blocchi MEASUREMENT e NOTE ON QUANTIZATION …]
+
+  !! An int8/quantized model is in this run and NO fp16 model is, so every GPU
+     row here is very likely an UNDERESTIMATE — this comparison cannot answer
+     'is the GPU worth it?'. Add an fp16 export via NER_BENCH_MODELS to get the
+     honest matrix (CPU-int8 vs GPU-fp16).
 ```
+
+Nota cosa quella run **non** fa: non conclude che la GPU sia scarsa. Ha misurato il modello int8 di
+serie, quindi lo dice e ti avvisa che il confronto è incompleto — che è tutto il punto.
 
 Due errori che non ti lascia fare — entrambi commessi prima da questo progetto:
 

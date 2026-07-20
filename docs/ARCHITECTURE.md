@@ -696,9 +696,15 @@ pulls the matching ONNX Runtime backend binary. The selection + fallback policy 
 cannot drift between them (the `resolve_pool_and_intra` discipline, applied to the backend).
 
 **Falling back to CPU is the fail-closed move, not a compromise.** A requested accelerator that
-cannot initialize — feature not compiled, backend library/driver missing, no device, registration
-error — drops to CPU with a `warn!`, because *a privacy proxy must start*, and masking is
-bit-identical on any backend (only slower). The dispatch is registered with `.error_on_failure()`
+cannot initialize — not present in the linked distribution, driver/device missing, registration
+error — drops to CPU with a `warn!`, because *a privacy proxy must start*, and **CPU is the
+reference implementation**: falling *back to* it costs latency, never masking quality. Note the
+direction — the claim is not that every backend computes identically (it isn't, see the note
+below); it is that the one we fall back *to* is the one everything else is measured against.
+That asymmetry is what makes the fallback safe under `NER_REQUIRED` too: that knob is a
+*detection-posture* knob ("the ML layer must be present and must not silently degrade"), and
+dropping to the reference implementation degrades nothing it is about. Making it fatal instead
+would let a driver update take down a proxy that is still masking perfectly. The dispatch is registered with `.error_on_failure()`
 precisely so this fallback is **explicit and logged**, never ORT's silent per-session CPU drop
 that would hide which backend actually ran. Two failures are kept distinct: a **typo** in
 `NER_EXECUTION_PROVIDER` (e.g. `vulkan`, which is *not* an ORT backend) is a config error that
@@ -706,16 +712,32 @@ that would hide which backend actually ran. Two failures are kept distinct: a **
 silently running CPU when an operator named a real-but-absent GPU — is the move `onnx::ExecutionProvider::parse`
 refuses (M8-R5's rule, applied to the accelerator knob).
 
-> **The fallback covers *initialization*, not *numerical correctness* — and that bound is what
-> makes an untested EP acceptable.** An accelerator that registers but computes subtly different
-> logits than the CPU is *not* caught by the fallback. But its blast radius is bounded to **NER
-> recall**: the deterministic structured recognizers (email, phone, SSN, credit card, IBAN) run on
-> CPU regex, independent of the EP, so **the fail-closed layer is untouched no matter what backend
-> the NER runs on**. An untested EP can therefore only (a) fail to load → CPU, or (b) slightly
-> degrade the best-effort NER layer — never leak through the deterministic layer, never crash. This
-> is why the tested-vs-untested split below is a *safe* trade, and why the tested one still owes
-> the cross-thread-determinism guard above: **an execution-provider swap must re-run it** before
-> the backend is trusted, because GPU floating-point diverges from CPU further than thread count does.
+> **The fallback covers *initialization*, not *numerical correctness*, and not the session's later
+> life — and that bound is what makes an untested EP acceptable.** Three things it does *not* catch:
+>
+> 1. **Numerical divergence.** An accelerator that registers but computes subtly different logits
+>    than the CPU is not detected.
+> 2. **Per-node partitioning.** ORT assigns nodes per-EP *after* registration and force-falls-back
+>    whatever the EP handles poorly (observed on DirectML: 8+ `Force fallback to CPU execution for
+>    node` lines plus ORT's own "some nodes were not assigned to the preferred execution providers"
+>    warning). So a registered EP is not a promise the whole graph ran on it — see the reporting
+>    caveat below.
+> 3. **Mid-life failure.** `build_session_pool` runs once, at load. A provider that dies afterwards
+>    (a GPU device-removed/TDR event is routine on Windows in a way "the CPU stopped working" is
+>    not) surfaces as an ordinary `session.run` error and follows the existing posture: `FailOpen`
+>    swallows it to structured-only under the default, `NER_REQUIRED` 400s. **There is no
+>    re-initialization on CPU** — the process keeps a dead accelerator for its lifetime. That is
+>    pre-existing, deliberate (M2-R1/R2) and not a leak, but M9 raises its *probability*, so it is
+>    stated here rather than left as a surprise.
+>
+> In every case the blast radius is bounded to **NER recall**: the deterministic structured
+> recognizers (email, phone, SSN, credit card, IBAN) run on CPU regex, independent of the EP, so
+> **the fail-closed layer is untouched no matter what backend the NER runs on**. An untested EP can
+> therefore only (a) fail to load → CPU, or (b) degrade the best-effort NER layer — never leak
+> through the deterministic layer, never crash. This is why the tested-vs-untested split below is a
+> *safe* trade, and why even the benchmarked one still owes the cross-thread-determinism guard
+> above: **an execution-provider swap must re-run it** before the backend is trusted, because GPU
+> floating-point diverges from CPU further than thread count does.
 
 Every EP *type* compiles on every platform (only its `register()` is feature-gated inside `ort`),
 so the selector needs no per-provider `#[cfg]` — an unavailable provider simply fails
@@ -739,16 +761,27 @@ list is wrong in both directions: it would have shown five GPU rows that were re
 six-feature experiment above, and it would *miss* the per-target accelerator, which is present
 without `ep-directml` ever being named. Asking the binary what it contains cannot lie either way.
 
+**"Measured" and "trusted" are different columns, deliberately.** Only `cpu` has passed the
+cross-thread determinism guard (`m7_r3_intra_threads_changes_speed_not_detection`); **no
+accelerator has been run against it at all.** DirectML has been *benchmarked* — we know how fast
+it is — which is not the same as knowing its logits agree with the CPU's. A single ✅ for both
+would say the opposite of the paragraph above, and a future builder scans the table, not the prose.
+
 | Provider (`NER_EXECUTION_PROVIDER`) | How it gets in | Natural OS / hardware | Status |
 |---|---|---|---|
-| `cpu` (default) | always | any | ✅ **tested** — the always-on baseline |
-| `directml` | **automatic** on Windows x64 (per-target `ort` feature) | Windows, any DX12 GPU (AMD/NVIDIA/Intel/iGPU) | ✅ **tested** — this box's AMD DX12 iGPU |
-| `cuda` | `ep-cuda` | Linux/Windows, NVIDIA | ⚠️ **wired, untested** — no NVIDIA hardware here |
-| `tensorrt` | `ep-tensorrt` | Linux/Windows, NVIDIA | ⚠️ **wired, untested** |
-| `coreml` | `ep-coreml` | macOS, Apple Silicon / AMD | ⚠️ **wired, untested** — needs a Mac |
-| `rocm` | `ep-rocm` | Linux, AMD | ⚠️ **wired, untested** |
-| `openvino` | `ep-openvino` | Linux/Windows, Intel | ⚠️ **wired, untested** |
-| `webgpu` | `ep-webgpu` | any (Vulkan/Metal/D3D12 via Dawn) | ⚠️ **wired, does not link on Windows x64** (`webgpu_dawn.lib`) |
+| `cpu` (default) | always | any | ✅ **trusted** — the reference implementation; the only provider that has passed the determinism guard |
+| `directml` | **automatic** on Windows (per-target `ort` feature) | Windows, any DX12 GPU (AMD/NVIDIA/Intel/iGPU) | 📊 **benchmarked, not trusted** — measured on this box's AMD DX12 iGPU (a NO-GO there); determinism guard **not** re-run |
+| `coreml` | **automatic** on macOS (per-target) | macOS, Apple Silicon / AMD | ⚠️ **wired, unverified** — needs a Mac |
+| `cuda` | **automatic** on Linux (per-target) | Linux/Windows, NVIDIA | ⚠️ **wired, unverified** — no NVIDIA hardware here |
+| `tensorrt` | `ep-tensorrt` | Linux/Windows, NVIDIA | ⚠️ **wired, unverified** |
+| `rocm` | `ep-rocm` | Linux, AMD | ⚠️ **wired, unverified** |
+| `openvino` | `ep-openvino` | Linux/Windows, Intel | ⚠️ **wired, unverified** |
+| `webgpu` | `ep-webgpu` | any (Vulkan/Metal/D3D12 via Dawn) | ❌ **does not link on Windows** (`webgpu_dawn.lib` absent) |
+
+Nothing in the table above `cpu` should be read as "safe to trust blindly": they are safe to *try*
+(the fallback and the bounded blast radius above see to that), and `--bench-providers` tells you
+whether trying is worth it on your box. Trusting one for masking quality means re-running the
+determinism guard under it first.
 
 **Only Windows x64 is wired per-target, and the reason is testability — not toolchain.** Every
 release target uses a **prebuilt** ONNX Runtime (`download-binaries`); none builds it from source.
@@ -791,9 +824,15 @@ comma-separated) form the matrix, so an operator can compare CPU-int8 against GP
 comparison that actually decides. Three properties make the report trustworthy rather than merely
 informative:
 
-- **A fallback is reported, never counted.** `build_session_reporting` returns the *effective*
-  provider, so a row whose accelerator did not engage prints `unavailable — fell back to cpu`
-  instead of quietly presenting CPU timings under a GPU's name.
+- **A fallback is reported, never counted — at *session* granularity.** `build_session_reporting`
+  returns the *effective* provider, so a row whose accelerator did not register prints
+  `unavailable — fell back to cpu` instead of quietly presenting CPU timings under a GPU's name.
+  **The contract covers registration, not execution:** ORT may still place individual nodes on the
+  CPU inside a registered EP, so `ok` means *"the EP was registered, and these are the timings you
+  will actually get"* — **not** "the whole graph ran on the accelerator". The numbers stay honest
+  either way (partitioning is included in what an operator would really experience); it is the
+  *guarantee* that is narrower than it looks. This is also what makes the quantization lesson
+  mechanical rather than folklore: int8-on-GPU is slow **because** its ops partition back to CPU.
 - **It refuses to let the int8 trap repeat.** The report always carries the quantization warning,
   and flags loudly when a run contains int8 but no fp16 — i.e. when it *cannot* answer "is the GPU
   worth it?".
