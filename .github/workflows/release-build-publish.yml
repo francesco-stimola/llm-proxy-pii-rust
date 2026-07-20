@@ -77,6 +77,28 @@ jobs:
             exit 1
           fi
 
+      # The sibling of the check above, on the other axis. That one guarantees the docs can explain
+      # the release; this one guarantees the release is what it says it is — a `v1.3.0` tag cut
+      # while the manifest still reads `1.2.0` would publish ten binaries that report a version
+      # nobody released, and the ROADMAP check cannot see that (it only reads the tag name).
+      #
+      # The anchor is `^version = "`, which is exactly one line in Cargo.toml: dependency versions
+      # live inside inline tables (`ort = { version = … }`) and never start a line, and
+      # `rust-version` does not match either.
+      - name: The tag must match Cargo.toml
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          expected="${tag#v}"
+          manifest=$(grep -m1 -E '^version = "' Cargo.toml | sed -E 's/^version = "([^"]+)".*/\1/')
+          if [ "$manifest" = "$expected" ]; then
+            echo "OK: tag $tag matches Cargo.toml version $manifest."
+          else
+            echo "::error::tag $tag says $expected, but Cargo.toml says $manifest."
+            echo "Bump the package version to $expected and re-cut the tag, or tag v$manifest."
+            exit 1
+          fi
+
       # v8 is the current major on Node 24 (v6 still targets Node 20; v7 was the first on Node 24).
       - uses: actions/download-artifact@v8
         with:

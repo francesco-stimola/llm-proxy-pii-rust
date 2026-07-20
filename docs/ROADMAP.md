@@ -1378,6 +1378,12 @@ user, NVIDIA device or not. Key-ed accelerators now get **their own artifact** i
   making the *intent* expressible — `tag `vX.Y.Z` (planned)` — and by **enforcing the rest**:
   `release-build-publish.yml` refuses to publish a `v*` tag this table does not name as cut, so a
   release the documentation cannot explain simply cannot happen.
+- [x] **A release is also checked against its own manifest.** The guard above reads only the tag
+  *name*, so it cannot see a `v1.3.0` tag cut while `Cargo.toml` still says `1.2.0` — that would
+  publish ten binaries reporting a version nobody released. A second step pins the two together, so
+  the pair now covers both axes: *can the docs explain this release*, and *is it what it claims to
+  be*. (Checkout happens at the tag's ref, so the manifest read is the tagged one — re-running an
+  older release reads that release's version, not `main`'s.)
 
 > **Tests deliberately run on the standard legs only.** Their purpose in this workflow is per-**arch**
 > coverage (`ci.yml` only tests x86_64 Linux), and the five standard rows already cover every
