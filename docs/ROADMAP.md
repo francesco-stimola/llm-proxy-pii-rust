@@ -1518,9 +1518,16 @@ downloaded executable should be able to say what it is, what it accepts, and whe
       (`2026-07-29T09:15:10.844780Z` — `tracing_subscriber::fmt`'s default), so an operator in
       CEST reads `10:37` for something that happened at `12:37` and has to do the arithmetic while
       debugging. UTC is the right default for a fleet of servers correlating logs; this is a
-      *local* proxy running next to the person reading it. **Print the offset rather than a bare
-      local time** (`+02:00`, never a naked `12:37:04`), so a line pasted into an issue is still
-      unambiguous. Looks trivial and is not — see step 1.
+      *local* proxy running next to the person reading it. **The timestamp keeps every part it has
+      today** — date, time, sub-second precision — and only shifts to local, with the zone marker
+      changing from `Z` to a numeric offset:
+      ```text
+      before  2026-07-29T10:37:04.844780Z         INFO … listening on http://127.0.0.1:8080
+      after   2026-07-29T12:37:04.844780+02:00    INFO … listening on http://127.0.0.1:8080
+      ```
+      **The offset is an addition, never a replacement**: what must not ship is a local time with
+      no zone at all (`12:37:04`), which reads correctly on the author's machine and is ambiguous
+      everywhere else. Looks trivial and is not — see step 1.
 - [ ] **`--help` must document the configuration, not just the two flags.** It exists (`main.rs`,
       and the unknown-argument refusal prints it too), but it lists only `--bench-providers` /
       `--help` and defers configuration to `README.md` / `docs/SETUP.md`. For a tool whose
