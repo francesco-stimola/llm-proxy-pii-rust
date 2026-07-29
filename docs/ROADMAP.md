@@ -1460,13 +1460,20 @@ N. That number decides the default, and we do not have it yet.
 - [ ] **Try the all-on default first, and only fall back if the numbers refuse it.** In order of
       preference: (a) every vetted region on by default and `PII_LOCALES` **removed**; (b) all-on by
       default with `PII_LOCALES` kept as an **override of that list** — set it and it replaces the
-      default set, leave it unset and you get everything; (c) the gate stays as-is, with the
-      measured cost per region documented. (a) is cleanest but drops a documented variable, which a
-      patch must not do — so **(b) is the expected landing**: same protection out of the box, and an
-      operator who set `PII_LOCALES` keeps exactly the behavior they asked for
-- [ ] Whatever is decided, the mismatch must not survive: a default naming `it,us` that activates
-      neither. It stays documented-as-broken until this milestone lands — the README says so today —
-      rather than being quietly changed to something that looks right and still isn't measured
+      default set, leave it unset and you get everything; (c) only the regions whose measured
+      FP-rate is acceptable are on by default, with the excluded ones documented as opt-in and the
+      number that excluded them written down. (a) is cleanest but drops a documented variable, which
+      a patch must not do — so **(b) is the expected landing**: same protection out of the box, and
+      an operator who set `PII_LOCALES` keeps exactly the behavior they asked for
+- [ ] **The floor, binding on every branch above: a freshly started proxy with no configuration
+      MUST have national-phone recognizers active.** "Everything off unless you knew to switch it
+      on" is the defect this milestone exists to end, not a fallback it may land back on — so the
+      branches differ only in *how many* regions are on and whether the variable survives, never in
+      *whether* the default detects anything. Pin it with a test that builds the detector from an
+      **empty environment** and asserts a domestic number is masked; that test is what stops the
+      regression from ever returning silently. Until M10 ships, the default stays
+      documented-as-broken — the READMEs say so today — rather than being quietly changed to
+      something that looks right and still isn't measured
 - [ ] `TESTING.md` catalogs the new cases; `ARCHITECTURE.md`'s matrix is **re-measured**, not
       re-asserted
 
@@ -1616,6 +1623,12 @@ Belgium?" answered by the same rule that answers it everywhere else in the detec
 > fail-closed tool that is a worse property than needing one explicit variable. The measurement in
 > step 4 removes the motive anyway: under (b) an extra region is cheap, so "guess what this host
 > needs" buys nothing that "cover what we claim to cover" doesn't already give.
+>
+> **What the host locale was really trying to fix is real** — that today's default detects *no*
+> domestic number at all. The fix is turning the vetted set **on**, which is strictly more coverage
+> than any single guessed locale: a host-locale default would still miss the Italian number arriving
+> at a German-locale server. Reading the machine answers a question that stops being asked once
+> nothing is off by default.
 
 **6 · The candidate regex, per shape family.** Today's three arms all require a leading `0`
 (`recognizers.rs:346`). Add a **non-trunk** family for IT mobiles (`347 1234567`) and ES
