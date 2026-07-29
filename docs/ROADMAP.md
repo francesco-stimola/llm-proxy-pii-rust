@@ -1821,6 +1821,32 @@ retrospective's signature move, landing on the guard that was supposed to make i
 | [M10-R18](reviews/M10.md#m10-r18) | M10-R12's closure claims both comments were fixed; the shared module's still points at the `#[ignore]`d guard | low | [x] |
 | [M10-R19](reviews/M10.md#m10-r19) | The M10-R10 fix left a new `cargo doc` warning of its own | low | [x] |
 
+**Round 3 (2026-07-29) — closure verification: six of seven hold**, both behavioural ones attacked
+directly against a gate-reinstated build in a throwaway worktree. Deleting the gate is defensible on
+re-measurement, PHONE-NAT-10 really does catch the M10-R13 defect (0.94 s), and every `phone_eval`
+figure reproduced exactly. [M10-R19](reviews/M10.md#m10-r19)'s closure does **not** hold — reopened
+as [M10-R23](reviews/M10.md#m10-r23). Seven new findings.
+
+> **The one all three rounds shared.** Every DoS number this milestone published — M10-R2's table,
+> its closure, round 2's verification, and M10-R13's "the gate bought nothing" — was measured on a
+> **periodic** body, and so is DOS-05. The per-scan memoization that carries the whole fix is keyed
+> on the matched bytes, so **its benefit is a property of the input's periodicity, not of the code**:
+> hold the shape and size fixed and vary only the distinct-candidate count, and 4 MiB runs 207 ms →
+> 17.0 s. A legal 15 MiB body of *distinct* digit groups answers **200 in 64.5 s** at the shipped
+> default. That is [M10-R20](reviews/M10.md#m10-r20), and the rule it leaves behind is: *when the fix
+> is a **cache**, the guard's input distribution is the thing under test — a case built with
+> `unit.repeat(n)` measures the cache's best case and publishes it as the worst.*
+
+| ID | Title | Sev | Status |
+|---|---|---|---|
+| [M10-R20](reviews/M10.md#m10-r20) | The memoization's benefit is a property of input *periodicity*, so M10-R2's DoS is still reachable: a legal 15 MiB body of distinct digit groups costs 64.5 s | **BLOCKER** | [ ] |
+| [M10-R21](reviews/M10.md#m10-r21) | PHONE-NAT-10 catches the M10-R13 class with 2 of its 2,400 samples, and its non-vacuity floor is aggregate | guard | [ ] |
+| [M10-R22](reviews/M10.md#m10-r22) | ROADMAP's own M10 prose still publishes the superseded pre-M10-R3 measurement and cites "union-only FPs 0" as the evidence | measurement | [ ] |
+| [M10-R23](reviews/M10.md#m10-r23) | M10-R19's closure fixed a different link; the `cargo doc` warning it named still fires unchanged | low | [ ] |
+| [M10-R24](reviews/M10.md#m10-r24) | DOS-05, DEP-02 and CFG-01 are absent from `docs/TESTING.md`, and its complexity model is a milestone behind | docs | [ ] |
+| [M10-R25](reviews/M10.md#m10-r25) | ARCHITECTURE still names `every_declared_shape_is_needed_by_a_corpus_case`, which M10-R17's fix deleted | low | [ ] |
+| [M10-R26](reviews/M10.md#m10-r26) | The promoted invariant "a trunk anchor guarantees a candidate can only begin where a number begins" is false, and PHONE-NAT-04 is pinned to the one region set where it cannot fail | guard | [ ] |
+
 <a id="backlog"></a>
 ## Backlog — documented, not scheduled
 
