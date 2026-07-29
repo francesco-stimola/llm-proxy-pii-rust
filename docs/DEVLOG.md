@@ -3,6 +3,45 @@
 Newest first. One entry per meaningful change — note *what* and *why*, not just
 *what*. This is the running history so context is never lost between sessions.
 
+## 2026-07-29 — M10 planning: the validator dispatch shape, measured
+
+**The open design call in M10 is closed, and the number came out against the intuition.**
+`Recognizer.validate` is a bare `fn(&str) -> bool` that cannot carry a region, so covering N
+countries is either (a) one recognizer per region — N regexes scanned over every field — or (b) one
+shared regex whose validator tries the enabled regions, which needs `validate` to become a boxed
+closure. A throwaway probe (deleted) measured both in the **release** profile on a 22 KiB payload,
+252 candidates, 9 regions, with a third shape (b′) added specifically to attribute the difference:
+
+| shape | per pass |
+|---|---|
+| (a) one recognizer per region | 12.28 ms |
+| (b′) shared regex, validate every region | 6.02 ms |
+| (b) shared regex, short-circuit | 2.40 ms |
+
+**(a) vs (b′) is the clean comparison**: identical validation work (11,880 calls each), so the 2.04×
+gap is *only* the 8 extra passes over the text — ~0.78 ms per scan per 22 KiB, and that term grows
+linearly with every region added. Nine regions under (a) would put ~7 ms per field onto a
+structured-only path that costs ~20 ms for an entire turn. The short-circuit is worth a further
+2.51×, 5.12× in total.
+
+**Worth recording because the guess was wrong:** debug measured 2.91× and release 5.12×. The
+expectation was the opposite — that optimizing would make `phonenumber` validation cheap and leave
+scan count looking relatively worse under (a) — so a decision taken from the debug number, or from
+argument alone, would have understated the winner by nearly half.
+
+Two clarifications folded into the plan while writing it up. **Region granularity is not what (b)
+trades away** — regions are still enabled individually and still bounded by the step-5 principle;
+only dispatch changes. And **neither shape "solves" the M4-R19 DoS**: bounded match length is a
+constraint on the *regex*, so it binds both equally — what (b) buys is one pattern family to keep
+bounded instead of nine, i.e. one place to get it wrong.
+
+**Also considered and rejected: defaulting to the host's locale.** It contradicts M4-R1's rule that
+coverage follows *the data that arrives*, not the deployment — a Frankfurt proxy carries Italian
+data, and an Italian developer on a US-locale Windows box would silently lose IT coverage, which is
+the exact failure M10 exists to end. It would also make masking machine-dependent: same request, two
+boxes, two results, nothing in the logs to explain it. Under (b) an extra region is cheap enough
+that guessing buys nothing over covering what we already claim to cover.
+
 ## 2026-07-29 — Version in the artifact filename: built, then rolled back for `--version`
 
 **The ask was "can the release tag be in the artifact name?" — yes, and it was implemented**: a

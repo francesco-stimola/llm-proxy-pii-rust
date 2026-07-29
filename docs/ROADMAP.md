@@ -1563,17 +1563,48 @@ cost against validation cost:
     `Box<dyn PiiDetector>` and run under `spawn_blocking`. Check what that breaks (any `Clone` or
     `Copy` derive on `Recognizer`) before committing to it.
 
-  **(b) is the expected answer** — scan cost is paid on every byte of every field, validation only on
-  the rare candidate — but it is the one that changes a type, so decide it with a measurement on the
-  M7 fixture (`cargo test --test m7_latency -- --ignored --nocapture --test-threads=1`) rather than
-  by argument. Whichever wins, **GB and DE must keep the exact behaviour M8.1 measured**; their
-  corpus cases are the regression guard for that.
+  **Decided: (b), and it was measured rather than argued** (throwaway probe, 2026-07-29, deleted
+  after reading; **release** profile, 22 KiB payload — the M7 realistic-turn size — 252 candidates,
+  9 regions):
+
+  | shape | per pass | what it isolates |
+  |---|---|---|
+  | (a) one recognizer per region | **12.28 ms** | 9 scans + 11,880 validations |
+  | (b′) shared regex, validate every region | **6.02 ms** | 1 scan + the *same* 11,880 validations |
+  | (b) shared regex, short-circuit on first accept | **2.40 ms** | 1 scan + 4,220 validations |
+
+  **(a) → (b′) is 2.04× and is purely the scan count** — the two do byte-identical validation work,
+  so the whole gap is 8 extra passes over the text, ~0.78 ms each per 22 KiB. That is the term that
+  **grows linearly with every region added**: nine regions would put ~7 ms per field onto a
+  structured-only path that costs ~20 ms for a whole turn. `.any()`'s early exit is worth a further
+  2.51×, for **5.12× overall**. Note it came out *larger* in release than in debug (2.91×), i.e. the
+  opposite of the "validation dominates once optimized" guess — which is the reason to measure.
+
+  So `validate` becomes a boxed closure. **Region granularity is not what is being traded away**:
+  (b) still enables regions individually and still bounds the set by the step-5 principle — only the
+  *dispatch* changes, so the "one region, one decision" property survives intact.
+
+  And the M4-R19 bounded-length rule is **not** solved by either shape — it constrains the regex, so
+  it applies identically to both. What (b) changes is that there is **one** pattern family to keep
+  bounded instead of N, i.e. one place to get it wrong rather than nine. Whichever way, **GB and DE
+  must keep the exact behaviour M8.1 measured**; their corpus cases are the regression guard.
 
 **5 · Bound the region set by a principle, not by taste.** Cover **exactly the countries the tool
 already claims** — the 10 national-ID countries and the XLM-R language set: IT, ES, FR, NL, PT, LV,
 CN, on top of today's GB + DE. (US needs nothing: it has no trunk-`0` domestic form, and the
 universal arm already covers `NNN NNN NNNN`.) That is defensible, finite, and leaves "why not
 Belgium?" answered by the same rule that answers it everywhere else in the detector.
+
+> **Considered and rejected: default to the *host's* locale** instead of an explicit set. It
+> contradicts the rule this detector already runs on — [M4-R1](reviews/M4.md#m4-r1) made national IDs
+> always-on *regardless of configuration* precisely because **what matters is the data that arrives,
+> not where the proxy runs**. A proxy in a Frankfurt datacenter routinely carries Italian users'
+> data, and an Italian developer on a US-locale Windows install would silently lose IT coverage —
+> the exact failure this milestone exists to end. It also makes masking **machine-dependent**: the
+> same request, two boxes, two results, with nothing in the logs to explain the difference. For a
+> fail-closed tool that is a worse property than needing one explicit variable. The measurement in
+> step 4 removes the motive anyway: under (b) an extra region is cheap, so "guess what this host
+> needs" buys nothing that "cover what we claim to cover" doesn't already give.
 
 **6 · The candidate regex, per shape family.** Today's three arms all require a leading `0`
 (`recognizers.rs:346`). Add a **non-trunk** family for IT mobiles (`347 1234567`) and ES
