@@ -55,6 +55,54 @@ changes.
 
 ## Quick start
 
+### Run a released binary
+
+Download the asset for your platform from the [latest
+release](https://github.com/francesco-stimola/llm-proxy-pii-rust/releases/latest): one executable,
+no installer, nothing to unpack. Take the unsuffixed name unless you want a `-cuda` / `-webgpu`
+variant (see *GPU acceleration* below).
+
+```powershell
+# Windows
+Move-Item .\llm-proxy-pii-rust-x86_64-pc-windows-msvc.exe .\llm-proxy-pii-rust.exe
+
+$env:NER_MODEL_REPO   = "jiting/xlm-roberta-base-ner-hrl_onnx"
+$env:NER_REQUIRED     = "1"
+$env:PII_LOCALES      = "it,us"     # add gb / de for domestic phone numbers
+$env:UPSTREAM_API_KEY = "sk-..."    # optional — a client's own header wins
+.\llm-proxy-pii-rust.exe
+```
+
+```sh
+# Linux / macOS  ·  on macOS also: xattr -d com.apple.quarantine ./llm-proxy-pii-rust
+mv llm-proxy-pii-rust-x86_64-unknown-linux-gnu llm-proxy-pii-rust
+chmod +x llm-proxy-pii-rust
+
+export NER_MODEL_REPO=jiting/xlm-roberta-base-ner-hrl_onnx
+export NER_REQUIRED=1
+export PII_LOCALES=it,us
+export UPSTREAM_API_KEY=sk-...
+./llm-proxy-pii-rust
+```
+
+Two startup lines tell you which proxy you actually got:
+
+```text
+INFO … ONNX NER detector loaded model="…model_quantized.onnx" pool_size=1 intra_threads=…
+INFO … listening on http://127.0.0.1:8080
+```
+
+| | |
+|---|---|
+| `NER_MODEL_REPO` | **The one you can't skip.** The model is not bundled, and without it the proxy still starts — masking structured PII only, sending names, organizations and locations upstream in clear. One-time revision-pinned fetch into the HuggingFace cache |
+| `NER_REQUIRED=1` | Turns that silent downgrade into a startup failure. If the first line above is missing, you are running structured-only |
+| `PII_LOCALES` | Gates **only** domestic phone numbers written without `+CC`, and only `gb` / `de` exist — the `it,us` default activates neither, so an Italian number needs `+39 …` to be masked ([M10](docs/ROADMAP.md#m10) closes this). National IDs are always on whatever you set |
+
+There is no config file — configuration is environment-only, and the full table is under
+[Configuration](#configuration).
+
+### Build from source
+
 Requires Rust **1.89+**.
 
 ```sh
@@ -68,7 +116,7 @@ UPSTREAM_API_KEY=sk-... ./target/onnx/release/llm-proxy-pii-rust
 > overwrite it with a structured-only binary. A default build works too, and drops the NER:
 > structured PII only.
 
-Then talk to it exactly like the real provider:
+### Either way — talk to it exactly like the real provider
 
 ```sh
 curl http://127.0.0.1:8080/v1/chat/completions \
@@ -410,7 +458,7 @@ Everything is environment-driven.
 | `UPSTREAM_FORWARD_HEADERS` | *(preset)* | Comma-separated client headers to pass through |
 | `UPSTREAM_EXTRA_HEADERS` | *(none)* | `Key=Value;Key2=Value2` static headers for every upstream request |
 | `MAX_BODY_BYTES` | `16777216` | Request body limit (16 MiB) |
-| `PII_LOCALES` | `it,us` | Gates only the *false-positive-prone* recognizer tier — currently the **national phone** recognizers (`gb`, `de`: domestic numbers with no `+CC`). Add `gb` / `de` to enable them. **National IDs are always on regardless** |
+| `PII_LOCALES` | `it,us` | Gates only the *false-positive-prone* recognizer tier — today just the **national phone** recognizers, and only `gb` / `de` exist (domestic numbers with no `+CC`). **The default activates neither**, so an Italian domestic number is *not* masked unless written `+39 …` — see the coverage matrix in [ARCHITECTURE](docs/ARCHITECTURE.md) and [M10](docs/ROADMAP.md#m10). **National IDs are always on regardless** |
 | `PII_CACHE_ENTRIES` | `16` | Detection cache (S3): the byte-identical system prompt is scanned once and reused, saving the dominant NER pass. Keyed on exact bytes, so a hit can never mask *less* than a fresh scan. `0` disables it |
 | `RUST_LOG` | *(unset)* | e.g. `llm_proxy_pii_rust=debug` |
 

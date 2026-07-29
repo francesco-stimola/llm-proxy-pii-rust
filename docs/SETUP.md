@@ -189,12 +189,21 @@ de-anonymized incrementally on the way back (placeholders split across token chu
 reassembled). Request-side masking always runs first, so the provider only ever sees
 placeholders.
 
-**PII locales (M4).** Detection runs in three tiers: **universal** (email, IBAN, credit card,
-phone) and **national IDs** (US SSN, IT Codice Fiscale, GB NINO, ES DNI/NIE, FR NIR) are
-**always on** — a national ID is masked regardless of configuration (privacy-first). `PII_LOCALES`
-(comma-separated, default `it,us`) gates only the **FP-prone** tier — ambiguous recognizers like
-national *phone* formats — of which there are none yet, so `PII_LOCALES` is a no-op today (the seam
-is kept for future opt-in recognizers).
+**PII locales (M4, filled in by M8.1).** Detection runs in three tiers: **universal** (email, IBAN,
+credit card, `+CC` phone) and **national IDs** (10 countries) are **always on** — a national ID is
+masked regardless of configuration (privacy-first). `PII_LOCALES` (comma-separated, default
+`it,us`) gates only the **FP-prone** tier: recognizers ambiguous enough that a wrong locale would
+over-mask. Since M8.1 that tier is no longer empty — `fp_prone_recognizers` (`src/pii/recognizers.rs`)
+matches **`gb` and `de`**, each adding a domestic phone recognizer for numbers written without
+`+CC`, validated against the real numbering plan. Every other code, **including the default `it` and
+`us`, contributes nothing** — so `PII_LOCALES` changes behavior only when you add `gb` / `de`. It is
+not a language setting: if names are going through unmasked, the cause is the NER model, not this.
+
+A locale code names a **numbering plan**, not a country's coverage: `de` masks any `0`-trunk number
+that fits the German plan, which by overlap includes several Italian landlines but not, say, French
+or Swiss ones. Measured matrix in [`ARCHITECTURE.md`](ARCHITECTURE.md) → *Locale coverage*. The
+consequence to know while developing: **with the shipped default, an Italian domestic number is not
+masked** — [M10](ROADMAP.md#m10) is open to close that.
 
 ## Fallback: GNU toolchain (no MSVC, no admin)
 

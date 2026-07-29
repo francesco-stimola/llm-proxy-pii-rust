@@ -54,6 +54,54 @@ Fai puntare il tuo client compatibile con OpenAI al proxy. Nient'altro nel tuo s
 
 ## Avvio rapido
 
+### Esegui un binario rilasciato
+
+Scarica l'asset della tua piattaforma dall'[ultima
+release](https://github.com/francesco-stimola/llm-proxy-pii-rust/releases/latest): un eseguibile,
+nessun installer, niente da scompattare. Prendi il nome senza suffisso, a meno che tu non voglia
+una variante `-cuda` / `-webgpu` (vedi *Accelerazione GPU*, più sotto).
+
+```powershell
+# Windows
+Move-Item .\llm-proxy-pii-rust-x86_64-pc-windows-msvc.exe .\llm-proxy-pii-rust.exe
+
+$env:NER_MODEL_REPO   = "jiting/xlm-roberta-base-ner-hrl_onnx"
+$env:NER_REQUIRED     = "1"
+$env:PII_LOCALES      = "it,us"     # aggiungi gb / de per i numeri di telefono domestici
+$env:UPSTREAM_API_KEY = "sk-..."    # opzionale — l'header del client ha la precedenza
+.\llm-proxy-pii-rust.exe
+```
+
+```sh
+# Linux / macOS  ·  su macOS anche: xattr -d com.apple.quarantine ./llm-proxy-pii-rust
+mv llm-proxy-pii-rust-x86_64-unknown-linux-gnu llm-proxy-pii-rust
+chmod +x llm-proxy-pii-rust
+
+export NER_MODEL_REPO=jiting/xlm-roberta-base-ner-hrl_onnx
+export NER_REQUIRED=1
+export PII_LOCALES=it,us
+export UPSTREAM_API_KEY=sk-...
+./llm-proxy-pii-rust
+```
+
+Due righe all'avvio ti dicono quale proxy hai davvero ottenuto:
+
+```text
+INFO … ONNX NER detector loaded model="…model_quantized.onnx" pool_size=1 intra_threads=…
+INFO … listening on http://127.0.0.1:8080
+```
+
+| | |
+|---|---|
+| `NER_MODEL_REPO` | **Quella che non puoi saltare.** Il modello non è incluso, e senza il proxy parte lo stesso — mascherando solo le PII strutturate e mandando nomi, organizzazioni e luoghi in chiaro. Fetch una tantum, fissato a una revisione, nella cache HuggingFace |
+| `NER_REQUIRED=1` | Trasforma quel declassamento silenzioso in un errore d'avvio. Se manca la prima riga qui sopra, stai girando in solo-strutturato |
+| `PII_LOCALES` | Governa **solo** i numeri di telefono domestici scritti senza `+CC`, ed esistono solo `gb` / `de` — il default `it,us` non ne attiva nessuno, quindi un numero italiano va scritto `+39 …` per essere mascherato ([M10](docs/ROADMAP.md#m10) chiude il buco). I documenti nazionali sono sempre attivi comunque |
+
+Non esiste un file di configurazione — la configurazione è solo ambiente, e la tabella completa è
+in [Configurazione](#configurazione).
+
+### Compila da sorgente
+
 Richiede Rust **1.89+**.
 
 ```sh
@@ -67,7 +115,7 @@ UPSTREAM_API_KEY=sk-... ./target/onnx/release/llm-proxy-pii-rust
 > sovrascriverlo con un binario solo-strutturato. Anche la build di default funziona, ma
 > rinuncia alla NER: solo PII strutturata.
 
-Poi parlaci esattamente come faresti col provider reale:
+### In entrambi i casi — parlaci come faresti col provider reale
 
 ```sh
 curl http://127.0.0.1:8080/v1/chat/completions \
@@ -423,7 +471,7 @@ Tutto è pilotato da variabili d'ambiente.
 | `UPSTREAM_FORWARD_HEADERS` | *(preset)* | Header del client da inoltrare, separati da virgola |
 | `UPSTREAM_EXTRA_HEADERS` | *(nessuno)* | `Chiave=Valore;Chiave2=Valore2` header statici per ogni richiesta a monte |
 | `MAX_BODY_BYTES` | `16777216` | Limite del corpo della richiesta (16 MiB) |
-| `PII_LOCALES` | `it,us` | Governa **solo** il livello di riconoscitori inclini a falsi positivi — attualmente i riconoscitori **telefono nazionale** (`gb`, `de`: numeri domestici senza `+CC`). Aggiungi `gb` / `de` per abilitarli. **I documenti nazionali sono sempre attivi** |
+| `PII_LOCALES` | `it,us` | Governa solo il livello di riconoscitori inclini a falsi positivi — oggi i soli riconoscitori **telefono nazionale**, e ne esistono solo `gb` / `de` (numeri domestici senza `+CC`). **Il default non ne attiva nessuno**, quindi un numero italiano domestico *non* viene mascherato se non scritto `+39 …` — vedi la matrice di copertura in [ARCHITECTURE](docs/ARCHITECTURE.md) e [M10](docs/ROADMAP.md#m10). **I documenti nazionali sono sempre attivi** |
 | `PII_CACHE_ENTRIES` | `16` | Cache di rilevamento (S3): il system prompt byte-identico viene scansionato una volta e riusato, risparmiando la passata NER dominante. Con chiave sui byte esatti, un hit non può **mai** mascherare *meno* di una scansione fresca. `0` la disabilita |
 | `RUST_LOG` | *(non impostata)* | es. `llm_proxy_pii_rust=debug` |
 

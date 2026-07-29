@@ -67,6 +67,30 @@ recognizers, not "which countries". The **language** domain for the NER is the m
 declared languages (XLM-R HRL: ar/de/en/es/fr/it/lv/nl/pt/zh — validated, see
 `docs/DEVLOG.md`); structured PII is language-independent.
 
+**A locale code names a numbering *plan*, not a country's coverage — and the difference is
+measured, not theoretical** (probe, 2026-07-29). Because `is_valid()` tests a candidate against
+one region's assigned ranges, enabling `de` masks every `0`-trunk number that happens to fit the
+German plan, wherever it is really from — and enabling a locale whose plan does *not* fit leaves
+that country's numbers untouched:
+
+| domestic number | masked with `gb` | with `de` | note |
+|---|---|---|---|
+| GB `020 7946 0958`, `07911 123456` | ✅ | mobile only | the mobile also fits the DE plan |
+| DE `030 12345678`, `0171 1234567` | Berlin only | ✅ | Berlin's `030…` also fits the GB plan |
+| **IT `06 69821234`, `02 72022122`, `081 7941111`, `055 27681`** | ❌ | **✅ by accident** | the IT plan overlaps the German one |
+| **IT `011 5627111`** (Turin) | ❌ | ❌ | same country as the row above — the overlap is per-number |
+| FR `01 42 68 53 00`, BE, AT, CH, IE | ❌ | ❌ | those plans don't collide with GB/DE |
+| `0123456789`, `0000000000` | ❌ | ❌ | the `is_valid()` gate doing its job |
+
+Two consequences worth stating plainly. First, **accidental coverage is not coverage**: Italian
+landlines are masked under `de` only because the plans collide, per number, and a libphonenumber
+metadata update can silently change which ones. Second — the sharp one — **the project's own
+default locale has no domestic phone recognizer at all.** `fp_prone_recognizers` matches `gb` and
+`de`; `it` and `us` return an empty vec, so with the shipped default `PII_LOCALES=it,us` an Italian
+domestic number reaches the provider **in clear** unless it is written `+39 …` (the universal `+CC`
+arm) or happens to fall in the 3-3-4 grouping the universal US arm matches (`320 123 4567` does;
+`347 1234567` and every landline above do not). Tracked as [M10](ROADMAP.md#m10).
+
 **Word boundaries are ASCII — `(?-u:\b)`, never a bare `\b` (M4-R13).** Rust `regex`'s default
 `\b` is **Unicode-aware**: a Han / Kana / Cyrillic letter *is* a word character, so there is **no
 boundary between a CJK character and a digit**. Chinese and Japanese have no inter-word spaces, so

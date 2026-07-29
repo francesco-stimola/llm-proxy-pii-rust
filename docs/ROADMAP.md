@@ -50,6 +50,7 @@ it, which a first dry run proved was not a hypothetical.
 | [M8.1 — national phone recognizer (opt-in)](#m81) | ✅ complete · tag `v1.1.0` |
 | [M9 — GPU optimization](#m9) | ✅ complete |
 | [M9.1 — one release binary per backend](#m91) | ✅ complete · tag `v1.2.0` |
+| [M10 — national phone: the countries that are missing](#m10) | 📋 planned · tag `v1.2.1` (planned) |
 
 ---
 
@@ -1392,6 +1393,96 @@ user, NVIDIA device or not. Key-ed accelerators now get **their own artifact** i
 > What can break on a variant (a download resolving to nothing, a link failure) is caught by the
 > build step, which every leg runs.
 
+<a id="m10"></a>
+## M10 — national phone: the countries that are missing 📋
+
+**Opened 2026-07-29, from a documentation pass that turned into a measurement.** Writing down what
+`PII_LOCALES` does surfaced that it does less than everyone assumed. A throwaway probe drove
+`StructuredRecognizers::with_locales` over real domestic numbers from nine countries; the matrix is
+promoted into [`ARCHITECTURE.md`](ARCHITECTURE.md) → *Locale coverage*. What it showed:
+
+1. **The shipped default `PII_LOCALES=it,us` masks no Italian domestic phone number.**
+   `fp_prone_recognizers` matches only `gb` / `de`; `it` and `us` return an empty vec. So
+   `06 69821234`, `011 5627111`, `347 1234567` all reach the provider in clear — while `+39 347
+   1234567` is masked by the universal `+CC` arm, and `320 123 4567` only because its 3-3-4 grouping
+   happens to match the universal *US* arm.
+2. **`de` masks several IT landlines by accident** (Rome, Milan, Naples, Florence — but not Turin),
+   because plans overlap per *number*, not per country. Accidental coverage is not coverage: a
+   libphonenumber metadata update can move it without a line of our code changing.
+3. **Nothing regressed — the gap was never filled.** [M4](#m4) introduced `PII_LOCALES` when the
+   FP-prone tier was *empty*, choosing `it,us` as a placeholder naming the project's own locales;
+   [M8.1](#m81) then added the tier's first two entries (`gb`, `de`) without revisiting that
+   default. So the mismatch is a leftover of "the tier had nothing in it", not of lost coverage.
+
+**Scope is every missing country, not IT alone.** GB and DE were where M8.1's evidence was, and
+they are legitimately covered; the rest of Europe simply never got its turn.
+
+**The library is not the constraint.** `phonenumber` 0.3.10 carries **245 regions** — every country
+worth adding is already in `country::Id` (spot-checked: IT, FR, ES, PT, NL, BE, AT, CH, IE, PL, SE,
+DK, NO, FI, GR, CZ, RO all present). Adding a region is a match arm in `fp_prone_recognizers`, not
+new metadata. **The two real constraints are ours:**
+
+- **The candidate regex is `0`-trunk only** (`src/pii/recognizers.rs:346` — all three alternatives
+  start with `0`). Countries that dropped the trunk prefix propose **no candidate at all**, so a
+  match arm alone is a no-op for them: ES `91 123 45 67`, IT **mobiles** `347 1234567`. Generalizing
+  the anchor is the actual work — and it widens the candidate set sharply, leaving `is_valid()` as
+  the only filter. That is where the FP risk moves.
+- **Cost scales with the number of enabled regions.** A candidate is validated per region until one
+  accepts, so N regions mean up to N `parse().is_valid()` calls per candidate, on the deterministic
+  path that is today the *fast* one (~20 ms/turn structured-only). "Turn on all 245" is not a design;
+  a vetted set is.
+
+**And the question that prompted this: does the gate still earn its keep?** It exists because
+[M4-R1](reviews/M4.md#m4-r1) called an un-anchored national phone FP-prone — an objection
+[M8.1](#m81) then **defused by measurement** (`is_valid()` against the real numbering plan: GB
+precision 1.000 / FP-rate 0.000; DE 0.909, whose single "FP" `0049301234` is itself a real
+international dial to Berlin). If the reason for opt-in is gone, an opt-in default is just a way to
+ship less protection than the code can give. But precision was measured **per region**: enabling N
+regions unions their accepted sets, so the union's FP-rate is ≥ the worst single one and grows with
+N. That number decides the default, and we do not have it yet.
+
+- [ ] Generalize the candidate regex beyond the `0` trunk (ES, IT mobiles) **without** unbounding
+      match length — `Scan::Overlapping` linearity (M4-R19) and the M8-R8 shadowing case must hold
+- [ ] Add the missing regions to `fp_prone_recognizers`, each with adversarial corpus cases —
+      starting with **IT** (landlines across area-code lengths `02` / `06` / `011` / `055` / `081`,
+      plus mobiles) since it is a declared locale of this project
+- [ ] Measure the **compound** FP-rate — each region alone, then the union — on an extended
+      adversarial corpus of phone-shaped non-phones (order numbers, invoice refs, national IDs,
+      dates), and the added latency per enabled region
+- [ ] **Tests that make "all countries are covered" checkable, not claimed.** Per enabled region:
+      positive cases across the shapes a plan actually has — landline (every area-code length that
+      country uses), mobile, toll-free/service — plus negatives from that country's own look-alikes
+      (order numbers, VAT/tax IDs, dates, postcodes). Then the guard that keeps it honest: a test
+      that **enumerates the regions the code enables and fails if any lacks corpus coverage**, so a
+      region can never be switched on without its cases. A country added silently is the failure
+      mode here, and it is the one a checklist alone does not catch
+- [ ] **Try the all-on default first, and only fall back if the numbers refuse it.** In order of
+      preference: (a) every vetted region on by default and `PII_LOCALES` **removed**; (b) all-on by
+      default with `PII_LOCALES` kept as an **override of that list** — set it and it replaces the
+      default set, leave it unset and you get everything; (c) the gate stays as-is, with the
+      measured cost per region documented. (a) is cleanest but drops a documented variable, which a
+      patch must not do — so **(b) is the expected landing**: same protection out of the box, and an
+      operator who set `PII_LOCALES` keeps exactly the behavior they asked for
+- [ ] Whatever is decided, the mismatch must not survive: a default naming `it,us` that activates
+      neither. It stays documented-as-broken until this milestone lands — the README says so today —
+      rather than being quietly changed to something that looks right and still isn't measured
+- [ ] `TESTING.md` catalogs the new cases; `ARCHITECTURE.md`'s matrix is **re-measured**, not
+      re-asserted
+
+> **Why a patch (`v1.2.1`) and not a minor.** It closes a gap between what the tool claims and what
+> it does — the declared `it` locale masking nothing — rather than adding a capability. The one thing
+> that would make it a minor is option (a), removing `PII_LOCALES` outright; that is why (b) keeps
+> the variable as an override rather than deleting it.
+
+> **Until this lands, the workaround is `PII_LOCALES=gb,de`** — it is what the maintainer runs
+> locally. It buys GB and DE properly, plus whichever Italian landlines the German plan happens to
+> accept; it does nothing for Italian mobiles or Turin. That is the gap M10 closes, and the reason
+> the default is left visibly wrong in the meantime instead of being papered over.
+
+> **The deliverable is the measurement.** If enabling every vetted region is safe, the tool should
+> ship it on; if it isn't, the docs should say what it costs. Widening coverage without those numbers
+> would trade a documented gap for an undocumented over-mask.
+
 <a id="backlog"></a>
 ## Backlog — documented, not scheduled
 
@@ -1430,6 +1521,14 @@ is a wrong-provider error, never a leak.
 ### Other later items
 Auth & rate-limiting stages · TLS (or running behind a TLS terminator) · config-file support & container
 deployment · additional providers · metrics/observability.
+
+> **Sharpened 2026-07-29.** Running the *released binary* is now documented in README → Quick start
+> as plain commands. Two things were built and deleted rather than shipped: a `deploy/` env-file +
+> launcher-script pair (machinery around a config model that is already one line per variable), and
+> a systemd unit — because **a hand-rolled unit per init system is the wrong shape, and a published
+> OCI image is the answer that generalizes**. So "run it as a service" is deliberately parked here
+> rather than half-answered elsewhere. The other half — the binary reading a config file itself —
+> stays deliberately not done.
 
 > The **never-log-raw-PII** rule is **not** a backlog item — it is an enforced quality bar *today*
 > (kind/placeholder-only logging, guarded by `tests/log_safety.rs`, DBG-02). A dedicated structured

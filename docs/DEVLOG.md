@@ -3,6 +3,96 @@
 Newest first. One entry per meaningful change — note *what* and *why*, not just
 *what*. This is the running history so context is never lost between sessions.
 
+## 2026-07-29 — Docs: how to run the *released binary* (the gap nobody had noticed)
+
+**The hole.** Every "how do I start it?" path in this repo assumed you were building from source:
+README's Quick start ran `cargo build-onnx --release` out of `target/onnx/`, `SETUP.md` is titled
+*Development setup* and uses `cargo run-onnx` throughout, and `MANUAL_VERIFICATION.md` uses the
+alias **on purpose** (staleness). The only place a release artifact was ever mentioned was the
+per-backend download table — which lives inside the *GPU acceleration* section and exists to
+explain execution providers, not installation. So an operator who downloaded the binary this
+project ships had **no documented path at all**: not how to configure it, not how to keep it
+running. `release-build.yml` packages a bare executable — no README, no env sample — so the
+artifact didn't carry the answer either.
+
+**Two things it had to say that were nowhere in writing.** First: *there is no config file*, and
+that is a decision, not an omission (`src/main.rs` — no arg parser, no dotenv; nothing to leave a
+credential in, no file-vs-env precedence to reason about). Second, and this is the one that
+matters: **a released binary with no model configured is a structured-only proxy, silently.**
+Every asset is built `--features onnx`, but the model isn't bundled, and with neither
+`NER_MODEL_PATH` nor `NER_MODEL_REPO` set the proxy starts happily and forwards names in clear.
+That is the exact failure that burned the first live verification run (2026-07-16) — where it was
+caught by `NER_REQUIRED=1`, a flag the release-binary user had never been told about. It is now a
+warning box in the Quick start, with the two-variable fix and the pair of startup lines that tell
+you which proxy you are actually running.
+
+**Also stated for the first time: the Linux assets are plain ELF executables, not installers.**
+`release-build.yml`'s Package step `cp`s the binary and stops — no `.deb`, no `.rpm`, no archive.
+The one thing a downloaded asset lacks on Unix is the execute bit, which is now in the snippet.
+
+**The shape it landed in: commands, not tooling.** The first pass built a `deploy/` directory — an
+annotated `proxy.env` plus a `run-proxy.sh` / `run-proxy.ps1` pair that applied it — and a hardened
+systemd unit. All of it was **deleted before commit**, on the maintainer's call, and the reasoning
+is the part worth keeping:
+
+- **A launcher script is a second thing to maintain and a second thing to trust.** What the reader
+  actually needed was four `export` lines. A script that reads an env file is machinery *around* a
+  configuration model that is already one line per variable — it adds a file format, a parser and
+  its failure modes, to save nothing.
+- **A unit file per init system is the wrong shape for "run it as a service."** Once that is the
+  goal, a **published OCI image** is the answer that generalizes; it stays Backlog, and the README
+  no longer half-implies otherwise. Same for a `launchd` plist.
+- **Prose was the other thing cut.** The section had grown a warning box, a rationale paragraph and
+  a table of launchers before it got to "here is how you start it". It is now: download, four
+  variables, run — then a three-row table for the only variables whose *absence* changes what gets
+  masked, and the two startup lines that tell you which proxy you got.
+
+**Then the doc pass turned into a measurement, and found a hole. `PII_LOCALES` does less than
+anyone assumed — including its own default.** `fp_prone_recognizers` (`src/pii/recognizers.rs:313`)
+matches **only** `gb` and `de`; `it` and `us` return an empty vec, so the shipped default `it,us` is
+inert. That is not pedantry about a knob: a throwaway probe (deleted after reading) drove
+`StructuredRecognizers::with_locales` over real domestic numbers from nine countries, and
+
+**with the default configuration, no Italian domestic phone number is masked** — `06 69821234`,
+`011 5627111`, `347 1234567` all go upstream in clear. `+39 347 1234567` is caught by the universal
+`+CC` arm, and `320 123 4567` only because its 3-3-4 grouping collides with the universal *US* arm.
+For a tool whose stated locales are IT + US, that is the finding, not a footnote.
+
+The other half of the probe: **`de` masks Rome, Milan, Naples and Florence landlines — but not
+Turin** — because a locale code names a *numbering plan*, and plans overlap per number rather than
+per country. FR/BE/AT/CH/IE numbers are untouched by either code. So "enabling `de` covers other
+countries too" is true by accident and false by design, and a libphonenumber metadata update could
+move it with no change of ours. The measured matrix is promoted into `ARCHITECTURE.md` → *Locale
+coverage* (the design file, per the promote rule); the work is **[M10](ROADMAP.md#m10)**.
+
+**M10 opened, scoped to every missing country rather than IT alone, and targeted at `v1.2.1`** — a
+patch, because it closes a gap between what the tool claims and what it does rather than adding a
+capability. History checked while writing it: nothing regressed. M4 introduced `PII_LOCALES` when
+the FP-prone tier was **empty**, picking `it,us` as a placeholder naming the project's own locales;
+M8.1 added the tier's first two entries without revisiting that default. The mismatch is a leftover
+of "the tier had nothing in it".
+
+**The library is not the blocker — we are.** `phonenumber` 0.3.10 ships **245 regions**; every
+country worth adding is already in `country::Id`. What actually gates the work is two things of our
+own. First, the candidate regex is **`0`-trunk only** (`recognizers.rs:346`), so countries that
+dropped the trunk prefix — ES `91 123 45 67`, and Italian **mobiles** `347 1234567` — propose no
+candidate at all and a match arm alone would be a no-op; generalizing that anchor widens the
+candidate set sharply and leaves `is_valid()` as the only filter, which is where the FP risk moves.
+Second, cost scales with N: a candidate is validated per region until one accepts, on the
+deterministic path that is today the *fast* one. So "turn on all 245" is not a design.
+
+**Which is why M10 is not scoped as "delete the variable".** The gate exists because M4-R1 called
+the un-anchored phone FP-prone — an objection M8.1 defused by measurement, which does argue the
+opt-in has outlived its reason. But precision was measured **per region**, and enabling N regions
+unions their accepted sets: the union's FP-rate is ≥ the worst single region's and grows with N.
+That number doesn't exist yet, so the deliverable is the measurement and the default follows from
+it. `PII_LOCALES` stays *accepted* whatever is decided — silently dropping a documented variable
+would break every operator who set it, which a patch release must not do.
+
+Docs corrected in the same pass: both READMEs (Quick start row + Configuration table),
+`ARCHITECTURE.md` (the matrix), and `SETUP.md` — the worst of them, still claiming the FP-prone tier
+was empty and `PII_LOCALES` a no-op, which M8.1 had made false.
+
 ## 2026-07-20 — Dual licensing (AGPL + commercial)
 
 **Decision.** Sole-contributor project, sole copyright holder — no CLA backlog to clear, so
