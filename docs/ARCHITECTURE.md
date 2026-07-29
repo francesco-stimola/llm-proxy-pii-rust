@@ -171,9 +171,22 @@ verdict), and a **digit-count gate** read out of libphonenumber's own metadata r
 implausible lengths before any parsing. The gate is derived, never hand-written: it unions each
 enabled region's `possible_length` across every descriptor, plus one for the trunk digit —
 `possible_length` on the *general* descriptor alone is empty for most regions, and a mask built
-from it silently masked **nothing**, which is the direction a length gate must never fail in. It
-is a superset of what `is_valid` accepts by construction, and if the metadata yields nothing it
-**fails open**: an optimisation may never be the thing that decides a value is not PII.
+from it silently masked **nothing**, which is the direction a length gate must never fail in. If
+the metadata yields nothing it **fails open**: an optimisation may never be the thing that decides
+a value is not PII.
+
+> ⚠️ **The gate is NOT yet the superset it was built to be — [M10-R13](reviews/M10.md#m10-r13) is
+> open.** `parse` normalizes before it validates: it strips an **international prefix** and a
+> **bare country calling code**, not only the one trunk character the mask allows for. So a
+> candidate can carry 1–5 more digits than the national number the mask was derived from, and for
+> the `Groups` family — whose regex reaches 15 digits against a mask that stops at 13 — every 14-
+> and 15-digit candidate is rejected before any region sees it. Measured: recall **0** in that
+> band, with two thirds of the accepted-but-rejected ones *truncated* rather than missed
+> (`39 3332 2673 8858` → `[PHONE_1] 8858`), i.e. the M10-R1 shape re-entered from the other side.
+> **The rule this is teaching, and it generalizes past phones:** *a cheap filter in front of a
+> validator must be derived from what the **validator** accepts, not from what the **metadata**
+> describes — and it must be proved by a differential test against the thing it is filtering, never
+> by a list of inputs the author expected it to allow.*
 
 **The validator is not a locale *discriminator*.** National plans overlap, so a number valid in
 one region can be valid in another — a GB mobile also validates as DE, and `0123456789` is a real

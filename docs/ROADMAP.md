@@ -1794,6 +1794,22 @@ no phone candidate at all).
 | [M10-R11](reviews/M10.md#m10-r11) | The M9-R4 unknown-argument refusal is order-dependent: `--version --bogus` exits 0 | low | [x] |
 | [M10-R12](reviews/M10.md#m10-r12) | The fixture-shape assertions the shared module points at are `#[ignore]`d and `onnx`-only | low | [x] |
 
+**Round 2 (2026-07-29) — closure verification: all twelve hold**, each checked against the
+**pre-fix tree** rather than the diff, and every `phone_eval` figure now published reproduced
+exactly. Seven new findings, one of them the reason `v1.2.1` still cannot be cut:
+**[M10-R13](reviews/M10.md#m10-r13) — M10-R2's fix *relocated* the leak it closed**, the M4
+retrospective's signature move, landing on the guard that was supposed to make it impossible.
+
+| ID | Title | Sev | Status |
+|---|---|---|---|
+| [M10-R13](reviews/M10.md#m10-r13) | The digit-count gate rejects numbers `is_valid()` accepts, so M10-R2's fix re-creates M10-R1's truncation | **leak** | [ ] |
+| [M10-R14](reviews/M10.md#m10-r14) | `docs/SETUP.md` still documents the pre-M10 world, incl. "an Italian domestic number is not masked" | docs | [ ] |
+| [M10-R15](reviews/M10.md#m10-r15) | `shrink_to_a_valid_prefix`'s doc says it *is* applied to the trunk families; the code says the opposite | docs | [ ] |
+| [M10-R16](reviews/M10.md#m10-r16) | The same latency measurement is published as two different numbers; ARCHITECTURE's is the one that doesn't reproduce | measurement | [ ] |
+| [M10-R17](reviews/M10.md#m10-r17) | `every_declared_shape_is_needed_by_a_corpus_case` does not read the corpus | guard | [ ] |
+| [M10-R18](reviews/M10.md#m10-r18) | M10-R12's closure claims both comments were fixed; the shared module's still points at the `#[ignore]`d guard | low | [ ] |
+| [M10-R19](reviews/M10.md#m10-r19) | The M10-R10 fix left a new `cargo doc` warning of its own | low | [ ] |
+
 <a id="backlog"></a>
 ## Backlog — documented, not scheduled
 

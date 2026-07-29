@@ -25,11 +25,12 @@ that way?"*
 | [M7.md](M7.md) | M7 / M7.1 — NER latency · system-prompt cache | 23, all closed |
 | [M8.md](M8.md) | M8 / M8.1 — GLiNER · national phone recognizer | 8, all closed |
 | [M9.md](M9.md) | M9 / M9.1 — GPU optimization · per-backend binaries | 29, all closed |
-| [M10.md](M10.md) | M10 — national phone coverage + release hygiene | **12 — all open (one leak, one BLOCKER)** |
+| [M10.md](M10.md) | M10 — national phone coverage + release hygiene | **19 — 12 closed, 7 open (one leak)** |
 
-**Every open finding in the project belongs to M10.** `v1.2.1` does not get cut until its ledger is clean —
-[M10-R1](M10.md#m10-r1) (a real phone number partially forwarded in clear) and
-[M10-R2](M10.md#m10-r2) (~100 s of CPU for one legal request) are the two that block it.
+**Every open finding in the project belongs to M10**, and `v1.2.1` does not get cut until its ledger is
+clean. Round 1's twelve are closed and were verified closed against the pre-fix tree; the blocker is now
+[M10-R13](M10.md#m10-r13) — **the fix for [M10-R2](M10.md#m10-r2) relocated the leak it closed**, into the
+one guard built to make that impossible. Six docs/guard findings follow it.
 
 ---
 
