@@ -50,7 +50,7 @@ it, which a first dry run proved was not a hypothetical.
 | [M8.1 — national phone recognizer (opt-in)](#m81) | ✅ complete · tag `v1.1.0` |
 | [M9 — GPU optimization](#m9) | ✅ complete |
 | [M9.1 — one release binary per backend](#m91) | ✅ complete · tag `v1.2.0` |
-| [M10 — national phone: the countries that are missing](#m10) | 📋 planned · tag `v1.2.1` (planned) |
+| [M10 — v1.2.1: national phone coverage + release hygiene](#m10) | 📋 planned · tag `v1.2.1` (planned) |
 
 ---
 
@@ -1394,7 +1394,7 @@ user, NVIDIA device or not. Key-ed accelerators now get **their own artifact** i
 > build step, which every leg runs.
 
 <a id="m10"></a>
-## M10 — national phone: the countries that are missing 📋
+## M10 — v1.2.1: national phone coverage + release hygiene 📋
 
 **Opened 2026-07-29, from a documentation pass that turned into a measurement.** Writing down what
 `PII_LOCALES` does surfaced that it does less than everyone assumed. A throwaway probe drove
@@ -1468,6 +1468,45 @@ N. That number decides the default, and we do not have it yet.
       rather than being quietly changed to something that looks right and still isn't measured
 - [ ] `TESTING.md` catalogs the new cases; `ARCHITECTURE.md`'s matrix is **re-measured**, not
       re-asserted
+
+### Also in `v1.2.1` — three things the binary cannot tell you about itself
+
+All three surfaced on 2026-07-29 while documenting how to run the released binary. None is about
+detection, and each is the kind of defect that only shows up when you use the shipped artifact
+rather than `cargo run` with the repo open next to you. The theme is the same: **a downloaded
+executable should be able to answer "what am I, and what do I accept?" without the README.**
+
+- [ ] **`--version`.** There is none, and because `main.rs` refuses unknown arguments (M9-R4),
+      `llm-proxy-pii-rust --version` does not print a version — it **fails to start**. A release
+      asset is a bare executable, so once it is saved next to an older copy nothing identifies it.
+      The alternative considered and **rejected** was putting the version in the artifact filename:
+      it was implemented, then rolled back, because a filename is a convention a rename can break
+      while a binary reporting `CARGO_PKG_VERSION` cannot lie — and the filename approach also
+      forfeits GitHub's stable `releases/latest/download/<name>` redirect. Print the version, the
+      target triple, and whether the ML layer is compiled in (`--features onnx`), since "which
+      build is this?" is the same question and `--bench-providers` already knows the answer.
+- [ ] **Default log level: `error` → `info`.** `EnvFilter::from_default_env()` falls back to
+      **ERROR-only** when `RUST_LOG` is unset, so the shipped default prints **nothing at all** —
+      no `listening on`, no `ONNX NER detector loaded`. Measured, not inferred: the binary was run
+      both ways. That breaks the one check this project tells operators to make ("if the NER line
+      is missing you are running structured-only"), because with no `RUST_LOG` *every* line is
+      missing, and a silent process looks equally like a healthy one and a broken one. Fix is
+      `EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"))`; `RUST_LOG`
+      keeps overriding it. **This does not weaken the privacy bar** — logs carry kinds, counts and
+      placeholders only, `Config`'s manual `Debug` redacts `upstream_api_key` (`src/config.rs:251`),
+      and `tests/log_safety.rs` enforces it at every level; the masked-body dump stays `trace`-only.
+      Until this ships the READMEs tell operators to set `RUST_LOG=info` explicitly.
+- [ ] **`--help` must document the configuration, not just the two flags.** It exists (`main.rs`,
+      and the unknown-argument refusal prints it too), but it lists only `--bench-providers` /
+      `--help` and defers configuration to `README.md` / `docs/SETUP.md`. For a tool whose
+      configuration is **entirely** environment variables and has no config file, that means the
+      shipped binary cannot tell you what it accepts — you need the repo to run the program. List
+      every variable with its default and a one-line purpose, grouped as the README table is
+      (server · upstream · detection · NER · GLiNER · debug).
+      **The risk is drift**, and a hand-written help text that silently falls behind `Config` is
+      worse than a short one — so pin it the same way the region coverage is pinned: a test that
+      **scans the source for every `env::var` / `env_flag` / `env_or` key and fails if one is
+      missing from the help text**. Then a variable cannot be added without appearing in `--help`.
 
 > **Why a patch (`v1.2.1`) and not a minor.** It closes a gap between what the tool claims and what
 > it does — the declared `it` locale masking nothing — rather than adding a capability. The one thing

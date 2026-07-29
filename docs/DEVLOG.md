@@ -3,6 +3,38 @@
 Newest first. One entry per meaningful change — note *what* and *why*, not just
 *what*. This is the running history so context is never lost between sessions.
 
+## 2026-07-29 — Version in the artifact filename: built, then rolled back for `--version`
+
+**The ask was "can the release tag be in the artifact name?" — yes, and it was implemented**: a
+`version` input on the reusable `release-build.yml` (needed because its other caller,
+`manual-build.yml`, runs on `workflow_dispatch` where no tag exists and fell back to
+`<Cargo.toml version>-dev-<short sha>`), producing `llm-proxy-pii-rust-v1.2.0-<target>[-variant]`.
+Both branches were simulated locally and the YAML validated.
+
+**It was then reverted, on the maintainer's call, in favour of `--version` — the better answer, and
+the reasoning is worth keeping.** A filename is a *convention*: it identifies the artifact only
+until someone renames it, and this project's own README tells operators to rename it (to
+`llm-proxy-pii-rust`) as step one. A binary reporting `CARGO_PKG_VERSION` cannot be made to lie by
+a rename. The filename approach also forfeits GitHub's stable `releases/latest/download/<name>`
+redirect, which needs a fixed name. So the pipelines are unchanged and the capability moves into
+the binary, tracked in [M10](ROADMAP.md#m10).
+
+**And measuring that led to the sharper finding: with `RUST_LOG` unset the proxy prints nothing.**
+`EnvFilter::from_default_env()` falls back to ERROR-only, so a healthy start is **completely
+silent** — no `listening on`, no `ONNX NER detector loaded`. Confirmed by running the binary both
+ways, not inferred. That quietly broke the check the previous DEVLOG entry had just told operators
+to make ("no NER line ⇒ structured-only"), because with no `RUST_LOG` *every* line is missing and a
+silent process looks the same whether it is healthy or wedged. Both READMEs now set `RUST_LOG=info`
+in the Quick start and say plainly that this is a defect we own; M10 changes the default, keeping
+`RUST_LOG` as the override. Checked before proposing it: `Config`'s manual `Debug`
+(`src/config.rs:251`) redacts `upstream_api_key`, so an `info` default does not start printing a
+credential.
+
+M10 also picked up **`--help`**: it exists, but lists only the two flags and defers configuration to
+the repo — for a tool with no config file and ~30 environment variables, that leaves the shipped
+binary unable to say what it accepts. Pinned against drift by a test that scans the source for every
+env key and fails if one is missing from the help text.
+
 ## 2026-07-29 — Docs: how to run the *released binary* (the gap nobody had noticed)
 
 **The hole.** Every "how do I start it?" path in this repo assumed you were building from source:

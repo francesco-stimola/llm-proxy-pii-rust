@@ -68,6 +68,7 @@ Move-Item .\llm-proxy-pii-rust-x86_64-pc-windows-msvc.exe .\llm-proxy-pii-rust.e
 $env:NER_MODEL_REPO   = "jiting/xlm-roberta-base-ner-hrl_onnx"
 $env:NER_REQUIRED     = "1"
 $env:PII_LOCALES      = "it,us"     # aggiungi gb / de per i numeri di telefono domestici
+$env:RUST_LOG         = "info"      # senza, il proxy non logga NULLA — vedi sotto
 $env:UPSTREAM_API_KEY = "sk-..."    # opzionale — l'header del client ha la precedenza
 .\llm-proxy-pii-rust.exe
 ```
@@ -80,16 +81,22 @@ chmod +x llm-proxy-pii-rust
 export NER_MODEL_REPO=jiting/xlm-roberta-base-ner-hrl_onnx
 export NER_REQUIRED=1
 export PII_LOCALES=it,us
+export RUST_LOG=info                # senza, il proxy non logga NULLA — vedi sotto
 export UPSTREAM_API_KEY=sk-...
 ./llm-proxy-pii-rust
 ```
 
-Due righe all'avvio ti dicono quale proxy hai davvero ottenuto:
+A quel punto due righe all'avvio ti dicono quale proxy hai davvero ottenuto:
 
 ```text
 INFO … ONNX NER detector loaded model="…model_quantized.onnx" pool_size=1 intra_threads=…
 INFO … listening on http://127.0.0.1:8080
 ```
+
+> **`RUST_LOG` oggi non è opzionale, ed è un difetto nostro.** Se non lo imposti il filtro dei log
+> ricade sui soli errori, quindi un proxy sano parte **in perfetto silenzio** — indistinguibile da
+> uno rotto, e senza modo di fare la verifica della tabella qui sotto. [M10](docs/ROADMAP.md#m10)
+> porta il default a `info`; fino ad allora, impostalo.
 
 | | |
 |---|---|
@@ -473,7 +480,7 @@ Tutto è pilotato da variabili d'ambiente.
 | `MAX_BODY_BYTES` | `16777216` | Limite del corpo della richiesta (16 MiB) |
 | `PII_LOCALES` | `it,us` | Governa solo il livello di riconoscitori inclini a falsi positivi — oggi i soli riconoscitori **telefono nazionale**, e ne esistono solo `gb` / `de` (numeri domestici senza `+CC`). **Il default non ne attiva nessuno**, quindi un numero italiano domestico *non* viene mascherato se non scritto `+39 …` — vedi la matrice di copertura in [ARCHITECTURE](docs/ARCHITECTURE.md) e [M10](docs/ROADMAP.md#m10). **I documenti nazionali sono sempre attivi** |
 | `PII_CACHE_ENTRIES` | `16` | Cache di rilevamento (S3): il system prompt byte-identico viene scansionato una volta e riusato, risparmiando la passata NER dominante. Con chiave sui byte esatti, un hit non può **mai** mascherare *meno* di una scansione fresca. `0` la disabilita |
-| `RUST_LOG` | *(non impostata)* | es. `llm_proxy_pii_rust=debug` |
+| `RUST_LOG` | *(non impostata)* | **Non impostata significa solo errori — il proxy parte in silenzio, senza stampare nemmeno `listening on`.** Imposta `info` per vedere avvio e richieste, o es. `llm_proxy_pii_rust=debug`. Il default passa a `info` con [M10](docs/ROADMAP.md#m10) |
 
 <details>
 <summary><b>NER (entità non strutturate) — <code>--features onnx</code></b></summary>
