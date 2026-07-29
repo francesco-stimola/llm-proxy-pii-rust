@@ -1419,7 +1419,7 @@ they are legitimately covered; the rest of Europe simply never got its turn.
 
 **The library is not the constraint.** `phonenumber` 0.3.10 carries **245 regions** — every country
 worth adding is already in `country::Id` (spot-checked: IT, FR, ES, PT, NL, BE, AT, CH, IE, PL, SE,
-DK, NO, FI, GR, CZ, RO all present). Adding a region is a match arm in `fp_prone_recognizers`, not
+DK, NO, FI, GR, CZ, RO all present). Adding a region is an entry in our own enabled-region set, not
 new metadata. **The two real constraints are ours:**
 
 - **The candidate regex is `0`-trunk only** (`src/pii/recognizers.rs:346` — all three alternatives
@@ -1443,9 +1443,10 @@ N. That number decides the default, and we do not have it yet.
 
 - [ ] Generalize the candidate regex beyond the `0` trunk (ES, IT mobiles) **without** unbounding
       match length — `Scan::Overlapping` linearity (M4-R19) and the M8-R8 shadowing case must hold
-- [ ] Add the missing regions to `fp_prone_recognizers`, each with adversarial corpus cases —
-      starting with **IT** (landlines across area-code lengths `02` / `06` / `011` / `055` / `081`,
-      plus mobiles) since it is a declared locale of this project
+- [ ] Add the missing regions to the enabled set — **the dispatch shape is settled in step 4 and it
+      came out (b): one shared regex per shape family, not one recognizer per region** — each with
+      adversarial corpus cases, starting with **IT** (landlines across area-code lengths `02` / `06`
+      / `011` / `055` / `081`, plus mobiles) since it is a declared locale of this project
 - [ ] Measure the **compound** FP-rate — each region alone, then the union — on an extended
       adversarial corpus of phone-shaped non-phones (order numbers, invoice refs, national IDs,
       dates), and the added latency per enabled region
