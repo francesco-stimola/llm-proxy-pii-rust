@@ -127,6 +127,10 @@ accepts `/`, and a 4-digit leading group is not a candidate.
 nine**, over the same 22 KiB turn. That is the point of the dispatch shape: one recognizer per
 shape *family*, with the region loop inside the validator, so adding a region costs validations
 on candidates only, never another O(n·L) scan of every field (see `national_phone_recognizers`).
+*(Conditions, per this project's rule about never quoting a number without them: reference box,
+`--release`, `--test-threads=1`, **another proxy instance running concurrently**. Read the
+milliseconds as a busy box's; the shape — flat in the region count — is what the decision rests on,
+and background load cannot bend a flat line into a sloped one.)*
 
 **The validator is not a locale *discriminator*.** National plans overlap, so a number valid in
 one region can be valid in another — a GB mobile also validates as DE, and `0123456789` is a real

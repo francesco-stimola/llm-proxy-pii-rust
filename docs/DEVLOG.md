@@ -21,6 +21,13 @@ validations on candidates only, never another O(n·L) scan of every field — wh
 argument for putting the region loop inside a boxed-closure validator instead of shipping one
 recognizer per region.
 
+> **Conditions, recorded because this repo has been burned by omitting them** (M7-R12): reference
+> box, `--release`, `--test-threads=1`, and **another proxy instance running on the same machine
+> throughout**. So these are a busy box's milliseconds, not the product's floor. The claim they
+> support is not an absolute — it is that the curve is **flat in the region count**, and background
+> load raises a flat line without sloping it. A clean-box re-measure would move the numbers, not the
+> conclusion.
+
 **Generalizing the candidate anchor was the real work, and the first attempt was wrong in an
 instructive way.** A country that dropped the trunk prefix (ES, PT, IT mobiles, LV, CN mobiles)
 proposes *no candidate at all* under a `0`-anchored regex, so a match arm alone would have been a
