@@ -1565,7 +1565,10 @@ cost against validation cost:
 
   **Decided: (b), and it was measured rather than argued** (throwaway probe, 2026-07-29, deleted
   after reading; **release** profile, 22 KiB payload — the M7 realistic-turn size — 252 candidates,
-  9 regions):
+  9 regions). **Measurement conditions, stated because this project has been burned by omitting
+  them:** the reference box under load — a Teams call running, and mismatched memory banks (16 GB +
+  8 GB, so not a clean dual-channel pair). **Treat the absolute milliseconds as this box's on a bad
+  day, not as the product's.**
 
   | shape | per pass | what it isolates |
   |---|---|---|
@@ -1579,6 +1582,13 @@ cost against validation cost:
   structured-only path that costs ~20 ms for a whole turn. `.any()`'s early exit is worth a further
   2.51×, for **5.12× overall**. Note it came out *larger* in release than in debug (2.91×), i.e. the
   opposite of the "validation dominates once optimized" guess — which is the reason to measure.
+
+  **The decision does not rest on the timings, which is why the noisy box does not threaten it.**
+  (a) and (b′) run the *same* validations; (a) additionally scans the text N−1 more times. It is
+  **strictly more work**, so (b′) cannot lose except to measurement noise — arithmetic, not a
+  benchmark result. What the numbers add is only *how much*, and a quieter machine would move the
+  size of the win, never its direction. Re-measure if a precise cost per region is ever needed
+  (idle box, on AC); do not re-open the choice over it.
 
   So `validate` becomes a boxed closure. **Region granularity is not what is being traded away**:
   (b) still enables regions individually and still bounds the set by the step-5 principle — only the

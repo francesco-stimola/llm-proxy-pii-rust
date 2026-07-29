@@ -24,6 +24,15 @@ linearly with every region added. Nine regions under (a) would put ~7 ms per fie
 structured-only path that costs ~20 ms for an entire turn. The short-circuit is worth a further
 2.51×, 5.12× in total.
 
+**Conditions, recorded because omitting them is a mistake this repo has already made once** (the M7
+"AC versus battery" spread that turned out to separate nothing): the box was **under load** — a
+Teams call in progress — with **mismatched memory banks** (16 GB + 8 GB, not a clean dual-channel
+pair). The absolute milliseconds are this machine's on a bad day and should not be quoted as the
+product's. **The decision survives that, because it does not rest on the timings:** (a) runs the
+same validations as (b′) *plus* N−1 extra scans of the text, so it is strictly more work — the
+measurement quantifies the win, arithmetic guarantees its direction. A quieter box would change the
+size, not the winner.
+
 **Worth recording because the guess was wrong:** debug measured 2.91× and release 5.12×. The
 expectation was the opposite — that optimizing would make `phonenumber` validation cheap and leave
 scan count looking relatively worse under (a) — so a decision taken from the debug number, or from
