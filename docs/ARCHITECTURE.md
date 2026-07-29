@@ -75,68 +75,128 @@ pt cn`. **US needs nothing** (no trunk-`0` domestic form; the universal `NNN NNN
 covers it) and **`ar` gets nothing**, for the same reason it gets no national-ID pack: the
 language spans ~20 countries with different plans, so there is no single "Arabic" numbering plan.
 
-**Two candidate shape families, and which regions may validate each is the key precision
-decision.**
+**Four candidate shape families, and *which regions may validate each* is the key precision
+decision.** A shape is a **rendering**, not a country: several countries write numbers the same
+way, and Italy writes them three ways.
 
-| family | pattern | validated against |
+| shape | example | declared by |
 |---|---|---|
-| **trunk `0`** — compact / 2–3 groups, and the French five-pair form | `020 7946 0958`, `030 12345678`, `01 23 45 67 89` | **every** enabled region |
-| **non-trunk** — 2–4 groups, or prefix + one long block | `91 123 45 67`, `912 345 678`, `347 1234567`, `138 0013 8000` | only regions whose numbers really are written without a leading `0`: **es it lv pt cn** |
+| `Trunk` — leading `0`, compact or 2–3 groups | `020 7946 0958`, `030 12345678`, `011 5627111` | de · fr · gb · it · nl · cn |
+| `TrunkPairs` — leading `0`, five 2-digit pairs | `01 23 45 67 89` | fr |
+| `Groups` — no trunk, 2–4 groups | `91 123 45 67`, `912 345 678`, `138 0013 8000` | es · it · lv · pt · cn |
+| `LongBlock` — no trunk, prefix + one 6–8-digit block | `347 1234567` | it |
 
-That split is what makes the tier shippable. libphonenumber's `parse` accepts a national number
-**with or without** its trunk prefix — because in a trunk-prefix country you really can dial a
-local number that way — so feeding un-anchored digit groups to DE/FR/NL/GB asks *"could this be a
-same-area local dial in Germany?"*, which is true of an enormous slice of ordinary numeric text.
-Measured before the split: DE alone turned **7 of 24** digit-shaped non-phones into `Phone` spans
-(`512 1024 2048 4096`, `30 60 120`, `20 30 40`, …), FR 4, NL 3. After it: 0 for all four.
+**Why per-region and not "trunk / non-trunk".** libphonenumber's `parse` accepts a national number
+**with or without** its trunk prefix — in a trunk-prefix country you really can dial a local number
+that way — so offering un-anchored groups to DE/FR/NL/GB asks *"could this be a same-area local
+dial in Berlin?"*, true of an enormous slice of ordinary numeric text. Measured with every region
+seeing every shape: **DE 7 of 24** digit-shaped non-phones became `Phone` spans (`512 1024 2048
+4096`, `30 60 120`, `20 30 40`, …), FR 4, NL 3; restricting them to `Trunk` took all three to 0.
+The same argument one level finer earns the fourth row: a single non-trunk flag handed China the
+Italian-mobile `LongBlock` shape, and China's plan accepts 10-digit runs starting `1…`, so file
+offsets and byte counts (`offset 100 1000000 in file`) became `Phone` spans — **0.250 of the
+offsets pool, 0.156 of sizes**. Declaring shapes per region takes those to 0 with Chinese mobiles
+still covered. `every_declared_shape_is_needed_by_a_corpus_case` fails if a row lists a shape no
+rendering of that country needs.
 
 **Measured, per region and for the union** (`tests/phone_eval.rs`, `--release`; 35 corpus
-positives, 20 curated negatives, 385 generated digit-shaped non-phones):
+positives, 20 curated negatives, 433 generated digit-shaped non-phones):
 
-| | recall | curated FP | generated FP — dates | codes | offsets | sizes | ports · money · refs |
-|---|---|---|---|---|---|---|---|
-| de · es · fr · gb · nl | **1.000** | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 |
-| it | **1.000** | 0.000 | 0.083 | 0.000 | 0.000 | 0.000 | 0.000 |
-| lv | **1.000** | 0.000 | 0.125 | 0.000 | 0.000 | 0.000 | 0.000 |
-| pt | **1.000** | 0.000 | 0.000 | 0.091 | 0.083 | 0.000 | 0.000 |
-| cn | **1.000** | 0.000 | 0.000 | 0.000 | 0.000 | 0.042 | 0.000 |
-| **union (the shipped default)** | **1.000** | 0.000 | **0.188** | 0.091 | 0.083 | 0.042 | 0.000 |
+| | recall | curated FP | dates | tables | codes | offsets | sizes | ports · money · refs |
+|---|---|---|---|---|---|---|---|---|
+| de · fr · gb · nl | **1.000** | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 |
+| es | **1.000** | 0.000 | 0.000 | 0.188 | 0.000 | 0.000 | 0.000 | 0.000 |
+| it | **1.000** | 0.000 | 0.080 | 0.062 | 0.000 | 0.000 | 0.000 | 0.000 |
+| lv | **1.000** | 0.000 | 0.120 | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 |
+| pt | **1.000** | 0.000 | 0.000 | 0.188 | 0.091 | 0.050 | 0.000 | 0.000 |
+| cn | **1.000** | 0.000 | 0.000 | 0.188 | 0.000 | 0.000 | 0.031 | 0.000 |
+| **union (the shipped default)** | **1.000** | 0.000 | **0.180** | **0.375** | 0.091 | 0.050 | 0.031 | 0.000 |
+
+> **These numbers replace an earlier, rosier set, and the correction is the more useful half.**
+> The first pool reported 0.000 for `sizes`, `offsets` and `refs` and concluded "the whole
+> exposure is dates". It was wrong in a way worth naming: an un-anchored candidate needs a
+> **2–3-digit leading token**, and the pool's non-date entries almost never had one
+> (`chunk 8192 bytes`, `order 2026 1042`, `port 8080` — all 4-digit leads, not candidates at
+> all), while the `LongBlock` family had essentially no representative. So the zeros were
+> reporting the *pool's* shape, not the detector's precision. *A corpus has a shape, and that
+> shape is a blind spot* (M4-R13) — landing on the milestone's own deliverable measurement.
+> `phone_eval` now asserts that the pool can reach every shape family before it reports on one.
 
 **Read the FP figures per category, never blended.** A single rate over a pool whose composition
-you chose is a number about the pool. What it says: ports, money amounts and reference numbers
-are untouched; the whole exposure is **space- or dash-separated dates** (`28 01 2026` →
-Latvia's 8-digit plan; `01 02 2026` → the Milan `02 …` prefix), plus a little in dense numeric
-tables. ISO (`2026-07-29`) and slash (`29/07/2026`) dates cannot collide at all — no family
-accepts `/`, and a 4-digit leading group is not a candidate.
+you chose is a number about the pool. What they say: **ports, money amounts and reference numbers
+are untouched.** The cost is concentrated in two shapes — space- or dash-separated **dates**
+(`28 01 2026` is a valid Latvian mobile; `01 02 2026` contains Milan's `02` prefix) and
+space-separated **numeric tables** (`512 105 205` is a real Suzhou landline shape). ISO
+(`2026-07-29`) and slash (`29/07/2026`) dates cannot collide at all — no family accepts `/`, and a
+4-digit leading group is not a candidate. The `tables` category is adversarial by construction: it
+was generated *from the families' own structure* to reach them, which is what makes its 0.375 a
+ceiling rather than an expectation.
 
 **Three things this trade rests on.**
 1. **On real agent traffic the cost is zero.** Over the M7 fixture — a genuine 22 KiB Claude
    Code turn already in the repo, written for a different purpose and so not curated for this
    one — the shipped default yields **no `Phone` spans at all**. Pinned as PHONE-OM
-   (`tests/phone_overmask.rs`) with a positive control, so "found nothing" can never be
-   "detector is dead".
-2. **The union is the sum of its parts, not more.** Union-only false positives: **0**. Enabling
-   N regions unions their accepted sets, and here nothing emerges that no single region
-   produced — so a region's measured cost is also its marginal cost.
+   (`tests/phone_overmask.rs`) with one positive control **per shape family**, so "found
+   nothing" can never be "that family is switched off".
+2. **The union produces no *emergent* false positives** — a candidate the union masks is always
+   one some enabled region masks alone, so a region's measured cost is also its marginal cost.
+   That is a **structural property of the dispatch**, not a discovered fact (the validator is
+   `.any()` over a superset), so `phone_eval` asserts it instead of reporting it. It does *not*
+   mean adding a region is free: the union's FP **set** still grows by set-union, which is
+   exactly what the table above shows.
 3. **Over-masking a date is a *functional* nuisance, not a privacy failure** — the direction
    this project errs in on purpose. It is not free: a masked line number or port inside
    `tool_use.input` hands the model `[PHONE_1]` where it needed `8080`. That is why the guard in
-   (1) is over real traffic and not over a corpus of the false positives we imagined.
+   (1) is over real traffic and not over a corpus of the false positives we imagined, and why
+   the three worst known over-masks are **pinned as tests** (`known_over_masks_are_still_over_masks`)
+   rather than quietly dropped from the negative corpus when they stopped passing.
 
-**Latency is not the constraint** — 0.30 ms/turn with no region enabled, **0.31–0.32 ms with all
-nine**, over the same 22 KiB turn. That is the point of the dispatch shape: one recognizer per
-shape *family*, with the region loop inside the validator, so adding a region costs validations
-on candidates only, never another O(n·L) scan of every field (see `national_phone_recognizers`).
-*(Conditions, per this project's rule about never quoting a number without them: reference box,
-`--release`, `--test-threads=1`, **another proxy instance running concurrently**. Read the
-milliseconds as a busy box's; the shape — flat in the region count — is what the decision rests on,
-and background load cannot bend a flat line into a sloped one.)*
+**Latency is not the constraint** — over the same 22 KiB turn the cost is **flat in the region
+count**: ~0.55 ms/turn with none enabled, ~0.57 ms with all nine. That is the point of the
+dispatch shape: one recognizer per shape *family*, with the region loop inside the validator, so
+adding a region costs validations on candidates only, never another O(n·L) scan of every field
+(see `national_phone_recognizers`). *(Conditions, per this project's rule about never quoting a
+number without them: reference box, `--release`, `--test-threads=1`, **not idle**. Read the
+milliseconds as a busy box's — repeat runs moved the absolute by ~1.8× while the flatness never
+moved. The flatness is what the decision rests on, and background load cannot bend a flat line
+into a sloped one.)*
+
+**Two guards keep a digit-dense field affordable, and neither is optional.** The candidate rescan
+probes O(n) start positions, so a field of digit groups asks the same question about the same
+bytes over and over — at up to five `phonenumber::parse()` calls each, and `.any()` short-circuits
+only on *accept*, so a **rejection is the expensive verdict**. Unguarded, a legal 12 MiB body cost
+**105 s** of CPU on an unauthenticated path. So: validator results are **memoized per scan** (a
+call-local map — the validator is a pure function of the matched bytes, so a hit cannot change a
+verdict), and a **digit-count gate** read out of libphonenumber's own metadata rejects
+implausible lengths before any parsing. The gate is derived, never hand-written: it unions each
+enabled region's `possible_length` across every descriptor, plus one for the trunk digit —
+`possible_length` on the *general* descriptor alone is empty for most regions, and a mask built
+from it silently masked **nothing**, which is the direction a length gate must never fail in. It
+is a superset of what `is_valid` accepts by construction, and if the metadata yields nothing it
+**fails open**: an optimisation may never be the thing that decides a value is not PII.
 
 **The validator is not a locale *discriminator*.** National plans overlap, so a number valid in
 one region can be valid in another — a GB mobile also validates as DE, and `0123456789` is a real
 Paris number. That is **privacy-safe** (over-masking a real phone is never a leak); it just means
 enabling one region does not reject every other region's numbers, and it is why a per-region
 precision figure does not predict the union's.
+
+> **A trunk anchor does more than reduce false positives: it guarantees a candidate can only
+> *begin where a number begins* (M10-R1).** Remove the anchor and an accepted span can start
+> mid-value — so a greedy over-match that swallowed the next number is rejected, a *shifted*
+> window is accepted instead, and masking **truncates** the neighbour rather than shadowing it:
+> `912 345 678 913 456 789` masked to `912 [PHONE_1]`, three digits of a real number upstream in
+> clear. **The fixpoint recovers a value it did not touch; it can never recover one the mask
+> ate** — which is why M8-R8's "the next pass masks it" argument does not carry over from the
+> trunk families, and copying it forward was the actual defect.
+>
+> Two lessons outlive the fix. **The un-anchored families retry a rejected match one digit group
+> shorter** until the validator accepts a prefix at the *same* start, which is what the trunk
+> anchor gave for free. And the predicate that catches this is *"no byte of a real value
+> survives"*, not *"nothing detectable survives"* — the orphaned `912` is not detectable, which
+> is precisely why it survived every existing guard, including PROP-03 (it quantifies over
+> **accepted** candidates, and those bytes belonged to a rejected one). PHONE-NAT-09 asserts the
+> stronger form.
 
 **Known recall gaps, deliberate and measured.** A non-trunk number written **compactly**
 (`3471234567`) is not a candidate: bare digit runs are indistinguishable from order numbers and
@@ -1146,10 +1206,14 @@ a future `cargo-deny` advisory isn't a surprise: (1) **~3 MB** of binary from th
 metadata (converted to a postcard blob at build time, `Lazy`-deserialized once at runtime — no XML parsing on
 the hot path); (2) a few **unmaintained transitive deps** — `oncemutex` (2016), `regex-cache` 0.2.1, an old
 `regex-syntax` 0.6.29 alongside the modern 0.8. None is a known advisory today; if one is ever flagged,
-`PII_LOCALES=` (empty) still switches the whole tier off, so the mitigation is bounded — **but note this got
-weaker in [M10](ROADMAP.md#m10)**: the recognizers are now on by default rather than opt-in, so a flagged
-advisory would affect every deployment until the operator acts, not only the ones that had opted in. The
-capability bought — an assigned-range phone check no regex can do, on by default — is judged worth it.
+**`PII_LOCALES=` (set and empty) switches the whole tier off** — that is the off switch, and it is a
+different value from *unset*, which means every region. (Those two were folded together once, so the
+documented mitigation turned the tier fully **on**; `CFG-01` now pins the distinction. A mitigation that
+does the opposite of what it says is worse than none, because it is reached for under time pressure.) Note
+the mitigation also got **weaker** in [M10](ROADMAP.md#m10): the recognizers are on by default rather than
+opt-in, so a flagged advisory would affect every deployment until the operator acts, not only the ones that
+had opted in. The capability bought — an assigned-range phone check no regex can do, on by default — is
+judged worth it.
 
 **And `time` in the DEFAULT build (M10).** Log timestamps are local with an explicit offset, which needs the
 `time` crate's platform offset lookup (`tracing-subscriber`'s `local-time` feature). It was *assumed* to be

@@ -1763,27 +1763,36 @@ only the false positives we imagined. Run:
 
 <a id="m10-ledger"></a>
 ### Review ledger — M10 → [`reviews/M10.md`](reviews/M10.md)
-**Round 1 (2026-07-29): 12 findings, none closed.** The headline claim holds — verified through the real
+**Round 1 (2026-07-29): 12 findings, all 12 closed.** The headline claim holds — verified through the real
 binary that an unset `PII_LOCALES` masks all nine regions and that setting it narrows — and every published
 precision figure reproduced exactly. The two sharp ones are [M10-R1](reviews/M10.md#m10-r1) (the un-anchored
 family voids the M8-R8 fixpoint backstop, and both PROP-03 and PROP-04 are structurally blind to it) and
 [M10-R2](reviews/M10.md#m10-r2) (a legal body now costs ~100 s of CPU, on a guard whose four cases produce
 no phone candidate at all).
 
+> **Two findings changed the product, not just the code.** [M10-R3](reviews/M10.md#m10-r3) showed the
+> milestone's own deliverable measurement was reporting the *pool's* shape rather than the detector's
+> precision — so the region table now declares **which renderings each country's numbers actually take**
+> (`Trunk` · `TrunkPairs` · `Groups` · `LongBlock`) instead of one coarse trunk/non-trunk flag, and the
+> published matrix in [ARCHITECTURE](ARCHITECTURE.md) is re-measured against a pool built from the families'
+> own structure. [M10-R1](reviews/M10.md#m10-r1)'s fix — retry a rejected match one group shorter — is what
+> the trunk anchor used to give for free. Both promoted to ARCHITECTURE; the numbers moved and are
+> **worse**, which is the point of publishing them.
+
 | ID | Title | Sev | Status |
 |---|---|---|---|
-| [M10-R1](reviews/M10.md#m10-r1) | The un-anchored family voids the M8-R8 fixpoint backstop — a real domestic number is left **partially in clear** at the shipped default | **leak** | [ ] |
-| [M10-R2](reviews/M10.md#m10-r2) | Per-candidate `phonenumber` validation costs ~100 s of CPU on a legal body; `complexity.rs` holds the character class constant and cannot see it | **BLOCKER** | [ ] |
-| [M10-R3](reviews/M10.md#m10-r3) | The generated negative pool cannot express the un-anchored families' shapes, so the published per-category zeros are a property of the pool (re-measured: 0.653) | measurement | [ ] |
-| [M10-R4](reviews/M10.md#m10-r4) | CLI-06 fails wherever `NO_COLOR` is unset — green only by accident of the harness shell, and CI does not set it | build | [ ] |
-| [M10-R5](reviews/M10.md#m10-r5) | ARCHITECTURE's supply-chain mitigation (`PII_LOCALES=` switches the tier off) turns it fully **on** | docs | [ ] |
-| [M10-R6](reviews/M10.md#m10-r6) | "union-only false positives: 0" is a structural identity of shape (b), not a measurement | measurement | [ ] |
-| [M10-R7](reviews/M10.md#m10-r7) | PHONE-OM's positive control only exercises the trunk family — the guard passes unchanged with both new families off | guard | [ ] |
-| [M10-R8](reviews/M10.md#m10-r8) | CLI-05's hand-listed source set already misses `HF_HUB_CACHE` / `HF_HOME`, documented as honored and absent from `--help` | guard | [ ] |
-| [M10-R9](reviews/M10.md#m10-r9) | DEP-01 is a six-name denylist, not the native-dep-free guarantee M10 cited it as | docs | [ ] |
-| [M10-R10](reviews/M10.md#m10-r10) | `Recognizer`'s doc comment absorbed into the new `Validator` alias; `[VETTED_PHONE_REGIONS]` names no item | docs | [ ] |
-| [M10-R11](reviews/M10.md#m10-r11) | The M9-R4 unknown-argument refusal is order-dependent: `--version --bogus` exits 0 | low | [ ] |
-| [M10-R12](reviews/M10.md#m10-r12) | The fixture-shape assertions the shared module points at are `#[ignore]`d and `onnx`-only | low | [ ] |
+| [M10-R1](reviews/M10.md#m10-r1) | The un-anchored family voids the M8-R8 fixpoint backstop — a real domestic number is left **partially in clear** at the shipped default | **leak** | [x] |
+| [M10-R2](reviews/M10.md#m10-r2) | Per-candidate `phonenumber` validation costs ~100 s of CPU on a legal body; `complexity.rs` holds the character class constant and cannot see it | **BLOCKER** | [x] |
+| [M10-R3](reviews/M10.md#m10-r3) | The generated negative pool cannot express the un-anchored families' shapes, so the published per-category zeros are a property of the pool (re-measured: 0.653) | measurement | [x] |
+| [M10-R4](reviews/M10.md#m10-r4) | CLI-06 fails wherever `NO_COLOR` is unset — green only by accident of the harness shell, and CI does not set it | build | [x] |
+| [M10-R5](reviews/M10.md#m10-r5) | ARCHITECTURE's supply-chain mitigation (`PII_LOCALES=` switches the tier off) turns it fully **on** | docs | [x] |
+| [M10-R6](reviews/M10.md#m10-r6) | "union-only false positives: 0" is a structural identity of shape (b), not a measurement | measurement | [x] |
+| [M10-R7](reviews/M10.md#m10-r7) | PHONE-OM's positive control only exercises the trunk family — the guard passes unchanged with both new families off | guard | [x] |
+| [M10-R8](reviews/M10.md#m10-r8) | CLI-05's hand-listed source set already misses `HF_HUB_CACHE` / `HF_HOME`, documented as honored and absent from `--help` | guard | [x] |
+| [M10-R9](reviews/M10.md#m10-r9) | DEP-01 is a six-name denylist, not the native-dep-free guarantee M10 cited it as | docs | [x] |
+| [M10-R10](reviews/M10.md#m10-r10) | `Recognizer`'s doc comment absorbed into the new `Validator` alias; `[VETTED_PHONE_REGIONS]` names no item | docs | [x] |
+| [M10-R11](reviews/M10.md#m10-r11) | The M9-R4 unknown-argument refusal is order-dependent: `--version --bogus` exits 0 | low | [x] |
+| [M10-R12](reviews/M10.md#m10-r12) | The fixture-shape assertions the shared module points at are `#[ignore]`d and `onnx`-only | low | [x] |
 
 <a id="backlog"></a>
 ## Backlog — documented, not scheduled

@@ -77,6 +77,13 @@ fn national_phone_cases() -> Category {
         .1
 }
 
+/// Whether `pattern` matches anywhere in `input`. Compiled per call — this runs a few times
+/// over a few hundred short strings, and a lazy static would be more machinery than the
+/// measurement deserves.
+fn regex_lite_contains(input: &str, pattern: &str) -> bool {
+    regex::Regex::new(pattern).unwrap().is_match(input)
+}
+
 fn phones(detector: &StructuredRecognizers, input: &str) -> Vec<String> {
     detector
         .detect(input)
@@ -155,12 +162,60 @@ fn generated_negatives() -> Vec<(&'static str, String)> {
         out.push(("refs", format!("ticket {} {} closed", 100 + n, 200 + n * 3)));
         out.push(("refs", format!("commit 9e31f36 at line {}", 100 + n)));
     }
+
+    // ---------------------------------------------------------------------------------
+    // **Shapes the un-anchored families can actually reach (M10-R3).**
+    //
+    // Everything above was written by imagining plausible text, and it turned out to be
+    // structurally unable to test half of what M10 added: an un-anchored candidate needs a
+    // **2–3-digit leading token**, and almost nothing above has one — `chunk 8192 bytes`,
+    // `order 2026 1042`, `port 8080` all start with four digits, which is not a candidate at
+    // all. The second family (`[1-9]\d{2}[ -]\d{6,8}`) had essentially no representative.
+    //
+    // So the published per-category zeros were reporting on the pool's shape, not the
+    // detector's precision — *a corpus has a shape, and that shape is a blind spot*
+    // (M4-R13), landing on the milestone's own deliverable measurement. These entries are
+    // generated **from the families' own structure** rather than from imagination, which is
+    // the only way a pool can honestly claim to cover them.
+    // ---------------------------------------------------------------------------------
+    for (i, lead) in [12u32, 42, 99, 100, 256, 512, 800, 913]
+        .into_iter()
+        .enumerate()
+    {
+        let k = i as u32;
+        // 2–3-digit token + a 6–8-digit block — file offsets, byte counts, order numbers,
+        // and `YYYYMMDD` as a second field.
+        out.push((
+            "sizes",
+            format!("chunk {lead} {} bytes read", 1_048_576 + k),
+        ));
+        out.push((
+            "offsets",
+            format!("offset {lead} {} in file", 1_000_000 + k * 7),
+        ));
+        out.push(("refs", format!("order {lead} {} shipped", 4_500_000 + k)));
+        out.push((
+            "dates",
+            format!("row {lead} 2026{:02}{:02} inserted", 1 + k % 12, 1 + k % 28),
+        ));
+        // 2–3-digit tokens in tabular runs — the shape a CSV column or a spreadsheet has.
+        out.push((
+            "tables",
+            format!(
+                "cell {lead} {} {} {} of the sheet",
+                100 + k,
+                200 + k,
+                300 + k
+            ),
+        ));
+        out.push(("tables", format!("row {lead} {} {} totals", 10 + k, 20 + k)));
+    }
     out
 }
 
 /// The category names in the generated pool, in report order.
 const NEGATIVE_CATEGORIES: &[&str] = &[
-    "dates", "ports", "sizes", "offsets", "money", "codes", "refs",
+    "dates", "ports", "sizes", "offsets", "money", "codes", "refs", "tables",
 ];
 
 /// Score one region set: recall over the positives whose `locale` is in `owned`, plus the
@@ -259,6 +314,31 @@ fn phone_precision_per_region_and_for_the_union() {
         generated.len()
     );
 
+    // **The pool must be able to reach every shape family, or its zeros mean "unmeasured"
+    // rather than "clean" (M10-R3).** Checked by candidate shape, not by outcome: a family is
+    // reached when the pool contains strings its regex proposes, whether or not any region
+    // accepts them.
+    let reach = |name: &str, sample: &dyn Fn(&str) -> bool| {
+        let n = generated.iter().filter(|(_, s)| sample(s)).count();
+        assert!(
+            n >= 5,
+            "the generated pool contains only {n} strings that could reach the {name} shape \
+             family — a pool that cannot reach a family cannot report on it, and today it \
+             reports 0.000 instead of 'unmeasured'"
+        );
+        println!("  pool reaches {name}: {n} strings");
+    };
+    reach("trunk", &|s: &str| {
+        regex_lite_contains(s, r"(?-u:\b)0\d{1,4}[ -]\d")
+    });
+    reach("un-anchored groups", &|s: &str| {
+        regex_lite_contains(s, r"(?-u:\b)[1-9]\d{1,2}[ -]\d{2,4}(?-u:\b)")
+    });
+    reach("un-anchored long block", &|s: &str| {
+        regex_lite_contains(s, r"(?-u:\b)[1-9]\d{2}[ -]\d{6,8}(?-u:\b)")
+    });
+    println!();
+
     for region in PHONE_REGIONS {
         let detector = StructuredRecognizers::with_regions(&[region.id]);
         report(region.code, &detector, &cases, &[region.code], &generated);
@@ -269,21 +349,40 @@ fn phone_precision_per_region_and_for_the_union() {
     println!();
     report("UNION", &detector, &cases, &all, &generated);
 
-    // The compound effect, named: what the union masks that no single region does.
+    // **A dispatch invariant, asserted — not a result reported (M10-R6).**
+    //
+    // "Union-only false positives: 0" was published as a discovered fact and cited as the
+    // evidence that made all-on-by-default safe. Under shape (b) it cannot be anything else:
+    // the candidate regexes are region-independent and the validator is `.any()` over the
+    // enabled set, so the union's recognizers accept a **superset** of any single region's and
+    // union acceptance implies single-region acceptance. It is pinned at 0 for every possible
+    // pool, which is exactly what makes it an assertion rather than a measurement.
+    //
+    // What it *does* mean is worth keeping: **no emergent false positives** — a candidate the
+    // union masks is always one some enabled region masks alone — so a region's measured cost
+    // is also its marginal cost. What it does **not** mean is that adding a region is free:
+    // the union's FP set still grows by set-union, which is what the per-category table above
+    // shows and what decides the default.
     let singles: Vec<StructuredRecognizers> = PHONE_REGIONS
         .iter()
         .map(|r| StructuredRecognizers::with_regions(&[r.id]))
         .collect();
-    let union_only: Vec<&String> = generated
+    let union_hits = generated
         .iter()
-        .map(|(_, s)| s)
-        .filter(|s| !phones(&detector, s).is_empty())
-        .filter(|s| singles.iter().all(|d| phones(d, s).is_empty()))
-        .collect();
-    println!(
-        "\nunion-only false positives: {} — {union_only:?}",
-        union_only.len()
+        .filter(|(_, s)| !phones(&detector, s).is_empty())
+        .count();
+    let any_single_hits = generated
+        .iter()
+        .filter(|(_, s)| singles.iter().any(|d| !phones(d, s).is_empty()))
+        .count();
+    assert_eq!(
+        union_hits, any_single_hits,
+        "the dispatch is supposed to make union acceptance equivalent to acceptance by some \
+         enabled region alone. It no longer is — a change to `national_phone_recognizers` \
+         made the union produce EMERGENT false positives, which the per-region numbers above \
+         can no longer predict."
     );
+    println!("\ndispatch invariant holds: union hits {union_hits} == ∪ singles {any_single_hits}");
 }
 
 /// **Latency per enabled region**, over the same real 22 KiB turn.

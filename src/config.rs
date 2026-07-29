@@ -43,7 +43,8 @@ pub struct Config {
     ///
     /// Defaults to **every vetted region** (M10); setting `PII_LOCALES` **replaces** that
     /// set rather than adding to it, so an operator who set it keeps exactly the behaviour
-    /// they asked for.
+    /// they asked for. Set-but-**empty** (`PII_LOCALES=`) is the off switch — it means *no*
+    /// domestic-phone region, which is a different thing from unset.
     pub pii_locales: Vec<String>,
     /// **Debug only (M2.6), off by default.** When set, the response de-mask is
     /// skipped so the client receives the placeholders (`[EMAIL_1]`, …) the
@@ -141,17 +142,16 @@ impl Config {
             Err(_) => Vec::new(),
         };
 
-        // Domestic-phone regions (M4's FP-prone tier): comma-separated codes. Unset — or
-        // set to nothing usable — means every vetted region (M10).
+        // Domestic-phone regions (M4's FP-prone tier): comma-separated codes.
+        //
+        // **Unset means every vetted region; set-and-empty means NONE (M10-R5).** These must
+        // differ. Folding an empty value into "unset" made `PII_LOCALES=` — the spelling an
+        // operator reaches for to turn something off, and the one ARCHITECTURE named as the
+        // response to a future `phonenumber` advisory — switch all nine regions **on**. An
+        // operator following that under time pressure would get the exact opposite of the
+        // intent, which is the worst shape a documented mitigation can have.
         let pii_locales = match std::env::var("PII_LOCALES") {
-            Ok(raw) => {
-                let list = parse_header_list(&raw); // same shape: comma-split, lowercased
-                if list.is_empty() {
-                    default_locales()
-                } else {
-                    list
-                }
-            }
+            Ok(raw) => parse_header_list(&raw), // same shape: comma-split, lowercased
             Err(_) => default_locales(),
         };
 
@@ -294,5 +294,31 @@ impl fmt::Debug for Config {
             .field("debug_skip_demask", &self.debug_skip_demask)
             .field("pii_cache_entries", &self.pii_cache_entries)
             .finish()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// **CFG-01 (M10-R5).** The three ways to spell the intent must be three behaviours.
+    ///
+    /// Driven through `parse_header_list` + `default_locales` rather than by mutating process
+    /// env, which would race a parallel test run. The case that matters is the middle one:
+    /// before M10-R5 an empty value fell back to the default set, so the documented way to
+    /// turn the tier **off** turned it fully **on**.
+    #[test]
+    fn an_empty_pii_locales_is_off_not_everything() {
+        assert_eq!(
+            default_locales().len(),
+            9,
+            "unset means every vetted region"
+        );
+        assert!(
+            parse_header_list("").is_empty(),
+            "`PII_LOCALES=` must resolve to NO region — it is the off switch"
+        );
+        assert!(parse_header_list(" , ,  ").is_empty());
+        assert_eq!(parse_header_list("gb, DE "), vec!["gb", "de"]);
     }
 }

@@ -219,6 +219,28 @@ async fn unknown_cli_argument_is_refused_and_never_binds() {
         "a proxy became reachable on {base} after an unrecognized argument — it fell through to \
          serving instead of refusing"
     );
+
+    // **Position must not matter (M10-R11).** `--version` / `--help` used to dispatch as the
+    // scan reached them, so anything *after* one was never examined: `--version --bogus` printed
+    // the version and exited 0 while `--bogus --version` was correctly refused. Neither order
+    // binds a listener, so M9-R4's sharp risk was never reopened — but "an unrecognized argument
+    // is a mistake" should not depend on where the mistake sits in the line.
+    for args in [
+        ["--version", "--bogus"],
+        ["--help", "--bogus"],
+        ["--bench-providers", "--bogus"],
+    ] {
+        let out = Command::new(env!("CARGO_BIN_EXE_llm-proxy-pii-rust"))
+            .args(args)
+            .env("RUST_LOG", "warn")
+            .output()
+            .expect("failed to spawn the proxy binary");
+        assert!(
+            !out.status.success(),
+            "{args:?} must be refused whatever the order, got {:?}",
+            out.status
+        );
+    }
 }
 
 /// **CLI-03 (M9-R14, M9-R16).** `--bench-providers` must never tell an operator to rebuild with
@@ -336,11 +358,40 @@ async fn version_prints_the_manifest_version_and_exits_zero() {
 /// caught by review.
 #[tokio::test]
 async fn help_names_every_environment_variable_the_code_reads() {
-    let sources = [
-        ("src/config.rs", include_str!("../src/config.rs")),
-        ("src/server.rs", include_str!("../src/server.rs")),
-        ("src/main.rs", include_str!("../src/main.rs")),
-    ];
+    // **Walk the tree, don't list files (M10-R8).** The first version scanned a hand-written
+    // three-file list and was already incomplete the day it was written: `src/pii/hf.rs`
+    // reads `HF_HUB_CACHE` and `HF_HOME`, both operator-facing and both documented in
+    // `docs/SETUP.md`, and the guard reported success because it never looked there. A list
+    // of places to check is the same kind of artefact as the help text it is guarding.
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut sources: Vec<(String, String)> = Vec::new();
+    let mut stack = vec![root.clone()];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).expect("src/ must be readable") {
+            let path = entry.expect("readable dir entry").path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                let name = path
+                    .strip_prefix(root.parent().unwrap())
+                    .unwrap_or(&path)
+                    .display()
+                    .to_string();
+                sources.push((name, std::fs::read_to_string(&path).expect("readable")));
+            }
+        }
+    }
+    assert!(
+        sources.len() >= 10,
+        "found only {} source files under src/ — the walk is broken",
+        sources.len()
+    );
+
+    // Variables the program *reads* but does not *define*: OS-provided, and documenting them
+    // in our `--help` would claim ownership we don't have. Listed here so the exclusion is a
+    // visible decision rather than an invisible gap.
+    const NOT_OURS: &[&str] = &["USERPROFILE", "HOME"];
+
     // Only *literal* keys: `env::var(key)` inside the `env_flag` / `env_or` helpers is a
     // variable, not a key, and must not be extracted.
     let pattern =
@@ -356,9 +407,12 @@ async fn help_names_every_environment_variable_the_code_reads() {
 
     let mut missing: Vec<String> = Vec::new();
     let mut found = 0usize;
-    for (path, source) in sources {
+    for (path, source) in &sources {
         for caps in pattern.captures_iter(source) {
             let key = &caps[1];
+            if NOT_OURS.contains(&key) {
+                continue;
+            }
             found += 1;
             if !help.contains(key) {
                 missing.push(format!("{key} (read in {path})"));
@@ -436,11 +490,25 @@ async fn default_log_level_is_info_and_timestamps_carry_an_offset() {
         .take()
         .wait_with_output()
         .expect("failed to collect output");
-    let logged = format!(
-        "{}{}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
-    );
+    // **Strip ANSI before matching (M10-R4).** `tracing-subscriber` does no TTY detection:
+    // it colours whenever `NO_COLOR` is unset, *including into a pipe*. So the raw line
+    // starts with an escape sequence, not with the timestamp, and an `^`-anchored regex
+    // fails — on an ordinary developer terminal and in CI (`ci.yml` sets
+    // `CARGO_TERM_COLOR: always` and no `NO_COLOR`), while passing in a shell that happens
+    // to export `NO_COLOR=1`. Stripping here keeps the guard asserting a property of the
+    // **binary** rather than of the environment it was run in; setting `NO_COLOR` instead
+    // would have done the opposite.
+    let ansi = regex::Regex::new(r"\x1b\[[0-9;]*m").unwrap();
+    let logged = ansi
+        .replace_all(
+            &format!(
+                "{}{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            ),
+            "",
+        )
+        .into_owned();
 
     assert!(
         logged.contains("listening on"),
@@ -458,10 +526,18 @@ async fn default_log_level_is_info_and_timestamps_carry_an_offset() {
         .filter(|l| l.contains("listening on"))
         .collect();
     assert!(
-        lines.iter().all(|line| stamped.is_match(line)),
+        !lines.is_empty() && lines.iter().all(|line| stamped.is_match(line)),
         "every log line must start with a timestamp carrying an EXPLICIT offset (`Z` or \
          `+HH:MM`) — a bare local time reads correctly only on the machine that wrote it. \
          Got:\n{}",
         lines.join("\n")
+    );
+
+    // The strip must not be able to swallow the thing being tested (M10-R4): a bare local
+    // time still fails, ANSI-coloured or not.
+    let bare = "\x1b[2m2026-07-29T12:37:04.844780\x1b[0m  INFO llm_proxy: listening on x";
+    assert!(
+        !stamped.is_match(&ansi.replace_all(bare, "")),
+        "the offset check must still reject a timestamp with no zone at all"
     );
 }

@@ -158,13 +158,16 @@ National IDs are masked **regardless of locale configuration** — privacy-first
 reaches the proxy gets masked even if its country isn't the one you configured.
 
 The **domestic phone** tier is the only one `PII_LOCALES` touches, and it is now **on out of the
-box**. A bare domestic number collides with ordinary digit sequences, so what makes it safe is not
-the pattern but the check: the pure-Rust [`phonenumber`](https://crates.io/crates/phonenumber)
-library confirms a candidate is a real **assigned** number for the region. Measured over 35 real
-renderings and 405 digit-shaped non-phones: **recall 1.000**, zero false positives on ports, money
-amounts and reference numbers, and **zero `Phone` spans at all** on a real 22 KiB Claude Code turn.
-What it does cost is space- or dash-separated dates (`28 01 2026` is a valid Latvian number) —
-the full matrix, and why that trade was taken, is in
+box** (set it to narrow the set; set it *empty* to switch the tier off). A bare domestic number
+collides with ordinary digit sequences, so what makes it safe is not the pattern but the check: the
+pure-Rust [`phonenumber`](https://crates.io/crates/phonenumber) library confirms a candidate is a
+real **assigned** number for the region. Measured over 35 real renderings and 453 digit-shaped
+non-phones: **recall 1.000**, zero false positives on ports, money amounts and reference numbers,
+and **zero `Phone` spans at all** on a real 22 KiB Claude Code turn.
+
+It is not free, and the costs are published rather than rounded off: space- or dash-separated dates
+(`28 01 2026` is a valid Latvian number) and space-separated numeric tables (`512 105 205` is a real
+Suzhou landline shape). The full per-category matrix, and why that trade was taken, is in
 [ARCHITECTURE → *Domestic phone coverage*](docs/ARCHITECTURE.md).
 
 **Unstructured entities — local ONNX NER (XLM-R int8, CPU).** People, organizations and
@@ -469,7 +472,7 @@ Everything is environment-driven.
 | `UPSTREAM_FORWARD_HEADERS` | *(preset)* | Comma-separated client headers to pass through |
 | `UPSTREAM_EXTRA_HEADERS` | *(none)* | `Key=Value;Key2=Value2` static headers for every upstream request |
 | `MAX_BODY_BYTES` | `16777216` | Request body limit (16 MiB) |
-| `PII_LOCALES` | `de,es,fr,gb,it,lv,nl,pt,cn` | The regions whose **domestic phone numbers** (no `+CC`) are detected. All nine are on by default; setting this **replaces** the set rather than adding to it, and a code outside the list contributes nothing. **National IDs are always on regardless** — see the coverage matrix in [ARCHITECTURE](docs/ARCHITECTURE.md) |
+| `PII_LOCALES` | `de,es,fr,gb,it,lv,nl,pt,cn` | The regions whose **domestic phone numbers** (no `+CC`) are detected. All nine are on by default; setting this **replaces** the set rather than adding to it, and a code outside the list contributes nothing. Set it **empty** (`PII_LOCALES=`) to turn the tier off — that is a different thing from leaving it unset. **National IDs are always on regardless** — see the coverage matrix in [ARCHITECTURE](docs/ARCHITECTURE.md) |
 | `PII_CACHE_ENTRIES` | `16` | Detection cache (S3): the byte-identical system prompt is scanned once and reused, saving the dominant NER pass. Keyed on exact bytes, so a hit can never mask *less* than a fresh scan. `0` disables it |
 | `RUST_LOG` | `info` | Log filter. Unset (or empty) means `info`, so startup lines are visible with no configuration; set e.g. `warn` or `llm_proxy_pii_rust=debug` to override. Timestamps are local time with an explicit offset |
 

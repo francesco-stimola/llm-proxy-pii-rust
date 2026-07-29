@@ -186,3 +186,61 @@ fn masking_many_small_entities_stays_linear() {
         "the round-trip must stay exact across {reps} entities"
     );
 }
+
+/// **DOS-05 (M10-R2) — the third axis: *what the bytes are*.**
+///
+/// DOS-01…04 vary field **size** and entity **count**, and hold the **character class**
+/// constant: `"a"*1M + "@b.co"`, `"sk-"*350_000`, `"4111 1111 1111 1111 "*50_000`,
+/// `"a@b.co "*n`. **None of them produces a single phone candidate** — the card row's groups
+/// are four digits, and the domestic-phone families need a 2–3-digit group at an ASCII word
+/// boundary, which `4111` never offers. So M10's whole change was invisible to the DoS guard,
+/// and a legal 12 MiB body of digit groups cost **105 s** of CPU on an unauthenticated path
+/// while every guard stayed green.
+///
+/// *A quantity a test never varies is a quantity the test cannot see* — and here the
+/// un-varied quantity was not size or count but the alphabet.
+///
+/// Two shapes, because they stress different halves: a run of **real** numbers makes every
+/// candidate an entity (validation *and* the splice), while a run of arbitrary digit groups
+/// makes most candidates rejections — and a rejection is the expensive verdict, since the
+/// region loop short-circuits only on *accept*.
+///
+/// Deliberately **not** asserted: that the arbitrary run masks nothing. Repeating any group
+/// pattern produces rotations of itself, and with nine plans enabled some rotation is
+/// usually somebody's real number (`22 45 12 33` is a valid Latvian one). That is the
+/// documented over-mask, not a defect, and pinning it here would make this guard a precision
+/// test that breaks whenever the region set changes.
+#[test]
+fn a_field_of_digit_groups_stays_affordable() {
+    for (label, unit, expect_entities) in [
+        // A real Italian number, repeated: every candidate is accepted and masked.
+        ("dense-real-numbers", "06 69821234 ", true),
+        // Arbitrary groups: mostly rejections, i.e. the worst case for the validator.
+        ("arbitrary-digit-groups", "45 12 33 22 ", false),
+    ] {
+        // **200 KB, not the megabytes the other cases use, and the size is a measurement not
+        // a guess.** `phonenumber::parse` is ~50× slower in the unoptimized profile `cargo
+        // test` builds, so this case is debug-bound rather than algorithm-bound. At 200 KB
+        // the guard still discriminates by a wide margin: post-fix ≈ 1.5–3 s here, while the
+        // pre-fix validator cost ~1 s per 200 KB *in release*, i.e. tens of seconds here —
+        // comfortably past the budget.
+        let input = unit.repeat(200_000 / unit.len());
+        let expected = input.clone();
+        let (found, masked, round_trips) = within_budget(label, move || detect_and_mask(input));
+
+        // Non-vacuity: the guard must be *reaching* the phone path, or it is measuring a
+        // detector that does nothing — the exact way DOS-01…04 passed while blind to this.
+        assert!(
+            found > 5_000,
+            "{label}: only {found} entities — this guard is not exercising the phone path"
+        );
+        if expect_entities {
+            assert!(
+                !masked.contains("06 69821234"),
+                "{label}: a number survived"
+            );
+        }
+        assert!(round_trips, "{label}: the round-trip must stay exact");
+        assert_ne!(masked, expected, "{label}: nothing was masked at all");
+    }
+}

@@ -3,6 +3,85 @@
 Newest first. One entry per meaningful change — note *what* and *why*, not just
 *what*. This is the running history so context is never lost between sessions.
 
+## 2026-07-29 — M10 review round 1: twelve findings, and the two that mattered were both invisible
+
+**The review found a partial leak and an availability blocker, and the same sentence caused the
+first one.** `national_phone_recognizers` copied M8.1's fixpoint argument forward verbatim — *"an
+over-long span `is_valid` rejects … the next pass masks it"* — into two families the trunk anchor
+no longer protects. The anchor was doing more than cutting false positives: it guaranteed a
+candidate could only **begin where a number begins**. Un-anchored, a rejected greedy match is
+replaced by a *shifted* accepted one, and masking **truncates** the neighbour:
+
+```text
+912 345 678 913 456 789   →  912 [PHONE_1]     ← three digits of a real number, upstream in clear
+138 0013 8000 139 0013 8001 → 138 0013 8[PHONE_1] 8001
+```
+
+**The fixpoint recovers a value it did not touch; it can never recover one the mask ate.** Fixed by
+retrying a rejected match one digit group shorter until the validator accepts a prefix at the same
+start — precisely what the trunk anchor gave for free. Applied to the un-anchored families only:
+doing it uniformly also accepts mid-number prefixes that are valid *somewhere*, which bridged two
+adjacent GB numbers into one coalesced span and broke the M8.1 behaviour this milestone promised
+to preserve.
+
+**Every existing guard was structurally blind, and that is the durable half.** The M8-R8 test
+asserts `detect(masked).is_empty()` — a predicate the leak *satisfies*, since an orphaned `912` is
+not detectable, which is exactly why it survived. PROP-03 quantifies over **accepted** candidates
+and those bytes belonged to a rejected one, so it passed vacuously (M4-R17's lesson, on a new
+candidate generator). The property that matters is **"no byte of a real value survives"**, not
+"nothing detectable survives"; PHONE-NAT-09 now asserts it.
+
+**The blocker: a legal 12 MiB body cost 105 s of CPU on an unauthenticated path.** Every candidate
+paid up to five `phonenumber::parse()` calls, and `.any()` short-circuits only on *accept* — so a
+**rejection is the expensive verdict**, and on adversarial input rejection is the entire workload.
+The code comment claimed the opposite ("cheap-to-be-wrong"), which is what would have stopped the
+next reader looking here. Two fixes: validator results **memoized per scan** (call-local, no lock;
+the validator is a pure function of the matched bytes), and a **digit-count gate read out of
+libphonenumber's metadata** before any parse. 4 MiB of digit groups: 45–50 s → **0.70 s**; a 1 MiB
+CSV-shaped `tool_result`: 1.94 s → **0.06 s**.
+
+The gate's first cut masked **nothing at all** — `possible_length` on the *general* descriptor is
+empty for most regions, so the mask came out 0. Now it unions every descriptor and **fails open**
+if the metadata yields nothing: an optimisation may never be the thing that decides a value is not
+PII. PHONE-NAT-10 asserts the gate is a superset of what `is_valid` accepts, including the
+one-trunk-character assumption its +1 allowance rests on.
+
+**Why `complexity.rs` missed it, one level past M4-R24.** DOS-01…04 vary field *size* and entity
+*count* and hold the **character class** constant — `"a"*1M`, `"sk-"*350k`, `"4111 1111…"`,
+`"a@b.co "*n`. **Not one produces a phone candidate**, so the whole change was invisible to the DoS
+guard. *A quantity a test never varies is a quantity the test cannot see* — and here the un-varied
+quantity was not size or count but the **alphabet**. DOS-05 varies it.
+
+**And the measurement itself was wrong, which is the finding I'd least like to have shipped.** The
+published per-category zeros (`ports`, `money`, `refs`, `sizes` 0.000) were a property of the pool,
+not the detector: an un-anchored candidate needs a **2–3-digit leading token**, and the pool's
+non-date entries almost never had one (`chunk 8192 bytes`, `order 2026 1042`, `port 8080` — 4-digit
+leads, not candidates at all), while the `LongBlock` family had essentially no representative.
+*A corpus has a shape, and that shape is a blind spot* (M4-R13) — landing on the milestone's own
+deliverable. Regenerating the pool **from the families' own structure** put CN at offsets 0.250 and
+sizes 0.156.
+
+**That drove a real design change rather than just a re-publication.** A single trunk/non-trunk flag
+had handed China the Italian-mobile `LongBlock` rendering; regions now declare **which renderings
+their numbers actually take** (`Trunk` · `TrunkPairs` · `Groups` · `LongBlock`), which takes CN's
+offsets and sizes to 0.000/0.031 with Chinese mobiles still covered, and is held honest by a test
+that fails if a declared shape is not needed by any corpus rendering of that country. The corrected
+union: dates 0.180, **tables 0.375**, codes 0.091, offsets 0.050, sizes 0.031, ports/money/refs
+0.000 — recall still 1.000, curated negatives still 0/20, and still **zero `Phone` spans on the
+real 22 KiB turn**.
+
+One curated negative stopped being one under the corrected pool (`512 1024 2048` is the shape of a
+real Suzhou landline). It is **pinned as a known over-mask** rather than deleted — dropping a corpus
+negative that stopped passing is how a measured cost quietly becomes an unmeasured one.
+
+Also closed: "union-only FPs = 0" was a **structural identity** of the dispatch, not a discovered
+fact, and was being cited as the evidence that made all-on safe — it is now an assertion with the
+right label. `PII_LOCALES=` (empty) turned all nine regions **on** while ARCHITECTURE named it as
+the way to turn the tier off; empty now means none. CLI-06 was green only because the harness shell
+exported `NO_COLOR` (it strips ANSI now). CLI-05 scanned a hand-written three-file list and was
+already missing `HF_HOME`/`HF_HUB_CACHE`; it walks `src/` now. DEP-01 was a six-name denylist being
+cited as a native-dep-free *guarantee* — DEP-02 asserts the property. `--version --bogus` exited 0.
+
 ## 2026-07-29 — M10 built: nine domestic-phone regions on by default, measured
 
 **The default now detects something.** `PII_LOCALES` shipped for two milestones with the value
@@ -22,11 +101,11 @@ argument for putting the region loop inside a boxed-closure validator instead of
 recognizer per region.
 
 > **Conditions, recorded because this repo has been burned by omitting them** (M7-R12): reference
-> box, `--release`, `--test-threads=1`, and **another proxy instance running on the same machine
-> throughout**. So these are a busy box's milliseconds, not the product's floor. The claim they
-> support is not an absolute — it is that the curve is **flat in the region count**, and background
-> load raises a flat line without sloping it. A clean-box re-measure would move the numbers, not the
-> conclusion.
+> box, `--release`, `--test-threads=1`, **not idle** — there was other load on the machine
+> throughout. So these are a busy box's milliseconds, not the product's floor. The claim they
+> support is not an absolute anyway — it is that the curve is **flat in the region count**, and
+> background load raises a flat line without sloping it. A clean-box re-measure would move the
+> numbers, not the conclusion.
 
 **Generalizing the candidate anchor was the real work, and the first attempt was wrong in an
 instructive way.** A country that dropped the trunk prefix (ES, PT, IT mobiles, LV, CN mobiles)
@@ -64,16 +143,22 @@ positives, 20 curated negatives, 385 generated digit-shaped non-phones):
 | cn | 1.000 | 0.000 | 0.000 | 0.000 | 0.000 | 0.042 | 0.000 |
 | **union (shipped)** | **1.000** | 0.000 | **0.188** | 0.091 | 0.083 | 0.042 | 0.000 |
 
+> ⚠️ **This table is superseded — the pool that produced it could not reach half the shapes M10
+> added, so its zeros mean "unmeasured", not "clean".** Kept as written because the correction is
+> the more instructive record: see the review-round-1 entry above, and
+> [ARCHITECTURE → *Domestic phone coverage*](ARCHITECTURE.md) for the numbers that hold.
+
 **Reported per category on purpose.** A single blended rate over a pool whose composition you chose
-is a number about the pool, not about the product — and here it would have hidden the only fact that
-matters: ports, money amounts and reference numbers are untouched, and the entire exposure is
-**space- or dash-separated dates** (`28 01 2026` is a valid Latvian number; `01 02 2026` contains
-the Milan `02 …` prefix). ISO and slash-separated dates cannot collide at all.
+is a number about the pool, not about the product. That principle survived the correction; what did
+not survive was the conclusion drawn from *this* pool ("the entire exposure is dates"), which the
+regenerated pool refutes.
 
 **Union-only false positives: 0.** Enabling N regions unions their accepted sets, and the worry
 going in was that the compound rate would exceed the sum of its parts. It doesn't — nothing is
 masked that no single region already masked — so a region's measured cost is also its marginal cost.
-That is the number that made (b) safe to ship rather than (c).
+*(Also corrected in review: this is a **structural identity** of shape (b), true for every possible
+pool, so it is now asserted rather than reported — and it was never the evidence that made (b) safe.
+Recall 1.000, the per-category table and PHONE-OM are.)*
 
 **And the check that decided it: on real agent traffic the cost is zero.** Over the M7 fixture — a
 genuine 22 KiB Claude Code turn already in the repo, written for a different milestone and therefore

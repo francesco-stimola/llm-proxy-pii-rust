@@ -51,9 +51,11 @@ CONFIGURATION (environment variables — there is no config file):
   Detection
     PII_LOCALES  [de,es,fr,gb,it,lv,nl,pt,cn]    Regions for the domestic-phone recognizers
                                                  (numbers written with no +CC). All of them are
-                                                 on by default; setting this REPLACES that set.
-                                                 A code outside the list contributes nothing.
-                                                 National IDs are always on regardless.
+                                                 on by default; setting this REPLACES that set,
+                                                 and a code outside the list contributes nothing.
+                                                 Set it EMPTY (PII_LOCALES=) to turn the tier
+                                                 off entirely. National IDs are always on
+                                                 regardless.
     PII_CACHE_ENTRIES           [16]             Content-keyed detection cache size; 0 disables.
 
   NER (needs a build with `--features onnx`)
@@ -74,6 +76,9 @@ CONFIGURATION (environment variables — there is no config file):
     NER_TOKEN_TYPE_IDS          [off]            Feed `token_type_ids` to models that need them.
     NER_EXECUTION_PROVIDER      [auto]           Force one execution provider by name.
     NER_BENCH_MODELS            [unset]          Extra model files for --bench-providers.
+    HF_HOME / HF_HUB_CACHE      [~/.cache/huggingface] HuggingFace's own cache location, honored
+                                                 as-is when either is set; otherwise the standard
+                                                 hub cache is pinned explicitly.
 
   GLiNER (needs a build with `--features onnx`)
     GLINER_MODEL_PATH           [unset]          Explicit local model file. Unset = GLiNER off.
@@ -132,6 +137,39 @@ fn usage() -> String {
 enum Mode {
     Serve,
     BenchProviders,
+    Version,
+    Help,
+}
+
+/// Read every argument **before acting on any of them** (M9-R4, M10-R11).
+///
+/// The order matters and it is the whole point: an earlier version dispatched as it scanned,
+/// so `--version --bogus` printed the version and exited **0** while `--bogus --version` was
+/// correctly refused. M9-R4's sharp risk — starting a live proxy in response to a typo, while
+/// the operator believed they had run a diagnostic — was not reopened by that (neither order
+/// binds a listener), but "an unrecognized argument is a mistake" should not depend on where
+/// the mistake sits in the line.
+///
+/// A later flag wins over an earlier one, which only matters for the nonsense case of passing
+/// two; every argument is still checked.
+fn parse_args<I: IntoIterator<Item = String>>(args: I) -> anyhow::Result<Mode> {
+    let mut mode = Mode::Serve;
+    for arg in args {
+        mode = match arg.as_str() {
+            BENCH_PROVIDERS_FLAG => Mode::BenchProviders,
+            "--version" | "-V" => Mode::Version,
+            "--help" | "-h" => Mode::Help,
+            other => {
+                anyhow::bail!(
+                    "unrecognized argument {other:?}\n\n{}\nRefusing to start: an \
+                     unrecognized argument is a mistake, and starting a live proxy in \
+                     response to one would look like a diagnostic that never ran.",
+                    usage()
+                );
+            }
+        };
+    }
+    Ok(mode)
 }
 
 fn main() -> anyhow::Result<()> {
@@ -163,30 +201,21 @@ fn main() -> anyhow::Result<()> {
     // the configured upstream, while the operator believed they had run a diagnostic. Every
     // other unexpected-input path in this codebase blocks or refuses — including M9's
     // `NER_EXECUTION_PROVIDER` typo check — so this one must not fail open.
-    let mut mode = Mode::Serve;
-    for arg in std::env::args().skip(1) {
-        match arg.as_str() {
-            BENCH_PROVIDERS_FLAG => mode = Mode::BenchProviders,
-            // `--version` and `--help` answer and exit *here*, before `Config::from_env`:
-            // you must be able to ask what a binary is without holding a valid upstream
-            // configuration.
-            "--version" | "-V" => {
-                print!("{}", version_report());
-                return Ok(());
-            }
-            "--help" | "-h" => {
-                print!("{}", usage());
-                return Ok(());
-            }
-            other => {
-                anyhow::bail!(
-                    "unrecognized argument {other:?}\n\n{}\nRefusing to start: an \
-                     unrecognized argument is a mistake, and starting a live proxy in \
-                     response to one would look like a diagnostic that never ran.",
-                    usage()
-                );
-            }
+    let mode = parse_args(std::env::args().skip(1))?;
+
+    // `--version` and `--help` answer and exit *here*, before `Config::from_env` and before
+    // the runtime exists: you must be able to ask what a binary is without holding a valid
+    // upstream configuration.
+    match mode {
+        Mode::Version => {
+            print!("{}", version_report());
+            return Ok(());
         }
+        Mode::Help => {
+            print!("{}", usage());
+            return Ok(());
+        }
+        Mode::Serve | Mode::BenchProviders => {}
     }
 
     // Only now is it safe to create threads.
@@ -200,7 +229,7 @@ fn main() -> anyhow::Result<()> {
         // number. Handled before `Config::from_env` because the benchmark needs only the
         // NER model config, not a valid upstream/server config — you should be able to
         // benchmark without a provider key.
-        if let Mode::BenchProviders = mode {
+        if matches!(mode, Mode::BenchProviders) {
             return server::run_provider_benchmark().await;
         }
 

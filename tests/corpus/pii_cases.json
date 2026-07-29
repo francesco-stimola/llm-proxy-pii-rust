@@ -90,7 +90,7 @@
         { "id": "PHONE-NL-NEG-01", "input": "postcode 1012 AB Amsterdam", "locale": "nl", "reason": "postcode", "entities": [] },
         { "id": "PHONE-PT-NEG-01", "input": "codigo postal 1000-001 Lisboa", "locale": "pt", "reason": "postcode", "entities": [] },
         { "id": "PHONE-CN-NEG-01", "input": "邮编 100000 北京", "locale": "cn", "reason": "postcode in CJK context", "entities": [] },
-        { "id": "PHONE-XX-NEG-01", "input": "sizes 512 1024 2048 4096 bytes", "locale": "de", "reason": "byte sizes — real agent traffic is full of digit runs nobody writes test cases for", "entities": [] },
+        { "id": "PHONE-XX-NEG-01", "input": "sizes 4096 8192 16384 bytes", "locale": "de", "reason": "byte sizes — real agent traffic is full of digit runs nobody writes test cases for. NOTE: this case used to read `512 1024 2048 4096`, and it is NOT a negative: `512 1024 2048` is the shape of a real Suzhou landline (area code 512), so China's plan accepts it. Rather than delete an inconvenient case, that string is pinned as a KNOWN over-mask by `known_over_masks_are_still_over_masks` in recognizers.rs and named in ARCHITECTURE — deleting it would have hidden the cost this milestone exists to publish. The 4-digit leading tokens here are not candidates for any family, which is what makes this one a genuine negative", "entities": [] },
         { "id": "PHONE-XX-NEG-02", "input": "retry after 30 60 120 seconds", "locale": "de", "reason": "backoff schedule", "entities": [] },
         { "id": "PHONE-XX-NEG-03", "input": "matrix 10 20 30 40 rows", "locale": "de", "reason": "a plain numeric table", "entities": [] },
         { "id": "PHONE-XX-NEG-04", "input": "port 8080 and port 3000 open", "locale": "nl", "reason": "ports", "entities": [] },

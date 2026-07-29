@@ -71,30 +71,93 @@ fn the_realistic_turn_yields_exactly_the_expected_phone_spans() {
     );
 }
 
-/// The same turn, but with a **domestic number spliced into the user message** — so the
-/// guard above cannot pass merely because the detector stopped working.
+/// The same turn, but with a domestic number **from every shape family** spliced into the
+/// user message — so the guard above cannot pass merely because the detector stopped working.
 ///
 /// An assert-absence test needs a positive control (M9-R28, BENCH-01): "no phone spans" and
 /// "no detection at all" produce the same empty vector, and only this distinguishes them.
+///
+/// **One control per family, not one control (M10-R7).** The first version spliced in only
+/// `06 69821234` — trunk-anchored, i.e. the family M10 did *not* add. Delete both un-anchored
+/// families and every control still passed: the fixture still yielded zero `Phone` spans
+/// (fewer recognizers cannot find more), the region count was still 9, the fixture was still
+/// 22 KiB, and the trunk number was still found. The guard was green with the two families
+/// whose over-mask risk it exists to bound switched off — and ROADMAP step 10 nominates this
+/// test as the automated stand-in for the CC battery that could not be run, so it has to be
+/// able to *see* them.
 #[test]
 fn the_guard_would_notice_a_phone_that_really_is_there() {
-    let detector = StructuredRecognizers::new();
-    let mut fields = m7_turn::realistic_turn();
-    let user = fields
-        .last_mut()
-        .expect("the turn ends with the user message");
-    user.text.push_str(" Il numero e' 06 69821234.");
+    // One per `PHONE_SHAPES` entry, in order: trunk 2/3-group, the French five-pair form,
+    // un-anchored groups, un-anchored prefix + long block.
+    const ONE_PER_SHAPE_FAMILY: &[&str] = &[
+        "06 69821234",
+        "01 23 45 67 89",
+        "91 123 45 67",
+        "347 1234567",
+    ];
 
-    let found: Vec<String> = fields
-        .iter()
-        .flat_map(|f| detector.detect(&f.text))
-        .filter(|e| e.kind == PiiKind::Phone)
-        .map(|e| e.text)
-        .collect();
+    let detector = StructuredRecognizers::new();
+    for number in ONE_PER_SHAPE_FAMILY {
+        let mut fields = m7_turn::realistic_turn();
+        let user = fields
+            .last_mut()
+            .expect("the turn ends with the user message");
+        user.text.push_str(&format!(" Il numero e' {number}."));
+
+        let found: Vec<String> = fields
+            .iter()
+            .flat_map(|f| detector.detect(&f.text))
+            .filter(|e| e.kind == PiiKind::Phone)
+            .map(|e| e.text)
+            .collect();
+        assert_eq!(
+            found,
+            vec![number.to_string()],
+            "every shape family must be live in this build — otherwise the empty expectation \
+             above is satisfied by a detector that cannot see that family at all"
+        );
+    }
+}
+
+/// The fixture's **shape**, asserted in the default build (M10-R12).
+///
+/// `m7_latency.rs` carries the full shape assertions, but they live in an `#[ignore]`d test
+/// inside a file gated `#![cfg(feature = "onnx")]` — so they run only with a model present,
+/// i.e. never in CI. Two comments pointed the next reader at that guard as the reason the
+/// shared fixture "cannot silently drift". These are the cheap structural parts, where both
+/// consumers of the shared module get them on every `cargo test`.
+#[test]
+fn the_shared_fixture_keeps_its_shape() {
+    let fields = m7_turn::realistic_turn();
+    let bytes: usize = fields.iter().map(|f| f.text.len()).sum();
+
+    assert!(
+        (20_000..50_000).contains(&bytes),
+        "the realistic turn is {bytes} bytes — it is supposed to be a ~22 KiB Claude Code turn"
+    );
     assert_eq!(
-        found,
-        vec!["06 69821234".to_string()],
-        "the domestic-phone recognizers must be live in this build — otherwise the guard \
-         above is satisfied by a detector that finds nothing at all"
+        fields
+            .iter()
+            .filter(|f| f.part == m7_turn::Part::System)
+            .count(),
+        1,
+        "Claude Code sends its whole system prompt as ONE field — the per-field cost model \
+         this fixture exists to exercise depends on that"
+    );
+    assert!(
+        fields
+            .iter()
+            .filter(|f| f.part == m7_turn::Part::SchemaDescription)
+            .count()
+            > 50,
+        "the many-small-fields tier is what makes this turn's shape realistic"
+    );
+    assert_eq!(
+        fields
+            .iter()
+            .filter(|f| f.part == m7_turn::Part::UserMessage)
+            .count(),
+        1,
+        "one user message, and it is where all the PII is"
     );
 }

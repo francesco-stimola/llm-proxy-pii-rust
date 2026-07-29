@@ -158,14 +158,18 @@ privacy-first: un documento che raggiunge il proxy viene mascherato anche se il 
 quello configurato.
 
 Il livello **telefono domestico** è l'unico che `PII_LOCALES` governa, ed è ora attivo **da
-subito**. Un numero domestico nudo si confonde con normali sequenze di cifre: ciò che lo rende
-sicuro non è il pattern ma il controllo — la libreria Rust puro
+subito** (impostala per restringere l'insieme; impostala *vuota* per spegnere il livello). Un
+numero domestico nudo si confonde con normali sequenze di cifre: ciò che lo rende sicuro non è il
+pattern ma il controllo — la libreria Rust puro
 [`phonenumber`](https://crates.io/crates/phonenumber) conferma che il candidato è un numero
-realmente **assegnato** per quella regione. Misurato su 35 rese reali e 405 non-telefoni a forma di
+realmente **assegnato** per quella regione. Misurato su 35 rese reali e 453 non-telefoni a forma di
 cifre: **recall 1.000**, zero falsi positivi su porte, importi e numeri di riferimento, e **zero
-span `Phone`** su un vero turno Claude Code da 22 KiB. Il costo sono le date separate da spazio o
-trattino (`28 01 2026` è un numero lettone valido) — la matrice completa, e perché quel compromesso
-è stato accettato, è in
+span `Phone`** su un vero turno Claude Code da 22 KiB.
+
+Non è gratis, e i costi sono pubblicati invece che arrotondati via: date separate da spazio o
+trattino (`28 01 2026` è un numero lettone valido) e tabelle numeriche separate da spazi
+(`512 105 205` è la forma di un vero numero fisso di Suzhou). La matrice completa per categoria, e
+perché quel compromesso è stato accettato, è in
 [ARCHITECTURE → *Domestic phone coverage*](docs/ARCHITECTURE.md).
 
 **Entità non strutturate — NER ONNX locale (XLM-R int8, CPU).** Persone, organizzazioni e luoghi
@@ -483,7 +487,7 @@ Tutto è pilotato da variabili d'ambiente.
 | `UPSTREAM_FORWARD_HEADERS` | *(preset)* | Header del client da inoltrare, separati da virgola |
 | `UPSTREAM_EXTRA_HEADERS` | *(nessuno)* | `Chiave=Valore;Chiave2=Valore2` header statici per ogni richiesta a monte |
 | `MAX_BODY_BYTES` | `16777216` | Limite del corpo della richiesta (16 MiB) |
-| `PII_LOCALES` | `de,es,fr,gb,it,lv,nl,pt,cn` | Le regioni di cui vengono rilevati i **numeri di telefono domestici** (senza `+CC`). Tutte e nove sono attive di default; impostarla **sostituisce** l'insieme invece di aggiungersi, e un codice fuori dalla lista non contribuisce nulla. **I documenti nazionali sono sempre attivi comunque** — vedi la matrice di copertura in [ARCHITECTURE](docs/ARCHITECTURE.md) |
+| `PII_LOCALES` | `de,es,fr,gb,it,lv,nl,pt,cn` | Le regioni di cui vengono rilevati i **numeri di telefono domestici** (senza `+CC`). Tutte e nove sono attive di default; impostarla **sostituisce** l'insieme invece di aggiungersi, e un codice fuori dalla lista non contribuisce nulla. Impostala **vuota** (`PII_LOCALES=`) per spegnere il livello — è diverso dal non impostarla affatto. **I documenti nazionali sono sempre attivi comunque** — vedi la matrice di copertura in [ARCHITECTURE](docs/ARCHITECTURE.md) |
 | `PII_CACHE_ENTRIES` | `16` | Cache di rilevamento (S3): il system prompt byte-identico viene scansionato una volta e riusato, risparmiando la passata NER dominante. Con chiave sui byte esatti, un hit non può **mai** mascherare *meno* di una scansione fresca. `0` la disabilita |
 | `RUST_LOG` | `info` | Filtro dei log. Non impostata (o vuota) significa `info`, così le righe d'avvio si vedono senza configurazione; imposta es. `warn` o `llm_proxy_pii_rust=debug` per sovrascriverlo. I timestamp sono in ora locale con offset esplicito |
 
