@@ -1474,6 +1474,16 @@ N. That number decides the default, and we do not have it yet.
       regression from ever returning silently. Until M10 ships, the default stays
       documented-as-broken — the READMEs say so today — rather than being quietly changed to
       something that looks right and still isn't measured
+- [ ] **The over-mask guard, on text nobody curated.** The negative corpus only contains
+      digit-shaped non-phones *we thought of*. This milestone widens the candidate set twice over —
+      a non-trunk shape family means any plausible digit group is a candidate, and ~9 plans give
+      each candidate nine chances to be somebody's valid number. Real agent traffic is full of
+      digit runs no one writes test cases for: line numbers in diffs, ports, byte offsets,
+      timestamps, PIDs, error codes, file sizes. So assert over the **M7 latency fixture** (a real
+      22 KiB Claude Code turn already in the repo, not a synthetic string): with every region on,
+      the `Phone` spans it yields must be exactly the ones we expect — a change in that count is a
+      regression to explain, not a diff to accept. Cheap, automated, and it catches the gross case
+      before anyone spends a live session on it
 - [ ] `TESTING.md` catalogs the new cases; `ARCHITECTURE.md`'s matrix is **re-measured**, not
       re-asserted
 
@@ -1654,6 +1664,27 @@ numbers into `ARCHITECTURE.md`'s matrix — **re-measured, not re-asserted** —
 **9 · Close the loop.** `PII_LOCALES` stays accepted whatever is decided (a patch must not break an
 operator who set it); the README's `PII_LOCALES` rows and the `it,us`-is-inert warnings come out
 only once the code makes them false.
+
+**10 · Which [CC scenarios](TESTING.md#cc-battery) this milestone actually needs — and why not all
+nine.** The battery is expensive (live key, two runs each, human eyes on two traces), so spend it
+where automated tests are structurally blind. **They are blind to exactly one thing here:
+over-masking real agent traffic, and the harm is functional rather than privacy.** A masked line
+number or port inside `tool_use.input` hands the model `[PHONE_1]` where it needed `8080` — the
+agent then does the wrong thing, and no corpus test will show you that because a corpus contains
+only the false positives we imagined. Run:
+  - **CC-04** (`tool_use.input` carries a value back) — the direct "over-mask corrupts a tool
+    argument" case, and the highest-value single run.
+  - **CC-09** (PII through an MCP SQL tool) — SQL result sets are the densest numeric payload the
+    battery has: row IDs, counts, amounts.
+  - **CC-03** (a file with PII → `tool_result`) — file contents are where line numbers and offsets
+    arrive.
+  - **CC-01** as the baseline that ordinary structured masking still round-trips.
+
+  **Skip CC-02, CC-05, CC-06, CC-07, CC-08.** M10 touches the deterministic layer only: the NER,
+  determinism, secrets, thinking blocks and streaming are all untouched, and re-running them would
+  buy confidence in code this milestone never edits. Say so in the DEVLOG when reporting the run —
+  *"five scenarios deliberately not run, because M10 cannot reach them"* is a result; silence about
+  them reads as a full battery that passed.
 
 <a id="backlog"></a>
 ## Backlog — documented, not scheduled
