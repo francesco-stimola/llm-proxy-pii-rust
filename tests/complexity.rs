@@ -200,6 +200,8 @@ fn masking_many_small_entities_stays_linear() {
 /// *A quantity a test never varies is a quantity the test cannot see* — and here the
 /// un-varied quantity was not size or count but the alphabet.
 ///
+/// **Both cases here REPEAT a unit, and that is now known to be the weaker half — see DOS-06.**
+///
 /// Two shapes, because they stress different halves: a run of **real** numbers makes every
 /// candidate an entity (validation *and* the splice), while a run of arbitrary digit groups
 /// makes most candidates rejections — and a rejection is the expensive verdict, since the
@@ -243,4 +245,90 @@ fn a_field_of_digit_groups_stays_affordable() {
         assert!(round_trips, "{label}: the round-trip must stay exact");
         assert_ne!(masked, expected, "{label}: nothing was masked at all");
     }
+}
+
+/// **DOS-06 (M10-R20) — the axis every one of this milestone's own measurements shared: the
+/// input REPEATED.**
+///
+/// M10 bounded a ~100 s validation cost with a per-scan memo, and measured the fix on
+/// `unit.repeat(n)` bodies — as does DOS-05, and as did every figure the milestone published.
+/// A memo keyed on the matched bytes only helps candidates that **recur**, so all of those
+/// numbers measured *the input's periodicity*, not the code. On a body whose candidates are
+/// genuinely **distinct** the memo does nothing at all: same shape, same 4 MiB, varying only
+/// the number of distinct candidates moved the cost **207 ms → 17,049 ms (82×)**, and a legal
+/// 15 MiB body answered in **64.5 s** at the completely default configuration.
+///
+/// *A quantity a test never varies is a quantity the test cannot see* — M4-R24's lesson, and
+/// then M10-R2's, arriving a third time on the same guard file. The un-varied quantity here was
+/// not the field size, not the entity count, not even the alphabet, but **how often the same
+/// bytes come round again**.
+///
+/// What bounds it is a fail-closed budget on validator calls per field, not a faster validator:
+/// `phonenumber::parse().is_valid()` is ~6.5 µs per region however it is asked, and the one
+/// attempt at a cheap pre-filter was a leak (M10-R13). So this asserts **both halves** — the
+/// work stays inside the budget, and a body that exhausts it is *refused* rather than
+/// forwarded with a partial scan.
+#[test]
+fn a_field_of_distinct_digit_groups_is_bounded_or_refused() {
+    // Every candidate different: no two share their bytes, so the memo is inert.
+    //
+    // **An odometer, not a modular hash, and the difference is the whole finding.** A
+    // `(i * 7) % 9000` style generator looks distinct and silently starts repeating after its
+    // period — the first draft of this test did exactly that, produced a 4 MiB body the memo
+    // absorbed, and reported "the budget was never reached" as if that were the product's
+    // doing. The digits below enumerate `(b, c)` over 81 M combinations, so nothing recurs
+    // within any field this suite builds.
+    fn distinct(bytes: usize) -> String {
+        let mut s = String::with_capacity(bytes + 64);
+        let mut i = 0u64;
+        while s.len() < bytes {
+            i += 1;
+            s.push_str(&format!(
+                "row {:02} {:04} {:04} end ",
+                10 + (i / 81_000_000) % 80,
+                1000 + i % 9000,
+                1000 + (i / 9000) % 9000
+            ));
+        }
+        s
+    }
+
+    // **60 KB, sized for the unoptimized profile.** Every candidate here is a cache miss, so
+    // the cost is the validator's ~6.5 µs per region — ~50× that in debug. The bar this case
+    // carries is *correctness under the budget*; the bound itself is the second half.
+    let input = distinct(60_000);
+    let expected = input.clone();
+    let (found, masked, round_trips) =
+        within_budget("distinct-digit-groups", move || detect_and_mask(input));
+
+    assert!(
+        found > 500,
+        "only {found} entities — this guard is not exercising the phone path"
+    );
+    assert!(round_trips, "the round-trip must stay exact");
+    assert_ne!(masked, expected, "nothing was masked at all");
+
+    // The other half: a body big enough to exhaust the validation budget must come back as an
+    // **error**, not as a quietly partial scan. `detect()` is the infallible view and returns
+    // nothing; `try_detect()` — which is what the request path uses — says why.
+    //
+    // **Deliberately outside `within_budget`.** Driving the budget to exhaustion costs
+    // budget × per-call, which is ~0.5 s in the shipped build and ~25 s here. Wrapping it in a
+    // wall clock would size the *product's* bound to fit the *test profile*, which is exactly
+    // backwards — so this case asserts the policy and lets it take as long as debug takes.
+    let huge = distinct(4 * 1024 * 1024);
+    let detector = StructuredRecognizers::new();
+    let err = detector.try_detect(&huge).expect_err(
+        "a 4 MiB field of distinct phone-shaped groups must exhaust the validation budget and \
+         be REFUSED — silently returning a partial scan is a miss, and a miss is a leak",
+    );
+    assert!(
+        err.message.contains("budget"),
+        "the error must say what happened, got {err:?}"
+    );
+    // Never log raw PII, not even in an error we control (DBG-02's rule applies here too).
+    assert!(
+        !err.message.contains("row "),
+        "the error message must carry no input-derived text, got {err:?}"
+    );
 }

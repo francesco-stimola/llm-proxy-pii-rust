@@ -3,6 +3,56 @@
 Newest first. One entry per meaningful change — note *what* and *why*, not just
 *what*. This is the running history so context is never lost between sessions.
 
+## 2026-07-29 — M10 review round 3: every DoS number this milestone published measured the wrong thing
+
+**The blind spot all three rounds shared: every one of them used `unit.repeat(n)`.** M10-R2's
+table, its closure, round 2's verification, M10-R13's "the gate bought nothing" — and DOS-05
+itself. The per-scan memoization that carries the whole fix is keyed on the matched bytes, so **its
+benefit is a property of the input repeating, not of the code**. Same shape, same 4 MiB, varying
+only how many candidates are distinct: **207 ms → 17,049 ms**. A legal **15 MiB** body — inside the
+default 16 MiB limit — answered `200` after **64.5 s** of CPU at the completely default
+configuration.
+
+*A quantity a test never varies is a quantity the test cannot see.* That is M4-R24's lesson and
+then M10-R2's, arriving a third time on the same file. The un-varied quantity was not the field
+size, not the entity count, not even the alphabet — it was **how often the same bytes come round
+again**.
+
+**Closed by bounding the work rather than accelerating it**, because there is nothing to
+accelerate: `phonenumber::parse().is_valid()` is ~6.5 µs per region however it is asked, and the one
+cheap pre-filter was round 2's leak. So a field's cache-missing validator calls are capped at
+50,000, and exceeding the cap is an **`Err` on the `try_detect` channel** — the request is blocked,
+never forwarded with a partially scanned field. Same call M5-R7 settled: *a detector may degrade its
+own recall, but it may never decide for the caller that degraded output is acceptable.*
+
+| body (distinct candidates) | before | after |
+|---|---|---|
+| 15 MiB | **64.5 s**, `Ok` | **0.99 s**, refused |
+| 4 MiB | ~17 s, `Ok` | 0.70 s, refused |
+| 1 MiB | 3.3 s | 0.81 s, `Ok` |
+| 4 MiB **repeated** (DOS-05's shape) | 0.38 s | 0.42 s, unchanged |
+
+**The budget is sized from the shipped build, not from the profile the guard runs in** — 50,000
+calls is ~0.5 s in release and ~25 s in debug, which is why DOS-06's refusal case is deliberately
+not wrapped in a wall clock. Letting the test profile set the product's bound is backwards.
+
+**And writing DOS-06 reproduced the finding one more time.** Its first generator used
+`(i * 7) % 9000`, looked distinct, silently repeated after its period, produced a 4 MiB body the memo
+absorbed, and reported "the budget was never reached" as though that were the product's doing. It is
+an odometer now, with the reason in a comment, because the next person will reach for the modular
+hash too.
+
+Two more worth keeping. **PHONE-NAT-10's non-vacuity floor was aggregate and therefore blind where
+it mattered**: `Trunk` alone contributed 705 of 1,286 acceptances while the band M10-R13 lived in
+yielded **2**, and zero in seven of twenty seeds. The floor is per-shape now, and the generator
+*aims* at that band with a real country calling code (2 → 17 acceptances); slot 3 keeps its own,
+lower, **measured** floor with the reason beside it, rather than a tidy uniform number that would
+mean either a red suite or a slower test. And **the invariant round 1 promoted was overstated**: a
+trunk anchor *constrains* where a candidate may begin, it does not forbid a mid-value start —
+`0958` inside `020 7946 0958` is a `0` on a word boundary. The consequence differs, and that is the
+real point: the shifted span **overlaps** and the resolver unions it, so it is an over-mask, never a
+truncation. That is why the trunk families need no shrink.
+
 ## 2026-07-29 — M10 review round 2: the fix for the DoS had relocated the leak
 
 **All twelve round-1 closures hold** — verified against the pre-fix tree rather than the diff, so

@@ -43,7 +43,7 @@ use phonenumber::country::Id;
 use regex::Regex;
 
 use super::overlap::resolve_overlaps;
-use super::{Confidence, PiiDetector, PiiEntity, PiiKind};
+use super::{Confidence, DetectError, PiiDetector, PiiEntity, PiiKind};
 
 /// A recognizer's extra check on the matched text.
 ///
@@ -384,7 +384,7 @@ pub struct PhoneRegion {
     /// text. Measured on digit-shaped non-phones (ports, offsets, HTTP codes, byte sizes,
     /// IDs), with every region seeing every shape: **DE 7 hits of 24, FR 4, NL 3**, against 0
     /// for the regions that genuinely have no trunk prefix. Restricting them to
-    /// [`Trunk`](PhoneShape::Trunk) took all three to 0 and cost no real rendering.
+    /// [`Trunk`] took all three to 0 and cost no real rendering.
     ///
     /// **The same argument one level finer, and it is worth the extra column.** A single
     /// non-trunk flag still handed China the *prefix + long block* shape (`347 1234567`),
@@ -622,15 +622,19 @@ fn national_phone_recognizers(regions: &[(Id, &[PhoneShape])]) -> Vec<Recognizer
                     //   code and the gate refused it — a **recall gap, i.e. a miss**, which is
                     //   the one direction a privacy filter may never fail in.
                     // - Nothing, because the per-scan memoization in `push_candidates` already
-                    //   collapses the adversarial case. Measured with the gate fully open, on
-                    //   the same inputs it was introduced for: 4 MiB of rejected digit groups
-                    //   384 ms vs 382 ms, 4 MiB of accepted ones 257 vs 258, 781 KiB of
-                    //   *distinct* candidates (the case memoization cannot help) 145 vs 145.
+                    //   collapses the *repeating* case, which is what every measurement then
+                    //   available exercised. Measured with the gate forced open, on the inputs
+                    //   it was introduced for: 384 ms vs 382, 257 vs 258.
                     //
                     // The rule that outlives it: **a cheap filter in front of a validator must
                     // be derived from what the *validator* accepts, not from what the metadata
                     // describes** — and it has to be proved differentially, against generated
                     // inputs, never against a list the author expected it to allow.
+                    //
+                    // **What bounds the cost instead is a fail-closed budget**, not a filter —
+                    // see [`MAX_PHONE_VALIDATIONS_PER_FIELD`], and note why: on a body whose
+                    // candidates are *distinct* the memo does nothing at all, and a validator
+                    // call is ~6.5 µs per region however it is asked (M10-R20).
                     applicable
                         .iter()
                         .any(|region| national_phone_valid(*region, matched))
@@ -678,10 +682,12 @@ impl StructuredRecognizers {
     /// Exposed (crate-internal) so the resolver's invariant can be tested directly: every
     /// structured candidate's bytes must end up covered in the resolved output — see
     /// `every_structured_candidate_byte_is_covered` (M4-R10 / M4-R11).
+    #[cfg(test)]
     pub(crate) fn raw_candidates(&self, input: &str) -> Vec<PiiEntity> {
+        let budget = std::cell::Cell::new(MAX_PHONE_VALIDATIONS_PER_FIELD);
         let mut candidates: Vec<PiiEntity> = Vec::new();
         for rec in &self.recognizers {
-            rec.push_candidates(input, &mut candidates);
+            rec.push_candidates(input, &mut candidates, &budget);
         }
         candidates
     }
@@ -725,21 +731,52 @@ impl Recognizer {
     /// repeated digit groups burned **105 s** of CPU on an unauthenticated path. The map is
     /// local to this call, so there is no lock and no cross-request state; the validator is a
     /// pure function of the matched bytes, so a hit cannot change a verdict.
-    fn push_candidates(&self, input: &str, out: &mut Vec<PiiEntity>) {
+    ///
+    /// **`budget` is what the memo cannot do (M10-R20).** A memo only helps candidates that
+    /// *repeat*; on a body of **distinct** digit groups every one is a cache miss at ~6.5 µs
+    /// per region. The budget is decremented per miss and shared across the whole field, so an
+    /// exhausted budget means the caller (`try_detect`) blocks the request instead of shipping
+    /// a partial scan. It is deliberately **not** consulted by the regex loop's structure —
+    /// once it hits zero the scan stops accepting, and the error is raised one level up, so
+    /// there is exactly one place that decides what a truncated scan means.
+    fn push_candidates(
+        &self,
+        input: &str,
+        out: &mut Vec<PiiEntity>,
+        budget: &std::cell::Cell<usize>,
+    ) {
         let mut runs: Vec<Range<usize>> = Vec::new();
         let mut memo: std::collections::HashMap<&str, bool> = std::collections::HashMap::new();
         let mut at = 0usize;
         while at <= input.len() {
+            if budget.get() == 0 && self.validate.is_some() {
+                break;
+            }
             let Some(m) = self.regex.find_at(input, at) else {
                 break;
             };
             let accepted = match &self.validate {
                 None => Some(m.start()..m.end()),
                 Some(check) => {
-                    if *memo.entry(m.as_str()).or_insert_with(|| check(m.as_str())) {
+                    let verdict = match memo.get(m.as_str()) {
+                        Some(known) => *known,
+                        None => {
+                            budget.set(budget.get().saturating_sub(1));
+                            let v = check(m.as_str());
+                            memo.insert(m.as_str(), v);
+                            v
+                        }
+                    };
+                    if verdict {
                         Some(m.start()..m.end())
                     } else {
-                        self.shrink_to_a_valid_prefix(input, m.start()..m.end(), check, &mut memo)
+                        self.shrink_to_a_valid_prefix(
+                            input,
+                            m.start()..m.end(),
+                            check,
+                            &mut memo,
+                            budget,
+                        )
                     }
                 }
             };
@@ -814,6 +851,7 @@ impl Recognizer {
         span: Range<usize>,
         check: &Validator,
         memo: &mut std::collections::HashMap<&'a str, bool>,
+        budget: &std::cell::Cell<usize>,
     ) -> Option<Range<usize>> {
         if !self.shrink_on_reject {
             return None;
@@ -827,7 +865,19 @@ impl Recognizer {
                 return None;
             }
             let prefix = &input[span.start..end];
-            if *memo.entry(prefix).or_insert_with(|| check(prefix)) {
+            let verdict = match memo.get(prefix) {
+                Some(known) => *known,
+                None => {
+                    if budget.get() == 0 {
+                        return None;
+                    }
+                    budget.set(budget.get() - 1);
+                    let v = check(prefix);
+                    memo.insert(prefix, v);
+                    v
+                }
+            };
+            if verdict {
                 return Some(span.start..end);
             }
         }
@@ -845,9 +895,70 @@ fn next_char_boundary(input: &str, i: usize) -> usize {
     next.min(input.len())
 }
 
+/// How many times one field may invoke a **cache-missing** validator before the structured
+/// layer refuses the field (M10-R20).
+///
+/// **This is a fail-closed bound on an unauthenticated CPU cost, not an optimisation** — the
+/// distinction matters because M10 already tried the optimisation and it was a leak (M10-R13).
+///
+/// `phonenumber::parse().is_valid()` costs **~6.5 µs per region** and there is no sound way to
+/// answer it more cheaply: any pre-filter must be derived from what the *validator* accepts,
+/// and the one attempt at that refused real numbers. The per-scan memo removes the cost only
+/// for candidates that **repeat** — which every DoS figure this milestone published happened to
+/// exercise, because they were all built with `unit.repeat(n)`. On a body whose candidates are
+/// genuinely **distinct** the memo does nothing, and a legal 15 MiB body cost **64 s** of CPU
+/// on an unauthenticated path.
+///
+/// So the work is bounded, and exceeding the bound is an `Err` on the
+/// [`try_detect`](PiiDetector::try_detect) channel: the request is **blocked**, never forwarded
+/// with a partial scan. That is the same call M5-R7 settled — *a detector may degrade its own
+/// recall, but it may never decide for the caller that degraded output is acceptable.*
+///
+/// **The number, and it is chosen from the shipped build's worst case rather than from what a
+/// test can conveniently measure.** A validator call costs ~10 µs across the enabled regions in
+/// `--release`, so 50,000 bounds one field at **~0.5 s**. Headroom against real traffic is
+/// large: the M7 22 KiB Claude Code turn yields **zero** phone candidates, and reaching the
+/// budget takes on the order of **half a megabyte of nothing but phone-shaped digit groups** in
+/// a single field. (`cargo test` builds unoptimized, where the same 50,000 calls take ~25 s —
+/// which is why DOS-06's refusal case is not wrapped in a wall-clock budget. The number must
+/// come from the product, not from the profile the guard happens to run in.)
+const MAX_PHONE_VALIDATIONS_PER_FIELD: usize = 50_000;
+
 impl PiiDetector for StructuredRecognizers {
     fn detect(&self, input: &str) -> Vec<PiiEntity> {
-        let kept = resolve_overlaps(input, self.raw_candidates(input));
+        // Infallible view. It must NOT silently return a partial scan — that is a miss, and a
+        // miss is a leak — so an exhausted budget yields nothing here and the fallible callers
+        // (which is what the request path uses) see the error.
+        self.try_detect(input).unwrap_or_default()
+    }
+
+    fn try_detect(&self, input: &str) -> Result<Vec<PiiEntity>, DetectError> {
+        let budget = std::cell::Cell::new(MAX_PHONE_VALIDATIONS_PER_FIELD);
+        let mut candidates: Vec<PiiEntity> = Vec::new();
+        for rec in &self.recognizers {
+            rec.push_candidates(input, &mut candidates, &budget);
+        }
+        if budget.get() == 0 {
+            // Value-free, as `DetectError` requires — the field's *size* is not input-derived
+            // content, and it is the one number an operator needs to act on.
+            return Err(DetectError {
+                detector: "structured",
+                message: format!(
+                    "a {} byte field exceeded the domestic-phone validation budget of {} \
+                     checks; blocking rather than forwarding a partially scanned field",
+                    input.len(),
+                    MAX_PHONE_VALIDATIONS_PER_FIELD
+                ),
+            });
+        }
+        Ok(self.finish(input, candidates))
+    }
+}
+
+impl StructuredRecognizers {
+    /// Resolve overlaps and emit the audit lines — the tail shared by both entry points.
+    fn finish(&self, input: &str, candidates: Vec<PiiEntity>) -> Vec<PiiEntity> {
+        let kept = resolve_overlaps(input, candidates);
         for entity in &kept {
             if entity.confidence == Confidence::Structural {
                 // Auditability: a structure-only match (e.g. a mod-97-invalid
@@ -2165,8 +2276,17 @@ mod tests {
     fn a_valid_number_is_never_lost_between_the_regex_and_the_validator() {
         let detector = StructuredRecognizers::new();
 
+        /// Calling codes of the regions that declare the `Groups` family (ES · IT · LV · PT ·
+        /// CN), as a leading token the family's regex accepts (1–3 digits, non-zero first).
+        const GROUPS_OWNER_CALLING_CODES: [&str; 4] = ["34", "39", "86", "371"];
+
         // Deterministic pseudo-random digits — a fixed sequence, so a failure reproduces.
         let mut seed = 0x5eed_1234_u64;
+        let mut tick = 0u64;
+        let mut seed_tick = move || {
+            tick = tick.wrapping_add(1);
+            tick
+        };
         let mut digit = move || {
             seed = seed
                 .wrapping_mul(6364136223846793005)
@@ -2186,12 +2306,15 @@ mod tests {
                 .collect()
         };
 
+        // Accepted count **per generated shape**, not in aggregate (M10-R21). An aggregate
+        // floor is dominated by whichever shape happens to be permissive — `Trunk` alone
+        // contributed 705 of 1,286 — so it can be met with **zero** samples in the band that
+        // actually matters. The band R13 lived in (14–15 digits, `Groups`) yielded 0–2 across
+        // seeds, and 0 in seven of twenty: the floor was 12.9× slack and blind at the same time.
+        let mut per_shape = [0usize; 6];
         let mut checked = 0usize;
-        let mut accepted = 0usize;
-        // 400 rounds × 6 families ≈ 2,400 candidates, which yields a few hundred valid ones
-        // (the floor below pins that). Sized for the **debug** profile `cargo test` builds,
-        // where `phonenumber::parse` is ~50× slower: 3,000 rounds took 93 s, which is a guard
-        // nobody would keep running.
+        // Sized for the **debug** profile `cargo test` builds, where `phonenumber::parse` is
+        // ~50× slower: 3,000 rounds took 93 s, which is a guard nobody would keep running.
         for _ in 0..400 {
             // Per family, in `PHONE_SHAPES` order, built to that family's own grammar —
             // including the group counts that push a candidate past any *domestic* length,
@@ -2218,11 +2341,17 @@ mod tests {
                         group(2, false)
                     ),
                 ),
+                // **The 14–15-digit band, aimed at rather than stumbled into (M10-R21).** This
+                // is where M10-R13 lived: a candidate written with its **country calling
+                // code**, which `parse` strips before validating. Under uniform random digits
+                // the band is accepted ~2 times in 2,400 — statistically absent, and the
+                // earlier aggregate floor could not tell. Leading with a real calling code of a
+                // region that owns this family is what makes the sample land there.
                 (
                     Groups,
                     format!(
                         "{} {} {} {}",
-                        group(2, true),
+                        GROUPS_OWNER_CALLING_CODES[(seed_tick() % 4) as usize],
                         group(4, false),
                         group(4, false),
                         group(4, false)
@@ -2235,7 +2364,7 @@ mod tests {
                 ),
             ];
 
-            for (shape, candidate) in generated {
+            for (slot, (shape, candidate)) in generated.into_iter().enumerate() {
                 checked += 1;
                 // **The generator has to speak the family's grammar, and checking that is not
                 // a formality — the first version emitted a four-pair French form where the
@@ -2265,7 +2394,7 @@ mod tests {
                 if !owners.iter().any(|r| national_phone_valid(*r, &candidate)) {
                     continue;
                 }
-                accepted += 1;
+                per_shape[slot] += 1;
 
                 let text = format!("x {candidate} y");
                 let spans: Vec<String> = detector
@@ -2284,13 +2413,26 @@ mod tests {
             }
         }
 
-        // Non-vacuity: the generator must actually be producing valid numbers, or this passes
-        // by never reaching its assertion (M4-R13, BENCH-01).
-        assert!(
-            accepted > 100,
-            "only {accepted} of {checked} generated candidates were valid for an owning \
-             region — the generator drifted and this guard is asserting nothing"
-        );
+        // Non-vacuity, **per generated shape**: each must have reached the assertion on its
+        // own, or this guard is silently blind wherever it matters most (M10-R21).
+        //
+        // **Slot 3's floor is lower, and the number is measured rather than rounded.** That is
+        // the country-code band, and it is *intrinsically* sparse: a random 12-digit national
+        // number is rarely an assigned one, so even aiming a real calling code at it yields
+        // ~17 acceptances per 400 rounds (uniform digits yielded 2). Raising the floor would
+        // mean raising the round count, and this test already costs ~17 s in the debug profile.
+        // The honest thing is a floor the aiming can actually clear, with the reason next to it
+        // — not a uniform number that makes the table look tidy.
+        const FLOORS: [usize; 6] = [20, 20, 20, 10, 20, 20];
+        for (slot, count) in per_shape.iter().enumerate() {
+            assert!(
+                *count >= FLOORS[slot],
+                "generated shape #{slot} produced only {count} candidates any owning region \
+                 accepts (floor {}), out of {checked} total — this guard is not exercising that \
+                 shape, and an aggregate count would have hidden it",
+                FLOORS[slot]
+            );
+        }
     }
 
     #[test]

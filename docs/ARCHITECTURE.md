@@ -96,7 +96,7 @@ The same argument one level finer earns the fourth row: a single non-trunk flag 
 Italian-mobile `LongBlock` shape, and China's plan accepts 10-digit runs starting `1…`, so file
 offsets and byte counts (`offset 100 1000000 in file`) became `Phone` spans — **0.250 of the
 offsets pool, 0.156 of sizes**. Declaring shapes per region takes those to 0 with Chinese mobiles
-still covered. `every_declared_shape_is_needed_by_a_corpus_case` fails if a row lists a shape no
+still covered. `every_declared_shape_is_needed_by_a_real_rendering` fails if a row lists a shape no
 rendering of that country needs.
 
 **Measured, per region and for the union** (`tests/phone_eval.rs`, `--release`; 35 corpus
@@ -193,28 +193,54 @@ takes 4 MiB of digit groups from 45-50 s to **0.38 s**.
 > from each family's grammar and asserts the property that matters directly: **if a region that
 > declares this family accepts it, we detect it.**
 
+**And the memo alone does not bound anything — a fail-closed budget does.** A memo keyed on the
+matched bytes helps only candidates that **recur**. Every DoS figure this milestone published, and
+DOS-05 itself, was built with `unit.repeat(n)` — so all of it measured the *input's periodicity*
+rather than the code. On a body of **distinct** digit groups the memo is inert: same shape, same
+4 MiB, varying only the distinct-candidate count moved the cost **207 ms → 17,049 ms**, and a legal
+15 MiB body answered in **64.5 s** at the default configuration. There is no faster validator to
+reach for (~6.5 µs per region, and the one cheap filter was the leak above), so the work is
+**bounded** instead: `MAX_PHONE_VALIDATIONS_PER_FIELD` (50,000 ≈ 0.5 s in the shipped build), and
+exceeding it is an `Err` on the `try_detect` channel — **the request is blocked, never forwarded
+with a partial scan.** Same call M5-R7 settled: *a detector may degrade its own recall, but it may
+never decide for the caller that degraded output is acceptable.* Measured after: the 15 MiB body is
+refused in **0.99 s**; a 1 MiB one still scans, in 0.81 s. Headroom against real traffic is large —
+the M7 22 KiB turn yields **zero** phone candidates, and reaching the budget takes on the order of
+half a megabyte of nothing but phone-shaped digit groups in a **single field**. DOS-06 is the guard,
+and its generator is an odometer rather than a modular hash for exactly the reason above.
+
 **The validator is not a locale *discriminator*.** National plans overlap, so a number valid in
 one region can be valid in another — a GB mobile also validates as DE, and `0123456789` is a real
 Paris number. That is **privacy-safe** (over-masking a real phone is never a leak); it just means
 enabling one region does not reject every other region's numbers, and it is why a per-region
 precision figure does not predict the union's.
 
-> **A trunk anchor does more than reduce false positives: it guarantees a candidate can only
-> *begin where a number begins* (M10-R1).** Remove the anchor and an accepted span can start
-> mid-value — so a greedy over-match that swallowed the next number is rejected, a *shifted*
-> window is accepted instead, and masking **truncates** the neighbour rather than shadowing it:
+> **A trunk anchor does more than reduce false positives: it constrains *where a candidate may
+> begin* (M10-R1).** Remove it and an accepted span can start at an arbitrary digit — so a
+> greedy over-match that swallowed the next number is rejected, a *shifted* window is accepted
+> instead, and masking **truncates** the neighbour rather than shadowing it:
 > `912 345 678 913 456 789` masked to `912 [PHONE_1]`, three digits of a real number upstream in
 > clear. **The fixpoint recovers a value it did not touch; it can never recover one the mask
 > ate** — which is why M8-R8's "the next pass masks it" argument does not carry over from the
 > trunk families, and copying it forward was the actual defect.
 >
+> **The anchor constrains; it does not forbid** — and the first version of this note said it did
+> ([M10-R26](reviews/M10.md#m10-r26)). A trunk candidate must begin at a `0` on an ASCII word
+> boundary, and inside `020 7946 0958` there is one: `0958`. So a trunk span *can* start
+> mid-value. What differs is the consequence: the shifted span **overlaps** the real number and
+> the resolver unions them, so the bytes are covered and nothing is truncated — the outcome is an
+> over-mask (`020 7946 0958 0161 496 0000` becomes one placeholder at the shipped default, two
+> under `PII_LOCALES=gb`), never a leak. **That, and not the stronger claim, is why the trunk
+> families need no shrink.** A targeted sweep of 3,870 variants found no truncating case.
+>
 > Two lessons outlive the fix. **The un-anchored families retry a rejected match one digit group
-> shorter** until the validator accepts a prefix at the *same* start, which is what the trunk
-> anchor gave for free. And the predicate that catches this is *"no byte of a real value
-> survives"*, not *"nothing detectable survives"* — the orphaned `912` is not detectable, which
-> is precisely why it survived every existing guard, including PROP-03 (it quantifies over
-> **accepted** candidates, and those bytes belonged to a rejected one). PHONE-NAT-09 asserts the
-> stronger form.
+> shorter** until the validator accepts a prefix at the *same* start, which is what the anchor
+> gives for free. And the predicate that catches this is *"no byte of a real value survives"*,
+> not *"nothing detectable survives"* — the orphaned `912` is not detectable, which is precisely
+> why it survived every existing guard, including PROP-03 (it quantifies over **accepted**
+> candidates, and those bytes belonged to a rejected one). PHONE-NAT-09 asserts the stronger
+> form, on the **default** region set: its sibling PHONE-NAT-04 runs on `["gb"]`, where the
+> coalescing above does not occur and so the interesting case cannot arise.
 
 **Known recall gaps, deliberate and measured.** A non-trunk number written **compactly**
 (`3471234567`) is not a candidate: bare digit runs are indistinguishable from order numbers and

@@ -1468,10 +1468,16 @@ N. That number decides the default, and we do not have it yet.
       number that excluded them written down. (a) is cleanest but drops a documented variable, which
       a patch must not do — so **(b) is the expected landing**: same protection out of the box, and
       an operator who set `PII_LOCALES` keeps exactly the behavior they asked for.
-      **Landed (b), and the numbers permitted it rather than merely tolerating it:** recall 1.000
-      for every region *and* the union, **union-only false positives 0** (the compound rate is the
-      sum of its parts, not more), and **zero `Phone` spans on a real 22 KiB agent turn**. No region
-      had to be demoted to opt-in, so (c) never came up
+      **Landed (b).** Recall **1.000** for every region and for the union, and **zero `Phone`
+      spans on a real 22 KiB agent turn** — those are the evidence. (c) was reconsidered against
+      the *corrected* numbers in review round 1 and still not taken: demoting ES/PT/CN would fix
+      the headline for `it` while re-creating the same defect for three other declared countries.
+      The full per-category matrix lives in [ARCHITECTURE](ARCHITECTURE.md), re-measured after
+      [M10-R3](reviews/M10.md#m10-r3) showed the first pool could not reach half the shapes —
+      **do not quote FP figures from this file**, which is exactly how the superseded ones
+      survived here for two rounds ([M10-R22](reviews/M10.md#m10-r22)). "Union-only false
+      positives 0" is likewise **not** evidence: it is a structural identity of the dispatch
+      ([M10-R6](reviews/M10.md#m10-r6))
 - [x] **The floor, binding on every branch above: a freshly started proxy with no configuration
       MUST have national-phone recognizers active.** "Everything off unless you knew to switch it
       on" is the defect this milestone exists to end, not a fallback it may land back on — so the
@@ -1566,12 +1572,13 @@ downloaded executable should be able to say what it is, what it accepts, and whe
 > ship it on; if it isn't, the docs should say what it costs. Widening coverage without those numbers
 > would trade a documented gap for an undocumented over-mask.
 >
-> **It was safe, and the docs say what it costs anyway.** Recall 1.000 per region and for the union;
-> union-only false positives 0; zero `Phone` spans on a real 22 KiB agent turn; latency flat
-> (0.30 → 0.32 ms/turn for 0 → 9 regions). The residual is space- or dash-separated dates —
-> 0.188 of that category, entirely IT + LV — published per category in
-> [ARCHITECTURE → *Domestic phone coverage*](ARCHITECTURE.md) rather than blended into one rate that
-> would have hidden it.
+> **It was safe enough to ship on, and the docs say what it costs.** Recall 1.000 per region and
+> for the union; zero `Phone` spans on a real 22 KiB agent turn; latency flat (0.30 → 0.32 ms/turn
+> for 0 → 9 regions). The residual — dates and space-separated numeric tables, per region and per
+> category — lives in [ARCHITECTURE → *Domestic phone coverage*](ARCHITECTURE.md) and **nowhere
+> else**. That is deliberate: the figures once appeared here too, and when
+> [M10-R3](reviews/M10.md#m10-r3) corrected them upward this copy stayed stale through two review
+> rounds ([M10-R22](reviews/M10.md#m10-r22)). One home per number, like one home per finding.
 
 ### Implementation order
 
@@ -1825,7 +1832,17 @@ retrospective's signature move, landing on the guard that was supposed to make i
 directly against a gate-reinstated build in a throwaway worktree. Deleting the gate is defensible on
 re-measurement, PHONE-NAT-10 really does catch the M10-R13 defect (0.94 s), and every `phone_eval`
 figure reproduced exactly. [M10-R19](reviews/M10.md#m10-r19)'s closure does **not** hold — reopened
-as [M10-R23](reviews/M10.md#m10-r23). Seven new findings.
+as [M10-R23](reviews/M10.md#m10-r23). Seven new findings, **all now closed.**
+
+> **[M10-R20](reviews/M10.md#m10-r20) is closed by bounding the work, not by making it faster.**
+> There is no faster validator to reach for (~6.5 µs per region, and the one cheap filter was
+> M10-R13's leak), so a field's validator calls are capped and exceeding the cap is an **`Err` on
+> the `try_detect` channel** — the request is blocked, never forwarded with a partial scan
+> (M5-R7's rule). Measured: a legal **15 MiB body of distinct candidates goes from 64.5 s of CPU
+> to 0.99 s and a refusal**; 1 MiB still scans, in 0.81 s; DOS-05's periodic shapes are unchanged.
+> DOS-06 is the guard, and its generator is an **odometer rather than a modular hash** — the first
+> draft used `(i * 7) % 9000`, silently repeated after its period, and reported the budget as never
+> reached.
 
 > **The one all three rounds shared.** Every DoS number this milestone published — M10-R2's table,
 > its closure, round 2's verification, and M10-R13's "the gate bought nothing" — was measured on a
@@ -1839,13 +1856,13 @@ as [M10-R23](reviews/M10.md#m10-r23). Seven new findings.
 
 | ID | Title | Sev | Status |
 |---|---|---|---|
-| [M10-R20](reviews/M10.md#m10-r20) | The memoization's benefit is a property of input *periodicity*, so M10-R2's DoS is still reachable: a legal 15 MiB body of distinct digit groups costs 64.5 s | **BLOCKER** | [ ] |
-| [M10-R21](reviews/M10.md#m10-r21) | PHONE-NAT-10 catches the M10-R13 class with 2 of its 2,400 samples, and its non-vacuity floor is aggregate | guard | [ ] |
-| [M10-R22](reviews/M10.md#m10-r22) | ROADMAP's own M10 prose still publishes the superseded pre-M10-R3 measurement and cites "union-only FPs 0" as the evidence | measurement | [ ] |
-| [M10-R23](reviews/M10.md#m10-r23) | M10-R19's closure fixed a different link; the `cargo doc` warning it named still fires unchanged | low | [ ] |
-| [M10-R24](reviews/M10.md#m10-r24) | DOS-05, DEP-02 and CFG-01 are absent from `docs/TESTING.md`, and its complexity model is a milestone behind | docs | [ ] |
-| [M10-R25](reviews/M10.md#m10-r25) | ARCHITECTURE still names `every_declared_shape_is_needed_by_a_corpus_case`, which M10-R17's fix deleted | low | [ ] |
-| [M10-R26](reviews/M10.md#m10-r26) | The promoted invariant "a trunk anchor guarantees a candidate can only begin where a number begins" is false, and PHONE-NAT-04 is pinned to the one region set where it cannot fail | guard | [ ] |
+| [M10-R20](reviews/M10.md#m10-r20) | The memoization's benefit is a property of input *periodicity*, so M10-R2's DoS is still reachable: a legal 15 MiB body of distinct digit groups costs 64.5 s | **BLOCKER** | [x] |
+| [M10-R21](reviews/M10.md#m10-r21) | PHONE-NAT-10 catches the M10-R13 class with 2 of its 2,400 samples, and its non-vacuity floor is aggregate | guard | [x] |
+| [M10-R22](reviews/M10.md#m10-r22) | ROADMAP's own M10 prose still publishes the superseded pre-M10-R3 measurement and cites "union-only FPs 0" as the evidence | measurement | [x] |
+| [M10-R23](reviews/M10.md#m10-r23) | M10-R19's closure fixed a different link; the `cargo doc` warning it named still fires unchanged | low | [x] |
+| [M10-R24](reviews/M10.md#m10-r24) | DOS-05, DEP-02 and CFG-01 are absent from `docs/TESTING.md`, and its complexity model is a milestone behind | docs | [x] |
+| [M10-R25](reviews/M10.md#m10-r25) | ARCHITECTURE still names `every_declared_shape_is_needed_by_a_corpus_case`, which M10-R17's fix deleted | low | [x] |
+| [M10-R26](reviews/M10.md#m10-r26) | The promoted invariant "a trunk anchor guarantees a candidate can only begin where a number begins" is false, and PHONE-NAT-04 is pinned to the one region set where it cannot fail | guard | [x] |
 
 <a id="backlog"></a>
 ## Backlog — documented, not scheduled
