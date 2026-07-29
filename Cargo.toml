@@ -68,7 +68,18 @@ phonenumber = "0.3"
 once_cell = "1"
 anyhow = "1"
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# `local-time` (→ `time/local-offset`) so log timestamps carry the operator's own clock
+# with an explicit offset instead of UTC (M10). See src/logging.rs for why the offset is
+# captured before the tokio runtime exists.
+tracing-subscriber = { version = "0.3", features = ["env-filter", "local-time"] }
+# Direct dep for `UtcOffset` + the timestamp format description. NEW in the DEFAULT build
+# (M10): it was in `Cargo.lock` only under `--features onnx`, via hf-hub → hf-xet →
+# tracing-appender — so "surely it's already there" was wrong, exactly as the plan warned.
+# The cost is real but small and PURE RUST (`time` + `time-core`/`time-macros`, `deranged`,
+# `num-conv`, `powerfmt`, `num_threads`) — nothing on tests/dependency_footprint.rs's
+# forbidden list, so the native-dep-free guarantee holds. `default-features = false` drops
+# `std`'s parsing/serde surface we don't use.
+time = { version = "0.3", default-features = false, features = ["std", "formatting", "local-offset", "macros"] }
 
 # ONNX inference deps (M2), behind the optional `onnx` feature so the default
 # build stays native-dep-free. `ort` 2.x is prerelease-only → pinned exactly.

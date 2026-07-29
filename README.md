@@ -69,7 +69,6 @@ Move-Item .\llm-proxy-pii-rust-x86_64-pc-windows-msvc.exe .\llm-proxy-pii-rust.e
 $env:NER_MODEL_REPO   = "jiting/xlm-roberta-base-ner-hrl_onnx"
 $env:NER_REQUIRED     = "1"
 $env:PII_LOCALES      = "it,us"     # add gb / de for domestic phone numbers
-$env:RUST_LOG         = "info"      # without it the proxy logs NOTHING — see below
 $env:UPSTREAM_API_KEY = "sk-..."    # optional — a client's own header wins
 .\llm-proxy-pii-rust.exe
 ```
@@ -82,7 +81,6 @@ chmod +x llm-proxy-pii-rust
 export NER_MODEL_REPO=jiting/xlm-roberta-base-ner-hrl_onnx
 export NER_REQUIRED=1
 export PII_LOCALES=it,us
-export RUST_LOG=info                # without it the proxy logs NOTHING — see below
 export UPSTREAM_API_KEY=sk-...
 ./llm-proxy-pii-rust
 ```
@@ -90,14 +88,15 @@ export UPSTREAM_API_KEY=sk-...
 Two startup lines then tell you which proxy you actually got:
 
 ```text
-INFO … ONNX NER detector loaded model="…model_quantized.onnx" pool_size=1 intra_threads=…
-INFO … listening on http://127.0.0.1:8080
+2026-07-29T12:37:04.844780+02:00  INFO … ONNX NER detector loaded model="…model_quantized.onnx" pool_size=1 …
+2026-07-29T12:37:04.885031+02:00  INFO … listening on http://127.0.0.1:8080
 ```
 
-> **`RUST_LOG` is not optional today, and that is a bug we own.** With it unset the log filter
-> falls back to errors only, so a healthy proxy starts up **completely silent** — indistinguishable
-> from a broken one, and with no way to run the check in the next table. [M10](docs/ROADMAP.md#m10)
-> changes the default to `info`; until then, set it.
+> Timestamps are **local time with the offset shown**, and the default log level is `info` — so a
+> freshly downloaded binary says what it is doing without any configuration. `RUST_LOG` still
+> overrides it (`RUST_LOG=warn`, `RUST_LOG=llm_proxy_pii_rust=debug`, …).
+> `llm-proxy-pii-rust --version` reports which build you have, and `--help` lists every
+> environment variable.
 
 | | |
 |---|---|
@@ -467,7 +466,7 @@ Everything is environment-driven.
 | `MAX_BODY_BYTES` | `16777216` | Request body limit (16 MiB) |
 | `PII_LOCALES` | `it,us` | Gates only the *false-positive-prone* recognizer tier — today just the **national phone** recognizers, and only `gb` / `de` exist (domestic numbers with no `+CC`). **The default activates neither**, so an Italian domestic number is *not* masked unless written `+39 …` — see the coverage matrix in [ARCHITECTURE](docs/ARCHITECTURE.md) and [M10](docs/ROADMAP.md#m10). **National IDs are always on regardless** |
 | `PII_CACHE_ENTRIES` | `16` | Detection cache (S3): the byte-identical system prompt is scanned once and reused, saving the dominant NER pass. Keyed on exact bytes, so a hit can never mask *less* than a fresh scan. `0` disables it |
-| `RUST_LOG` | *(unset)* | **Unset means errors only — the proxy starts silently, printing not even `listening on`.** Set `info` to see startup and per-request lines, or e.g. `llm_proxy_pii_rust=debug`. The default becomes `info` in [M10](docs/ROADMAP.md#m10) |
+| `RUST_LOG` | `info` | Log filter. Unset (or empty) means `info`, so startup lines are visible with no configuration; set e.g. `warn` or `llm_proxy_pii_rust=debug` to override. Timestamps are local time with an explicit offset |
 
 <details>
 <summary><b>NER (unstructured entities) — <code>--features onnx</code></b></summary>

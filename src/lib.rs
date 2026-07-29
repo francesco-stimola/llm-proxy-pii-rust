@@ -5,6 +5,7 @@
 //! them. See `docs/ARCHITECTURE.md` for the design.
 
 pub mod config;
+pub mod logging;
 pub mod pii;
 pub mod pipeline;
 pub mod proxy;

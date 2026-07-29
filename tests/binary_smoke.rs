@@ -6,8 +6,11 @@
 //! in-process mock upstream and confirms a single PII request is masked outbound,
 //! augmented, and restored inbound.
 //!
-//! Kept to ONE case on purpose: subprocess tests are slower and more
-//! timing-sensitive, so the bulk of coverage stays in-process.
+//! Everything else here is the **CLI surface** (CLI-01…CLI-06) — argument handling, the
+//! version/help output and the log defaults. Those live here for the same reason: each is a
+//! property of the *process*, unreachable from `build_router`. The bulk of coverage still
+//! stays in-process, because subprocess tests are slower and more timing-sensitive; nothing
+//! joins this file unless spawning the real `.exe` is what makes the assertion true.
 
 use std::net::{SocketAddr, TcpListener};
 use std::process::{Child, Command};
@@ -18,12 +21,28 @@ use serde_json::{json, Value};
 use tokio::net::TcpListener as TokioListener;
 
 /// Kills the spawned proxy process when the test ends, even on a panic.
-struct ChildGuard(Child);
+///
+/// `Option` so a test can [`take`](ChildGuard::take) the child back when it needs to
+/// `wait_with_output()` — the guard then has nothing left to kill, and an assertion that
+/// panics before the take still cleans up.
+struct ChildGuard(Option<Child>);
+
+impl ChildGuard {
+    fn child(&mut self) -> &mut Child {
+        self.0.as_mut().expect("child already taken")
+    }
+
+    fn take(&mut self) -> Child {
+        self.0.take().expect("child already taken")
+    }
+}
 
 impl Drop for ChildGuard {
     fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
+        if let Some(child) = self.0.as_mut() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
     }
 }
 
@@ -74,7 +93,7 @@ async fn binary_boots_and_does_the_pii_roundtrip() {
         .env("RUST_LOG", "warn")
         .spawn()
         .expect("failed to spawn the proxy binary");
-    let _guard = ChildGuard(child);
+    let _guard = ChildGuard(Some(child));
 
     let client = reqwest::Client::new();
     let base = format!("http://127.0.0.1:{port}");
@@ -172,13 +191,13 @@ async fn unknown_cli_argument_is_refused_and_never_binds() {
         .env("RUST_LOG", "warn")
         .spawn()
         .expect("failed to spawn the proxy binary");
-    let mut guard = ChildGuard(child);
+    let mut guard = ChildGuard(Some(child));
 
     // It must exit, and exit non-zero.
     let status = {
         let mut waited = None;
         for _ in 0..100 {
-            match guard.0.try_wait().expect("try_wait failed") {
+            match guard.child().try_wait().expect("try_wait failed") {
                 Some(status) => {
                     waited = Some(status);
                     break;
@@ -261,5 +280,188 @@ async fn help_prints_usage_and_exits_zero() {
     assert!(
         stdout.contains("--bench-providers"),
         "usage must document the flags, got: {stdout}"
+    );
+}
+
+/// **CLI-04 (M10).** `--version` prints the manifest version and exits **0**.
+///
+/// A release asset is a bare executable: once it is saved next to an older copy, nothing
+/// identifies it — and because unknown arguments are refused (CLI-01), asking the obvious way
+/// did not merely print nothing, it **failed to start**. The rejected alternative was putting the
+/// version in the artifact filename: a filename is a convention a rename can break, while a
+/// binary reporting `CARGO_PKG_VERSION` cannot lie (and the filename approach also forfeits
+/// GitHub's stable `releases/latest/download/<name>` redirect).
+///
+/// It must also work **without a valid upstream configuration** — this test sets none, so a
+/// `--version` handled after `Config::from_env` would fail here.
+#[tokio::test]
+async fn version_prints_the_manifest_version_and_exits_zero() {
+    let out = Command::new(env!("CARGO_BIN_EXE_llm-proxy-pii-rust"))
+        .arg("--version")
+        .env("RUST_LOG", "warn")
+        .env("UPSTREAM_BASE_URL", "") // deliberately useless config
+        .output()
+        .expect("failed to spawn the proxy binary");
+
+    assert!(
+        out.status.success(),
+        "--version must exit 0, got {:?}",
+        out.status
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains(env!("CARGO_PKG_VERSION")),
+        "--version must print the manifest version {}, got: {stdout}",
+        env!("CARGO_PKG_VERSION")
+    );
+    // "Which build is this?" is three questions, and the third decides whether names are
+    // masked at all — so the target and the ML layer are part of the answer.
+    assert!(
+        stdout.contains("target:") && stdout.contains("ml (onnx feature):"),
+        "--version must report the target triple and whether the ML layer is compiled in, \
+         got: {stdout}"
+    );
+}
+
+/// **CLI-05 (M10).** Every environment variable the code reads is **named** in `--help`.
+///
+/// Configuration here is *entirely* environment variables with no config file, so a help text
+/// that lists the flags and defers to `README.md` means you need the repo to run the program.
+/// The risk of writing that text by hand is drift, and a stale help text is worse than a short
+/// one — so this extracts the keys from the source and fails the first time someone adds a
+/// variable without documenting it.
+///
+/// **Deliberate scope limit:** it proves each key is *named*, not that its description is
+/// accurate. A wrong default in the help text is not caught here (nor by any test) — it is
+/// caught by review.
+#[tokio::test]
+async fn help_names_every_environment_variable_the_code_reads() {
+    let sources = [
+        ("src/config.rs", include_str!("../src/config.rs")),
+        ("src/server.rs", include_str!("../src/server.rs")),
+        ("src/main.rs", include_str!("../src/main.rs")),
+    ];
+    // Only *literal* keys: `env::var(key)` inside the `env_flag` / `env_or` helpers is a
+    // variable, not a key, and must not be extracted.
+    let pattern =
+        regex::Regex::new(r#"(?:env::var(?:_os)?|env_flag|env_or)\(\s*"([A-Z][A-Z0-9_]*)"#)
+            .unwrap();
+
+    let out = Command::new(env!("CARGO_BIN_EXE_llm-proxy-pii-rust"))
+        .arg("--help")
+        .env("RUST_LOG", "warn")
+        .output()
+        .expect("failed to spawn the proxy binary");
+    let help = String::from_utf8_lossy(&out.stdout);
+
+    let mut missing: Vec<String> = Vec::new();
+    let mut found = 0usize;
+    for (path, source) in sources {
+        for caps in pattern.captures_iter(source) {
+            let key = &caps[1];
+            found += 1;
+            if !help.contains(key) {
+                missing.push(format!("{key} (read in {path})"));
+            }
+        }
+    }
+
+    // A guard that finds nothing to check is not a guard — if the extraction regex ever stops
+    // matching the code's shape, this catches it instead of passing vacuously.
+    assert!(
+        found >= 20,
+        "the env-key extractor matched only {found} keys — the source shape changed and this \
+         guard is no longer checking anything"
+    );
+    assert!(
+        missing.is_empty(),
+        "these environment variables are read by the code but not named in `--help`:\n  {}\n\
+         Add them to `ENV_REFERENCE` in src/main.rs — the shipped binary must be able to say \
+         what it accepts.",
+        missing.join("\n  ")
+    );
+}
+
+/// **CLI-06 (M10).** With `RUST_LOG` **unset** the binary still logs, and every timestamp
+/// carries an **explicit** UTC offset.
+///
+/// Two defects in one line, both invisible from the source and both found by running the
+/// shipped artifact:
+///
+/// 1. `EnvFilter::from_default_env()` falls back to ERROR-only, so the released binary printed
+///    **nothing at all**. That breaks the one check this project asks operators to make ("if the
+///    `ONNX NER detector loaded` line is missing you are running structured-only"), because with
+///    no `RUST_LOG` *every* line is missing — and a silent process looks exactly like a healthy
+///    one.
+/// 2. Timestamps were UTC on a proxy that runs next to the person reading its logs. Local time
+///    is the fix, but the regression it invites is a *bare* local time (`12:37:04`) — correct on
+///    the author's machine, ambiguous everywhere else. So the assertion is on the **offset**,
+///    which is what makes the line readable anywhere, not on the wall-clock value, which depends
+///    on the machine.
+///
+/// `env_remove` rather than `env` — the child must inherit an environment with no `RUST_LOG`,
+/// and mutating this process's env would race the other tests.
+#[tokio::test]
+async fn default_log_level_is_info_and_timestamps_carry_an_offset() {
+    use std::process::Stdio;
+
+    let port = free_port();
+    let child = Command::new(env!("CARGO_BIN_EXE_llm-proxy-pii-rust"))
+        .env("LISTEN_ADDR", format!("127.0.0.1:{port}"))
+        .env_remove("RUST_LOG")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn the proxy binary");
+    let mut guard = ChildGuard(Some(child));
+
+    let client = reqwest::Client::new();
+    let base = format!("http://127.0.0.1:{port}");
+    let mut healthy = false;
+    for _ in 0..100 {
+        if let Ok(resp) = client.get(format!("{base}/healthz")).send().await {
+            if resp.status().is_success() {
+                healthy = true;
+                break;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(healthy, "proxy binary did not become healthy on {base}");
+
+    // Stop it, then drain what it wrote — `wait_with_output` consumes the child, so take it
+    // out of the guard (which has kept it alive through every assertion above).
+    let _ = guard.child().kill();
+    let out = guard
+        .take()
+        .wait_with_output()
+        .expect("failed to collect output");
+    let logged = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    assert!(
+        logged.contains("listening on"),
+        "with RUST_LOG unset the binary logged nothing at INFO — a released proxy that starts \
+         silently looks identical to a broken one. Got:\n{logged}"
+    );
+
+    // `Z` or `[+-]HH:MM`, but never a bare local time.
+    let stamped = regex::Regex::new(
+        r"(?m)^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}(?:Z|[+-]\d{2}:\d{2})\s",
+    )
+    .unwrap();
+    let lines: Vec<&str> = logged
+        .lines()
+        .filter(|l| l.contains("listening on"))
+        .collect();
+    assert!(
+        lines.iter().all(|line| stamped.is_match(line)),
+        "every log line must start with a timestamp carrying an EXPLICIT offset (`Z` or \
+         `+HH:MM`) — a bare local time reads correctly only on the machine that wrote it. \
+         Got:\n{}",
+        lines.join("\n")
     );
 }
