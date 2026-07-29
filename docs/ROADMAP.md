@@ -1487,12 +1487,12 @@ N. That number decides the default, and we do not have it yet.
 - [ ] `TESTING.md` catalogs the new cases; `ARCHITECTURE.md`'s matrix is **re-measured**, not
       re-asserted
 
-### Also in `v1.2.1` — three things the binary cannot tell you about itself
+### Also in `v1.2.1` — four rough edges of the shipped binary
 
-All three surfaced on 2026-07-29 while documenting how to run the released binary. None is about
-detection, and each is the kind of defect that only shows up when you use the shipped artifact
-rather than `cargo run` with the repo open next to you. The theme is the same: **a downloaded
-executable should be able to answer "what am I, and what do I accept?" without the README.**
+All four surfaced on 2026-07-29, three while documenting how to run the released binary and the
+fourth by running it. None is about detection, and each is the kind of defect that only shows up
+when you use the shipped artifact rather than `cargo run` with the repo open next to you: **a
+downloaded executable should be able to say what it is, what it accepts, and when things happened.**
 
 - [ ] **`--version`.** There is none, and because `main.rs` refuses unknown arguments (M9-R4),
       `llm-proxy-pii-rust --version` does not print a version — it **fails to start**. A release
@@ -1514,6 +1514,13 @@ executable should be able to answer "what am I, and what do I accept?" without t
       placeholders only, `Config`'s manual `Debug` redacts `upstream_api_key` (`src/config.rs:251`),
       and `tests/log_safety.rs` enforces it at every level; the masked-body dump stays `trace`-only.
       Until this ships the READMEs tell operators to set `RUST_LOG=info` explicitly.
+- [ ] **Timestamps in local time, with the offset shown.** Logs are UTC today
+      (`2026-07-29T09:15:10.844780Z` — `tracing_subscriber::fmt`'s default), so an operator in
+      CEST reads `10:37` for something that happened at `12:37` and has to do the arithmetic while
+      debugging. UTC is the right default for a fleet of servers correlating logs; this is a
+      *local* proxy running next to the person reading it. **Print the offset rather than a bare
+      local time** (`+02:00`, never a naked `12:37:04`), so a line pasted into an issue is still
+      unambiguous. Looks trivial and is not — see step 1.
 - [ ] **`--help` must document the configuration, not just the two flags.** It exists (`main.rs`,
       and the unknown-argument refusal prints it too), but it lists only `--bench-providers` /
       `--help` and defers configuration to `README.md` / `docs/SETUP.md`. For a tool whose
@@ -1546,11 +1553,44 @@ Written 2026-07-29 for the builder. **Steps 1–3 are independent of the phone w
 first** — they are small, they unblock the `RUST_LOG=info` workaround the READMEs currently
 prescribe, and keeping them in their own commit keeps the risky detection change reviewable alone.
 
-**1 · Default log level** (`src/main.rs`). `EnvFilter::from_default_env()` →
-`EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"))`. Test: assert the
-fallback directive is `info` when `RUST_LOG` is absent and that a set `RUST_LOG` still wins (drive
-the filter builder directly — do **not** mutate process env in a parallel test run). Then delete the
-`RUST_LOG=info` line and its warning box from both READMEs.
+**1 · The subscriber: default level *and* local timestamps** (`src/main.rs`). Both changes edit the
+same six lines, so they land together, in one commit, with one test file.
+
+*Level.* `EnvFilter::from_default_env()` → `EnvFilter::try_from_default_env().unwrap_or_else(|_|
+EnvFilter::new("info"))`. Test: the fallback directive is `info` when `RUST_LOG` is absent, and a set
+`RUST_LOG` still wins — drive the filter builder directly, do **not** mutate process env in a
+parallel test run. Then delete the `RUST_LOG=info` line and its warning box from both READMEs.
+
+*Timestamps — and this is the part that is not trivial.* The obvious fix,
+`tracing_subscriber::fmt::time::LocalTime`, **fails at runtime in this program**. It calls into the
+`time` crate's local-offset lookup, which **refuses to answer once the process is multi-threaded**
+(its guard against the `localtime_r`/`setenv` data race, CVE-2020-26235) — and `#[tokio::main]`
+builds the runtime, worker threads and all, *before* the body of `main` runs, so by the time the
+subscriber is initialized the answer is already unavailable. The failure is platform-split and
+therefore a trap: Windows has a thread-safe path and usually works, Linux and macOS do not. Shipping
+"it looked right on my box" is exactly the shape of bug this project keeps finding.
+
+  So: **capture the offset while the process is still single-threaded**, then hand it to
+  `OffsetTime::new(offset, …)`. That means dropping `#[tokio::main]` in favour of a plain `fn main()`
+  that reads the offset first and then builds the runtime itself — a small, contained change, but a
+  *structural* one, which is why this is not the one-liner it looks like.
+
+  **If the offset cannot be determined, fall back to UTC and say so once at startup.** A silently
+  wrong local time is worse than an honest `Z`: it is the kind of thing that costs an hour during an
+  incident. Never guess an offset.
+
+  Enabling this needs `tracing-subscriber`'s `local-time` feature and `time/local-offset`. `time`
+  0.3.53 is already in `Cargo.lock` and is pure Rust (nothing on `dependency_footprint.rs`'s
+  forbidden list), but confirm with `cargo tree` that it is in the **default** build's tree before
+  assuming the cost is zero — that guard exists because this kind of "surely it's already there"
+  has been wrong before.
+
+  *Test what is deterministic.* Do not assert a wall-clock value — the result depends on the machine.
+  Assert (i) the offset helper returns the same answer when called before threads exist, (ii) the
+  fallback path yields UTC plus its warning, and (iii) in `binary_smoke.rs`, that an emitted line's
+  timestamp carries an **explicit** offset (`Z` or `[+-]HH:MM`). (iii) is the one that catches the
+  real regression — a bare local time with no offset, which reads fine on the author's box and is
+  ambiguous everywhere else.
 
 **2 · `--version`** (`src/main.rs`). Print `CARGO_PKG_VERSION`, the target triple, and whether the
 `onnx` feature is compiled in. It must be handled in the same `match` as `--bench-providers`, before
