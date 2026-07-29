@@ -123,6 +123,16 @@ false positive): `email`, `phone`, `ssn`, `credit_card`, `iban`, `secret`,
   gap can hide. It earned its keep immediately: on its first run it found a live leak
   (`4111111111111111555 867 5309` → `4111111111111111[PHONE_1]`, a Luhn-valid card in clear), which is what
   drove `Vault::mask_all` (mask to a fixpoint).
+  > **The pair still has one hole, and it is worth knowing before you trust it.** PROP-03 quantifies over
+  > **accepted** candidates and PROP-04 over what is **still detectable**. Neither sees a value that a
+  > recognizer matched, the *validator* then **rejected**, and a later mask **truncated** — the rejected
+  > match is outside PROP-03's set, and the surviving fragment is by definition undetectable, so PROP-04 is
+  > satisfied by it. That is not hypothetical: it is the shape of [M10-R1](reviews/M10.md#m10-r1). The
+  > property that would close it is neither "a winner covers every candidate byte" nor "nothing detectable
+  > remains" but **"no byte of a real value remains"** — for a value the detector *did* see, in any form,
+  > including one it declined. Any new recognizer whose regex can match a **superset** of the real value
+  > (greedy groups, un-anchored starts) needs that third check; the ones whose matches are pinned to where
+  > a value begins do not.
 
 ### Integration — pipeline over OpenAI-shaped payloads
 - INT-01 — user message with multiple PII → outgoing request carries placeholders; vault populated.

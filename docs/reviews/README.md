@@ -19,9 +19,17 @@ that way?"*
 | [M2.5.md](M2.5.md) | M2.5 — HuggingFace model management | 2, all closed |
 | [M2.6.md](M2.6.md) | M2.6 — debug & observability modes | 2 nits, all closed |
 | [M3.md](M3.md) | M3 — streaming & multi-provider routing | 2, all closed |
-| [M4.md](M4.md) | M4 — broad locale & language coverage | **23 — 18 closed, 5 open (one BLOCKER)** |
+| [M4.md](M4.md) | M4 — broad locale & language coverage | 24, all closed |
+| [M5.md](M5.md) | M5 — integration & performance testing | 12, all closed |
+| [M6.md](M6.md) | M6 — native Anthropic `/v1/messages` | 6, all closed |
+| [M7.md](M7.md) | M7 / M7.1 — NER latency · system-prompt cache | 23, all closed |
+| [M8.md](M8.md) | M8 / M8.1 — GLiNER · national phone recognizer | 8, all closed |
+| [M9.md](M9.md) | M9 / M9.1 — GPU optimization · per-backend binaries | 29, all closed |
+| [M10.md](M10.md) | M10 — national phone coverage + release hygiene | **12 — all open (one leak, one BLOCKER)** |
 
-**M5 does not start until M4's ledger is clean.** All five open findings in the project belong to M4.
+**Every open finding in the project belongs to M10.** `v1.2.1` does not get cut until its ledger is clean —
+[M10-R1](M10.md#m10-r1) (a real phone number partially forwarded in clear) and
+[M10-R2](M10.md#m10-r2) (~100 s of CPU for one legal request) are the two that block it.
 
 ---
 
