@@ -67,7 +67,6 @@ Move-Item .\llm-proxy-pii-rust-x86_64-pc-windows-msvc.exe .\llm-proxy-pii-rust.e
 
 $env:NER_MODEL_REPO   = "jiting/xlm-roberta-base-ner-hrl_onnx"
 $env:NER_REQUIRED     = "1"
-$env:PII_LOCALES      = "it,us"     # aggiungi gb / de per i numeri di telefono domestici
 $env:UPSTREAM_API_KEY = "sk-..."    # opzionale — l'header del client ha la precedenza
 .\llm-proxy-pii-rust.exe
 ```
@@ -79,7 +78,6 @@ chmod +x llm-proxy-pii-rust
 
 export NER_MODEL_REPO=jiting/xlm-roberta-base-ner-hrl_onnx
 export NER_REQUIRED=1
-export PII_LOCALES=it,us
 export UPSTREAM_API_KEY=sk-...
 ./llm-proxy-pii-rust
 ```
@@ -101,7 +99,7 @@ A quel punto due righe all'avvio ti dicono quale proxy hai davvero ottenuto:
 |---|---|
 | `NER_MODEL_REPO` | **Quella che non puoi saltare.** Il modello non è incluso, e senza il proxy parte lo stesso — mascherando solo le PII strutturate e mandando nomi, organizzazioni e luoghi in chiaro. Fetch una tantum, fissato a una revisione, nella cache HuggingFace |
 | `NER_REQUIRED=1` | Trasforma quel declassamento silenzioso in un errore d'avvio. Se manca la prima riga qui sopra, stai girando in solo-strutturato |
-| `PII_LOCALES` | Governa **solo** i numeri di telefono domestici scritti senza `+CC`, ed esistono solo `gb` / `de` — il default `it,us` non ne attiva nessuno, quindi un numero italiano va scritto `+39 …` per essere mascherato ([M10](docs/ROADMAP.md#m10) chiude il buco). I documenti nazionali sono sempre attivi comunque |
+| `PII_LOCALES` | Non serve impostarla — tutte e nove le regioni per il telefono domestico sono attive di default. Usala solo per *restringere* l'insieme (lo sostituisce). I documenti nazionali sono sempre attivi comunque |
 
 Non esiste un file di configurazione — la configurazione è solo ambiente, e la tabella completa è
 in [Configurazione](#configurazione).
@@ -153,14 +151,22 @@ checksum o regole specifiche, così il tasso di falsi positivi resta quasi nullo
 |---|---|
 | **Universali** | email · telefono (US + `+CC`) · carta di credito (Luhn) · IBAN (mod-97 + lunghezza per paese) · chiavi API e segreti (`sk-…`, `sk-ant-…`, `AKIA…`) |
 | **Documenti nazionali** *(10 paesi)* | 🇺🇸 SSN · 🇮🇹 Codice Fiscale · 🇬🇧 NINO · 🇪🇸 DNI/NIE · 🇫🇷 NIR · 🇩🇪 Steuer-ID · 🇳🇱 BSN · 🇵🇹 NIF · 🇱🇻 codice personale · 🇨🇳 documento di residenza |
-| **Telefono nazionale** *(opt-in via `PII_LOCALES`)* | 🇬🇧 GB · 🇩🇪 DE, numeri domestici senza `+CC` (`020 7946 0958`, `030 12345678`) — validati contro il piano di numerazione reale, così numeri d'ordine e documenti non vengono sovra-mascherati |
+| **Telefono domestico** *(9 regioni, tutte attive di default)* | 🇩🇪 🇪🇸 🇫🇷 🇬🇧 🇮🇹 🇱🇻 🇳🇱 🇵🇹 🇨🇳 numeri scritti **senza `+CC`** — `020 7946 0958`, `06 69821234`, `347 1234567`, `91 123 45 67`, `01 23 45 67 89` — ognuno verificato contro il **piano di numerazione reale** di quel paese, così numeri d'ordine e documenti non vengono sovra-mascherati |
 
 I documenti nazionali vengono mascherati **indipendentemente dalla configurazione dei locale** —
 privacy-first: un documento che raggiunge il proxy viene mascherato anche se il suo paese non è
-quello configurato. Il livello **telefono nazionale** è l'eccezione: un numero domestico nudo si
-confonde con normali sequenze di cifre, quindi è opt-in per locale via `PII_LOCALES` e protetto da
-un controllo di numero realmente assegnato (la libreria Rust puro `phonenumber` — nessuna dipendenza
-nativa).
+quello configurato.
+
+Il livello **telefono domestico** è l'unico che `PII_LOCALES` governa, ed è ora attivo **da
+subito**. Un numero domestico nudo si confonde con normali sequenze di cifre: ciò che lo rende
+sicuro non è il pattern ma il controllo — la libreria Rust puro
+[`phonenumber`](https://crates.io/crates/phonenumber) conferma che il candidato è un numero
+realmente **assegnato** per quella regione. Misurato su 35 rese reali e 405 non-telefoni a forma di
+cifre: **recall 1.000**, zero falsi positivi su porte, importi e numeri di riferimento, e **zero
+span `Phone`** su un vero turno Claude Code da 22 KiB. Il costo sono le date separate da spazio o
+trattino (`28 01 2026` è un numero lettone valido) — la matrice completa, e perché quel compromesso
+è stato accettato, è in
+[ARCHITECTURE → *Domestic phone coverage*](docs/ARCHITECTURE.md).
 
 **Entità non strutturate — NER ONNX locale (XLM-R int8, CPU).** Persone, organizzazioni e luoghi
 in **ar · de · en · es · fr · it · lv · nl · pt · zh**. Gira sul tuo hardware; i campi grandi
@@ -477,7 +483,7 @@ Tutto è pilotato da variabili d'ambiente.
 | `UPSTREAM_FORWARD_HEADERS` | *(preset)* | Header del client da inoltrare, separati da virgola |
 | `UPSTREAM_EXTRA_HEADERS` | *(nessuno)* | `Chiave=Valore;Chiave2=Valore2` header statici per ogni richiesta a monte |
 | `MAX_BODY_BYTES` | `16777216` | Limite del corpo della richiesta (16 MiB) |
-| `PII_LOCALES` | `it,us` | Governa solo il livello di riconoscitori inclini a falsi positivi — oggi i soli riconoscitori **telefono nazionale**, e ne esistono solo `gb` / `de` (numeri domestici senza `+CC`). **Il default non ne attiva nessuno**, quindi un numero italiano domestico *non* viene mascherato se non scritto `+39 …` — vedi la matrice di copertura in [ARCHITECTURE](docs/ARCHITECTURE.md) e [M10](docs/ROADMAP.md#m10). **I documenti nazionali sono sempre attivi** |
+| `PII_LOCALES` | `de,es,fr,gb,it,lv,nl,pt,cn` | Le regioni di cui vengono rilevati i **numeri di telefono domestici** (senza `+CC`). Tutte e nove sono attive di default; impostarla **sostituisce** l'insieme invece di aggiungersi, e un codice fuori dalla lista non contribuisce nulla. **I documenti nazionali sono sempre attivi comunque** — vedi la matrice di copertura in [ARCHITECTURE](docs/ARCHITECTURE.md) |
 | `PII_CACHE_ENTRIES` | `16` | Cache di rilevamento (S3): il system prompt byte-identico viene scansionato una volta e riusato, risparmiando la passata NER dominante. Con chiave sui byte esatti, un hit non può **mai** mascherare *meno* di una scansione fresca. `0` la disabilita |
 | `RUST_LOG` | `info` | Filtro dei log. Non impostata (o vuota) significa `info`, così le righe d'avvio si vedono senza configurazione; imposta es. `warn` o `llm_proxy_pii_rust=debug` per sovrascriverlo. I timestamp sono in ora locale con offset esplicito |
 

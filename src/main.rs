@@ -49,11 +49,11 @@ CONFIGURATION (environment variables — there is no config file):
                                                  upstream request.
 
   Detection
-    PII_LOCALES                 [it,us]          Comma-separated regions for the domestic-phone
-                                                 recognizers (no `+CC`). Only `gb` and `de` exist
-                                                 today, so THE DEFAULT ACTIVATES NEITHER — see
-                                                 docs/ROADMAP.md M10. National IDs are always on
-                                                 regardless of this.
+    PII_LOCALES  [de,es,fr,gb,it,lv,nl,pt,cn]    Regions for the domestic-phone recognizers
+                                                 (numbers written with no +CC). All of them are
+                                                 on by default; setting this REPLACES that set.
+                                                 A code outside the list contributes nothing.
+                                                 National IDs are always on regardless.
     PII_CACHE_ENTRIES           [16]             Content-keyed detection cache size; 0 disables.
 
   NER (needs a build with `--features onnx`)

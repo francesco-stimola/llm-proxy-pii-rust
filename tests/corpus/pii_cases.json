@@ -28,6 +28,77 @@
       ]
     },
 
+    "national_phone": {
+      "note": "M10. Domestic numbers written with NO +CC, per region. The `locale` field is load-bearing here, not decoration: `phone_regions_all_have_corpus_cases` enumerates the regions the CODE enables and fails if any has no positive AND no negative case, so a region cannot be switched on silently. Positives cover every area-code length that country really uses, plus mobile and toll-free/service where the plan has them; negatives are that country's own digit-shaped look-alikes. All cases run against the DEFAULT detector (every vetted region on), which is what makes them a compound-FP test and not nine isolated ones.",
+      "positive": [
+        { "id": "PHONE-DE-01", "input": "Berlin 030 12345678 heute", "locale": "de", "note": "2-digit area code", "entities": [ { "kind": "Phone", "text": "030 12345678" } ] },
+        { "id": "PHONE-DE-02", "input": "Frankfurt 069 90009000 anrufen", "locale": "de", "note": "3-digit area code", "entities": [ { "kind": "Phone", "text": "069 90009000" } ] },
+        { "id": "PHONE-DE-03", "input": "mobil 0171 1234567 bitte", "locale": "de", "note": "mobile", "entities": [ { "kind": "Phone", "text": "0171 1234567" } ] },
+        { "id": "PHONE-DE-04", "input": "kompakt 03012345678 ok", "locale": "de", "note": "no separators", "entities": [ { "kind": "Phone", "text": "03012345678" } ] },
+
+        { "id": "PHONE-ES-01", "input": "llama al 91 123 45 67 ahora", "locale": "es", "note": "Madrid, 2-digit area, no trunk prefix", "entities": [ { "kind": "Phone", "text": "91 123 45 67" } ] },
+        { "id": "PHONE-ES-02", "input": "llama al 912 345 678 ahora", "locale": "es", "note": "3-3-3 grouping", "entities": [ { "kind": "Phone", "text": "912 345 678" } ] },
+        { "id": "PHONE-ES-03", "input": "movil 612 34 56 78 gracias", "locale": "es", "note": "mobile", "entities": [ { "kind": "Phone", "text": "612 34 56 78" } ] },
+        { "id": "PHONE-ES-04", "input": "gratuito 900 123 456 gracias", "locale": "es", "note": "toll-free", "entities": [ { "kind": "Phone", "text": "900 123 456" } ] },
+
+        { "id": "PHONE-FR-01", "input": "appelle le 01 23 45 67 89 svp", "locale": "fr", "note": "the five-pair rendering no other family reaches", "entities": [ { "kind": "Phone", "text": "01 23 45 67 89" } ] },
+        { "id": "PHONE-FR-02", "input": "mobile 06 12 34 56 78 svp", "locale": "fr", "note": "mobile", "entities": [ { "kind": "Phone", "text": "06 12 34 56 78" } ] },
+        { "id": "PHONE-FR-03", "input": "appelle le 01.23.45.67.89 svp", "locale": "fr", "note": "dot separators are the other common French rendering", "entities": [ { "kind": "Phone", "text": "01.23.45.67.89" } ] },
+
+        { "id": "PHONE-GB-01", "input": "call 020 7946 0958 now", "locale": "gb", "note": "London, 3-digit area (Ofcom drama range)", "entities": [ { "kind": "Phone", "text": "020 7946 0958" } ] },
+        { "id": "PHONE-GB-02", "input": "leeds 0113 496 0000 x", "locale": "gb", "note": "4-digit area code", "entities": [ { "kind": "Phone", "text": "0113 496 0000" } ] },
+        { "id": "PHONE-GB-03", "input": "mob 07911 123456 pls", "locale": "gb", "note": "mobile", "entities": [ { "kind": "Phone", "text": "07911 123456" } ] },
+        { "id": "PHONE-GB-04", "input": "free 0800 1111 line", "locale": "gb", "note": "freephone, shorter than any other arm", "entities": [ { "kind": "Phone", "text": "0800 1111" } ] },
+        { "id": "PHONE-GB-05", "input": "compact 02079460958 ok", "locale": "gb", "note": "no separators", "entities": [ { "kind": "Phone", "text": "02079460958" } ] },
+
+        { "id": "PHONE-IT-01", "input": "chiama 02 12345678 oggi", "locale": "it", "note": "Milan, 2-digit area code", "entities": [ { "kind": "Phone", "text": "02 12345678" } ] },
+        { "id": "PHONE-IT-02", "input": "chiama 06 69821234 oggi", "locale": "it", "note": "Rome, 2-digit area code", "entities": [ { "kind": "Phone", "text": "06 69821234" } ] },
+        { "id": "PHONE-IT-03", "input": "chiama 011 5627111 oggi", "locale": "it", "note": "Turin, 3-digit area code", "entities": [ { "kind": "Phone", "text": "011 5627111" } ] },
+        { "id": "PHONE-IT-04", "input": "chiama 055 27551 oggi", "locale": "it", "note": "Florence, short subscriber number", "entities": [ { "kind": "Phone", "text": "055 27551" } ] },
+        { "id": "PHONE-IT-05", "input": "chiama 081 7413000 oggi", "locale": "it", "note": "Naples, 3-digit area code", "entities": [ { "kind": "Phone", "text": "081 7413000" } ] },
+        { "id": "PHONE-IT-06", "input": "cellulare 347 1234567 grazie", "locale": "it", "note": "mobile — the shape the trunk-only regex could never propose", "entities": [ { "kind": "Phone", "text": "347 1234567" } ] },
+        { "id": "PHONE-IT-07", "input": "cellulare 320 123 4567 grazie", "locale": "it", "note": "mobile, 3-3-4 grouping", "entities": [ { "kind": "Phone", "text": "320 123 4567" } ] },
+        { "id": "PHONE-IT-08", "input": "numero verde 800 123 456 grazie", "locale": "it", "note": "toll-free", "entities": [ { "kind": "Phone", "text": "800 123 456" } ] },
+
+        { "id": "PHONE-LV-01", "input": "zvani 67 22 33 44 tagad", "locale": "lv", "note": "landline, 2-2-2-2", "entities": [ { "kind": "Phone", "text": "67 22 33 44" } ] },
+        { "id": "PHONE-LV-02", "input": "zvani 67 123 456 tagad", "locale": "lv", "note": "landline, 2-3-3", "entities": [ { "kind": "Phone", "text": "67 123 456" } ] },
+
+        { "id": "PHONE-NL-01", "input": "bel 020 123 4567 nu", "locale": "nl", "note": "Amsterdam, 3-digit area code", "entities": [ { "kind": "Phone", "text": "020 123 4567" } ] },
+        { "id": "PHONE-NL-02", "input": "bel 0343 123456 nu", "locale": "nl", "note": "4-digit area code", "entities": [ { "kind": "Phone", "text": "0343 123456" } ] },
+        { "id": "PHONE-NL-03", "input": "bel 06 12345678 nu", "locale": "nl", "note": "mobile", "entities": [ { "kind": "Phone", "text": "06 12345678" } ] },
+
+        { "id": "PHONE-PT-01", "input": "liga 21 123 4567 agora", "locale": "pt", "note": "Lisbon, 2-digit area code", "entities": [ { "kind": "Phone", "text": "21 123 4567" } ] },
+        { "id": "PHONE-PT-02", "input": "liga 210 123 456 agora", "locale": "pt", "note": "3-3-3 grouping", "entities": [ { "kind": "Phone", "text": "210 123 456" } ] },
+        { "id": "PHONE-PT-03", "input": "telemovel 912 345 678 agora", "locale": "pt", "note": "mobile", "entities": [ { "kind": "Phone", "text": "912 345 678" } ] },
+
+        { "id": "PHONE-CN-01", "input": "拨打 010 12345678 电话", "locale": "cn", "note": "Beijing, 3-digit area code, CJK context (M4-R13)", "entities": [ { "kind": "Phone", "text": "010 12345678" } ] },
+        { "id": "PHONE-CN-02", "input": "拨打 021 61234567 电话", "locale": "cn", "note": "Shanghai", "entities": [ { "kind": "Phone", "text": "021 61234567" } ] },
+        { "id": "PHONE-CN-03", "input": "拨打 138 0013 8000 电话", "locale": "cn", "note": "mobile, no trunk prefix", "entities": [ { "kind": "Phone", "text": "138 0013 8000" } ] }
+      ],
+      "negative": [
+        { "id": "PHONE-DE-NEG-01", "input": "Postleitzahl 10115 Berlin Mitte", "locale": "de", "reason": "postcode", "entities": [] },
+        { "id": "PHONE-DE-NEG-02", "input": "Bestellung 12 34 56 78 versendet", "locale": "de", "reason": "an un-anchored digit group: DE writes every domestic number with the trunk 0, so it must never be validated against un-anchored candidates", "entities": [] },
+        { "id": "PHONE-ES-NEG-01", "input": "codigo postal 28013 Madrid centro", "locale": "es", "reason": "postcode", "entities": [] },
+        { "id": "PHONE-ES-NEG-02", "input": "pedido 45 21 del catalogo", "locale": "es", "reason": "order reference, too short for any plan", "entities": [] },
+        { "id": "PHONE-FR-NEG-01", "input": "code postal 75008 Paris huitieme", "locale": "fr", "reason": "postcode", "entities": [] },
+        { "id": "PHONE-FR-NEG-02", "input": "reference 01 23 45 refusee", "locale": "fr", "reason": "the French pair rendering, but only six digits — every French number is ten, so the plan rejects it. The regex proposes it; the validator is what says no", "entities": [] },
+        { "id": "PHONE-GB-NEG-01", "input": "sort code 12-34-56 on the form", "locale": "gb", "reason": "bank sort code — the classic GB look-alike", "entities": [] },
+        { "id": "PHONE-GB-NEG-02", "input": "ref 0000000000 rejected", "locale": "gb", "reason": "an all-zero run parses but is assigned nowhere. NOTE: M8.1's version of this case used `0123456789`, and it stopped being a negative the moment France was enabled — that string IS the Paris number 01 23 45 67 89. Kept as the clearest example of the compound effect: enabling N regions unions their accepted sets, so a look-alike for one country can be a real number in another (over-masking a real phone, never a leak)", "entities": [] },
+        { "id": "PHONE-IT-NEG-01", "input": "CAP 00184 Roma centro", "locale": "it", "reason": "postcode", "entities": [] },
+        { "id": "PHONE-IT-NEG-02", "input": "fattura 12 del 2026 emessa", "locale": "it", "reason": "invoice reference", "entities": [] },
+        { "id": "PHONE-LV-NEG-01", "input": "pasta indekss LV-1050 Riga", "locale": "lv", "reason": "postcode", "entities": [] },
+        { "id": "PHONE-NL-NEG-01", "input": "postcode 1012 AB Amsterdam", "locale": "nl", "reason": "postcode", "entities": [] },
+        { "id": "PHONE-PT-NEG-01", "input": "codigo postal 1000-001 Lisboa", "locale": "pt", "reason": "postcode", "entities": [] },
+        { "id": "PHONE-CN-NEG-01", "input": "邮编 100000 北京", "locale": "cn", "reason": "postcode in CJK context", "entities": [] },
+        { "id": "PHONE-XX-NEG-01", "input": "sizes 512 1024 2048 4096 bytes", "locale": "de", "reason": "byte sizes — real agent traffic is full of digit runs nobody writes test cases for", "entities": [] },
+        { "id": "PHONE-XX-NEG-02", "input": "retry after 30 60 120 seconds", "locale": "de", "reason": "backoff schedule", "entities": [] },
+        { "id": "PHONE-XX-NEG-03", "input": "matrix 10 20 30 40 rows", "locale": "de", "reason": "a plain numeric table", "entities": [] },
+        { "id": "PHONE-XX-NEG-04", "input": "port 8080 and port 3000 open", "locale": "nl", "reason": "ports", "entities": [] },
+        { "id": "PHONE-XX-NEG-05", "input": "line 42 of 128 in the diff", "locale": "gb", "reason": "line numbers", "entities": [] },
+        { "id": "PHONE-XX-NEG-06", "input": "id 123 456 789 in the list", "locale": "fr", "reason": "a grouped identifier", "entities": [] }
+      ]
+    },
+
     "ssn": {
       "positive": [
         { "id": "SSN-01", "input": "My SSN is 123-45-6789", "locale": "us", "entities": [ { "kind": "Ssn", "text": "123-45-6789" } ] }

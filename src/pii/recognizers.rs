@@ -48,11 +48,25 @@ use super::{Confidence, PiiDetector, PiiEntity, PiiKind};
 /// One compiled recognizer: a category, its pattern, an optional validator applied to
 /// each raw match, and how the scan advances after one. Overlap priority comes from the
 /// kind ([`PiiKind::priority`]).
+/// A recognizer's extra check on the matched text.
+///
+/// A **boxed closure**, not a bare `fn` pointer (M10) — see [`Recognizer::validate`].
+type Validator = Box<dyn Fn(&str) -> bool + Send + Sync>;
+
 struct Recognizer {
     kind: PiiKind,
     regex: Regex,
     /// Extra check on the matched text; `None` means "accept every match".
-    validate: Option<fn(&str) -> bool>,
+    ///
+    /// A **boxed closure**, not a bare `fn` pointer (M10). The national-phone validator
+    /// has to carry the *set of enabled regions*, which a `fn(&str) -> bool` cannot — that
+    /// is why GB and DE each needed a hand-written wrapper before, and why "one recognizer
+    /// per region" was the only shape a fn pointer allowed. Measured, that shape costs a
+    /// full `Scan::Overlapping` pass per region (O(n·L) each) while doing byte-identical
+    /// validation work: **strictly more work**, ~2× at nine regions. So the region loop
+    /// moves *into* the validator and the scan count stays constant — see
+    /// [`national_phone_recognizers`].
+    validate: Option<Validator>,
     /// Whether this pattern's length is bounded — see [`Scan`].
     scan: Scan,
 }
@@ -105,13 +119,22 @@ pub struct StructuredRecognizers {
 }
 
 impl StructuredRecognizers {
-    /// Build the default recognizer set: the universal recognizers plus the
-    /// **default locales (IT + US)**. Backward-compatible with the M1–M3 behavior.
+    /// Build the default recognizer set: the universal recognizers, the always-on
+    /// national identifiers, and the domestic-phone recognizers for **every vetted
+    /// region** ([`VETTED_PHONE_REGIONS`]).
+    ///
+    /// **The default detects domestic numbers (M10).** Until M10 it did not: the default
+    /// was the string `"it,us"`, chosen by [M4](../../../docs/ROADMAP.md#m4) when the
+    /// FP-prone tier was *empty* and never revisited when
+    /// [M8.1](../../../docs/ROADMAP.md#m81) filled it with `gb` and `de` — so the shipped
+    /// configuration named two locales that mapped to no recognizer at all, and
+    /// `06 69821234` went upstream in clear. "Everything off unless you knew to switch it
+    /// on" is not a defensible default for a privacy tool.
     pub fn new() -> Self {
-        Self::with_locales(&["it", "us"])
+        Self::with_regions(&vetted_phone_regions())
     }
 
-    /// Build with an explicit list of locale codes (M4). Three tiers:
+    /// Build with an explicit list of locale codes (M4, `PII_LOCALES`). Three tiers:
     ///
     /// - **Universal** — email, secret, credit card, IBAN (any country + mod-97),
     ///   phone (US + `+CC`) — always on.
@@ -120,17 +143,30 @@ impl StructuredRecognizers {
     ///   national ID that reaches the proxy is masked even if its country isn't
     ///   configured). Each is specific enough (checksums / prefix rules) to stay
     ///   near-zero false-positive when always on.
-    /// - **FP-prone** — ambiguous recognizers (e.g. national *phone* formats with
-    ///   no `+CC`) — opt-in per locale via `locales`.
+    /// - **Domestic phone** — the FP-prone tier: numbers written with no `+CC`. Every
+    ///   [vetted region](PHONE_REGIONS) is on by default; passing `locales` **replaces**
+    ///   that set rather than adding to it, so an operator who set `PII_LOCALES` keeps
+    ///   exactly the behaviour they asked for.
     ///
-    /// So `locales` (from `PII_LOCALES`) gates *ambiguous* recognizers, not "which
-    /// countries" — national IDs are never gated off.
+    /// A code outside the vetted set contributes nothing (it has no measured FP-rate, and
+    /// an unmeasured region is not a region we ship). That is also what keeps the old
+    /// `it,us` default honest if it is still in someone's environment: `us` has no
+    /// domestic trunk form at all, and `it` now resolves to a real recognizer.
     pub fn with_locales<S: AsRef<str>>(locales: &[S]) -> Self {
+        let regions: Vec<Id> = locales
+            .iter()
+            .filter_map(|code| phone_region_for_locale(code.as_ref()))
+            .map(|region| region.id)
+            .collect();
+        Self::with_regions(&regions)
+    }
+
+    /// Build with an explicit region set for the domestic-phone tier. The seam the
+    /// measurement harness and the coverage guard drive directly.
+    pub fn with_regions(regions: &[Id]) -> Self {
         let mut recognizers = universal_recognizers();
         recognizers.extend(national_id_recognizers());
-        for locale in locales {
-            recognizers.extend(fp_prone_recognizers(locale.as_ref()));
-        }
+        recognizers.extend(national_phone_recognizers(regions));
         Self { recognizers }
     }
 }
@@ -169,7 +205,7 @@ fn universal_recognizers() -> Vec<Recognizer> {
         Recognizer {
             kind: PiiKind::CreditCard,
             regex: Regex::new(r"(?-u:\b)(?:\d{4}[ -]\d{4}[ -]\d{4}[ -]\d{4}|\d{13,19})(?-u:\b)").unwrap(),
-            validate: Some(credit_card_valid),
+            validate: Some(Box::new(credit_card_valid)),
             scan: Scan::Overlapping, // bounded: ≤ 19 digits — and this is the M4-R17 repro
         },
         Recognizer {
@@ -220,7 +256,7 @@ fn national_id_recognizers() -> Vec<Recognizer> {
         Recognizer {
             kind: PiiKind::NationalId,
             regex: Regex::new(r"(?-u:\b)[A-Za-z]{6}\d{2}[A-Za-z]\d{2}[A-Za-z]\d{3}[A-Za-z](?-u:\b)").unwrap(),
-            validate: Some(cf_check_valid),
+            validate: Some(Box::new(cf_check_valid)),
             scan: Scan::Overlapping,
         },
         // UK National Insurance Number: 2 prefix letters, 6 digits, a suffix letter
@@ -232,7 +268,7 @@ fn national_id_recognizers() -> Vec<Recognizer> {
                 r"(?-u:\b)[A-Za-z]{2}\d{6}[A-Da-d](?-u:\b)|(?-u:\b)[A-Za-z]{2} \d{2} \d{2} \d{2} [A-Da-d](?-u:\b)",
             )
             .unwrap(),
-            validate: Some(nino_prefix_valid),
+            validate: Some(Box::new(nino_prefix_valid)),
             scan: Scan::Overlapping,
         },
         // Spanish DNI (8 digits) / NIE (X/Y/Z + 7 digits), each with a mod-23 check
@@ -240,7 +276,7 @@ fn national_id_recognizers() -> Vec<Recognizer> {
         Recognizer {
             kind: PiiKind::NationalId,
             regex: Regex::new(r"(?-u:\b)(?:[XYZxyz]\d{7}|\d{8})[A-Za-z](?-u:\b)").unwrap(),
-            validate: Some(es_dni_nie_valid),
+            validate: Some(Box::new(es_dni_nie_valid)),
             scan: Scan::Overlapping,
         },
         // French NIR (social security): 15 digits — sex + YY + MM + geo/order + a
@@ -251,7 +287,7 @@ fn national_id_recognizers() -> Vec<Recognizer> {
         Recognizer {
             kind: PiiKind::NationalId,
             regex: Regex::new(r"(?-u:\b)[12]\d{2}(?:0[1-9]|1[0-2]|20|3\d|4[0-2]|[5-9]\d)\d{10}(?-u:\b)").unwrap(),
-            validate: Some(fr_nir_valid),
+            validate: Some(Box::new(fr_nir_valid)),
             scan: Scan::Overlapping,
         },
         // Nine-digit national IDs: NL BSN (11-proef) or PT NIF (mod-11). One
@@ -265,7 +301,7 @@ fn national_id_recognizers() -> Vec<Recognizer> {
         Recognizer {
             kind: PiiKind::NationalId,
             regex: Regex::new(r"(?-u:\b)\d{9}(?-u:\b)").unwrap(),
-            validate: Some(nine_digit_id_valid),
+            validate: Some(Box::new(nine_digit_id_valid)),
             scan: Scan::Overlapping,
         },
         // Eleven-digit national IDs: DE Steuer-ID (ISO 7064 Mod 11,10 + one repeated
@@ -276,14 +312,14 @@ fn national_id_recognizers() -> Vec<Recognizer> {
         Recognizer {
             kind: PiiKind::NationalId,
             regex: Regex::new(r"(?-u:\b)\d{11}(?-u:\b)").unwrap(),
-            validate: Some(eleven_digit_id_valid),
+            validate: Some(Box::new(eleven_digit_id_valid)),
             scan: Scan::Overlapping,
         },
         // LV personal code, classic dashed form `DDMMYY-NNNNC` (mod-11 checksum).
         Recognizer {
             kind: PiiKind::NationalId,
             regex: Regex::new(r"(?-u:\b)\d{6}-\d{5}(?-u:\b)").unwrap(),
-            validate: Some(lv_code_valid),
+            validate: Some(Box::new(lv_code_valid)),
             scan: Scan::Overlapping,
         },
         // China Resident Identity Card: 17 digits + a check char (digit or X),
@@ -291,80 +327,284 @@ fn national_id_recognizers() -> Vec<Recognizer> {
         Recognizer {
             kind: PiiKind::NationalId,
             regex: Regex::new(r"(?-u:\b)\d{17}[0-9Xx](?-u:\b)").unwrap(),
-            validate: Some(zh_resident_id_valid),
+            validate: Some(Box::new(zh_resident_id_valid)),
             scan: Scan::Overlapping,
         },
     ]
 }
 
-/// **FP-prone** recognizers for one locale (M4-R1) — ambiguous patterns opted in
-/// via `PII_LOCALES` (unlike national IDs, which are always on). Unknown codes yield
-/// nothing.
+/// One region whose **domestic phone numbers** (written with no `+CC`) this build detects.
+pub struct PhoneRegion {
+    /// The `PII_LOCALES` code that selects it — ISO 3166-1 alpha-2.
+    pub code: &'static str,
+    /// The libphonenumber region the validator parses against.
+    pub id: Id,
+    /// Whether this region's numbers are normally written **without a leading `0`**, and
+    /// therefore need the un-anchored [shape family](PhoneShape::NonTrunk).
+    ///
+    /// **This flag is the single most important precision decision in M10, and it was made
+    /// by measurement.** libphonenumber's `parse(Some(region), …)` accepts a national
+    /// number *with or without* the trunk prefix — because in a trunk-prefix country you
+    /// really can dial a local number without it. So feeding un-anchored digit groups to a
+    /// trunk-prefix region asks "could this be a same-area local dial in Germany?", which is
+    /// true of an enormous slice of ordinary numeric text. Measured on a small corpus of
+    /// digit-shaped non-phones (ports, offsets, HTTP codes, byte sizes, IDs):
+    ///
+    /// | region | junk hits with the un-anchored family on |
+    /// |---|---|
+    /// | DE | 7 — `512 1024 2048 4096`, `30 60 120`, `20 30 40`, … |
+    /// | FR | 4 — `100 200 300`, `123 456 789`, … |
+    /// | NL | 3 |
+    /// | PT | 1 |
+    /// | ES · GB · IT · LV · CN | 0 |
+    ///
+    /// GB, DE, FR and NL write *every* domestic number with the trunk `0`, so excluding
+    /// them from the un-anchored family costs no real rendering and removes almost all of
+    /// that. IT (mobiles `3…`), ES, PT, LV and CN (mobiles `1…`) genuinely have no trunk
+    /// prefix, so for them the un-anchored family is the only way their numbers are seen at
+    /// all.
+    pub non_trunk: bool,
+}
+
+/// The regions this build ships — **on by default** (M10).
 ///
-/// **National phone numbers with no `+CC` (M8.1).** The un-anchored domestic form
-/// (`020 7946 0958`, `030 12345678`) is exactly the "FP-prone" case M4-R1 moved out of
-/// the always-on tier: a `0`-trunk digit run looks like an order number, a sort code, or
-/// a national ID. What makes it safe here is the **validator** — a loose `0`-anchored
-/// regex proposes a candidate, and [`national_phone_valid`] accepts it only if the
-/// `phonenumber` crate (libphonenumber) deems it a REAL, assigned number for the region,
-/// a check no hand-written regex can do. Measured on an adversarial corpus
-/// (docs/DEVLOG.md, M8.1): GB precision 1.000, DE 0.909. Opt-in per locale because tight
-/// numbering plans (GB) validate near-perfectly while permissive ones need vetting.
-fn fp_prone_recognizers(code: &str) -> Vec<Recognizer> {
-    match code.trim().to_ascii_lowercase().as_str() {
-        "gb" => vec![national_phone_recognizer(gb_phone_valid)],
-        "de" => vec![national_phone_recognizer(de_phone_valid)],
-        _ => Vec::new(),
-    }
-}
-
-/// The shared national-phone recognizer: a loose `0`-trunk candidate regex, gated by a
-/// per-locale `phonenumber` validator. GB and DE share the regex (both use a `0` trunk
-/// prefix); only the validator's region differs.
+/// **The set is bounded by a principle, not by taste: exactly the countries the tool
+/// already claims.** The ten national-ID packs plus the NER model's language set, which
+/// between them are what "we cover this country" means everywhere else in this detector.
+/// That answers "why not Belgium?" with the same rule that answers it for every other
+/// layer, instead of a judgement call per country.
 ///
-/// The regex enumerates a **bounded** number of digit groups — a compact run plus 2- and
-/// 3-group forms — which bounds the match **length** (max ~15 chars): that keeps
-/// [`Scan::Overlapping`] linear (M4-R19) and stops an open `(?:[ -]?\d)+` from eating an
-/// unbounded digit run. It does **not** stop a match from crossing the boundary between two
-/// adjacent numbers — arm 1's greedy `\d{3,4}` can take the *trunk of the next* number
-/// (`0800 1111 0800`), an over-long span `is_valid` then **rejects**, which shadows the
-/// first number's shorter valid form in a single [`detect`](PiiDetector::detect) pass (the
-/// overlapping rescan resumes *forward* of the rejected match, so `find_at` can't return the
-/// shorter one). **That costs no coverage on the request path:** masking runs through
-/// [`Vault::mask_all`](crate::pii::anonymizer::Vault::mask_all), whose **fixpoint** re-detects
-/// — masking the second number un-shadows the first, and the next pass masks it. This is the
-/// same backstop the `Scan::Sequential` recognizers (Email/Secret) rely on for their chained
-/// case (M4-R11), made load-bearing here (M8-R8) and pinned by a `mask_all`-level test — so
-/// this recognizer must **never** override `redetect` to skip later passes. Every anchored
-/// arm uses ASCII `(?-u:\b)` (M4-R13) so a `0`-run inside a longer ASCII token
-/// (`user0207946095@…`) is not a candidate. Precision is the validator's job, not the
-/// regex's.
-fn national_phone_recognizer(validate: fn(&str) -> bool) -> Recognizer {
-    Recognizer {
-        kind: PiiKind::Phone,
-        regex: Regex::new(
-            r"(?-u:\b)0\d{1,4}[ -]\d{3,4}[ -]\d{3,4}(?-u:\b)|(?-u:\b)0\d{1,4}[ -]\d{4,8}(?-u:\b)|(?-u:\b)0\d{6,11}(?-u:\b)",
-        )
-        .unwrap(),
-        validate: Some(validate),
-        scan: Scan::Overlapping,
-    }
+/// **US is deliberately absent and that is not a gap:** it has no trunk-`0` domestic form,
+/// and the universal `NNN NNN NNNN` arm already covers it. `ar` gets nothing for the same
+/// reason it gets no national-ID pack — the language spans ~20 countries with different
+/// plans, so there is no single "Arabic" numbering plan to enable.
+///
+/// > **Rejected: defaulting to the *host's* locale.** It contradicts
+/// > [M4-R1](../../../docs/reviews/M4.md#m4-r1), which made national IDs always-on
+/// > *regardless of configuration* precisely because **what matters is the data that
+/// > arrives, not where the proxy runs** — a proxy in a Frankfurt datacenter routinely
+/// > carries Italian users' data. It would also make masking machine-dependent: same
+/// > request, two boxes, two results, nothing in the logs to explain it.
+///
+/// A region cannot be added here without corpus cases: `phone_regions_all_have_corpus_cases`
+/// (`tests/pii_corpus.rs`) enumerates this table and fails if any row has none.
+pub const PHONE_REGIONS: &[PhoneRegion] = &[
+    PhoneRegion {
+        code: "de",
+        id: Id::DE,
+        non_trunk: false,
+    },
+    PhoneRegion {
+        code: "es",
+        id: Id::ES,
+        non_trunk: true,
+    },
+    PhoneRegion {
+        code: "fr",
+        id: Id::FR,
+        non_trunk: false,
+    },
+    PhoneRegion {
+        code: "gb",
+        id: Id::GB,
+        non_trunk: false,
+    },
+    PhoneRegion {
+        code: "it",
+        id: Id::IT,
+        non_trunk: true,
+    },
+    PhoneRegion {
+        code: "lv",
+        id: Id::LV,
+        non_trunk: true,
+    },
+    PhoneRegion {
+        code: "nl",
+        id: Id::NL,
+        non_trunk: false,
+    },
+    PhoneRegion {
+        code: "pt",
+        id: Id::PT,
+        non_trunk: true,
+    },
+    PhoneRegion {
+        code: "cn",
+        id: Id::CN,
+        non_trunk: true,
+    },
+];
+
+/// Every vetted region — the default domestic-phone set.
+pub fn vetted_phone_regions() -> Vec<Id> {
+    PHONE_REGIONS.iter().map(|r| r.id).collect()
 }
 
-/// `validate` for GB / DE national phone candidates: accept only what `phonenumber`
-/// confirms is a real, assigned number for the region (`is_valid` — assigned prefix +
-/// length, not merely a *possible* length). This is what defuses the M4-R1 FP concern:
-/// sequential digits, all-zeros, sort codes, refs and unassigned prefixes all parse but
-/// are **not valid**, so they are rejected. A `fn(&str) -> bool` can't carry the region,
-/// so there is one thin wrapper per locale.
-fn gb_phone_valid(matched: &str) -> bool {
-    national_phone_valid(Id::GB, matched)
+/// Map a `PII_LOCALES` code to a vetted phone region, or `None` if we do not ship that
+/// region (an unmeasured region is not a region we ship).
+///
+/// Accepts the ISO 3166-1 alpha-2 code and the one language alias this project already
+/// uses for a country elsewhere (`zh` for China, as in the NER's language set). `uk` is
+/// **not** accepted for the United Kingdom — it is Ukraine's ISO code, and quietly reading
+/// it as GB is the kind of guess this detector does not make.
+fn phone_region_for_locale(code: &str) -> Option<&'static PhoneRegion> {
+    let code = code.trim().to_ascii_lowercase();
+    let code = if code == "zh" { "cn" } else { code.as_str() };
+    PHONE_REGIONS.iter().find(|r| r.code == code)
 }
 
-fn de_phone_valid(matched: &str) -> bool {
-    national_phone_valid(Id::DE, matched)
+/// Which candidate **shape family** a pattern belongs to — and, therefore, which regions
+/// are allowed to validate its candidates.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PhoneShape {
+    /// Anchored on a leading `0`. Safe for every region: the trunk digit is itself a
+    /// strong signal, and this is the family M8.1 measured (GB precision 1.000, DE 0.909).
+    Trunk,
+    /// Un-anchored. Validated **only** against regions flagged
+    /// [`non_trunk`](PhoneRegion::non_trunk) — see that field for the measurement, and for
+    /// why feeding these to a trunk-prefix region is what turns ordinary numeric text into
+    /// false positives.
+    NonTrunk,
 }
 
+/// The candidate shape families, and the whole reason this tier can grow past GB + DE.
+///
+/// Before M10 there was one family and it required a leading `0` — so a country that
+/// dropped the trunk prefix proposed **no candidate at all**, and adding it to the enabled
+/// set would have been a silent no-op. Generalizing the anchor is the actual work.
+///
+/// **Every family's match length must stay bounded** — [`Scan::Overlapping`] costs
+/// O(n · L), so an open `(?:[ -]?\d)+` turns the masking path back into the M4-R19
+/// complexity DoS. The longest match any family below can produce is ~18 chars. Do not add
+/// an unbounded arm; `tests/complexity.rs` is the guard.
+///
+/// Each family is one [`Recognizer`], and the *validator* loops the enabled regions — so
+/// the number of scans over a field is fixed at this table's length no matter how many
+/// regions are on.
+const PHONE_SHAPES: &[(PhoneShape, &str)] = &[
+    // Trunk `0`, compact or 2/3 groups — GB `020 7946 0958`, DE `030 12345678`,
+    // IT `011 5627111`, NL `020 123 4567`, CN `010 12345678`. **Unchanged from M8.1**:
+    // GB and DE must keep exactly the behaviour that milestone measured.
+    (
+        PhoneShape::Trunk,
+        r"(?-u:\b)0\d{1,4}[ -]\d{3,4}[ -]\d{3,4}(?-u:\b)|(?-u:\b)0\d{1,4}[ -]\d{4,8}(?-u:\b)|(?-u:\b)0\d{6,11}(?-u:\b)",
+    ),
+    // Trunk `0`, five 2-digit pairs — the standard French rendering (`01 23 45 67 89`,
+    // also written with `.` or `-`). No arm above matches it: they top out at three groups.
+    (
+        PhoneShape::Trunk,
+        r"(?-u:\b)0\d[ .-]\d{2}[ .-]\d{2}[ .-]\d{2}[ .-]\d{2}(?-u:\b)",
+    ),
+    // **No trunk prefix**, 2–4 groups — ES `91 123 45 67`, PT `912 345 678`,
+    // LV `67 22 33 44`, CN mobiles `138 0013 8000`. The leading digit is non-zero: a `0`
+    // start belongs to the trunk families, and letting both match the same text would only
+    // double the candidate set.
+    //
+    // **Separators are required, and that is a deliberate precision/recall trade.** A bare
+    // compact run (`3471234567`) is indistinguishable from an order number, a unix
+    // timestamp or a numeric ID — and bare 9- and 11-digit runs are *already* over-masked
+    // by the national-ID tier under the M4-R6 tradeoff. Requiring grouping costs the
+    // compact rendering of a non-trunk mobile (a documented recall gap, DEVLOG M10) and
+    // buys back the FP rate that made this family shippable on by default at all.
+    //
+    // **The first group stays 2–3 digits, and that too was measured.** Widening it to 4
+    // makes a 4-digit-prefixed pair (`2010 2020`, `2048 4096`, `2000 3000`) an 8-digit
+    // candidate, and Latvia's plan — 8 digits, `2…` mobile / `6…` landline — accepts
+    // essentially all of them: four new false positives out of the same 24-case negative
+    // set, for the one Latvian rendering (`6712 3456`) it buys. LV is still covered by its
+    // `67 22 33 44` and `67 123 456` forms.
+    (
+        PhoneShape::NonTrunk,
+        r"(?-u:\b)[1-9]\d{1,2}(?:[ -]\d{2,4}){1,3}(?-u:\b)",
+    ),
+    // **No trunk prefix**, prefix + one long block — the usual Italian mobile rendering
+    // (`347 1234567`), which the arm above cannot reach: its groups top out at 4 digits.
+    (
+        PhoneShape::NonTrunk,
+        r"(?-u:\b)[1-9]\d{2}[ -]\d{6,8}(?-u:\b)",
+    ),
+];
+
+/// The domestic-phone recognizers for a set of regions — **one per shape family**, each
+/// validated against the enabled regions that family applies to (M10, shape (b)).
+///
+/// **Why the region loop lives in the validator.** The alternative — one recognizer per
+/// region — needs no type change, and it is *strictly more work*: the two do byte-identical
+/// validation, and the per-region shape additionally scans the text N−1 more times at
+/// O(n · L) each. Measured on a 22 KiB realistic turn with 9 regions (release profile):
+/// **12.28 ms** per-region vs **6.02 ms** shared-regex-validate-all vs **2.40 ms** shared
+/// regex with `.any()`'s early exit — 5.12× overall, and the 2.04× between the first two is
+/// purely the extra scans. That term grows linearly with every region added, on the
+/// deterministic path that is today the *fast* one (~20 ms for a whole turn).
+///
+/// **Region granularity is not traded away**: regions are still enabled individually and
+/// still bounded by [`PHONE_REGIONS`]. Only the dispatch changed.
+///
+/// **What makes an un-anchored digit run safe to propose at all** is the validator, not the
+/// regex: [`national_phone_valid`] accepts a candidate only if `phonenumber`
+/// (libphonenumber) deems it a REAL, **assigned** number for some enabled region — a check
+/// against the country's actual numbering plan that no hand-written regex can do. This is
+/// the [M4-R1](../../../docs/reviews/M4.md#m4-r1) "national phone with no `+CC` is FP-prone"
+/// objection, defused by measurement rather than argued away (M8.1: GB precision 1.000,
+/// DE 0.909).
+///
+/// A shape family's match can still cross the boundary between two **adjacent** numbers —
+/// the trunk family's greedy `\d{3,4}` can take the *trunk of the next* number
+/// (`0800 1111 0800`), an over-long span `is_valid` then rejects, which shadows the first
+/// number's shorter valid form within a single [`detect`](PiiDetector::detect) pass (the
+/// overlapping rescan resumes *forward* of the rejected match, so `find_at` cannot return
+/// the shorter one). **That costs no coverage on the request path:** masking runs through
+/// [`Vault::mask_all`](crate::pii::anonymizer::Vault::mask_all), whose **fixpoint**
+/// re-detects — masking the second number un-shadows the first, and the next pass masks it
+/// (M8-R8, pinned by a `mask_all`-level test). So these recognizers must **never** override
+/// `redetect` to skip later passes. Every arm uses ASCII `(?-u:\b)` (M4-R13), so a digit run
+/// inside a longer ASCII token (`user0207946095@…`) is not a candidate.
+fn national_phone_recognizers(regions: &[Id]) -> Vec<Recognizer> {
+    // Deduplicate (`PII_LOCALES=it,it`) and keep the table's order, so the same set costs
+    // the same and short-circuits the same however it was written.
+    let enabled: Vec<&'static PhoneRegion> = PHONE_REGIONS
+        .iter()
+        .filter(|r| regions.contains(&r.id))
+        .collect();
+
+    PHONE_SHAPES
+        .iter()
+        .filter_map(|(shape, pattern)| {
+            let applicable: std::sync::Arc<[Id]> = enabled
+                .iter()
+                .filter(|r| *shape == PhoneShape::Trunk || r.non_trunk)
+                .map(|r| r.id)
+                .collect::<Vec<_>>()
+                .into();
+            // No enabled region uses this family — don't scan for it at all.
+            if applicable.is_empty() {
+                return None;
+            }
+            Some(Recognizer {
+                kind: PiiKind::Phone,
+                regex: Regex::new(pattern).unwrap(),
+                validate: Some(Box::new(move |matched: &str| {
+                    // `.any()` short-circuits on the first region that accepts — worth
+                    // 2.51× on its own, because a candidate that *is* a real number is
+                    // usually accepted early, and the expensive case (a rejection, which
+                    // costs all N parses) is the common-but-cheap-to-be-wrong one.
+                    applicable
+                        .iter()
+                        .any(|region| national_phone_valid(*region, matched))
+                })),
+                scan: Scan::Overlapping,
+            })
+        })
+        .collect()
+}
+
+/// Whether `phonenumber` confirms `matched` is a real, **assigned** number for `country`
+/// (`is_valid` — assigned prefix *and* length, not merely a *possible* length).
+///
+/// This is the whole precision story of the tier: sequential digits, all-zeros, sort codes,
+/// order refs and unassigned prefixes all *parse* and are **not valid**, so they are
+/// rejected.
 fn national_phone_valid(country: Id, matched: &str) -> bool {
     phonenumber::parse(Some(country), matched)
         .map(|number| number.is_valid())
@@ -431,7 +671,7 @@ impl Recognizer {
             let Some(m) = self.regex.find_at(input, at) else {
                 break;
             };
-            if self.validate.is_none_or(|check| check(m.as_str())) {
+            if self.validate.as_ref().is_none_or(|check| check(m.as_str())) {
                 match runs.last_mut() {
                     // Hits arrive in non-decreasing start order, so only the last run can
                     // still grow.
@@ -1386,7 +1626,7 @@ mod tests {
         assert_eq!(e[0].confidence, Confidence::Verified);
     }
 
-    // ---- M8.1: opt-in national phone recognizers (GB / DE) via `phonenumber` ----
+    // ---- M8.1 / M10: domestic phone recognizers via `phonenumber` ----
 
     /// Assert `input` masks to exactly one `Phone` span whose text is the full `number`.
     /// (Where the universal 3-3-4 phone arm also fires on a sub-span, the resolver unions
@@ -1430,15 +1670,114 @@ mod tests {
     fn national_phone_is_gated_by_pii_locales() {
         // `020 7946 0958` is a 3-4-4 GB number the UNIVERSAL arm does not match (it needs
         // 3-3-4 or a `+CC`), and its spaces break the contiguous 9/11-digit ID patterns —
-        // so with GB *off* it is masked by nothing, proving the gate is real, not masked
-        // by a coincidental universal hit.
+        // so with no region enabled it is masked by nothing, proving the gate is real and
+        // not a coincidental universal hit.
+        //
+        // **`us` alone is the honest "gate off" case now (M10).** It used to be `it,us`,
+        // and that is precisely the defect this milestone closed: both codes mapped to no
+        // recognizer, so the assertion passed while the *shipped default* masked no
+        // domestic number at all. `it` now resolves to a real region — one whose plan
+        // happens to accept this number — so keeping it here would assert the opposite of
+        // what it reads as.
         assert!(
-            kinds_with(&["it", "us"], "call 020 7946 0958 now").is_empty(),
-            "GB national phone must not be masked when `gb` is not in PII_LOCALES"
+            kinds_with(&["us"], "call 020 7946 0958 now").is_empty(),
+            "GB national phone must not be masked when no region enabling it is configured"
         );
-        assert!(kinds_with(&["de"], "call 020 7946 0958 now").is_empty());
+        // A code we do not ship is not a region: it contributes nothing, rather than
+        // silently falling back to the default set.
+        assert!(kinds_with(&["zz"], "call 020 7946 0958 now").is_empty());
+        // And a *different* region whose plan rejects this number leaves it alone.
+        assert!(kinds_with(&["es"], "call 020 7946 0958 now").is_empty());
         // Turning GB on masks it.
         assert_phone(&["gb"], "call 020 7946 0958 now", "020 7946 0958");
+    }
+
+    /// **The floor M10 exists to establish: a proxy started with NO configuration must
+    /// detect a domestic number.**
+    ///
+    /// This is the regression that shipped for two milestones — [M4](docs/ROADMAP.md#m4)
+    /// introduced `PII_LOCALES` with the placeholder default `it,us` while the FP-prone
+    /// tier was *empty*, and [M8.1](docs/ROADMAP.md#m81) filled that tier with `gb`/`de`
+    /// without revisiting the default. Nothing regressed; the gap was simply never filled.
+    /// It stayed invisible because every test that exercised a domestic number passed the
+    /// region in explicitly.
+    ///
+    /// So this test builds the detector the way `Config`'s default does — from **no
+    /// environment at all** — and asserts a real number from each shipped region is masked.
+    /// "Everything off unless you knew to switch it on" cannot come back silently.
+    #[test]
+    fn the_default_configuration_detects_a_domestic_number_in_every_shipped_region() {
+        let detector = StructuredRecognizers::new();
+        for (region, input, number) in [
+            ("de", "Berlin 030 12345678 heute", "030 12345678"),
+            ("es", "llama al 612 34 56 78 ahora", "612 34 56 78"),
+            ("fr", "appelle le 01 23 45 67 89 svp", "01 23 45 67 89"),
+            ("gb", "call 020 7946 0958 now", "020 7946 0958"),
+            ("it", "chiama 06 69821234 oggi", "06 69821234"),
+            ("it", "cellulare 347 1234567 grazie", "347 1234567"),
+            ("lv", "zvani 67 22 33 44 tagad", "67 22 33 44"),
+            ("nl", "bel 0343 123456 nu", "0343 123456"),
+            ("pt", "liga 210 123 456 agora", "210 123 456"),
+            ("cn", "拨打 138 0013 8000 电话", "138 0013 8000"),
+        ] {
+            let got: Vec<(PiiKind, String)> = detector
+                .detect(input)
+                .into_iter()
+                .map(|e| (e.kind, e.text))
+                .collect();
+            assert_eq!(
+                got,
+                vec![(PiiKind::Phone, number.to_string())],
+                "the DEFAULT detector must mask the {region} domestic number in {input:?}"
+            );
+        }
+    }
+
+    /// The default set and the explicit set agree — so `PII_LOCALES` **replaces** the
+    /// default rather than being the only way to get anything, and an operator who spells
+    /// out every region gets exactly the shipped behaviour.
+    #[test]
+    fn the_default_region_set_is_the_vetted_table() {
+        let all: Vec<&str> = PHONE_REGIONS.iter().map(|r| r.code).collect();
+        let input = "chiama 06 69821234 oggi";
+        assert_eq!(
+            kinds_with(&all, input),
+            StructuredRecognizers::new()
+                .detect(input)
+                .into_iter()
+                .map(|e| (e.kind, e.text))
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(vetted_phone_regions().len(), PHONE_REGIONS.len());
+    }
+
+    /// The un-anchored family is validated **only** against regions whose numbers really
+    /// are written without a trunk `0` — the single most important precision decision in
+    /// M10, and the one that is easiest to undo by accident.
+    ///
+    /// libphonenumber accepts a national number with *or without* its trunk prefix, because
+    /// in a trunk-prefix country you can dial a local number that way. So handing
+    /// un-anchored digit groups to DE/FR/NL/GB asks "could this be a same-area local dial?"
+    /// — true of an enormous slice of ordinary numeric text. Measured: DE alone turned 7 of
+    /// 24 digit-shaped non-phones into `Phone` spans.
+    #[test]
+    fn the_un_anchored_family_never_reaches_a_trunk_prefix_region() {
+        for junk in [
+            "sizes 512 1024 2048 4096",
+            "retry after 30 60 120 seconds",
+            "matrix 10 20 30 40",
+            "the run took 100 200 300 ms",
+            "id 123 456 789 in the list",
+            "pairs 12 34 56 78 here",
+            "ports 80 443 8080 open",
+        ] {
+            for region in ["de", "fr", "nl", "gb"] {
+                assert!(
+                    kinds_with(&[region], junk).is_empty(),
+                    "{region} must not accept un-anchored digit groups: {junk:?}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -1510,19 +1849,19 @@ mod tests {
     #[test]
     fn national_phone_validators_accept_reals_reject_junk() {
         // Direct validator unit tests (region-specific).
-        assert!(gb_phone_valid("020 7946 0958"));
-        assert!(gb_phone_valid("07911 123456"));
-        assert!(!gb_phone_valid("0000000000"));
-        assert!(!gb_phone_valid("0123456789"));
-        assert!(de_phone_valid("030 12345678"));
-        assert!(de_phone_valid("0171 1234567"));
-        assert!(!de_phone_valid("0000000000"));
+        assert!(national_phone_valid(Id::GB, "020 7946 0958"));
+        assert!(national_phone_valid(Id::GB, "07911 123456"));
+        assert!(!national_phone_valid(Id::GB, "0000000000"));
+        assert!(!national_phone_valid(Id::GB, "0123456789"));
+        assert!(national_phone_valid(Id::DE, "030 12345678"));
+        assert!(national_phone_valid(Id::DE, "0171 1234567"));
+        assert!(!national_phone_valid(Id::DE, "0000000000"));
         // NOTE: the validator is not a locale *discriminator* — national numbering plans
         // overlap, so a number valid in one region can be valid in another (e.g.
         // `07911 123456` validates as DE too). That is privacy-safe: over-masking a real
         // phone is never a leak. But some region-specific numbers still fail elsewhere —
         // a London geographic number is not a valid DE number:
-        assert!(!de_phone_valid("020 7946 0958"));
+        assert!(!national_phone_valid(Id::DE, "020 7946 0958"));
     }
 
     /// Real PII values, deliberately including the **grouped** shapes (spaces inside the

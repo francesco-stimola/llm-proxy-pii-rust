@@ -49,47 +49,98 @@ unstructured-entity load.
   small fraction of arbitrary numbers on checksum alone (~18% of 9-digit tokens); this is an
   **accepted over-mask tradeoff** (M4-R6) — privacy-first, never a leak — not context-gated
   (that would leak); the contextual precision path is GLiNER ([M8](ROADMAP.md#m8)).
-- **FP-prone** — ambiguous recognizers **opt-in per locale** via `PII_LOCALES`
-  (`fp_prone_recognizers`). The **national phone with no `+CC`** (GB `020 7946 0958`, DE
-  `030 12345678`) lives here ([M8.1](ROADMAP.md#m81)): a `0`-trunk digit run looks like an
-  order number or a national ID, so it can't be always-on. A loose `0`-anchored regex proposes
-  a candidate and the pure-Rust **`phonenumber`** crate's `is_valid()` accepts it only if it is
-  a real, assigned number for the region — the assigned-prefix + length check no hand-written
-  regex can do, which is what defuses the FP concern (measured: GB precision 1.000, DE 0.909).
-  GB/DE ship; other codes stay a no-op until vetted. **The validator is not a locale
-  *discriminator*** — national numbering plans overlap, so a number valid in one region can be
-  valid in another (a GB mobile also validates as DE). That is **privacy-safe** (over-masking a
-  real phone is never a leak); it just means enabling one locale doesn't reject every other
-  locale's numbers. See also the accepted dependency tradeoff under *Supply-chain* below.
+- **Domestic phone** — numbers written with **no `+CC`** (GB `020 7946 0958`, IT `347 1234567`,
+  ES `91 123 45 67`). Historically the "FP-prone, opt-in" tier ([M4-R1](reviews/M4.md#m4-r1),
+  [M8.1](ROADMAP.md#m81)): a bare digit run looks like an order number or a national ID, so it
+  could not be always-on. **[M10](ROADMAP.md#m10) made it on by default**, because the reason
+  for opt-in had already been defused by measurement — a loose regex proposes a candidate and
+  the pure-Rust **`phonenumber`** crate's `is_valid()` accepts it only if it is a real,
+  **assigned** number for the region, the prefix-and-length check against a real numbering plan
+  that no hand-written regex can do. Nine regions ship, on by default; `PII_LOCALES` **replaces**
+  that set if you set it, and a code outside the table contributes nothing (an unmeasured region
+  is not a region we ship). See the *Domestic phone coverage* matrix below for what that buys and
+  what it costs, and the accepted dependency tradeoff under *Supply-chain*.
 
-So `PII_LOCALES` (default `it, us`, `Config.pii_locales`) gates only *ambiguous*
-recognizers, not "which countries". The **language** domain for the NER is the model's
-declared languages (XLM-R HRL: ar/de/en/es/fr/it/lv/nl/pt/zh — validated, see
-`docs/DEVLOG.md`); structured PII is language-independent.
+So `PII_LOCALES` (`Config.pii_locales`, default = every vetted region) gates only the
+*domestic-phone* tier, not "which countries" — the national IDs are never gated off. The
+**language** domain for the NER is the model's declared languages (XLM-R HRL:
+ar/de/en/es/fr/it/lv/nl/pt/zh — validated, see `docs/DEVLOG.md`); structured PII is
+language-independent.
 
-**A locale code names a numbering *plan*, not a country's coverage — and the difference is
-measured, not theoretical** (probe, 2026-07-29). Because `is_valid()` tests a candidate against
-one region's assigned ranges, enabling `de` masks every `0`-trunk number that happens to fit the
-German plan, wherever it is really from — and enabling a locale whose plan does *not* fit leaves
-that country's numbers untouched:
+### Domestic phone coverage — re-measured 2026-07-29 (M10)
 
-| domestic number | masked with `gb` | with `de` | note |
-|---|---|---|---|
-| GB `020 7946 0958`, `07911 123456` | ✅ | mobile only | the mobile also fits the DE plan |
-| DE `030 12345678`, `0171 1234567` | Berlin only | ✅ | Berlin's `030…` also fits the GB plan |
-| **IT `06 69821234`, `02 72022122`, `081 7941111`, `055 27681`** | ❌ | **✅ by accident** | the IT plan overlaps the German one |
-| **IT `011 5627111`** (Turin) | ❌ | ❌ | same country as the row above — the overlap is per-number |
-| FR `01 42 68 53 00`, BE, AT, CH, IE | ❌ | ❌ | those plans don't collide with GB/DE |
-| `0123456789`, `0000000000` | ❌ | ❌ | the `is_valid()` gate doing its job |
+**Nine regions, chosen by a principle rather than by taste: exactly the countries the tool
+already claims** — the ten national-ID packs plus the NER's language set. `de es fr gb it lv nl
+pt cn`. **US needs nothing** (no trunk-`0` domestic form; the universal `NNN NNN NNNN` arm
+covers it) and **`ar` gets nothing**, for the same reason it gets no national-ID pack: the
+language spans ~20 countries with different plans, so there is no single "Arabic" numbering plan.
 
-Two consequences worth stating plainly. First, **accidental coverage is not coverage**: Italian
-landlines are masked under `de` only because the plans collide, per number, and a libphonenumber
-metadata update can silently change which ones. Second — the sharp one — **the project's own
-default locale has no domestic phone recognizer at all.** `fp_prone_recognizers` matches `gb` and
-`de`; `it` and `us` return an empty vec, so with the shipped default `PII_LOCALES=it,us` an Italian
-domestic number reaches the provider **in clear** unless it is written `+39 …` (the universal `+CC`
-arm) or happens to fall in the 3-3-4 grouping the universal US arm matches (`320 123 4567` does;
-`347 1234567` and every landline above do not). Tracked as [M10](ROADMAP.md#m10).
+**Two candidate shape families, and which regions may validate each is the key precision
+decision.**
+
+| family | pattern | validated against |
+|---|---|---|
+| **trunk `0`** — compact / 2–3 groups, and the French five-pair form | `020 7946 0958`, `030 12345678`, `01 23 45 67 89` | **every** enabled region |
+| **non-trunk** — 2–4 groups, or prefix + one long block | `91 123 45 67`, `912 345 678`, `347 1234567`, `138 0013 8000` | only regions whose numbers really are written without a leading `0`: **es it lv pt cn** |
+
+That split is what makes the tier shippable. libphonenumber's `parse` accepts a national number
+**with or without** its trunk prefix — because in a trunk-prefix country you really can dial a
+local number that way — so feeding un-anchored digit groups to DE/FR/NL/GB asks *"could this be a
+same-area local dial in Germany?"*, which is true of an enormous slice of ordinary numeric text.
+Measured before the split: DE alone turned **7 of 24** digit-shaped non-phones into `Phone` spans
+(`512 1024 2048 4096`, `30 60 120`, `20 30 40`, …), FR 4, NL 3. After it: 0 for all four.
+
+**Measured, per region and for the union** (`tests/phone_eval.rs`, `--release`; 35 corpus
+positives, 20 curated negatives, 385 generated digit-shaped non-phones):
+
+| | recall | curated FP | generated FP — dates | codes | offsets | sizes | ports · money · refs |
+|---|---|---|---|---|---|---|---|
+| de · es · fr · gb · nl | **1.000** | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 |
+| it | **1.000** | 0.000 | 0.083 | 0.000 | 0.000 | 0.000 | 0.000 |
+| lv | **1.000** | 0.000 | 0.125 | 0.000 | 0.000 | 0.000 | 0.000 |
+| pt | **1.000** | 0.000 | 0.000 | 0.091 | 0.083 | 0.000 | 0.000 |
+| cn | **1.000** | 0.000 | 0.000 | 0.000 | 0.000 | 0.042 | 0.000 |
+| **union (the shipped default)** | **1.000** | 0.000 | **0.188** | 0.091 | 0.083 | 0.042 | 0.000 |
+
+**Read the FP figures per category, never blended.** A single rate over a pool whose composition
+you chose is a number about the pool. What it says: ports, money amounts and reference numbers
+are untouched; the whole exposure is **space- or dash-separated dates** (`28 01 2026` →
+Latvia's 8-digit plan; `01 02 2026` → the Milan `02 …` prefix), plus a little in dense numeric
+tables. ISO (`2026-07-29`) and slash (`29/07/2026`) dates cannot collide at all — no family
+accepts `/`, and a 4-digit leading group is not a candidate.
+
+**Three things this trade rests on.**
+1. **On real agent traffic the cost is zero.** Over the M7 fixture — a genuine 22 KiB Claude
+   Code turn already in the repo, written for a different purpose and so not curated for this
+   one — the shipped default yields **no `Phone` spans at all**. Pinned as PHONE-OM
+   (`tests/phone_overmask.rs`) with a positive control, so "found nothing" can never be
+   "detector is dead".
+2. **The union is the sum of its parts, not more.** Union-only false positives: **0**. Enabling
+   N regions unions their accepted sets, and here nothing emerges that no single region
+   produced — so a region's measured cost is also its marginal cost.
+3. **Over-masking a date is a *functional* nuisance, not a privacy failure** — the direction
+   this project errs in on purpose. It is not free: a masked line number or port inside
+   `tool_use.input` hands the model `[PHONE_1]` where it needed `8080`. That is why the guard in
+   (1) is over real traffic and not over a corpus of the false positives we imagined.
+
+**Latency is not the constraint** — 0.30 ms/turn with no region enabled, **0.31–0.32 ms with all
+nine**, over the same 22 KiB turn. That is the point of the dispatch shape: one recognizer per
+shape *family*, with the region loop inside the validator, so adding a region costs validations
+on candidates only, never another O(n·L) scan of every field (see `national_phone_recognizers`).
+
+**The validator is not a locale *discriminator*.** National plans overlap, so a number valid in
+one region can be valid in another — a GB mobile also validates as DE, and `0123456789` is a real
+Paris number. That is **privacy-safe** (over-masking a real phone is never a leak); it just means
+enabling one region does not reject every other region's numbers, and it is why a per-region
+precision figure does not predict the union's.
+
+**Known recall gaps, deliberate and measured.** A non-trunk number written **compactly**
+(`3471234567`) is not a candidate: bare digit runs are indistinguishable from order numbers and
+timestamps, and the 9-/11-digit ones are already over-masked by the national-ID tier under the
+M4-R6 tradeoff. Latvia's 4+4 rendering (`6712 3456`) is out for the same reason — allowing a
+4-digit leading group made every `YYYY NNNN` pair an 8-digit candidate, which Latvia's plan
+accepts: four new false positives for one rendering. LV stays covered by `67 22 33 44` and
+`67 123 456`.
 
 **Word boundaries are ASCII — `(?-u:\b)`, never a bare `\b` (M4-R13).** Rust `regex`'s default
 `\b` is **Unicode-aware**: a Han / Kana / Cyrillic letter *is* a word character, so there is **no
@@ -1090,18 +1141,36 @@ forbidden list — so `tests/dependency_footprint.rs` stays green. Two real cost
 a future `cargo-deny` advisory isn't a surprise: (1) **~3 MB** of binary from the embedded worldwide numbering
 metadata (converted to a postcard blob at build time, `Lazy`-deserialized once at runtime — no XML parsing on
 the hot path); (2) a few **unmaintained transitive deps** — `oncemutex` (2016), `regex-cache` 0.2.1, an old
-`regex-syntax` 0.6.29 alongside the modern 0.8. None is a known advisory today; if one is ever flagged, the
-recognizer is opt-in per `PII_LOCALES`, so the mitigation is bounded. The capability bought — an assigned-range
-phone check no regex can do — is judged worth it.
+`regex-syntax` 0.6.29 alongside the modern 0.8. None is a known advisory today; if one is ever flagged,
+`PII_LOCALES=` (empty) still switches the whole tier off, so the mitigation is bounded — **but note this got
+weaker in [M10](ROADMAP.md#m10)**: the recognizers are now on by default rather than opt-in, so a flagged
+advisory would affect every deployment until the operator acts, not only the ones that had opted in. The
+capability bought — an assigned-range phone check no regex can do, on by default — is judged worth it.
+
+**And `time` in the DEFAULT build (M10).** Log timestamps are local with an explicit offset, which needs the
+`time` crate's platform offset lookup (`tracing-subscriber`'s `local-time` feature). It was *assumed* to be
+free because `Cargo.lock` already carried `time 0.3.53` — `cargo tree` said otherwise: it was there only under
+`--features onnx`, via `hf-hub → hf-xet → tracing-appender`. So it is a genuinely new default-build dependency
+(`time` + `time-core`/`time-macros`, `deranged`, `num-conv`, `powerfmt`, `num_threads`), all **pure Rust**, so
+the native-dep-free guarantee holds unchanged. Recorded because "surely it's already there" is exactly the
+class of claim this file exists to stop being made without checking.
 
 ## Decisions & open points
 
 - **Placeholder format: `[KIND_N]`** (e.g. `[EMAIL_1]`) — ASCII, tokenizer-friendly.
 - **Coverage (M4, supersedes the original "IT + US")** — three tiers; see *Hybrid
   detection → Locale coverage* above. The NER's domain is its **model's** 10 languages;
-  structured PII is language-independent and always on. `PII_LOCALES` gates only
-  *FP-prone* recognizers — since [M8.1](ROADMAP.md#m81) the GB/DE national-phone
-  recognizers, `phonenumber`-validated; other codes remain a no-op until vetted.
+  structured PII is language-independent and always on. `PII_LOCALES` gates only the
+  *domestic-phone* tier — nine `phonenumber`-validated regions, **on by default since
+  [M10](ROADMAP.md#m10)**; setting the variable replaces that set, and a code outside the
+  table contributes nothing.
+- **A default that detects nothing is a bug, not a conservative choice (M10).** The FP-prone
+  tier shipped for two milestones with a default (`it,us`) naming regions that mapped to no
+  recognizer at all — nothing regressed, the gap was simply never filled when M8.1 added the
+  tier's first entries. The floor that replaces it: **a proxy started with no configuration
+  must mask a domestic number**, pinned by a test that builds the detector from an empty
+  environment. The branches of a coverage decision may differ in *how many* regions are on;
+  they may never differ in *whether* the default detects anything.
 - **Over-mask, never leak** — the standing tie-breaker. Where precision and recall
   conflict, recall wins: the pure-numeric national IDs accept ~18% of arbitrary 9-digit
   tokens (M4-R6) and a union may swallow a bare `@domain`. Both are **accepted on

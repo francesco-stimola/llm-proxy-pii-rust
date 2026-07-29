@@ -37,9 +37,13 @@ pub struct Config {
     /// provider receive required headers (`anthropic-version`, editor headers, …)
     /// without blindly forwarding everything.
     pub forward_request_headers: Vec<String>,
-    /// Active locales for the structured recognizers (M4) — national-identifier
-    /// coverage per locale (`it`, `us`, `gb`, …). Universal recognizers (email,
-    /// IBAN, card, phone) always run regardless. Defaults to `it, us`.
+    /// Active locales for the **domestic-phone** recognizers (M4's FP-prone tier) —
+    /// numbers written with no `+CC`. Universal recognizers (email, IBAN, card, `+CC`
+    /// phone) and the national IDs always run regardless (M4-R1).
+    ///
+    /// Defaults to **every vetted region** (M10); setting `PII_LOCALES` **replaces** that
+    /// set rather than adding to it, so an operator who set it keeps exactly the behaviour
+    /// they asked for.
     pub pii_locales: Vec<String>,
     /// **Debug only (M2.6), off by default.** When set, the response de-mask is
     /// skipped so the client receives the placeholders (`[EMAIL_1]`, …) the
@@ -137,7 +141,8 @@ impl Config {
             Err(_) => Vec::new(),
         };
 
-        // Structured-recognizer locales (M4): comma-separated codes, default IT+US.
+        // Domestic-phone regions (M4's FP-prone tier): comma-separated codes. Unset — or
+        // set to nothing usable — means every vetted region (M10).
         let pii_locales = match std::env::var("PII_LOCALES") {
             Ok(raw) => {
                 let list = parse_header_list(&raw); // same shape: comma-split, lowercased
@@ -167,9 +172,21 @@ impl Config {
     }
 }
 
-/// The default recognizer locales when `PII_LOCALES` is unset (IT + US).
+/// The recognizer locales when `PII_LOCALES` is unset: **every vetted region** (M10).
+///
+/// It used to be the literal `["it", "us"]` — a placeholder chosen by M4 when the FP-prone
+/// tier was empty, and never revisited when M8.1 filled it. Both codes mapped to no
+/// recognizer, so the shipped default masked **no** domestic phone number at all.
+///
+/// Resolving it from [`PHONE_REGIONS`] rather than re-typing the list means the default and
+/// the code that implements it cannot disagree — and because the resolved list is what
+/// `Config`'s `Debug` prints at startup, an operator can *see* which regions are active
+/// instead of inferring them from the absence of a variable.
 fn default_locales() -> Vec<String> {
-    vec!["it".to_string(), "us".to_string()]
+    crate::pii::recognizers::PHONE_REGIONS
+        .iter()
+        .map(|region| region.code.to_string())
+        .collect()
 }
 
 /// OpenAI-compatible defaults per provider (M3, Option A). Base URL + API key stay

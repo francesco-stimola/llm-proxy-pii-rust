@@ -3,6 +3,99 @@
 Newest first. One entry per meaningful change — note *what* and *why*, not just
 *what*. This is the running history so context is never lost between sessions.
 
+## 2026-07-29 — M10 built: nine domestic-phone regions on by default, measured
+
+**The default now detects something.** `PII_LOCALES` shipped for two milestones with the value
+`it,us` — a placeholder M4 chose while the FP-prone tier was *empty*, never revisited when M8.1
+filled it with `gb`/`de`. Both codes mapped to no recognizer, so `06 69821234` reached the provider
+in clear. Nine regions (`de es fr gb it lv nl pt cn`) are now on out of the box, bounded by the
+step-5 principle — exactly the countries the tool already claims (the ten national-ID packs plus the
+NER's languages), with US excluded because it has no trunk-`0` domestic form and `ar` excluded
+because there is no single Arabic numbering plan. Landing **(b)** from the ROADMAP's ladder:
+`PII_LOCALES` survives as an *override* that replaces the default set, so a patch release does not
+break an operator who set it.
+
+**The dispatch shape held up exactly as the planning probe predicted.** Latency over the M7 22 KiB
+turn: **0.30 ms with no region enabled, 0.31–0.32 ms with all nine.** Adding a region costs
+validations on candidates only, never another O(n·L) scan of every field — which is the whole
+argument for putting the region loop inside a boxed-closure validator instead of shipping one
+recognizer per region.
+
+**Generalizing the candidate anchor was the real work, and the first attempt was wrong in an
+instructive way.** A country that dropped the trunk prefix (ES, PT, IT mobiles, LV, CN mobiles)
+proposes *no candidate at all* under a `0`-anchored regex, so a match arm alone would have been a
+silent no-op for it. Adding an un-anchored shape family and validating it against **all** enabled
+regions produced 8 false positives out of 24 hand-written digit-shaped non-phones: `512 1024 2048
+4096`, `30 60 120`, `20 30 40`, `123 456 789`, `100 200 300`…
+
+The cause is not the regex. **libphonenumber's `parse` accepts a national number with *or without*
+its trunk prefix** — because in a trunk-prefix country you really can dial a local number that way
+— so handing un-anchored digit groups to Germany asks *"could this be a same-area local dial in
+Berlin?"*, which is true of an enormous slice of ordinary numeric text. Blamed per region: **DE 7,
+FR 4, NL 3, PT 1, and ES/GB/IT/LV/CN 0.** The fix is structural rather than a heuristic: each region
+declares whether its numbers are really written without a leading `0`, and the un-anchored family is
+validated **only** against those. Same 24 negatives afterwards: DE/FR/NL/GB → 0.
+
+**Two shape decisions were also settled by measurement, and both cost recall on purpose.**
+- The un-anchored family **requires separators**. A bare `3471234567` is indistinguishable from an
+  order number or a unix timestamp, and bare 9-/11-digit runs are *already* over-masked by the
+  national-ID tier under M4-R6.
+- Its leading group stays **2–3 digits**. Widening to 4 buys Latvia's `6712 3456` rendering and
+  costs four new false positives — every `YYYY NNNN` pair becomes an 8-digit candidate, and
+  Latvia's plan (8 digits, `2…`/`6…`) accepts essentially all of them. LV stays covered by
+  `67 22 33 44` and `67 123 456`.
+
+**The measurement, which is what M10 was actually for** (`tests/phone_eval.rs`, release; 35 corpus
+positives, 20 curated negatives, 385 generated digit-shaped non-phones):
+
+| | recall | curated FP | dates | codes | offsets | sizes | ports · money · refs |
+|---|---|---|---|---|---|---|---|
+| de · es · fr · gb · nl | 1.000 | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 |
+| it | 1.000 | 0.000 | 0.083 | 0.000 | 0.000 | 0.000 | 0.000 |
+| lv | 1.000 | 0.000 | 0.125 | 0.000 | 0.000 | 0.000 | 0.000 |
+| pt | 1.000 | 0.000 | 0.000 | 0.091 | 0.083 | 0.000 | 0.000 |
+| cn | 1.000 | 0.000 | 0.000 | 0.000 | 0.000 | 0.042 | 0.000 |
+| **union (shipped)** | **1.000** | 0.000 | **0.188** | 0.091 | 0.083 | 0.042 | 0.000 |
+
+**Reported per category on purpose.** A single blended rate over a pool whose composition you chose
+is a number about the pool, not about the product — and here it would have hidden the only fact that
+matters: ports, money amounts and reference numbers are untouched, and the entire exposure is
+**space- or dash-separated dates** (`28 01 2026` is a valid Latvian number; `01 02 2026` contains
+the Milan `02 …` prefix). ISO and slash-separated dates cannot collide at all.
+
+**Union-only false positives: 0.** Enabling N regions unions their accepted sets, and the worry
+going in was that the compound rate would exceed the sum of its parts. It doesn't — nothing is
+masked that no single region already masked — so a region's measured cost is also its marginal cost.
+That is the number that made (b) safe to ship rather than (c).
+
+**And the check that decided it: on real agent traffic the cost is zero.** Over the M7 fixture — a
+genuine 22 KiB Claude Code turn already in the repo, written for a different milestone and therefore
+not curated for this one — the shipped default yields **no `Phone` spans at all**. Pinned as PHONE-OM
+with a positive control, because "found nothing" and "detector is dead" produce the same empty
+vector (M9-R28). The fixture moved to `tests/common/m7_turn.rs`: the guard has to run in the
+**default** build and `m7_latency.rs` is `onnx`-only, and two copies of a fixture whose whole value
+is *text nobody curated* would have drifted apart.
+
+**A corpus negative stopped being one, and it is the clearest illustration of the compound effect.**
+M8.1's `ref 0123456789 rejected` was a GB look-alike; the moment France was enabled it became a real
+number — `01 23 45 67 89`, Paris. Replaced with an all-zero run and the story kept in the corpus,
+because over-masking another country's real phone number is the *expected* shape of this trade, not
+a defect.
+
+**Also shipped, and unrelated to detection:** `--version` (version + target triple + whether the ML
+layer is compiled in), a `--help` that lists every environment variable with a test that fails if
+one is added without documenting it, an `info` default log level, and **local timestamps with an
+explicit offset**. That last one is not the one-liner it looks: `tracing_subscriber`'s `LocalTime`
+calls `time`'s local-offset lookup, which refuses to answer once the process is multi-threaded
+(CVE-2020-26235) — and `#[tokio::main]` builds the workers *before* `main`'s body runs. The failure
+is platform-split (Windows usually answers, Linux/macOS do not), so it ships as "it looked right on
+my box". `main` is now a plain `fn` that reads the offset first and builds the runtime itself; an
+indeterminate offset falls back to UTC and says so once. **And `time` turned out to be a genuinely
+new default-build dependency** — the plan assumed it was free because `Cargo.lock` already had it,
+and `cargo tree` showed it was there only under `--features onnx`. Pure Rust, so the native-dep-free
+guarantee holds; recorded because that is exactly the class of assumption this project keeps getting
+wrong.
+
 ## 2026-07-29 — M10 planning: the validator dispatch shape, measured
 
 **The open design call in M10 is closed, and the number came out against the intuition.**

@@ -68,7 +68,6 @@ Move-Item .\llm-proxy-pii-rust-x86_64-pc-windows-msvc.exe .\llm-proxy-pii-rust.e
 
 $env:NER_MODEL_REPO   = "jiting/xlm-roberta-base-ner-hrl_onnx"
 $env:NER_REQUIRED     = "1"
-$env:PII_LOCALES      = "it,us"     # add gb / de for domestic phone numbers
 $env:UPSTREAM_API_KEY = "sk-..."    # optional — a client's own header wins
 .\llm-proxy-pii-rust.exe
 ```
@@ -80,7 +79,6 @@ chmod +x llm-proxy-pii-rust
 
 export NER_MODEL_REPO=jiting/xlm-roberta-base-ner-hrl_onnx
 export NER_REQUIRED=1
-export PII_LOCALES=it,us
 export UPSTREAM_API_KEY=sk-...
 ./llm-proxy-pii-rust
 ```
@@ -102,7 +100,7 @@ Two startup lines then tell you which proxy you actually got:
 |---|---|
 | `NER_MODEL_REPO` | **The one you can't skip.** The model is not bundled, and without it the proxy still starts — masking structured PII only, sending names, organizations and locations upstream in clear. One-time revision-pinned fetch into the HuggingFace cache |
 | `NER_REQUIRED=1` | Turns that silent downgrade into a startup failure. If the first line above is missing, you are running structured-only |
-| `PII_LOCALES` | Gates **only** domestic phone numbers written without `+CC`, and only `gb` / `de` exist — the `it,us` default activates neither, so an Italian number needs `+39 …` to be masked ([M10](docs/ROADMAP.md#m10) closes this). National IDs are always on whatever you set |
+| `PII_LOCALES` | Not needed — all nine domestic-phone regions are on by default. Set it only to *narrow* the set (it replaces the default). National IDs are always on whatever you set |
 
 There is no config file — configuration is environment-only, and the full table is under
 [Configuration](#configuration).
@@ -154,13 +152,20 @@ rule-validated, so the false-positive rate stays near zero.
 |---|---|
 | **Universal** | email · phone (US + `+CC`) · credit card (Luhn) · IBAN (mod-97 + per-country length) · API keys & secrets (`sk-…`, `sk-ant-…`, `AKIA…`) |
 | **National IDs** *(10 countries)* | 🇺🇸 SSN · 🇮🇹 Codice Fiscale · 🇬🇧 NINO · 🇪🇸 DNI/NIE · 🇫🇷 NIR · 🇩🇪 Steuer-ID · 🇳🇱 BSN · 🇵🇹 NIF · 🇱🇻 personal code · 🇨🇳 Resident ID |
-| **National phone** *(opt-in via `PII_LOCALES`)* | 🇬🇧 GB · 🇩🇪 DE domestic numbers with no `+CC` (`020 7946 0958`, `030 12345678`) — validated against the real numbering plan, so order numbers and IDs aren't over-masked |
+| **Domestic phone** *(9 regions, all on by default)* | 🇩🇪 🇪🇸 🇫🇷 🇬🇧 🇮🇹 🇱🇻 🇳🇱 🇵🇹 🇨🇳 numbers written with **no `+CC`** — `020 7946 0958`, `06 69821234`, `347 1234567`, `91 123 45 67`, `01 23 45 67 89` — each checked against that country's **real numbering plan**, so order numbers and IDs aren't over-masked |
 
 National IDs are masked **regardless of locale configuration** — privacy-first: an ID that
-reaches the proxy gets masked even if its country isn't the one you configured. The **national
-phone** tier is the exception: a bare domestic number collides with ordinary digit sequences, so
-it is opt-in per locale via `PII_LOCALES` and gated by a real assigned-number check (the pure-Rust
-`phonenumber` library — no native dependency).
+reaches the proxy gets masked even if its country isn't the one you configured.
+
+The **domestic phone** tier is the only one `PII_LOCALES` touches, and it is now **on out of the
+box**. A bare domestic number collides with ordinary digit sequences, so what makes it safe is not
+the pattern but the check: the pure-Rust [`phonenumber`](https://crates.io/crates/phonenumber)
+library confirms a candidate is a real **assigned** number for the region. Measured over 35 real
+renderings and 405 digit-shaped non-phones: **recall 1.000**, zero false positives on ports, money
+amounts and reference numbers, and **zero `Phone` spans at all** on a real 22 KiB Claude Code turn.
+What it does cost is space- or dash-separated dates (`28 01 2026` is a valid Latvian number) —
+the full matrix, and why that trade was taken, is in
+[ARCHITECTURE → *Domestic phone coverage*](docs/ARCHITECTURE.md).
 
 **Unstructured entities — local ONNX NER (XLM-R int8, CPU).** People, organizations and
 locations across **ar · de · en · es · fr · it · lv · nl · pt · zh**. Runs on your own
@@ -464,7 +469,7 @@ Everything is environment-driven.
 | `UPSTREAM_FORWARD_HEADERS` | *(preset)* | Comma-separated client headers to pass through |
 | `UPSTREAM_EXTRA_HEADERS` | *(none)* | `Key=Value;Key2=Value2` static headers for every upstream request |
 | `MAX_BODY_BYTES` | `16777216` | Request body limit (16 MiB) |
-| `PII_LOCALES` | `it,us` | Gates only the *false-positive-prone* recognizer tier — today just the **national phone** recognizers, and only `gb` / `de` exist (domestic numbers with no `+CC`). **The default activates neither**, so an Italian domestic number is *not* masked unless written `+39 …` — see the coverage matrix in [ARCHITECTURE](docs/ARCHITECTURE.md) and [M10](docs/ROADMAP.md#m10). **National IDs are always on regardless** |
+| `PII_LOCALES` | `de,es,fr,gb,it,lv,nl,pt,cn` | The regions whose **domestic phone numbers** (no `+CC`) are detected. All nine are on by default; setting this **replaces** the set rather than adding to it, and a code outside the list contributes nothing. **National IDs are always on regardless** — see the coverage matrix in [ARCHITECTURE](docs/ARCHITECTURE.md) |
 | `PII_CACHE_ENTRIES` | `16` | Detection cache (S3): the byte-identical system prompt is scanned once and reused, saving the dominant NER pass. Keyed on exact bytes, so a hit can never mask *less* than a fresh scan. `0` disables it |
 | `RUST_LOG` | `info` | Log filter. Unset (or empty) means `info`, so startup lines are visible with no configuration; set e.g. `warn` or `llm_proxy_pii_rust=debug` to override. Timestamps are local time with an explicit offset |
 

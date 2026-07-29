@@ -50,7 +50,7 @@ it, which a first dry run proved was not a hypothetical.
 | [M8.1 — national phone recognizer (opt-in)](#m81) | ✅ complete · tag `v1.1.0` |
 | [M9 — GPU optimization](#m9) | ✅ complete |
 | [M9.1 — one release binary per backend](#m91) | ✅ complete · tag `v1.2.0` |
-| [M10 — v1.2.1: national phone coverage + release hygiene](#m10) | 📋 planned · tag `v1.2.1` (planned) |
+| [M10 — v1.2.1: national phone coverage + release hygiene](#m10) | 🔨 code-complete · tag `v1.2.1` (planned) |
 
 ---
 
@@ -1394,7 +1394,7 @@ user, NVIDIA device or not. Key-ed accelerators now get **their own artifact** i
 > build step, which every leg runs.
 
 <a id="m10"></a>
-## M10 — v1.2.1: national phone coverage + release hygiene 📋
+## M10 — v1.2.1: national phone coverage + release hygiene 🔨
 
 **Opened 2026-07-29, from a documentation pass that turned into a measurement.** Writing down what
 `PII_LOCALES` does surfaced that it does less than everyone assumed. A throwaway probe drove
@@ -1441,40 +1441,47 @@ ship less protection than the code can give. But precision was measured **per re
 regions unions their accepted sets, so the union's FP-rate is ≥ the worst single one and grows with
 N. That number decides the default, and we do not have it yet.
 
-- [ ] Generalize the candidate regex beyond the `0` trunk (ES, IT mobiles) **without** unbounding
-      match length — `Scan::Overlapping` linearity (M4-R19) and the M8-R8 shadowing case must hold
-- [ ] Add the missing regions to the enabled set — **the dispatch shape is settled in step 4 and it
+- [x] Generalize the candidate regex beyond the `0` trunk (ES, IT mobiles) **without** unbounding
+      match length — `Scan::Overlapping` linearity (M4-R19) and the M8-R8 shadowing case must hold.
+      Two families added (the French five-pair form; an un-anchored one), longest match ~18 chars,
+      `tests/complexity.rs` green
+- [x] Add the missing regions to the enabled set — **the dispatch shape is settled in step 4 and it
       came out (b): one shared regex per shape family, not one recognizer per region** — each with
       adversarial corpus cases, starting with **IT** (landlines across area-code lengths `02` / `06`
       / `011` / `055` / `081`, plus mobiles) since it is a declared locale of this project
-- [ ] Measure the **compound** FP-rate — each region alone, then the union — on an extended
+- [x] Measure the **compound** FP-rate — each region alone, then the union — on an extended
       adversarial corpus of phone-shaped non-phones (order numbers, invoice refs, national IDs,
-      dates), and the added latency per enabled region
-- [ ] **Tests that make "all countries are covered" checkable, not claimed.** Per enabled region:
+      dates), and the added latency per enabled region. `tests/phone_eval.rs`; numbers in
+      [ARCHITECTURE → *Domestic phone coverage*](ARCHITECTURE.md) and DEVLOG 2026-07-29
+- [x] **Tests that make "all countries are covered" checkable, not claimed.** Per enabled region:
       positive cases across the shapes a plan actually has — landline (every area-code length that
       country uses), mobile, toll-free/service — plus negatives from that country's own look-alikes
       (order numbers, VAT/tax IDs, dates, postcodes). Then the guard that keeps it honest: a test
       that **enumerates the regions the code enables and fails if any lacks corpus coverage**, so a
       region can never be switched on without its cases. A country added silently is the failure
       mode here, and it is the one a checklist alone does not catch
-- [ ] **Try the all-on default first, and only fall back if the numbers refuse it.** In order of
+- [x] **Try the all-on default first, and only fall back if the numbers refuse it.** In order of
       preference: (a) every vetted region on by default and `PII_LOCALES` **removed**; (b) all-on by
       default with `PII_LOCALES` kept as an **override of that list** — set it and it replaces the
       default set, leave it unset and you get everything; (c) only the regions whose measured
       FP-rate is acceptable are on by default, with the excluded ones documented as opt-in and the
       number that excluded them written down. (a) is cleanest but drops a documented variable, which
       a patch must not do — so **(b) is the expected landing**: same protection out of the box, and
-      an operator who set `PII_LOCALES` keeps exactly the behavior they asked for
-- [ ] **The floor, binding on every branch above: a freshly started proxy with no configuration
+      an operator who set `PII_LOCALES` keeps exactly the behavior they asked for.
+      **Landed (b), and the numbers permitted it rather than merely tolerating it:** recall 1.000
+      for every region *and* the union, **union-only false positives 0** (the compound rate is the
+      sum of its parts, not more), and **zero `Phone` spans on a real 22 KiB agent turn**. No region
+      had to be demoted to opt-in, so (c) never came up
+- [x] **The floor, binding on every branch above: a freshly started proxy with no configuration
       MUST have national-phone recognizers active.** "Everything off unless you knew to switch it
       on" is the defect this milestone exists to end, not a fallback it may land back on — so the
       branches differ only in *how many* regions are on and whether the variable survives, never in
       *whether* the default detects anything. Pin it with a test that builds the detector from an
       **empty environment** and asserts a domestic number is masked; that test is what stops the
-      regression from ever returning silently. Until M10 ships, the default stays
-      documented-as-broken — the READMEs say so today — rather than being quietly changed to
-      something that looks right and still isn't measured
-- [ ] **The over-mask guard, on text nobody curated.** The negative corpus only contains
+      regression from ever returning silently. **PHONE-NAT-06** does exactly that, for all nine
+      regions at once. Promoted to [ARCHITECTURE](ARCHITECTURE.md) → *Decisions*: a default that
+      detects nothing is a bug, not a conservative choice
+- [x] **The over-mask guard, on text nobody curated.** The negative corpus only contains
       digit-shaped non-phones *we thought of*. This milestone widens the candidate set twice over —
       a non-trunk shape family means any plausible digit group is a candidate, and ~9 plans give
       each candidate nine chances to be somebody's valid number. Real agent traffic is full of
@@ -1483,8 +1490,9 @@ N. That number decides the default, and we do not have it yet.
       22 KiB Claude Code turn already in the repo, not a synthetic string): with every region on,
       the `Phone` spans it yields must be exactly the ones we expect — a change in that count is a
       regression to explain, not a diff to accept. Cheap, automated, and it catches the gross case
-      before anyone spends a live session on it
-- [ ] `TESTING.md` catalogs the new cases; `ARCHITECTURE.md`'s matrix is **re-measured**, not
+      before anyone spends a live session on it. **PHONE-OM; the expected set is empty**, with a
+      positive control so "found nothing" can never be "detector is dead"
+- [x] `TESTING.md` catalogs the new cases; `ARCHITECTURE.md`'s matrix is **re-measured**, not
       re-asserted
 
 ### Also in `v1.2.1` — four rough edges of the shipped binary
@@ -1494,7 +1502,7 @@ fourth by running it. None is about detection, and each is the kind of defect th
 when you use the shipped artifact rather than `cargo run` with the repo open next to you: **a
 downloaded executable should be able to say what it is, what it accepts, and when things happened.**
 
-- [ ] **`--version`.** There is none, and because `main.rs` refuses unknown arguments (M9-R4),
+- [x] **`--version`.** There is none, and because `main.rs` refuses unknown arguments (M9-R4),
       `llm-proxy-pii-rust --version` does not print a version — it **fails to start**. A release
       asset is a bare executable, so once it is saved next to an older copy nothing identifies it.
       The alternative considered and **rejected** was putting the version in the artifact filename:
@@ -1503,7 +1511,7 @@ downloaded executable should be able to say what it is, what it accepts, and whe
       forfeits GitHub's stable `releases/latest/download/<name>` redirect. Print the version, the
       target triple, and whether the ML layer is compiled in (`--features onnx`), since "which
       build is this?" is the same question and `--bench-providers` already knows the answer.
-- [ ] **Default log level: `error` → `info`.** `EnvFilter::from_default_env()` falls back to
+- [x] **Default log level: `error` → `info`.** `EnvFilter::from_default_env()` falls back to
       **ERROR-only** when `RUST_LOG` is unset, so the shipped default prints **nothing at all** —
       no `listening on`, no `ONNX NER detector loaded`. Measured, not inferred: the binary was run
       both ways. That breaks the one check this project tells operators to make ("if the NER line
@@ -1513,8 +1521,10 @@ downloaded executable should be able to say what it is, what it accepts, and whe
       keeps overriding it. **This does not weaken the privacy bar** — logs carry kinds, counts and
       placeholders only, `Config`'s manual `Debug` redacts `upstream_api_key` (`src/config.rs:251`),
       and `tests/log_safety.rs` enforces it at every level; the masked-body dump stays `trace`-only.
-      Until this ships the READMEs tell operators to set `RUST_LOG=info` explicitly.
-- [ ] **Timestamps in local time, with the offset shown.** Logs are UTC today
+      *Shipped as written, plus one thing the plan missed: an exported-but-**blank** `RUST_LOG`
+      parses to no directives, which is ERROR-only — the same silent binary through a second door.
+      It now counts as unset (LOG-02).*
+- [x] **Timestamps in local time, with the offset shown.** Logs are UTC today
       (`2026-07-29T09:15:10.844780Z` — `tracing_subscriber::fmt`'s default), so an operator in
       CEST reads `10:37` for something that happened at `12:37` and has to do the arithmetic while
       debugging. UTC is the right default for a fleet of servers correlating logs; this is a
@@ -1527,8 +1537,10 @@ downloaded executable should be able to say what it is, what it accepts, and whe
       ```
       **The offset is an addition, never a replacement**: what must not ship is a local time with
       no zone at all (`12:37:04`), which reads correctly on the author's machine and is ambiguous
-      everywhere else. Looks trivial and is not — see step 1.
-- [ ] **`--help` must document the configuration, not just the two flags.** It exists (`main.rs`,
+      everywhere else. Looks trivial and is not — see step 1. *Shipped; the UTC fallback prints
+      `+00:00` rather than `Z`, which keeps one format and one code path while still giving the
+      reader an explicit offset.*
+- [x] **`--help` must document the configuration, not just the two flags.** It exists (`main.rs`,
       and the unknown-argument refusal prints it too), but it lists only `--bench-providers` /
       `--help` and defers configuration to `README.md` / `docs/SETUP.md`. For a tool whose
       configuration is **entirely** environment variables and has no config file, that means the
@@ -1545,14 +1557,21 @@ downloaded executable should be able to say what it is, what it accepts, and whe
 > that would make it a minor is option (a), removing `PII_LOCALES` outright; that is why (b) keeps
 > the variable as an override rather than deleting it.
 
-> **Until this lands, the workaround is `PII_LOCALES=gb,de`** — it is what the maintainer runs
-> locally. It buys GB and DE properly, plus whichever Italian landlines the German plan happens to
-> accept; it does nothing for Italian mobiles or Turin. That is the gap M10 closes, and the reason
-> the default is left visibly wrong in the meantime instead of being papered over.
+> **The `PII_LOCALES=gb,de` workaround is retired.** It was what the maintainer ran locally: GB and
+> DE properly, plus whichever Italian landlines the German plan happened to accept, and nothing for
+> Italian mobiles or Turin. Unset now means all nine regions; setting it still works and now
+> *narrows* rather than being the only way to get anything.
 
 > **The deliverable is the measurement.** If enabling every vetted region is safe, the tool should
 > ship it on; if it isn't, the docs should say what it costs. Widening coverage without those numbers
 > would trade a documented gap for an undocumented over-mask.
+>
+> **It was safe, and the docs say what it costs anyway.** Recall 1.000 per region and for the union;
+> union-only false positives 0; zero `Phone` spans on a real 22 KiB agent turn; latency flat
+> (0.30 → 0.32 ms/turn for 0 → 9 regions). The residual is space- or dash-separated dates —
+> 0.188 of that category, entirely IT + LV — published per category in
+> [ARCHITECTURE → *Domestic phone coverage*](ARCHITECTURE.md) rather than blended into one rate that
+> would have hidden it.
 
 ### Implementation order
 
@@ -1732,6 +1751,15 @@ only the false positives we imagined. Run:
   buy confidence in code this milestone never edits. Say so in the DEVLOG when reporting the run —
   *"five scenarios deliberately not run, because M10 cannot reach them"* is a result; silence about
   them reads as a full battery that passed.
+
+  > **Not run — and that is the one M10 box that is open, stated plainly rather than quietly
+  > dropped.** CC-01/03/04/09 need a live `ANTHROPIC_API_KEY` and a human watching two traces; this
+  > environment has neither, exactly as in [M6](#m6) and [M9](#m9). **What automated tests could
+  > reach, they reached**, and the specific risk the battery exists to cover here — over-masking a
+  > digit run inside `tool_use.input` — has its cheap, automated approximation in **PHONE-OM**: the
+  > shipped default yields **zero** `Phone` spans on a real 22 KiB Claude Code turn. That is not the
+  > same evidence as a live session (a fixture is still a fixture, and it carries no tool *results*),
+  > so the battery stays owed before `v1.2.1` is cut.
 
 <a id="backlog"></a>
 ## Backlog — documented, not scheduled
