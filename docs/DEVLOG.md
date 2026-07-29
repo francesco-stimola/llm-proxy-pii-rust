@@ -3,6 +3,50 @@
 Newest first. One entry per meaningful change — note *what* and *why*, not just
 *what*. This is the running history so context is never lost between sessions.
 
+## 2026-07-29 — M10 review round 2: the fix for the DoS had relocated the leak
+
+**All twelve round-1 closures hold** — verified against the pre-fix tree rather than the diff, so
+every "it's fixed" has a matching "it was broken there". Seven new findings, and the sharp one is
+the M4 retrospective's signature move committed one more time, by me, on the guard that was
+supposed to make it impossible.
+
+**M10-R2's digit-count gate refused numbers our own validator calls real.** It was derived from
+`possible_length` plus one character for the trunk prefix. But `phonenumber::parse` normalizes
+before it validates: it also strips an **international prefix** and a **bare country calling code**,
+so a candidate can carry several more digits than any `possible_length`. `39 3332 2673 8858` — a
+real Italian number written with its country code — was rejected before any region saw it, and for
+the `Groups` family (regex reaching 15 digits, mask stopping at 13) recall in that band was **0**,
+two thirds of them *truncated* rather than merely missed. That is M10-R1's shape, re-entered from
+the other side, by the fix for M10-R2.
+
+**It is closed by deleting the gate, and that decision came from a measurement rather than an
+argument.** Before rewriting the derivation to cover country codes, I forced the gate fully open
+and re-ran the very inputs it was introduced for: **382 → 384 ms** on 4 MiB of arbitrary digit
+groups, **258 → 257** on repeated real numbers, **145 → 145** on 781 KiB of *distinct* candidates —
+the case memoization cannot help with. It bought **nothing**. The per-scan memoization was already
+carrying all of M10-R2. A filter that costs recall and buys no speed has no defence, so it is gone
+rather than repaired.
+
+> **The rule, and it generalizes past phones:** *a cheap filter in front of a validator must be
+> derived from what the **validator** accepts, not from what the **metadata** describes — and it
+> must be proved by a differential test against generated inputs, never by a list the author
+> expected it to allow.* Its own guard asserted the superset property over 30 hand-written
+> literals — all domestic renderings, so all ≤ 13 digits — while the defect lived at 14–15.
+> **An assertion made only where it cannot fail is not an assertion.**
+
+Writing the replacement proved the same point twice more. PHONE-NAT-10 now generates from each
+family's grammar; its first version emitted a **four-pair** French form where the family requires
+five and reported the resulting miss as a detector bug, so it asserts each generated string matches
+its family *whole* before drawing any conclusion from it. And its premise had to become **per
+family**: "valid for any enabled region" folds in the deliberate per-region shape restriction and
+reports it as a miss — a 14-digit un-anchored run that only Germany's plan accepts is *not* offered
+to Germany, on purpose.
+
+The other six were docs and naming, and one is worth keeping: the same latency measurement had been
+published as two different pairs of numbers (0.30/0.32 and 0.55/0.57). Settled by re-measuring three
+times — 0.30/0.32, identical each run — and the note now records that the outlier existed, so the
+next reader knows the spread is real instead of assuming the box is deterministic.
+
 ## 2026-07-29 — M10 review round 1: twelve findings, and the two that mattered were both invisible
 
 **The review found a partial leak and an availability blocker, and the same sentence caused the

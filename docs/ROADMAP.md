@@ -1796,19 +1796,30 @@ no phone candidate at all).
 
 **Round 2 (2026-07-29) — closure verification: all twelve hold**, each checked against the
 **pre-fix tree** rather than the diff, and every `phone_eval` figure now published reproduced
-exactly. Seven new findings, one of them the reason `v1.2.1` still cannot be cut:
+exactly. Seven new findings, one of them the reason `v1.2.1` could not be cut yet:
 **[M10-R13](reviews/M10.md#m10-r13) — M10-R2's fix *relocated* the leak it closed**, the M4
 retrospective's signature move, landing on the guard that was supposed to make it impossible.
+**All seven now closed.**
+
+> **M10-R13 was closed by *deleting* the optimisation, not by repairing it** — measured with the
+> gate forced open, it bought **nothing** (382→384 ms, 258→257, 145→145 on the very inputs it was
+> added for), because the per-scan memoization was already doing all the work. A filter that costs
+> recall and buys no speed has no defence. The rule it leaves behind is in
+> [ARCHITECTURE](ARCHITECTURE.md): *a cheap filter in front of a validator must be derived from
+> what the **validator** accepts, not from what the **metadata** describes — and proved
+> differentially, never by a list of inputs the author expected it to allow.* Its old guard
+> asserted the property over 30 hand-written literals, all ≤ 13 digits, while the defect lived at
+> 14–15: **an assertion made only where it cannot fail is not an assertion.**
 
 | ID | Title | Sev | Status |
 |---|---|---|---|
-| [M10-R13](reviews/M10.md#m10-r13) | The digit-count gate rejects numbers `is_valid()` accepts, so M10-R2's fix re-creates M10-R1's truncation | **leak** | [ ] |
-| [M10-R14](reviews/M10.md#m10-r14) | `docs/SETUP.md` still documents the pre-M10 world, incl. "an Italian domestic number is not masked" | docs | [ ] |
-| [M10-R15](reviews/M10.md#m10-r15) | `shrink_to_a_valid_prefix`'s doc says it *is* applied to the trunk families; the code says the opposite | docs | [ ] |
-| [M10-R16](reviews/M10.md#m10-r16) | The same latency measurement is published as two different numbers; ARCHITECTURE's is the one that doesn't reproduce | measurement | [ ] |
-| [M10-R17](reviews/M10.md#m10-r17) | `every_declared_shape_is_needed_by_a_corpus_case` does not read the corpus | guard | [ ] |
-| [M10-R18](reviews/M10.md#m10-r18) | M10-R12's closure claims both comments were fixed; the shared module's still points at the `#[ignore]`d guard | low | [ ] |
-| [M10-R19](reviews/M10.md#m10-r19) | The M10-R10 fix left a new `cargo doc` warning of its own | low | [ ] |
+| [M10-R13](reviews/M10.md#m10-r13) | The digit-count gate rejects numbers `is_valid()` accepts, so M10-R2's fix re-creates M10-R1's truncation | **leak** | [x] |
+| [M10-R14](reviews/M10.md#m10-r14) | `docs/SETUP.md` still documents the pre-M10 world, incl. "an Italian domestic number is not masked" | docs | [x] |
+| [M10-R15](reviews/M10.md#m10-r15) | `shrink_to_a_valid_prefix`'s doc says it *is* applied to the trunk families; the code says the opposite | docs | [x] |
+| [M10-R16](reviews/M10.md#m10-r16) | The same latency measurement is published as two different numbers; ARCHITECTURE's is the one that doesn't reproduce | measurement | [x] |
+| [M10-R17](reviews/M10.md#m10-r17) | `every_declared_shape_is_needed_by_a_corpus_case` does not read the corpus | guard | [x] |
+| [M10-R18](reviews/M10.md#m10-r18) | M10-R12's closure claims both comments were fixed; the shared module's still points at the `#[ignore]`d guard | low | [x] |
+| [M10-R19](reviews/M10.md#m10-r19) | The M10-R10 fix left a new `cargo doc` warning of its own | low | [x] |
 
 <a id="backlog"></a>
 ## Backlog — documented, not scheduled
@@ -1844,6 +1855,18 @@ code needed. A *single* instance choosing per **request** needs a provider **map
 prefer routing by the request's `model`** — no client changes, no custom headers, composes with the
 existing presets; keep it opt-in. **Not a privacy change** — masking runs *before* routing, so a mis-route
 is a wrong-provider error, never a leak.
+
+### Should `cargo doc --no-deps` join the "green with no warnings" bar? *(raised by [M10-R10](reviews/M10.md#m10-r10) / [M10-R19](reviews/M10.md#m10-r19))*
+It does not today, and the consequence was measured rather than argued: M10 added two intra-doc-link
+warnings and **nobody noticed**, because ~14 already existed. Almost all are one mechanical class — a
+public doc comment linking a private item — so the cleanup is small and the question is really about
+the bar, not the work.
+
+**Deliberately not decided inside M10.** It affects code that milestone never touched, and a
+project-wide quality bar set as a side effect of a patch release is a bar nobody agreed to. The
+argument for it is the one this repo already makes about `clippy`: *a warning channel with 14
+standing entries cannot surface the fifteenth*, and these dense doc comments are exactly where this
+codebase's reasoning lives.
 
 ### Other later items
 Auth & rate-limiting stages · TLS (or running behind a TLS terminator) · config-file support & container

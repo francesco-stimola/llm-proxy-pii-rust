@@ -189,21 +189,24 @@ de-anonymized incrementally on the way back (placeholders split across token chu
 reassembled). Request-side masking always runs first, so the provider only ever sees
 placeholders.
 
-**PII locales (M4, filled in by M8.1).** Detection runs in three tiers: **universal** (email, IBAN,
-credit card, `+CC` phone) and **national IDs** (10 countries) are **always on** — a national ID is
-masked regardless of configuration (privacy-first). `PII_LOCALES` (comma-separated, default
-`it,us`) gates only the **FP-prone** tier: recognizers ambiguous enough that a wrong locale would
-over-mask. Since M8.1 that tier is no longer empty — `fp_prone_recognizers` (`src/pii/recognizers.rs`)
-matches **`gb` and `de`**, each adding a domestic phone recognizer for numbers written without
-`+CC`, validated against the real numbering plan. Every other code, **including the default `it` and
-`us`, contributes nothing** — so `PII_LOCALES` changes behavior only when you add `gb` / `de`. It is
-not a language setting: if names are going through unmasked, the cause is the NER model, not this.
+**PII locales (M4, filled in by M8.1, opened up by M10).** Detection runs in three tiers:
+**universal** (email, IBAN, credit card, `+CC` phone) and **national IDs** (10 countries) are
+**always on** — a national ID is masked regardless of configuration (privacy-first). `PII_LOCALES`
+gates only the **domestic-phone** tier: numbers written with no `+CC`, which are ambiguous enough
+with ordinary digit runs that they were opt-in until M10 measured them.
 
-A locale code names a **numbering plan**, not a country's coverage: `de` masks any `0`-trunk number
-that fits the German plan, which by overlap includes several Italian landlines but not, say, French
-or Swiss ones. Measured matrix in [`ARCHITECTURE.md`](ARCHITECTURE.md) → *Locale coverage*. The
-consequence to know while developing: **with the shipped default, an Italian domestic number is not
-masked** — [M10](ROADMAP.md#m10) is open to close that.
+Since M10 that tier is **on by default** — nine regions (`de es fr gb it lv nl pt cn`), each
+declaring the renderings its own numbers take, every candidate checked against the real numbering
+plan by `phonenumber`. Setting `PII_LOCALES` **replaces** that set rather than adding to it; a code
+outside the nine contributes nothing; and setting it **empty** (`PII_LOCALES=`) turns the tier off
+entirely. It is not a language setting: if names are going through unmasked, the cause is the NER
+model, not this.
+
+A locale code names a **numbering plan**, not a country's coverage, and the plans overlap — a GB
+mobile also validates as DE, and `0123456789` is a real Paris number. That is privacy-safe
+(over-masking a real phone is never a leak) but it means enabling one region does not reject
+another's numbers. The measured per-category cost of the shipped default is in
+[`ARCHITECTURE.md`](ARCHITECTURE.md) → *Domestic phone coverage*.
 
 ## Fallback: GNU toolchain (no MSVC, no admin)
 

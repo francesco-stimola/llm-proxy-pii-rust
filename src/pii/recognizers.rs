@@ -394,8 +394,8 @@ pub struct PhoneRegion {
     /// region takes those to 0 while Chinese mobiles (`138 0013 8000`, a *groups* shape) stay
     /// covered.
     ///
-    /// Each entry is load-bearing: `every_declared_shape_is_needed_by_a_corpus_case` fails if
-    /// a shape is listed that no corpus positive for that region requires.
+    /// Each entry is load-bearing: `every_declared_shape_is_needed_by_a_real_rendering` fails
+    /// if a shape is listed that no rendering of that country requires.
     pub shapes: &'static [PhoneShape],
 }
 
@@ -605,23 +605,32 @@ fn national_phone_recognizers(regions: &[(Id, &[PhoneShape])]) -> Vec<Recognizer
             if applicable.is_empty() {
                 return None;
             }
-            // The digit counts any enabled region could possibly accept, read out of
-            // libphonenumber's own metadata — see `plausible_digit_counts`.
-            let plausible = plausible_digit_counts(&applicable);
             Some(Recognizer {
                 kind: PiiKind::Phone,
                 regex: Regex::new(pattern).unwrap(),
                 validate: Some(Box::new(move |matched: &str| {
-                    // **Length gate first, and it is the difference between a cheap
-                    // rejection and an expensive one (M10-R2).** `.any()` short-circuits
-                    // only on *accept*, so a rejected candidate otherwise pays every
-                    // enabled region's `parse()` — and on adversarial input rejection is
-                    // the whole workload, not the rare case. The gate answers most of them
-                    // without parsing anything.
-                    let digits = matched.bytes().filter(u8::is_ascii_digit).count();
-                    if digits >= usize::BITS as usize || plausible & (1u64 << digits) == 0 {
-                        return false;
-                    }
+                    // **No cheap pre-filter here, and that is a decision with a measurement
+                    // behind it (M10-R13).** A digit-count gate derived from libphonenumber's
+                    // `possible_length` metadata was added to make rejection cheap — the
+                    // expensive verdict, since `.any()` short-circuits only on *accept*. It
+                    // was **wrong and it bought nothing**:
+                    //
+                    // - Wrong, because `parse` strips an international prefix and a bare
+                    //   country calling code as well as the national prefix, so a candidate
+                    //   may legitimately be several digits longer than any `possible_length`.
+                    //   `39 3332 2673 8858` is a real Italian number written with its country
+                    //   code and the gate refused it — a **recall gap, i.e. a miss**, which is
+                    //   the one direction a privacy filter may never fail in.
+                    // - Nothing, because the per-scan memoization in `push_candidates` already
+                    //   collapses the adversarial case. Measured with the gate fully open, on
+                    //   the same inputs it was introduced for: 4 MiB of rejected digit groups
+                    //   384 ms vs 382 ms, 4 MiB of accepted ones 257 vs 258, 781 KiB of
+                    //   *distinct* candidates (the case memoization cannot help) 145 vs 145.
+                    //
+                    // The rule that outlives it: **a cheap filter in front of a validator must
+                    // be derived from what the *validator* accepts, not from what the metadata
+                    // describes** — and it has to be proved differentially, against generated
+                    // inputs, never against a list the author expected it to allow.
                     applicable
                         .iter()
                         .any(|region| national_phone_valid(*region, matched))
@@ -641,79 +650,6 @@ fn national_phone_recognizers(regions: &[(Id, &[PhoneShape])]) -> Vec<Recognizer
             })
         })
         .collect()
-}
-
-/// A bitmask of the digit counts a candidate could possibly have for **some** enabled
-/// region — the cheap gate in front of `phonenumber::parse` (M10-R2).
-///
-/// **Read out of libphonenumber's metadata, never hand-written**, so it cannot disagree with
-/// `is_valid` and cannot drift when the crate's metadata is updated:
-/// `descriptors().general().possible_length()` is the same table `is_valid` is derived from.
-/// `possible_local_length()` is unioned in as well — in a trunk-prefix country you can dial a
-/// local number without the area code, and `parse` accepts that form.
-///
-/// **Plus one for the trunk digit.** A candidate is the text as written (`020 7946 0958`,
-/// 11 digits) while the metadata describes the *national number* (`2079460958`, 10) — `parse`
-/// strips the national prefix. Every prefix in this table is a single character, which
-/// `every_enabled_regions_national_prefix_is_one_character` asserts rather than assumes: the
-/// allowance is exactly one digit, so a region with a longer prefix would need this revisited
-/// and will fail that test instead of silently under-masking.
-///
-/// A `u64` indexed by digit count. It is a **superset** of what `is_valid` accepts by
-/// construction, so the gate can only ever reject a candidate no region could have taken —
-/// which is what makes it safe to put in front of a privacy decision.
-fn plausible_digit_counts(regions: &[Id]) -> u64 {
-    let mut mask = 0u64;
-    for region in regions {
-        let Some(metadata) = phonenumber::metadata::DATABASE.by_id(region.as_ref()) else {
-            // An unknown region cannot be gated on knowledge we do not have: **fail open**
-            // (let everything through to `parse`), never closed. Unreachable for the shipped
-            // table — `PHONE_REGIONS` only names regions libphonenumber carries.
-            return u64::MAX;
-        };
-        let d = metadata.descriptors();
-        // **Every descriptor, not just `general`.** The general one's `possible_length` is
-        // empty for most regions — the lengths live on the per-type descriptors — and a mask
-        // built from it alone rejects real numbers. Found by running it: the first cut
-        // silently masked *nothing*, which is the direction a length gate must never fail in.
-        let per_type = [
-            d.fixed_line(),
-            d.mobile(),
-            d.toll_free(),
-            d.premium_rate(),
-            d.shared_cost(),
-            d.personal_number(),
-            d.voip(),
-            d.pager(),
-            d.uan(),
-            d.voicemail(),
-            d.standard_rate(),
-            d.carrier(),
-            d.no_international(),
-        ];
-        let trunk = u32::from(metadata.national_prefix().is_some());
-        for descriptor in std::iter::once(d.general()).chain(per_type.into_iter().flatten()) {
-            for length in descriptor
-                .possible_length()
-                .iter()
-                .chain(descriptor.possible_local_length())
-            {
-                for extra in 0..=trunk {
-                    let bit = u32::from(*length) + extra;
-                    if bit < u64::BITS {
-                        mask |= 1u64 << bit;
-                    }
-                }
-            }
-        }
-    }
-    // A region whose metadata declared no lengths at all must not silently switch detection
-    // off. Fail open — the gate is an optimisation, and an optimisation may never be the
-    // thing that decides a value is not PII.
-    if mask == 0 {
-        return u64::MAX;
-    }
-    mask
 }
 
 /// Whether `phonenumber` confirms `matched` is a real, **assigned** number for `country`
@@ -863,9 +799,15 @@ impl Recognizer {
     ///
     /// Cutting at separators rather than one byte at a time is not just an optimisation: the
     /// group boundary is exactly where a shorter *rendering of the same number* ends, so at
-    /// most three attempts are made (four groups is the widest family). Applied to the trunk
-    /// families too, where it is strictly more protective — it resolves in one pass what the
-    /// fixpoint used to resolve in two, and it can only ever accept what `is_valid` accepts.
+    /// most four attempts are made (five groups is the widest family).
+    ///
+    /// **Applied to the un-anchored families only** ([`Recognizer::shrink_on_reject`]), and the
+    /// asymmetry was measured rather than assumed. The trunk families do not need it — their
+    /// anchor already pins the start, so the fixpoint recovers what they shadow — and giving it
+    /// to them costs something real: it accepts mid-number prefixes that are valid in *some*
+    /// region, which bridged `020 7946 0958 0161 496 0000` into a single coalesced span and
+    /// turned PHONE-NAT-04's two numbers into one placeholder. Privacy-safe, but a fidelity
+    /// loss for no gain, and a break of the GB/DE behaviour M8.1 measured.
     fn shrink_to_a_valid_prefix<'a>(
         &self,
         input: &'a str,
@@ -1993,9 +1935,14 @@ mod tests {
     /// and byte counts, 0.250 of the offsets pool). So the entries are held to the same
     /// standard as the region set itself: earn your place with a case.
     ///
-    /// Removing any declared shape must break a positive that region owns.
+    /// Removing any declared shape must change what one of [`REGION_RENDERINGS`] detects.
+    ///
+    /// **The renderings are a list in this file, not the corpus** — a unit test cannot read
+    /// `tests/corpus/pii_cases.json`, and saying otherwise in the test's *name* would be the
+    /// same class of overclaim this milestone keeps finding. Every one of them is also a
+    /// corpus positive; keeping the two in step is review's job, not this test's.
     #[test]
-    fn every_declared_shape_is_needed_by_a_corpus_case() {
+    fn every_declared_shape_is_needed_by_a_real_rendering() {
         for region in PHONE_REGIONS {
             for shape in region.shapes {
                 let reduced: Vec<PhoneShape> = region
@@ -2194,83 +2141,156 @@ mod tests {
         }
     }
 
-    /// **PHONE-NAT-10 (M10-R2) — the length gate is a superset of what `is_valid` accepts.**
+    /// **PHONE-NAT-10 (M10-R13) — differential recall: nothing may sit between a candidate
+    /// and its validator.**
     ///
-    /// The gate sits in front of a privacy decision, so "it makes things faster" is not
-    /// enough: it must be incapable of rejecting a candidate a region would have taken. Both
-    /// halves of the derivation are checked — the metadata really yields lengths (an empty
-    /// mask would silently mask nothing, which is how the first cut failed), and the +1 trunk
-    /// allowance covers every enabled region's actual prefix.
+    /// The property, stated so it cannot be satisfied by choosing convenient inputs: take a
+    /// candidate **generated from a shape family's own grammar**; if `is_valid` accepts it for
+    /// a region that **declares that family**, the detector must produce a `Phone` span
+    /// covering the whole thing. Anything less is a **miss**, which for a privacy tool is the
+    /// one direction that is not a trade-off.
+    ///
+    /// **Its predecessor asserted the same idea over 30 hand-written literals and could not
+    /// fail.** They were all domestic renderings, so all ≤ 13 digits — and the defect lived at
+    /// 14–15, where `phonenumber` strips an international prefix or a bare country code that
+    /// no domestic rendering carries. *An assertion made only where it cannot fail is not an
+    /// assertion.* Generating the inputs is what takes the author's expectations out of them.
+    ///
+    /// **The premise is per family on purpose.** Asking "valid for *any* region" would fold in
+    /// the per-region shape restriction ([`PhoneRegion::shapes`]) and report it as a miss: a
+    /// 14-digit un-anchored run that only Germany's plan accepts is *deliberately* not offered
+    /// to Germany. That is a precision decision with its own measurement, not a filter bug,
+    /// and conflating the two would make this guard un-actionable.
     #[test]
-    fn the_length_gate_never_rejects_a_number_a_region_accepts() {
-        let all: Vec<Id> = vetted_phone_regions();
-        let mask = plausible_digit_counts(&all);
-        assert_ne!(mask, 0, "an empty gate would reject every candidate");
-        assert_ne!(
-            mask,
-            u64::MAX,
-            "a fully-open gate means the metadata lookup silently failed"
-        );
+    fn a_valid_number_is_never_lost_between_the_regex_and_the_validator() {
+        let detector = StructuredRecognizers::new();
 
-        // The allowance the gate's soundness rests on: at most one trunk character.
-        for region in &all {
-            let metadata = phonenumber::metadata::DATABASE
-                .by_id(region.as_ref())
-                .expect("every shipped region is in libphonenumber's database");
-            if let Some(prefix) = metadata.national_prefix() {
-                assert_eq!(
-                    prefix.chars().count(),
-                    1,
-                    "{region:?}'s national prefix is {prefix:?} — the gate's +1 allowance \
-                     assumes a single trunk character and would under-mask this region"
+        // Deterministic pseudo-random digits — a fixed sequence, so a failure reproduces.
+        let mut seed = 0x5eed_1234_u64;
+        let mut digit = move || {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            b'0' + ((seed >> 33) % 10) as u8
+        };
+        let mut group = |n: usize, first_nonzero: bool| -> String {
+            (0..n)
+                .map(|i| {
+                    let d = digit();
+                    if i == 0 && first_nonzero && d == b'0' {
+                        '7'
+                    } else {
+                        d as char
+                    }
+                })
+                .collect()
+        };
+
+        let mut checked = 0usize;
+        let mut accepted = 0usize;
+        // 400 rounds × 6 families ≈ 2,400 candidates, which yields a few hundred valid ones
+        // (the floor below pins that). Sized for the **debug** profile `cargo test` builds,
+        // where `phonenumber::parse` is ~50× slower: 3,000 rounds took 93 s, which is a guard
+        // nobody would keep running.
+        for _ in 0..400 {
+            // Per family, in `PHONE_SHAPES` order, built to that family's own grammar —
+            // including the group counts that push a candidate past any *domestic* length,
+            // which is exactly the band the deleted length gate refused.
+            let generated = [
+                (
+                    Trunk,
+                    format!(
+                        "0{} {} {}",
+                        group(2, false),
+                        group(4, false),
+                        group(4, false)
+                    ),
+                ),
+                (Trunk, format!("0{} {}", group(3, false), group(8, false))),
+                (
+                    TrunkPairs,
+                    format!(
+                        "0{} {} {} {} {}",
+                        group(1, false),
+                        group(2, false),
+                        group(2, false),
+                        group(2, false),
+                        group(2, false)
+                    ),
+                ),
+                (
+                    Groups,
+                    format!(
+                        "{} {} {} {}",
+                        group(2, true),
+                        group(4, false),
+                        group(4, false),
+                        group(4, false)
+                    ),
+                ),
+                (LongBlock, format!("{} {}", group(3, true), group(8, false))),
+                (
+                    Groups,
+                    format!("{} {} {}", group(3, true), group(3, false), group(3, false)),
+                ),
+            ];
+
+            for (shape, candidate) in generated {
+                checked += 1;
+                // **The generator has to speak the family's grammar, and checking that is not
+                // a formality — the first version emitted a four-pair French form where the
+                // family requires five, so it produced renderings we never claimed to detect
+                // and reported them as misses.** A rendering no family matches is a documented
+                // recall gap (we do not claim every rendering on earth), not a defect on the
+                // path this test is about.
+                let pattern = PHONE_SHAPES
+                    .iter()
+                    .find(|(s, _)| *s == shape)
+                    .map(|(_, p)| Regex::new(p).unwrap())
+                    .expect("every generated shape must exist in PHONE_SHAPES");
+                assert!(
+                    pattern
+                        .find(&candidate)
+                        .is_some_and(|m| m.as_str() == candidate),
+                    "the generator produced {candidate:?}, which the {shape:?} family does not \
+                     match whole — fix the generator, not the detector"
+                );
+
+                // Only the regions that declare this family will ever see this candidate.
+                let owners: Vec<Id> = PHONE_REGIONS
+                    .iter()
+                    .filter(|r| r.shapes.contains(&shape))
+                    .map(|r| r.id)
+                    .collect();
+                if !owners.iter().any(|r| national_phone_valid(*r, &candidate)) {
+                    continue;
+                }
+                accepted += 1;
+
+                let text = format!("x {candidate} y");
+                let spans: Vec<String> = detector
+                    .detect(&text)
+                    .into_iter()
+                    .filter(|e| e.kind == PiiKind::Phone)
+                    .map(|e| e.text)
+                    .collect();
+                assert!(
+                    spans.iter().any(|s| s == &candidate),
+                    "{candidate:?} ({} digits) is valid for a region that declares the \
+                     {shape:?} family, but the detector produced {spans:?} — that is a MISS, \
+                     not an over-mask",
+                    candidate.bytes().filter(u8::is_ascii_digit).count()
                 );
             }
         }
 
-        // Every corpus positive must clear the gate — the concrete instance of the claim.
-        for number in [
-            "030 12345678",
-            "069 90009000",
-            "0171 1234567",
-            "03012345678",
-            "91 123 45 67",
-            "912 345 678",
-            "612 34 56 78",
-            "900 123 456",
-            "01 23 45 67 89",
-            "06 12 34 56 78",
-            "01.23.45.67.89",
-            "020 7946 0958",
-            "0113 496 0000",
-            "07911 123456",
-            "0800 1111",
-            "02079460958",
-            "02 12345678",
-            "06 69821234",
-            "011 5627111",
-            "055 27551",
-            "081 7413000",
-            "347 1234567",
-            "320 123 4567",
-            "800 123 456",
-            "67 22 33 44",
-            "67 123 456",
-            "020 123 4567",
-            "0343 123456",
-            "06 12345678",
-            "21 123 4567",
-            "210 123 456",
-            "010 12345678",
-            "021 61234567",
-            "138 0013 8000",
-        ] {
-            let digits = number.bytes().filter(u8::is_ascii_digit).count();
-            assert!(
-                mask & (1u64 << digits) != 0,
-                "the length gate rejects {number:?} ({digits} digits) before any region \
-                 could see it"
-            );
-        }
+        // Non-vacuity: the generator must actually be producing valid numbers, or this passes
+        // by never reaching its assertion (M4-R13, BENCH-01).
+        assert!(
+            accepted > 100,
+            "only {accepted} of {checked} generated candidates were valid for an owning \
+             region — the generator drifted and this guard is asserting nothing"
+        );
     }
 
     #[test]

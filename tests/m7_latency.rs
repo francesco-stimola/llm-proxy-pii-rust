@@ -51,8 +51,10 @@ use llm_proxy_pii_rust::pii::{DetectError, PiiDetector, PiiEntity};
 
 // Lives in a shared module because M10's over-mask guard needs the SAME turn while running
 // in the **default** build — this file is `onnx`-only, and two copies of a fixture whose
-// whole value is "text nobody curated" would drift apart. `realistic_turn`'s shape is
-// asserted below, so the move cannot go unnoticed either.
+// whole value is "text nobody curated" would drift apart. The shape assertion below is part of
+// an `#[ignore]`d test in this `onnx`-gated file, so it does NOT run in an ordinary `cargo
+// test` — `tests/phone_overmask.rs` is what pins the fixture's size, part distribution and span
+// set on every default run (M10-R18).
 #[path = "common/m7_turn.rs"]
 mod m7_turn;
 

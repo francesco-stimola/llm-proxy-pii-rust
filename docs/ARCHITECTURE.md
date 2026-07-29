@@ -152,41 +152,46 @@ ceiling rather than an expectation.
    rather than quietly dropped from the negative corpus when they stopped passing.
 
 **Latency is not the constraint** — over the same 22 KiB turn the cost is **flat in the region
-count**: ~0.55 ms/turn with none enabled, ~0.57 ms with all nine. That is the point of the
-dispatch shape: one recognizer per shape *family*, with the region loop inside the validator, so
-adding a region costs validations on candidates only, never another O(n·L) scan of every field
-(see `national_phone_recognizers`). *(Conditions, per this project's rule about never quoting a
-number without them: reference box, `--release`, `--test-threads=1`, **not idle**. Read the
-milliseconds as a busy box's — repeat runs moved the absolute by ~1.8× while the flatness never
-moved. The flatness is what the decision rests on, and background load cannot bend a flat line
-into a sloped one.)*
+count**: **0.30 ms/turn with none enabled, 0.32 ms with all nine**, reproduced three times. That is
+the point of the dispatch shape: one recognizer per shape *family*, with the region loop inside the
+validator, so adding a region costs validations on candidates only, never another O(n·L) scan of
+every field (see `national_phone_recognizers`). *(Conditions, per this project's rule about never
+quoting a number without them: reference box, `--release`, `--test-threads=1`, **not idle**. One
+noisy run once put these at 0.55/0.57 and that figure was briefly published here alongside the
+other — the discrepancy is why these are the reproduced ones. The **flatness** is what the decision
+rests on, and it survived every run: background load raises a flat line without sloping it.)*
 
-**Two guards keep a digit-dense field affordable, and neither is optional.** The candidate rescan
-probes O(n) start positions, so a field of digit groups asks the same question about the same
-bytes over and over — at up to five `phonenumber::parse()` calls each, and `.any()` short-circuits
-only on *accept*, so a **rejection is the expensive verdict**. Unguarded, a legal 12 MiB body cost
-**105 s** of CPU on an unauthenticated path. So: validator results are **memoized per scan** (a
-call-local map — the validator is a pure function of the matched bytes, so a hit cannot change a
-verdict), and a **digit-count gate** read out of libphonenumber's own metadata rejects
-implausible lengths before any parsing. The gate is derived, never hand-written: it unions each
-enabled region's `possible_length` across every descriptor, plus one for the trunk digit —
-`possible_length` on the *general* descriptor alone is empty for most regions, and a mask built
-from it silently masked **nothing**, which is the direction a length gate must never fail in. If
-the metadata yields nothing it **fails open**: an optimisation may never be the thing that decides
-a value is not PII.
+**What keeps a digit-dense field affordable is memoization — and nothing else, which was itself a
+finding.** The candidate rescan probes O(n) start positions, so a field of digit groups asks the
+same question about the same bytes over and over, at up to five `phonenumber::parse()` calls each;
+and `.any()` short-circuits only on *accept*, so a **rejection is the expensive verdict**.
+Unguarded, a legal 12 MiB body cost **105 s** of CPU on an unauthenticated path. Validator results
+are therefore **memoized per scan** — a call-local map, no lock, no cross-request state; the
+validator is a pure function of the matched bytes, so a hit can never change a verdict. That alone
+takes 4 MiB of digit groups from 45-50 s to **0.38 s**.
 
-> ⚠️ **The gate is NOT yet the superset it was built to be — [M10-R13](reviews/M10.md#m10-r13) is
-> open.** `parse` normalizes before it validates: it strips an **international prefix** and a
-> **bare country calling code**, not only the one trunk character the mask allows for. So a
-> candidate can carry 1–5 more digits than the national number the mask was derived from, and for
-> the `Groups` family — whose regex reaches 15 digits against a mask that stops at 13 — every 14-
-> and 15-digit candidate is rejected before any region sees it. Measured: recall **0** in that
-> band, with two thirds of the accepted-but-rejected ones *truncated* rather than missed
-> (`39 3332 2673 8858` → `[PHONE_1] 8858`), i.e. the M10-R1 shape re-entered from the other side.
-> **The rule this is teaching, and it generalizes past phones:** *a cheap filter in front of a
-> validator must be derived from what the **validator** accepts, not from what the **metadata**
-> describes — and it must be proved by a differential test against the thing it is filtering, never
-> by a list of inputs the author expected it to allow.*
+> **A digit-count gate was added alongside it and then deleted — both halves are worth keeping**
+> ([M10-R13](reviews/M10.md#m10-r13)). Derived from libphonenumber's `possible_length` metadata to
+> make rejection cheap, it was **wrong**: `parse` normalizes before it validates, stripping an
+> **international prefix** and a **bare country calling code** as well as the national prefix, so a
+> candidate may carry several more digits than any `possible_length`. `39 3332 2673 8858` — a real
+> Italian number written with its country code — was refused before any region saw it, and for the
+> `Groups` family (regex reaching 15 digits against a mask stopping at 13) recall in that band was
+> **0**, two thirds of them *truncated* rather than merely missed. A **miss**, i.e. the one
+> direction a privacy filter may never fail in.
+>
+> And it was **worthless**: measured with the gate fully open, on the very inputs it was introduced
+> for — 384 ms vs 382, 257 vs 258, and 145 vs 145 on *distinct* candidates, the case memoization
+> cannot help. The memoization was already doing all of the work.
+>
+> **The rule, and it generalizes past phones:** *a cheap filter in front of a validator must be
+> derived from what the **validator** accepts, not from what the **metadata** describes — and it
+> must be proved by a differential test against generated inputs, never by a list the author
+> expected it to allow.* Its own guard asserted the superset property over 30 hand-written
+> literals, all domestic renderings and therefore all <= 13 digits; the defect lived at 14-15.
+> *An assertion made only where it cannot fail is not an assertion.* PHONE-NAT-10 now generates
+> from each family's grammar and asserts the property that matters directly: **if a region that
+> declares this family accepts it, we detect it.**
 
 **The validator is not a locale *discriminator*.** National plans overlap, so a number valid in
 one region can be valid in another — a GB mobile also validates as DE, and `0123456789` is a real

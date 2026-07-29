@@ -9,7 +9,11 @@
 //! `m7_latency.rs`. In short: real Claude Code traffic is ~22 KB of instruction boilerplate
 //! and tool schemas carrying almost no PII, plus a ~100-byte user message carrying all of
 //! it — and `mask_all` runs **per field**, so the field distribution is what decides cost.
-//! `m7_latency.rs` asserts that shape, so it cannot silently drift.
+//! **What actually holds that shape in place, stated precisely** (M10-R18 — the earlier version
+//! of this line pointed at a guard that does not run): `tests/phone_overmask.rs` pins the byte
+//! range, the part distribution and the exact `Phone`-span set on **every default `cargo test`**.
+//! `m7_latency.rs` carries the fuller shape assertion, but inside an `#[ignore]`d test in an
+//! `onnx`-gated file — so it runs only with a model present, i.e. never in CI.
 
 // Each consumer uses a different subset (the latency tests want `Part`, the over-mask guard
 // wants only the text), and an unused item in the other crate is not a defect.
