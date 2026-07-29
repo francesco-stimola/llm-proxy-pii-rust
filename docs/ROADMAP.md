@@ -1522,6 +1522,84 @@ executable should be able to answer "what am I, and what do I accept?" without t
 > ship it on; if it isn't, the docs should say what it costs. Widening coverage without those numbers
 > would trade a documented gap for an undocumented over-mask.
 
+### Implementation order
+
+Written 2026-07-29 for the builder. **Steps 1–3 are independent of the phone work and should land
+first** — they are small, they unblock the `RUST_LOG=info` workaround the READMEs currently
+prescribe, and keeping them in their own commit keeps the risky detection change reviewable alone.
+
+**1 · Default log level** (`src/main.rs`). `EnvFilter::from_default_env()` →
+`EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"))`. Test: assert the
+fallback directive is `info` when `RUST_LOG` is absent and that a set `RUST_LOG` still wins (drive
+the filter builder directly — do **not** mutate process env in a parallel test run). Then delete the
+`RUST_LOG=info` line and its warning box from both READMEs.
+
+**2 · `--version`** (`src/main.rs`). Print `CARGO_PKG_VERSION`, the target triple, and whether the
+`onnx` feature is compiled in. It must be handled in the same `match` as `--bench-providers`, before
+`Config::from_env()`, so it works without a valid upstream config. Test in `tests/binary_smoke.rs`
+alongside CLI-01/CLI-02, driving the **real binary**: the flag prints the manifest version and exits
+0. Catalog it as CLI-04.
+
+**3 · `--help` covers the configuration.** Extend `USAGE` with every environment variable, grouped
+as the README table is. **The guard is the point** — a hand-written help text drifts. Add a test
+that `include_str!`s `src/config.rs` and `src/server.rs`, regex-extracts every `env::var("X")` /
+`env_flag("X")` / `env_or("X", …)` key, and asserts each appears in `USAGE`. That test is what makes
+"documented" true a year from now, and it fails loudly the first time someone adds a variable.
+CLI-02 already asserts `--help` exits 0 — extend rather than duplicate it, and catalog the new
+coverage guard as CLI-05. Note the deliberate scope limit: it proves every key is **named**, not that
+its description is accurate; say so in `TESTING.md` rather than letting the guard read stronger than
+it is.
+
+**4 · Decide the validator shape — the one blocking design call.** `Recognizer.validate` is
+`Option<fn(&str) -> bool>` (`recognizers.rs:55`), a bare fn pointer that **cannot carry a region** —
+which is why GB and DE each needed a hand-written wrapper today. Two ways out, and they trade scan
+cost against validation cost:
+  - **(a) One recognizer per region.** Zero type change: `fp_prone_recognizers` already returns a
+    `Vec<Recognizer>`, so each region contributes its own regex + wrapper. Cost: N regexes scanned
+    over every field, and `Scan::Overlapping` is O(n·L) *per recognizer*.
+  - **(b) One recognizer per *shape family*, validator tries the enabled regions.** Scan count stays
+    constant as N grows and validation only runs on candidates (rare). Cost: `validate` must become
+    a closure — `Box<dyn Fn(&str) -> bool + Send + Sync>` — since detectors are held as
+    `Box<dyn PiiDetector>` and run under `spawn_blocking`. Check what that breaks (any `Clone` or
+    `Copy` derive on `Recognizer`) before committing to it.
+
+  **(b) is the expected answer** — scan cost is paid on every byte of every field, validation only on
+  the rare candidate — but it is the one that changes a type, so decide it with a measurement on the
+  M7 fixture (`cargo test --test m7_latency -- --ignored --nocapture --test-threads=1`) rather than
+  by argument. Whichever wins, **GB and DE must keep the exact behaviour M8.1 measured**; their
+  corpus cases are the regression guard for that.
+
+**5 · Bound the region set by a principle, not by taste.** Cover **exactly the countries the tool
+already claims** — the 10 national-ID countries and the XLM-R language set: IT, ES, FR, NL, PT, LV,
+CN, on top of today's GB + DE. (US needs nothing: it has no trunk-`0` domestic form, and the
+universal arm already covers `NNN NNN NNNN`.) That is defensible, finite, and leaves "why not
+Belgium?" answered by the same rule that answers it everywhere else in the detector.
+
+**6 · The candidate regex, per shape family.** Today's three arms all require a leading `0`
+(`recognizers.rs:346`). Add a **non-trunk** family for IT mobiles (`347 1234567`) and ES
+(`91 123 45 67`). **The M4-R19 constraint is absolute: match length must stay bounded** (~15 chars),
+or `Scan::Overlapping` stops being linear and the complexity DoS is back. Do not write an open
+`(?:[ -]?\d)+`. Re-run `tests/complexity.rs` — its wall-clock budgets are the guard — and keep the
+M8-R8 shadowing case green (the recognizer must **never** override `redetect`; the `mask_all`
+fixpoint is what un-shadows an adjacent number).
+
+**7 · Corpus and the coverage guard.** `tests/corpus/pii_cases.json` already carries a per-case
+`locale` field (`recognizers.phone`, today 5 positive / 1 negative — thin). Add, per region:
+positives across every area-code length that country really uses, plus mobile and toll-free/service;
+negatives from that country's own look-alikes (order numbers, VAT/tax IDs, dates, postcodes). Then
+the guard from the scope list above: **a test that enumerates the regions the code enables and fails
+if any has no corpus case**, so a region cannot be switched on silently. New IDs continue the
+`PHONE-NN` scheme; catalog them in `TESTING.md`.
+
+**8 · Measure, then choose the default.** An `#[ignore]`d harness in the shape of `ner_eval` that
+prints precision / recall / FP-rate **per region and for the union**, plus the added latency per
+enabled region. Only then take the (a)/(b)/(c) default decision from the scope list, and write the
+numbers into `ARCHITECTURE.md`'s matrix — **re-measured, not re-asserted** — and into `DEVLOG.md`.
+
+**9 · Close the loop.** `PII_LOCALES` stays accepted whatever is decided (a patch must not break an
+operator who set it); the README's `PII_LOCALES` rows and the `it,us`-is-inert warnings come out
+only once the code makes them false.
+
 <a id="backlog"></a>
 ## Backlog — documented, not scheduled
 
