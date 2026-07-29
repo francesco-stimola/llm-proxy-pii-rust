@@ -1558,7 +1558,7 @@ coverage guard as CLI-05. Note the deliberate scope limit: it proves every key i
 its description is accurate; say so in `TESTING.md` rather than letting the guard read stronger than
 it is.
 
-**4 · Decide the validator shape — the one blocking design call.** `Recognizer.validate` is
+**4 · The validator shape — decided, do not re-open.** `Recognizer.validate` is
 `Option<fn(&str) -> bool>` (`recognizers.rs:55`), a bare fn pointer that **cannot carry a region** —
 which is why GB and DE each needed a hand-written wrapper today. Two ways out, and they trade scan
 cost against validation cost:
