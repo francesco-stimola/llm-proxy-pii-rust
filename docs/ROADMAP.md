@@ -1933,10 +1933,18 @@ does not either; both are re-opened as new findings rather than quietly re-score
 | [M10-R28](reviews/M10.md#m10-r28) | The budget bounds a **field**, not a request: the same 15.6 MiB split across 78 fields answers 200 in 57 s, unchanged by its own fix | **BLOCKER** | [ ] |
 | [M10-R29](reviews/M10.md#m10-r29) | `MAX_PHONE_VALIDATIONS_PER_FIELD` is spent by every validating recognizer, so the always-on national-ID tier refuses legal requests with the phone tier off | correctness | [ ] |
 | [M10-R30](reviews/M10.md#m10-r30) | The published bound is per *pass*, not per field — `mask_all` re-mints it up to five times, and a sub-budget field measures 2–4× the published 0.5 s | measurement | [ ] |
-| [M10-R31](reviews/M10.md#m10-r31) | M10-R26's closure corrected ARCHITECTURE and left the disproved sentence in the source, at the line the finding named | guard | [ ] |
-| [M10-R32](reviews/M10.md#m10-r32) | M10-R27 changed client-visible behaviour with no test; DOS-06's assertions pass unchanged on the message it replaced | guard | [ ] |
+| [M10-R31](reviews/M10.md#m10-r31) | M10-R26's closure corrected ARCHITECTURE and left the disproved sentence in the source, at the line the finding named | guard | [x] |
+| [M10-R32](reviews/M10.md#m10-r32) | M10-R27 changed client-visible behaviour with no test; DOS-06's assertions pass unchanged on the message it replaced | guard | [x] |
 | [M10-R33](reviews/M10.md#m10-r33) | Both READMEs' fail-closed list omits the 400 this milestone added, and the "linear under load" bullet beside it is contradicted by measurement | docs | [ ] |
-| [M10-R34](reviews/M10.md#m10-r34) | PHONE-NAT-10's country-code aim names five regions and carries four | low | [ ] |
+| [M10-R34](reviews/M10.md#m10-r34) | PHONE-NAT-10's country-code aim names five regions and carries four | low | [x] |
+
+> **Four closed without waiting, three held back on purpose.** R31 · R32 · R34 are closed
+> (`fmt`/`clippy` clean, **214 default green**, one new case). **R33 is deliberately half-closed and
+> stays `[ ]`:** its fail-closed-list omission is fixed in both READMEs, but its linearity bullet
+> asserts a per-request CPU bound the code does not yet have — writing a corrected bound before
+> [M10-R28](reviews/M10.md#m10-r28) sets one would be the very failure R33 is about. **R28 · R29 ·
+> R30 are with the maintainer**, not deferred: each needs a threshold or a behaviour decision that
+> is not the builder's to take alone.
 
 <a id="backlog"></a>
 ## Backlog — documented, not scheduled

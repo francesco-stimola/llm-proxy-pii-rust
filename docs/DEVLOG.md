@@ -3,6 +3,55 @@
 Newest first. One entry per meaningful change — note *what* and *why*, not just
 *what*. This is the running history so context is never lost between sessions.
 
+## 2026-07-30 — M10 round 4: two closures fell, and the budget turned out to bound the wrong unit
+
+**Round 4 verified the round-3 closures and six of eight hold.** The headline is that the two that
+did not are the two that mattered. The full record is in [reviews/M10.md](reviews/M10.md); what
+belongs here is what the round *changed about the milestone's own claims*.
+
+**The fail-open hunt came back empty, and that is the good news.** The one thing round 4 was
+launched to answer — can an exhausted validation budget ever become a silent *"no PII found"* — is
+**no**, on every path walked: `detect()`, `FailOpen` (the structured recognizers are never wrapped in
+it), `CompositeDetector`, `CachingDetector` (an error is never cached), `Vault::mask_all`'s fixpoint,
+`PrivacyStage`, and the response path. The budget is a call-local `Cell`, so `try_detect` stays a
+pure function of its input and `pii::cache`'s soundness argument survives untouched.
+
+**But the budget bounds a *field*, and the client chooses how many fields a body has.** M10-R28:
+the same 15.6 MiB that M10-R20 refuses in one field answers **200 in 57 s** split across 78 legal
+`messages[].content` fields — and the pre-fix binary is *indistinguishable* on that body, three warm
+runs each. So M10-R20's repro really is fixed and its **conclusion** is not: *"the work is bounded"*
+is true of a field, and the number that made it a BLOCKER is a property of a request. This is M4's
+retrospective lesson 6 — *ask what a guard holds constant* — arriving a **third** time, and each time
+the un-varied quantity was one level above the one the guard thinks in. Every complexity guard this
+project has written measures one string. The masking path takes a body.
+
+**And the budget is spent by validators it was never sized for.** M10-R29: the counter lives in
+`push_candidates` and decrements for *any* recognizer with a validator — the nine always-on
+national-ID checksums included, which are nanoseconds of arithmetic rather than the ~6.5 µs
+`phonenumber` call the number was derived from. Measured consequence: with `PII_LOCALES=` (phone tier
+**not loaded**), 800 KB of bare 9-digit tokens is a 400 in 45 ms where `1.2.0` masked and forwarded
+it in 150 ms. A live behaviour regression, and M10-R27's own rule landing on M10-R27's own fix — the
+refusal it made actionable is now *confidently wrong*, prescribing a SQL `LIMIT` for a cost that came
+from somewhere else.
+
+**Closed in this pass: R31, R32, R34.** R32 added **E2E-05**, the test M10-R27 shipped without: the
+refusal asserted where the client reads it, including that no digit run in the message is drawn from
+the body. R34 was filed as a doc comment naming five countries over an array of four — the array was
+the smaller half, because the line indexing it said `% 4`, so the fifth was unreachable by
+construction. Fixing both moved a measured floor (slot 3: 17 → 15 of 2400), which is the only reason
+anyone would know it had been broken. *A collection and the modulus that indexes it are one fact.*
+
+**R33 is half-closed on purpose and stays open.** Both READMEs now list the budget refusal among the
+causes of a 400 — the one an otherwise completely legal body can trigger. Their *"a large body can't
+stall the proxy for everyone"* bullet is left **untouched**: it claims a per-request CPU bound, and
+until R28 sets one, any rewording would either restate the false conclusion or invent a number.
+Describing a bound the code does not have is the failure that finding is about.
+
+**R28, R29 and R30 are with the maintainer**, which is the process working rather than stalling: each
+needs a threshold with functional consequences or a change to visible behaviour, and R29 has to be
+settled first or R28's number gets measured against work the budget was never meant to count.
+Suite green throughout: **214 default**, `fmt` and `clippy -D warnings` clean.
+
 ## 2026-07-29 — "the CC battery needs a live API key" was never true, and it kept costing decisions
 
 **Corrected on the maintainer's report, and the interesting part is *why* it survived.** The CC

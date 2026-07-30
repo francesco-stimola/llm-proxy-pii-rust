@@ -194,8 +194,12 @@ hardware; large fields are chunked so long documents work too.
 ### The bar it holds itself to
 
 - **Fail closed.** An unreadable request shape, an unknown content-block type, a required
-  detector that errors, or masking that can't reach a stable fixpoint all **block the request
-  (400)** rather than forward anything of unknown PII status. Only `POST /v1/chat/completions`
+  detector that errors, masking that can't reach a stable fixpoint, or a single field so
+  digit-dense it exhausts the phone-validation budget all **block the request (400)** rather than
+  forward anything of unknown PII status. That last one is the only 400 an otherwise completely
+  legal body can trigger, and it is worth knowing before you meet it: retrying the same body fails
+  identically — shrink the field instead (a `LIMIT` on the query behind an oversized tool result,
+  fewer rows per call). Only `POST /v1/chat/completions`
   (and `POST /v1/messages` when `UPSTREAM_PROVIDER=anthropic`) is proxied — everything else is
   `404`, never forwarded.
 - **Never log raw PII.** Logs carry kinds, counts and placeholders — never values. Enforced

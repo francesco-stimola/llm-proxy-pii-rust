@@ -641,9 +641,13 @@ fn national_phone_recognizers(regions: &[(Id, &[PhoneShape])]) -> Vec<Recognizer
                 })),
                 scan: Scan::Overlapping,
                 // **Only the un-anchored families, and the asymmetry is the point (M10-R1).**
-                // A trunk-anchored candidate already begins where a number begins, so a
-                // rejected over-match shadows rather than truncates and `mask_all`'s fixpoint
-                // recovers it (M8-R8) — shrinking there would buy nothing and cost something
+                // The trunk anchor *constrains* a candidate's start; it does not forbid a
+                // mid-value one (M10-R26/R31): inside `020 7946 0958` the `0958` is a `0` on
+                // an ASCII word boundary. What differs is the consequence — a shifted trunk
+                // span is **accepted**, so it overlaps the real number, the resolver unions
+                // the two and the bytes stay covered. The outcome is an over-mask, never a
+                // truncation, and `mask_all`'s fixpoint (M8-R8) has nothing to recover.
+                // Shrinking here would buy nothing and cost something
                 // real: it accepts mid-number prefixes that are valid in *some* region, which
                 // bridges two adjacent numbers into one coalesced span. Measured on
                 // `020 7946 0958 0161 496 0000`, that turned PHONE-NAT-04's two spans into
@@ -816,11 +820,12 @@ impl Recognizer {
     /// **prefix starting at the same byte** — or there is nothing left to cut (M10-R1).
     ///
     /// **This is what the trunk `0` used to provide for free, and removing the anchor took it
-    /// away.** A trunk-anchored candidate can only *begin where a number begins*, so a greedy
-    /// over-match that swallowed the next number's trunk was rejected, the real number stayed
-    /// whole, and [`Vault::mask_all`](crate::pii::anonymizer::Vault::mask_all)'s fixpoint
-    /// masked it on a later pass (M8-R8). An **un-anchored** candidate has no such pin, and the
-    /// consequence is not a shadowed value but a **truncated** one:
+    /// away.** The anchor *constrains* a candidate's start without forbidding a mid-value one
+    /// (M10-R26/R31) — inside `020 7946 0958` the `0958` is a `0` on an ASCII word boundary, so
+    /// a trunk span can start there. What the anchor buys is the **consequence**: that shifted
+    /// span is *accepted*, so it overlaps the real number and the resolver unions the two — an
+    /// over-mask, and no byte is left in clear. An **un-anchored** candidate has no such pin,
+    /// and there a rejected over-match yields a **truncated** value instead:
     ///
     /// ```text
     /// 912 345 678 913 456 789      two real Portuguese numbers, one space apart
@@ -2291,7 +2296,7 @@ mod tests {
 
         /// Calling codes of the regions that declare the `Groups` family (ES · IT · LV · PT ·
         /// CN), as a leading token the family's regex accepts (1–3 digits, non-zero first).
-        const GROUPS_OWNER_CALLING_CODES: [&str; 4] = ["34", "39", "86", "371"];
+        const GROUPS_OWNER_CALLING_CODES: [&str; 5] = ["34", "39", "86", "351", "371"];
 
         // Deterministic pseudo-random digits — a fixed sequence, so a failure reproduces.
         let mut seed = 0x5eed_1234_u64;
@@ -2364,7 +2369,11 @@ mod tests {
                     Groups,
                     format!(
                         "{} {} {} {}",
-                        GROUPS_OWNER_CALLING_CODES[(seed_tick() % 4) as usize],
+                        // Indexed by the array's own length, not a restated literal — a `% 4`
+                        // here is what silently kept PT out of the aim while the doc comment
+                        // above claimed it (M10-R34).
+                        GROUPS_OWNER_CALLING_CODES
+                            [(seed_tick() as usize) % GROUPS_OWNER_CALLING_CODES.len()],
                         group(4, false),
                         group(4, false),
                         group(4, false)
@@ -2432,10 +2441,15 @@ mod tests {
         // **Slot 3's floor is lower, and the number is measured rather than rounded.** That is
         // the country-code band, and it is *intrinsically* sparse: a random 12-digit national
         // number is rarely an assigned one, so even aiming a real calling code at it yields
-        // ~17 acceptances per 400 rounds (uniform digits yielded 2). Raising the floor would
+        // ~15 acceptances per 400 rounds (uniform digits yielded 2). Raising the floor would
         // mean raising the round count, and this test already costs ~17 s in the debug profile.
         // The honest thing is a floor the aiming can actually clear, with the reason next to it
         // — not a uniform number that makes the table look tidy.
+        //
+        // **The margin here is 5, and it got smaller on purpose.** Fixing M10-R34 put PT into
+        // the aim it had always claimed, which re-drew the whole deterministic sequence: this
+        // slot measured 17 with four calling codes and measures 15 with five. Measured counts
+        // as of `main`: `[355, 356, 330, 15, 28, 234]` of 2400.
         const FLOORS: [usize; 6] = [20, 20, 20, 10, 20, 20];
         for (slot, count) in per_shape.iter().enumerate() {
             assert!(

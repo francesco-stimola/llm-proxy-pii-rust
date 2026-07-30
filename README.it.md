@@ -196,9 +196,13 @@ vengono suddivisi in finestre, così funzionano anche i documenti lunghi.
 ### Lo standard che si impone
 
 - **Fail closed.** Una forma di richiesta illeggibile, un tipo di blocco di contenuto
-  sconosciuto, un rilevatore obbligatorio che fallisce, o un mascheramento che non raggiunge un
-  punto fisso stabile **bloccano la richiesta (400)** invece di inoltrare qualcosa dallo stato
-  PII sconosciuto. Solo `POST /v1/chat/completions` (e `POST /v1/messages` quando
+  sconosciuto, un rilevatore obbligatorio che fallisce, un mascheramento che non raggiunge un
+  punto fisso stabile, o un singolo campo così denso di cifre da esaurire il budget di validazione
+  telefonica **bloccano la richiesta (400)** invece di inoltrare qualcosa dallo stato PII
+  sconosciuto. L'ultimo è l'unico 400 che un corpo per il resto perfettamente legale può
+  provocare, ed è utile saperlo prima di incontrarlo: rimandare lo stesso corpo fallisce in modo
+  identico — va rimpicciolito il campo (un `LIMIT` sulla query dietro un risultato di tool troppo
+  grande, meno righe per chiamata). Solo `POST /v1/chat/completions` (e `POST /v1/messages` quando
   `UPSTREAM_PROVIDER=anthropic`) è proxato — tutto il resto è `404`, mai inoltrato.
 - **Mai loggare PII in chiaro.** I log riportano categorie, conteggi e segnaposto — mai i valori.
   Garantito da un test, non da una convenzione.

@@ -799,3 +799,118 @@ async fn e2e_cache_on_a_repeated_large_field_still_masks_both_times() {
         );
     }
 }
+
+/// Mock upstream that records how many requests it was asked to serve, so a test can
+/// assert **nothing was forwarded** rather than merely that the client saw a 400.
+async fn spawn_counting_mock_upstream() -> (SocketAddr, Arc<Mutex<usize>>) {
+    let hits = Arc::new(Mutex::new(0usize));
+    let seen = hits.clone();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let app = Router::new().route(
+        "/v1/chat/completions",
+        post(move |Json(_body): Json<Value>| {
+            let seen = seen.clone();
+            async move {
+                *seen.lock().unwrap() += 1;
+                Json(json!({ "choices": [] }))
+            }
+        }),
+    );
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    (addr, hits)
+}
+
+/// E2E-05 (M10-R27 / M10-R32) — a field that exhausts the validation budget is refused, and the
+/// refusal **the client reads** is the actionable one.
+///
+/// M10-R27 rewrote that message so an agent receiving the 400 can act on it instead of retrying
+/// the identical body forever. It was verified by hand, once, at the moment it was written — and
+/// the only automated assertions on it live in DOS-06, which reads `err.message` straight off the
+/// detector and passes byte-for-byte on the message M10-R27 *replaced* (M10-R32). So the half that
+/// carries the whole point — that the string survives `DetectError`'s `Display`, `ctx.block`, and
+/// `error_response` into `error.message` — was pinned nowhere at all. Both have moved before.
+///
+/// Three properties, and (c) is the one that must never be dropped: this is the single string in
+/// the codebase deliberately built from request bytes, so it is where the never-log-raw-PII bar is
+/// easiest to breach by accident.
+#[tokio::test]
+async fn e2e05_budget_refusal_reaches_the_client_intact_and_carries_no_input_bytes() {
+    // The same odometer as DOS-06: `(b, c)` enumerated over 81 M combinations, so no candidate
+    // recurs and the per-scan memo is inert. A modular-hash generator silently repeats after its
+    // period and reports "the budget was never reached" as the product's doing (M10-R20).
+    let mut field = String::with_capacity(1024 * 1024 + 64);
+    let mut i = 0u64;
+    while field.len() < 1024 * 1024 {
+        i += 1;
+        field.push_str(&format!(
+            "row {:02} {:04} {:04} end ",
+            10 + (i / 81_000_000) % 80,
+            1000 + i % 9000,
+            1000 + (i / 9000) % 9000
+        ));
+    }
+
+    let (upstream, hits) = spawn_counting_mock_upstream().await;
+    let proxy = spawn_proxy(upstream).await;
+    let resp = reqwest::Client::new()
+        .post(format!("http://{proxy}/v1/chat/completions"))
+        .json(&json!({ "messages": [{ "role": "user", "content": field }] }))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(
+        resp.status(),
+        400,
+        "the budget refusal must reach the client as a 400"
+    );
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["error"]["type"], "blocked");
+    let message = body["error"]["message"]
+        .as_str()
+        .expect("the 400 body must carry error.message")
+        .to_string();
+
+    // (a) it names what happened.
+    assert!(
+        message.contains("budget"),
+        "the refusal must say what was exceeded, got: {message}"
+    );
+    // (b) it is *actionable* — the half DOS-06 cannot distinguish from the message it replaced.
+    //     An agent that retries the identical body gets the identical 400; the message has to say
+    //     so, and name the field-shrinking move that does work.
+    assert!(
+        message.contains("Retrying it unchanged will fail identically"),
+        "the refusal must tell its client that a bare retry is futile, got: {message}"
+    );
+    assert!(
+        message.contains("LIMIT"),
+        "the refusal must name a concrete way to shrink the field, got: {message}"
+    );
+
+    // (c) no byte of the request survives in it. The message is built from the input's *length*
+    //     and a constant, so the only digit runs it may carry are those two numbers — anything
+    //     else is request-derived text in a string that is logged and returned to the client.
+    assert!(
+        !message.contains("row "),
+        "the refusal must carry no input-derived text, got: {message}"
+    );
+    let digit_runs: Vec<&str> = message
+        .split(|c: char| !c.is_ascii_digit())
+        .filter(|s| !s.is_empty())
+        .collect();
+    for run in &digit_runs {
+        assert!(
+            !field.contains(run) || run.len() < 4,
+            "the refusal leaks the digit run {run:?} from the request body: {message}"
+        );
+    }
+
+    // And the refusal is a refusal: the upstream was never asked.
+    assert_eq!(
+        *hits.lock().unwrap(),
+        0,
+        "a blocked request must not be forwarded — the upstream saw it"
+    );
+}

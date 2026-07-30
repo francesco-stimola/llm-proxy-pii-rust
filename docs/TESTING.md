@@ -149,6 +149,16 @@ false positive): `email`, `phone`, `ssn`, `credit_card`, `iban`, `secret`,
 - E2E-03 (TC-03) — secret + email in a shell command output (`e2e03_secret_and_email_masked_before_upstream`).
 - E2E-04 (TC-04) — all categories (email/phone/SSN/card/IBAN/secret) in a `SELECT … FROM DUAL`-style
   result, masked upstream and restored to the client (`e2e04_db_query_result_all_categories_masked_and_restored`).
+- E2E-05 (M10) — the validation-budget refusal, asserted **where the client reads it**
+  (`e2e05_budget_refusal_reaches_the_client_intact_and_carries_no_input_bytes`): a 1 MiB field of
+  distinct phone-shaped groups → `400`, `error.type = "blocked"`, and `error.message` that (a)
+  names the budget, (b) carries the actionable clause M10-R27 added — *retrying unchanged fails
+  identically*, plus the `LIMIT` — and (c) contains **no digit run drawn from the request**. The
+  counting mock upstream proves the request was never forwarded. **(c) is the load-bearing one**:
+  this message is the single string the codebase deliberately builds from request bytes, so it is
+  where the never-log-raw-PII bar is easiest to breach by accident. Added by M10-R32, whose point
+  was that DOS-06's assertions pass byte-for-byte on the message M10-R27 *replaced*, and that the
+  survival of the string through `Display` → `ctx.block` → `error_response` was pinned nowhere.
 - E2E-BIN — `tests/binary_smoke.rs`: boots the **compiled binary** (`main` → `from_env` → `run`) against a mock upstream for one PII round-trip; the only test that exercises the real process (kept to a single case).
 - **M5 additions (`tests/proxy_e2e.rs`)** — the full-HTTP companions to the pipeline-level INT
   tests, driving the real router + a mock upstream rather than `PrivacyStage` directly:
