@@ -126,7 +126,7 @@ impl Vault {
     /// field and every pass of one request (M10-R28 / M10-R30).
     ///
     /// **The fixpoint is half of why the old bound did not exist.** This loop calls detection up to
-    /// [`MAX_MASK_PASSES`] times plus one confirming `redetect`, and each of those calls used to
+    /// `MAX_MASK_PASSES` times plus one confirming `redetect`, and each of those calls used to
     /// mint a fresh allowance — so one field could legitimately spend five times the published
     /// budget without ever "exceeding" it. The budget travels with the request now, which is what
     /// makes the number in `MAX_PHONE_VALIDATIONS_PER_REQUEST` mean what its name says.

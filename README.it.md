@@ -206,10 +206,14 @@ vengono suddivisi in finestre, così funzionano anche i documenti lunghi.
   `UPSTREAM_PROVIDER=anthropic`) è proxato — tutto il resto è `404`, mai inoltrato.
 - **Mai loggare PII in chiaro.** I log riportano categorie, conteggi e segnaposto — mai i valori.
   Garantito da un test, non da una convenzione.
-- **Lineare sotto carico.** Il percorso di mascheramento è dimostrabilmente lineare sia nella
-  *dimensione* del campo che nel *numero* di entità, e il lavoro CPU-bound gira fuori
-  dall'executor asincrono: un corpo grande non può bloccare il proxy per tutti. *Un proxy giù non
-  protegge nulla.*
+- **Lineare sotto carico, e limitato per richiesta.** Il percorso di mascheramento è
+  dimostrabilmente lineare sia nella *dimensione* del campo che nel *numero* di entità, e il lavoro
+  CPU-bound gira fuori dall'executor asincrono. Ma *lineare è una forma, non un tetto*: un corpo
+  legale da 15,6 MiB di testo denso di cifre teneva occupato un worker per **57 s**, finché
+  l'ammontare di validazioni telefoniche non è stato riferito alla **richiesta** invece che al
+  campo — lo stesso corpo ora viene rifiutato in **0,19 s**, e il caso peggiore che una singola
+  richiesta può costare è **~1,4 s** di CPU. Un corpo grande non può bloccare il proxy per tutti.
+  *Un proxy giù non protegge nulla.*
 - **Deterministico.** Lo stesso valore ottiene sempre lo stesso segnaposto all'interno di una
   richiesta, così le conversazioni multi-turno stateless restano coerenti.
 

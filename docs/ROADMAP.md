@@ -1785,20 +1785,21 @@ only the false positives we imagined. Run:
 
 ### What is left before the tag
 
-Written 2026-07-29, **updated 2026-07-30 after review round 4.** The milestone's scope items are all
-`[x]` and the suite is green on both feature sets (213 / 246 tests, zero warnings; `fmt`,
-`clippy -D warnings` clean; `cargo doc` 15 warnings, all pre-existing). Item 1 is no longer outside
-the code.
+Written 2026-07-29, **rewritten 2026-07-30 after round 4's findings were closed.** The milestone's
+scope items are all `[x]`, all **34** review findings across four rounds are `[x]`, and the suite is
+green on both feature sets (**217 default / 250 onnx**, zero warnings; `fmt`, `clippy -D warnings`
+clean; `cargo doc` 15 warnings, all pre-existing). Nothing is left in the code.
 
-1. **[M10-R28](reviews/M10.md#m10-r28) — the tag blocker, and it needs a decision, not a patch.**
-   Round 4 ran the closure verification: the budget cannot fail *open* (that walk is in the record,
-   and it came back clean), but it bounds a **field** while the body chooses its field count, so
-   M10-R20's DoS is reachable at the shipped default with a legal body — verified against a pre-fix
-   build on the identical payload. Fixing it means a **per-request** budget, which needs a seam on
-   `PiiDetector` and a threshold with functional consequences. **Settle
-   [M10-R29](reviews/M10.md#m10-r29) first** — the same counter is currently spent by the always-on
-   national-ID validators, so any number chosen now would be measured against the wrong work, and
-   that one is refusing legal requests today.
+1. **Review round 5 — closure verification of round 4.** Round 4's seven findings are closed but
+   **unverified**, and three of them changed shipped behaviour: the validation allowance is now
+   per-**request** rather than per-field, only the phone validator charges it, and the threshold moved
+   50,000 → 500,000. The things to attack, in order: whether **`try_detect_within` can be reached
+   with a *fresh* allowance on any path** (the wrappers each had to override it — a missed one
+   restores the old behaviour silently and every test stays green); whether `FailOpen`'s new
+   distinction between a failed detector and an exhausted request holds; and whether the refusal
+   guards, which cross a **test** allowance rather than the shipped 500,000, still fail when the
+   property breaks. Round 4's own verdict table is the model — a closure is checked against the
+   finding's own `file:line`s, or against nothing.
 2. **The CC battery — CC-01 / CC-03 / CC-04 / CC-09** (step 10 above). Needs the maintainer at the
    keyboard with Claude Code pointed at the proxy. **No key configuration required.**
 3. **Bump `Cargo.toml` to `1.2.1`** — a `chore(release):` commit at tag time, as `1.2.0` was. Left
@@ -1912,39 +1913,59 @@ as [M10-R23](reviews/M10.md#m10-r23). Seven new findings, **all now closed.**
 > default) are written up in the record as **considered and not taken**, with the reasoning, so the
 > next reader inherits the decision rather than re-deriving it.
 
-**Round 4 (2026-07-30) — closure verification: six of eight hold.** The fail-open hunt the round was
-commissioned for came back **empty** — an exhausted budget is an `Err` on every path
-(`detect` · `FailOpen` · `CompositeDetector` · `CachingDetector` · the `mask_all` fixpoint · the
-response path), and the walk is written out in the record. Both feature sets green (213 / 246, zero
-warnings), `cargo doc` 15 warnings all pre-existing, and every `phone_eval` figure reproduced exactly.
-[M10-R20](reviews/M10.md#m10-r20)'s closure does **not** hold and [M10-R26](reviews/M10.md#m10-r26)'s
-does not either; both are re-opened as new findings rather than quietly re-scored. Seven new findings.
+**Round 4 (2026-07-30): 7 findings, all 7 closed — and six of eight round-3 closures held.** The
+fail-open hunt the round was commissioned for came back **empty**: an exhausted budget is an `Err` on
+every path (`detect` · `FailOpen` · `CompositeDetector` · `CachingDetector` · the `mask_all`
+fixpoint · the response path), and the walk is written out in the record. Both feature sets were green
+at the time (213 / 246, zero warnings), `cargo doc` 15 warnings all pre-existing, and every
+`phone_eval` figure reproduced exactly. [M10-R20](reviews/M10.md#m10-r20)'s closure did **not** hold
+and [M10-R26](reviews/M10.md#m10-r26)'s did not either; both were re-opened as new findings rather
+than quietly re-scored.
 
-> **[M10-R28](reviews/M10.md#m10-r28) is the one that blocks the tag.** The budget bounds a *field*
-> and the body chooses its field count, so the DoS M10-R20 was raised for is reachable unchanged —
-> measured against a **pre-fix build on the identical body**, HEAD and `9751847` are indistinguishable.
-> It needs a threshold with functional consequences and a seam that does not exist yet, so it is the
-> maintainer's call, not a mechanical fix. [M10-R29](reviews/M10.md#m10-r29) is the same budget
-> counting work it was not written for, and it **refuses legal requests today** — settle it first, or
-> M10-R28's number gets measured against the wrong work.
+> **[M10-R28](reviews/M10.md#m10-r28) was the tag blocker, and the fail-open hunt coming back empty is
+> what makes it interesting.** The budget bounded a *field* while the body chooses its field count, so
+> the DoS M10-R20 was raised for was reachable unchanged — measured against a **pre-fix build on the
+> identical body**, HEAD and `9751847` were indistinguishable. Its fix is one `Budget` per request,
+> threaded through a new `try_detect_within` seam. And the *reason* nothing failed open — nothing wraps
+> the structured recognizers in `FailOpen` **today** — turned out to be the defect underneath: a
+> property of the wiring, not of the code. `FailOpen` now swallows a failed *detector* and propagates
+> an exhausted *request*.
 
 | ID | Title | Sev | Status |
 |---|---|---|---|
-| [M10-R28](reviews/M10.md#m10-r28) | The budget bounds a **field**, not a request: the same 15.6 MiB split across 78 fields answers 200 in 57 s, unchanged by its own fix | **BLOCKER** | [ ] |
-| [M10-R29](reviews/M10.md#m10-r29) | `MAX_PHONE_VALIDATIONS_PER_FIELD` is spent by every validating recognizer, so the always-on national-ID tier refuses legal requests with the phone tier off | correctness | [ ] |
-| [M10-R30](reviews/M10.md#m10-r30) | The published bound is per *pass*, not per field — `mask_all` re-mints it up to five times, and a sub-budget field measures 2–4× the published 0.5 s | measurement | [ ] |
+| [M10-R28](reviews/M10.md#m10-r28) | The budget bounds a **field**, not a request: the same 15.6 MiB split across 78 fields answers 200 in 57 s, unchanged by its own fix | **BLOCKER** | [x] |
+| [M10-R29](reviews/M10.md#m10-r29) | `MAX_PHONE_VALIDATIONS_PER_FIELD` is spent by every validating recognizer, so the always-on national-ID tier refuses legal requests with the phone tier off | correctness | [x] |
+| [M10-R30](reviews/M10.md#m10-r30) | The published bound is per *pass*, not per field — `mask_all` re-mints it up to five times, and a sub-budget field measures 2–4× the published 0.5 s | measurement | [x] |
 | [M10-R31](reviews/M10.md#m10-r31) | M10-R26's closure corrected ARCHITECTURE and left the disproved sentence in the source, at the line the finding named | guard | [x] |
 | [M10-R32](reviews/M10.md#m10-r32) | M10-R27 changed client-visible behaviour with no test; DOS-06's assertions pass unchanged on the message it replaced | guard | [x] |
-| [M10-R33](reviews/M10.md#m10-r33) | Both READMEs' fail-closed list omits the 400 this milestone added, and the "linear under load" bullet beside it is contradicted by measurement | docs | [ ] |
+| [M10-R33](reviews/M10.md#m10-r33) | Both READMEs' fail-closed list omits the 400 this milestone added, and the "linear under load" bullet beside it is contradicted by measurement | docs | [x] |
 | [M10-R34](reviews/M10.md#m10-r34) | PHONE-NAT-10's country-code aim names five regions and carries four | low | [x] |
 
-> **Four closed without waiting, three held back on purpose.** R31 · R32 · R34 are closed
-> (`fmt`/`clippy` clean, **214 default green**, one new case). **R33 is deliberately half-closed and
-> stays `[ ]`:** its fail-closed-list omission is fixed in both READMEs, but its linearity bullet
-> asserts a per-request CPU bound the code does not yet have — writing a corrected bound before
-> [M10-R28](reviews/M10.md#m10-r28) sets one would be the very failure R33 is about. **R28 · R29 ·
-> R30 are with the maintainer**, not deferred: each needs a threshold or a behaviour decision that
-> is not the builder's to take alone.
+> **All seven closed (2026-07-30), in two passes and deliberately in that order.** R31 · R32 · R34
+> went first as they needed no decision; R33 was **half**-closed and held at `[ ]` on its own
+> instruction, because its linearity bullet claims a per-request CPU bound the code did not yet have.
+> Then R29 (what the budget counts) and R28 (what unit it belongs to), which the maintainer settled —
+> **R29 first, or R28's number gets measured against work the budget was never meant to count.** R30
+> and R33's second half fell out of R28 as predicted: the seam is the same one.
+>
+> **The threshold moved because of a legal payload, not an adversarial one.** Charging per `parse()`
+> instead of per candidate (R29) shrank the effective allowance ~9×, and at 50,000 units an ordinary
+> **367 KB database tool result with one phone column** came back a `400`. Raised to **500,000**
+> (~1.4 s of CPU, ≈50,000 numbers per request) on the maintainer's call. *A fail-closed threshold
+> whose refusal is a routine event is the wrong threshold.* Not an environment variable: a CPU bound
+> an operator can raise is not a bound.
+>
+> **Measured after:** the 15.6 MiB body that answered `200` in 57 s is **refused in 0.19 s**; a real
+> 22 KiB Claude Code turn spends **0** units; a 6.1 MB / 80,000-row SQL result is still masked.
+> **217 default / 250 onnx green**, `fmt` and `clippy -D warnings` clean on both.
+>
+> Two things outlived the round, both promoted. *A budget scoped to a unit the client can multiply is
+> a rate, not a bound* ([ARCHITECTURE](ARCHITECTURE.md)), and its testing companion — *when a guard's
+> unit is smaller than the attack's, no number of axes inside its own unit will reach the attack*
+> ([TESTING](TESTING.md#algorithmic-complexity-guards)). And `FailOpen` now distinguishes a failed
+> **detector** from an exhausted **request** allowance: round 4 hunted for a fail-open path and found
+> none, and the reason none existed — nothing wraps the structured recognizers in `FailOpen` *today* —
+> was itself the defect.
 
 <a id="backlog"></a>
 ## Backlog — documented, not scheduled

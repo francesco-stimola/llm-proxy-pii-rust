@@ -204,9 +204,13 @@ hardware; large fields are chunked so long documents work too.
   `404`, never forwarded.
 - **Never log raw PII.** Logs carry kinds, counts and placeholders — never values. Enforced
   by a test, not by convention.
-- **Linear under load.** The masking path is provably linear in both field *size* and entity
-  *count*, and CPU-bound work runs off the async executor — a large body can't stall the
-  proxy for everyone. *A proxy that is down protects nothing.*
+- **Linear under load, and bounded per request.** The masking path is provably linear in both
+  field *size* and entity *count*, and CPU-bound work runs off the async executor. But *linear is
+  a shape, not a budget*: a legal 15.6 MiB body of digit-dense text held a worker for **57 s**
+  until the phone validation allowance was scoped to the **request** instead of the field — the
+  same body is now refused in **0.19 s**, and the worst case any single request can cost is
+  **~1.4 s** of CPU. A large body can't stall the proxy for everyone. *A proxy that is down
+  protects nothing.*
 - **Deterministic.** The same value always maps to the same placeholder within a request, so
   stateless multi-turn conversations stay coherent.
 

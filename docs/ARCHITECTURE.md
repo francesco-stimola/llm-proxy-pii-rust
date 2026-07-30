@@ -199,15 +199,69 @@ DOS-05 itself, was built with `unit.repeat(n)` — so all of it measured the *in
 rather than the code. On a body of **distinct** digit groups the memo is inert: same shape, same
 4 MiB, varying only the distinct-candidate count moved the cost **207 ms → 17,049 ms**, and a legal
 15 MiB body answered in **64.5 s** at the default configuration. There is no faster validator to
-reach for (~6.5 µs per region, and the one cheap filter was the leak above), so the work is
-**bounded** instead: `MAX_PHONE_VALIDATIONS_PER_FIELD` (50,000 ≈ 0.5 s in the shipped build), and
-exceeding it is an `Err` on the `try_detect` channel — **the request is blocked, never forwarded
-with a partial scan.** Same call M5-R7 settled: *a detector may degrade its own recall, but it may
-never decide for the caller that degraded output is acceptable.* Measured after: the 15 MiB body is
-refused in **0.99 s**; a 1 MiB one still scans, in 0.81 s. Headroom against real traffic is large —
-the M7 22 KiB turn yields **zero** phone candidates, and reaching the budget takes on the order of
-half a megabyte of nothing but phone-shaped digit groups in a **single field**. DOS-06 is the guard,
-and its generator is an odometer rather than a modular hash for exactly the reason above.
+reach for (the one cheap filter was the leak above), so the work is **bounded** instead:
+`MAX_PHONE_VALIDATIONS_PER_REQUEST`, and exceeding it is an `Err` on the `try_detect` channel —
+**the request is blocked, never forwarded with a partial scan.** Same call M5-R7 settled: *a detector
+may degrade its own recall, but it may never decide for the caller that degraded output is
+acceptable.* DOS-06 is the guard, and its generator is an odometer rather than a modular hash for
+exactly the reason above.
+
+> **The unit of a budget is the whole budget, and the first version of this one had the wrong unit
+> (M10-R28 / M10-R30).** It was `_PER_FIELD` and it meant it: the allowance was minted **per call**,
+> `PrivacyStage` calls detection once per text field, and `Vault::mask_all` calls it up to five times
+> per field. So the real ceiling was `budget × fields × passes`, and **every one of those factors is
+> chosen by the client**. Measured: the same 15.6 MiB that is refused as one field answered `200` in
+> **57 s** split across 78 perfectly legal `messages[].content` fields — *indistinguishable from the
+> build that had no budget at all*, three warm runs each. The published per-field figure was not true
+> in any unit.
+>
+> **The rule, and it generalizes past this tier:** *a budget scoped to a unit the client can multiply
+> is not a bound — it is a rate.* Its companion is on the testing side, in
+> [TESTING](TESTING.md#algorithmic-complexity-guards): when a guard's unit (one string) is smaller
+> than the attack's unit (one body), the guard cannot see the attack however many axes it varies
+> inside its own unit. Every complexity guard this project had written measured **one string**,
+> because `try_detect(&str)` is the shape they were handed; the masking path takes a **body**.
+>
+> There is now exactly **one `Budget` per request**, created by `PrivacyStage::on_request` beside
+> the `Vault` it already owns and threaded down through `mask_all_within` → `try_detect_within`.
+> `CompositeDetector`, `CachingDetector` and `FailOpen` **must** forward it, and each does so
+> explicitly: inheriting the trait default would route the call to plain `try_detect` and hand the
+> detector underneath a fresh allowance — restoring the per-field behaviour silently, on the one path
+> that matters. Measured after: the 15.6 MiB body is refused in **193 ms**.
+
+> **`FailOpen` is not fail-open about the budget, and the distinction is a leak if collapsed.**
+> *"This detector is unavailable"* is a property of the **detector**; continuing without a
+> non-critical engine is exactly what the wrapper is for. *"The allowance for scanning this request
+> ran out"* is a property of the **request** — the text was not fully examined, so its PII status is
+> unknown, and answering `Ok(vec![])` there forwards a partially scanned body with a clean bill of
+> health. Round 4 hunted for a path where an exhausted budget fails *open* and found none, but only
+> because nothing wraps the structured recognizers in `FailOpen` **today**. That was a property of
+> the wiring, not of the code, and wiring changes.
+
+**What the budget costs, and the number is chosen against a legal payload.** One unit is one
+`phonenumber::parse()`, measured at **~2.7 µs** on the shipped release build, so **500,000** bounds a
+request's domestic-phone work at **~1.4 s** of CPU — against **~95 s** for the same 16 MiB
+`MAX_BODY_BYTES` with no budget, a **40× reduction of the worst case**. The allowance works out to
+≈**50,000 phone numbers per request**. Re-measure any of it with `DOS-BUD`:
+
+| body | verdict | wall clock |
+|---|---|---|
+| M7 22 KiB Claude Code turn | masked, **0 units spent** | — |
+| 35 KB SQL result, 500 rows, one phone column | masked (5,005 units) | 14 ms |
+| 367 KB SQL result, 5,000 rows | masked (50,005) | 120 ms |
+| 3.7 MB SQL result, 50,000 rows | masked (295,005) | 788 ms |
+| 6.1 MB SQL result, 80,000 rows | masked (445,005) | 1.23 s |
+| 2 MiB field, *nothing but* phone-shaped groups | masked (499,380) | 1.32 s |
+| 3 MiB+ field, same shape | **refused** | 1.32 s |
+| 15.6 MiB across 78 × 200 KB fields | **refused** | 193 ms |
+
+**The 367 KB row is why the number is 500,000 and not 50,000.** At 50,000 units that entirely
+ordinary `tool_result` — a database query an agent runs by accident — came back a `400`. *A
+fail-closed threshold whose refusal is a routine event is the wrong threshold:* every refusal costs
+the agent a turn, and a bound that fires on legal traffic teaches its operator to raise it rather
+than to trust it. Which is also why it is **not** an environment variable (M10-R27): a CPU bound an
+operator can raise is not a bound. Headroom against a conversation is total — the M7 turn spends
+**zero** units, pinned by `PHONE-BUD`.
 
 **The validator is not a locale *discriminator*.** National plans overlap, so a number valid in
 one region can be valid in another — a GB mobile also validates as DE, and `0123456789` is a real

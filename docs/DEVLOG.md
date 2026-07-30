@@ -34,23 +34,58 @@ it in 150 ms. A live behaviour regression, and M10-R27's own rule landing on M10
 refusal it made actionable is now *confidently wrong*, prescribing a SQL `LIMIT` for a cost that came
 from somewhere else.
 
-**Closed in this pass: R31, R32, R34.** R32 added **E2E-05**, the test M10-R27 shipped without: the
+**Closed in the first pass: R31, R32, R34.** R32 added **E2E-05**, the test M10-R27 shipped without: the
 refusal asserted where the client reads it, including that no digit run in the message is drawn from
 the body. R34 was filed as a doc comment naming five countries over an array of four — the array was
 the smaller half, because the line indexing it said `% 4`, so the fifth was unreachable by
 construction. Fixing both moved a measured floor (slot 3: 17 → 15 of 2400), which is the only reason
 anyone would know it had been broken. *A collection and the modulus that indexes it are one fact.*
 
-**R33 is half-closed on purpose and stays open.** Both READMEs now list the budget refusal among the
-causes of a 400 — the one an otherwise completely legal body can trigger. Their *"a large body can't
-stall the proxy for everyone"* bullet is left **untouched**: it claims a per-request CPU bound, and
-until R28 sets one, any rewording would either restate the false conclusion or invent a number.
-Describing a bound the code does not have is the failure that finding is about.
+**R33 was half-closed on purpose and held open until R28 landed.** Both READMEs list the budget refusal
+among the causes of a 400 — the one an otherwise completely legal body can trigger. Their *"a large body
+can't stall the proxy for everyone"* bullet was left **untouched** in the first pass: it claims a
+per-request CPU bound, and until R28 set one, any rewording would either restate the false conclusion or
+invent a number. It now says what is measured — *linear is a shape, not a budget* — with the 57 s → 0.19 s
+figure and the ~1.4 s per-request ceiling. Following the finding's own ordering instruction was worth it.
 
-**R28, R29 and R30 are with the maintainer**, which is the process working rather than stalling: each
-needs a threshold with functional consequences or a change to visible behaviour, and R29 has to be
-settled first or R28's number gets measured against work the budget was never meant to count.
-Suite green throughout: **214 default**, `fmt` and `clippy -D warnings` clean.
+**R28, R29 and R30 went to the maintainer before any code was written**, which is the process working
+rather than stalling: each needed a threshold with functional consequences or a change to visible
+behaviour. The decisions taken, recorded here because the reasoning is the part that does not survive
+in a diff:
+
+- **What the budget counts → only the phone validator, per `parse()`.** Restores `1.2.0`'s behaviour
+  on every non-phone body and makes one unit mean one thing (~2.7 µs), which is what lets a number
+  encode a CPU ceiling at all.
+- **Where the bound lives → one allowance per request**, threaded through a new `try_detect_within`
+  seam on `PiiDetector`. Chosen over a cumulative-bytes cap in the stage, which would bound bytes
+  rather than work, and over lowering `MAX_BODY_BYTES`, which changes what the proxy *accepts*
+  instead of what it costs.
+- **The tag → close everything first**, then round 5, then `1.2.1`.
+
+**Then the measurement moved the threshold, and this is the part worth remembering.** Charging per
+`parse()` shrank the effective allowance ~9×, so before publishing anything I measured the case the
+maintainer had flagged sessions earlier — an MCP SQL tool pulling a table with a phone column. At
+50,000 units an entirely ordinary **367 KB / 5,000-row** result came back a `400`. Raised to
+**500,000** (~1.4 s of CPU, ≈50,000 numbers per request). *A fail-closed threshold whose refusal is a
+routine event is the wrong threshold* — every refusal costs an agent a turn, and a bound that fires on
+legal traffic teaches its operator to raise it rather than to trust it. It is deliberately **not** an
+environment variable: a CPU bound an operator can raise is not a bound.
+
+Measured after: the 15.6 MiB body that answered `200` in 57 s is **refused in 0.19 s**; a 6.1 MB /
+80,000-row SQL result is still masked (445,005 units, 1.23 s); a real 22 KiB Claude Code turn spends
+**0**. Suite green throughout: **217 default / 250 onnx**, `fmt` and `clippy -D warnings` clean on both.
+
+**One incidental fix, because a false red is worse than no guard.** The complexity wall clock was 10 s
+against a slowest linear case of 3.3 s, and under `cargo test --features onnx` — every test binary at
+once — a 1.9 s case was seen crossing it. Widened to 30 s, with every measured figure written beside
+the constant and the ceiling set by the fastest *quadratic* case on record (52 s), so it is a real
+separation rather than "big enough to never fail".
+
+**And the milestone's own trap landed a fourth time, on me, while measuring the fix for it.** DOS-BUD's
+first SQL generator built its phone column with `(r * 7) % 9000`, which repeats after its period: 20,000
+rows measured the *same* 30,781 units as 10,000. Caught only because the two rows were printed next to
+each other. Four times now — DOS-05, DOS-06's first draft, PHONE-NAT-10, and this — the same shape:
+*a generator that looks varied and silently repeats reports the product's cost as lower than it is.*
 
 ## 2026-07-29 — "the CC battery needs a live API key" was never true, and it kept costing decisions
 
@@ -115,6 +150,13 @@ own recall, but it may never decide for the caller that degraded output is accep
 **The budget is sized from the shipped build, not from the profile the guard runs in** — 50,000
 calls is ~0.5 s in release and ~25 s in debug, which is why DOS-06's refusal case is deliberately
 not wrapped in a wall clock. Letting the test profile set the product's bound is backwards.
+
+> **Superseded on 2026-07-30 — every number in the two paragraphs above is measured in the wrong
+> unit.** The allowance was minted per *call*, so the ceiling was `budget × fields × passes` and none
+> of it was a property of a request; the *"0.5 s"* was a third figure again. See the round-4 entry at
+> the top of this file, [M10-R28](reviews/M10.md#m10-r28) and
+> [M10-R30](reviews/M10.md#m10-r30). Kept as written because this is what was believed on 2026-07-29
+> and the belief is the point of a log.
 
 **And writing DOS-06 reproduced the finding one more time.** Its first generator used
 `(i * 7) % 9000`, looked distinct, silently repeated after its period, produced a 4 MiB body the memo

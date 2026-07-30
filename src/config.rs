@@ -198,7 +198,8 @@ impl Config {
 /// tier was empty, and never revisited when M8.1 filled it. Both codes mapped to no
 /// recognizer, so the shipped default masked **no** domestic phone number at all.
 ///
-/// Resolving it from [`PHONE_REGIONS`] rather than re-typing the list means the default and
+/// Resolving it from [`PHONE_REGIONS`](crate::pii::recognizers::PHONE_REGIONS) rather than
+/// re-typing the list means the default and
 /// the code that implements it cannot disagree — and because the resolved list is what
 /// `Config`'s `Debug` prints at startup, an operator can *see* which regions are active
 /// instead of inferring them from the absence of a variable.

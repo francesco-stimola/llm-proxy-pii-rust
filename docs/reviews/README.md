@@ -25,17 +25,28 @@ that way?"*
 | [M7.md](M7.md) | M7 / M7.1 — NER latency · system-prompt cache | 23, all closed |
 | [M8.md](M8.md) | M8 / M8.1 — GLiNER · national phone recognizer | 8, all closed |
 | [M9.md](M9.md) | M9 / M9.1 — GPU optimization · per-backend binaries | 29, all closed |
-| [M10.md](M10.md) | M10 — national phone coverage + release hygiene | **34 — 27 closed, 7 open (one BLOCKER)** |
+| [M10.md](M10.md) | M10 — national phone coverage + release hygiene | 34, all closed (round 5 pending) |
 
-**Every open finding in the project belongs to M10**, and `v1.2.1` does not get cut until its ledger is
-clean. Rounds 1–3 are closed, each verified against a pre-fix build. The blocker is
-[M10-R28](M10.md#m10-r28), and it is the third turn of the same wheel: M10-R2 was a DoS; its fix was
-undone by the input **repeating** ([M10-R20](M10.md#m10-r20)); *that* fix bounds a **field** while the
-body chooses its field count, so the same legal 15.6 MiB payload still costs 57 s — and a pre-fix build
-answers it in the same time. **Three fixes, one attack, still reachable.** Alongside it,
-[M10-R29](M10.md#m10-r29) has the same budget refusing legal requests it was never meant to see, and
-[M10-R31](M10.md#m10-r31) is a closure that corrected one of the two lines its finding named — the second
-time in two rounds.
+**The page to read here is [M10-R28](M10.md#m10-r28), the fourth turn of one wheel.** M10-R2 was a DoS
+on the domestic-phone validator. Its fix was undone by the input **repeating**
+([M10-R20](M10.md#m10-r20)). *That* fix bounded a **field** while the body chooses its field count, so
+the same legal 15.6 MiB payload still cost **57 s** — and a pre-fix build answered it in the same time,
+which is how three consecutive fixes were shown to have closed nothing. What finally closed it was
+changing the *unit*: one allowance per **request**. The rule it leaves is in ARCHITECTURE — *a budget
+scoped to a unit the client can multiply is a rate, not a bound* — with its testing companion in
+TESTING: every complexity guard this project had written measured **one string**, because
+`try_detect(&str)` is the shape each was handed, while the masking path takes a **body**.
+
+Two more from round 4 are worth the detour. [M10-R29](M10.md#m10-r29): the budget named after the phone
+tier was charged by nine always-on checksums, so it refused legal requests **with the phone tier not
+loaded at all** — and fixing the unit shrank the effective allowance enough that an ordinary 367 KB
+database result started getting a `400`, which is what moved the threshold. And
+[M10-R31](M10.md#m10-r31): a closure that corrected one of the two lines its finding named, the second
+time in two rounds — *a closure is checked against the finding's own locations, or against nothing.*
+
+Round 4 also went hunting for a path where an exhausted budget fails **open** and found none. The
+reason it found none — nothing wraps the structured recognizers in `FailOpen` *today* — turned out to
+be the defect underneath.
 
 ---
 
