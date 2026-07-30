@@ -25,7 +25,7 @@ that way?"*
 | [M7.md](M7.md) | M7 / M7.1 — NER latency · system-prompt cache | 23, all closed |
 | [M8.md](M8.md) | M8 / M8.1 — GLiNER · national phone recognizer | 8, all closed |
 | [M9.md](M9.md) | M9 / M9.1 — GPU optimization · per-backend binaries | 29, all closed |
-| [M10.md](M10.md) | M10 — national phone coverage + release hygiene | 52, all closed (round 8 pending) |
+| [M10.md](M10.md) | M10 — national phone coverage + release hygiene | 55, 52 closed (round 8 open) |
 
 **The page to read here is [M10-R28](M10.md#m10-r28), the fourth turn of one wheel.** M10-R2 was a DoS
 on the domestic-phone validator. Its fix was undone by the input **repeating**
@@ -88,7 +88,22 @@ chains are a **hand-written list of four**, not a projection of the wiring, and 
 is `FailOpen` — where the one line that makes a budget refusal un-swallowable is asserted by nothing
 at all ([M10-R47](M10.md#m10-r47), [M10-R48](M10.md#m10-r48)). *A guard widened from a type to a list
 of instances has moved the blind spot, not removed it* — which is the same lesson arriving where its
-own fix landed.
+own fix landed. **Round 8 closed that loop**: deleting the guard clause now reds `FAILOPEN-BUD` *and*
+DOS-08, because the `FailOpen` positions are in the list.
+
+**Where the wheel stopped being about the code and became about the *instrument* — round 8.** Six
+rounds moved the budget's unit; the seventh discovered that the harness measuring it had been fed
+eleven-digit non-numbers, and fixed the values. The eighth found the fix had corrected the harness's
+*values* and not its *axis*: DOS-BUD builds one rendering of one region, `347 XXXXXXX`, which is the
+**cheapest legal phone in the shipped set** — `LongBlock` is the only shape family with a single
+applicable region, and the only rendering no other family's regex matches inside. From that single
+point four documents concluded that *a legal phone-bearing body cannot reach the allowance at all*;
+measured, five of six legal 16 MiB payloads are refused and the real binary refuses a 2.6 MB contact
+export ([M10-R53](M10.md#m10-r53), [M10-R54](M10.md#m10-r54)). The generalization worth carrying out
+of this folder: **a measurement harness needs a declared scope the way a guard does** — R49 gave it a
+non-vacuity assertion, which proves it measures *something*, and that is not the same as proving what
+it measures is representative. *An instrument with no declared scope has its narrowest reading quoted
+as its widest.*
 
 ---
 

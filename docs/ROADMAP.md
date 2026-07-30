@@ -1785,22 +1785,23 @@ only the false positives we imagined. Run:
 
 ### What is left before the tag
 
-Written 2026-07-29, **rewritten 2026-07-30 after round 7's findings were closed.** The milestone's
-scope items are all `[x]`, all **52** review findings across seven rounds are `[x]`, and the suite is
-green on both feature sets (**220 default / 253 onnx**, zero warnings; `fmt`, `clippy -D warnings`
-clean; `cargo doc` 15 warnings, all pre-existing). Nothing is left in the code.
+Written 2026-07-29, **rewritten 2026-07-30 after round 8.** The milestone's scope items are all `[x]`,
+**52 of 55** review findings across eight rounds are `[x]`, and the suite is green on both feature sets
+(**220 default / 253 onnx**, zero warnings; `fmt`, `clippy -D warnings` clean; `cargo doc` 15 warnings,
+all pre-existing). **Nothing is left in the code** — round 8 confirmed that by mutation, and its three
+findings need no source change.
 
-1. **Review round 8 — closure verification of round 7.** The two worth attacking are the ones that
-   changed *numbers* rather than code. [M10-R49](reviews/M10.md#m10-r49): DOS-BUD's phone column is a
-   real ten-digit Italian mobile now, its verdict column reports `N masked` instead of `N left`, and a
-   new row measures the SQL shape at `MAX_BODY_BYTES` — re-run it and check the conclusion it
-   supports, that a **legal phone-bearing body cannot reach the allowance** because `.any()`
-   short-circuits on accept. That claim is now load-bearing in ARCHITECTURE, the constant's doc and
-   both READMEs. [M10-R50](reviews/M10.md#m10-r50): every ceiling figure was re-measured on an idle
-   box; verify them there, and check that no *contended* measurement has crept back into a product
-   doc. Then [M10-R47](reviews/M10.md#m10-r47)'s **FAILOPEN-BUD** — mutate the guard clause away and
-   confirm it reds — and [M10-R48](reviews/M10.md#m10-r48)'s `shipped_chains()`, which is still a
-   hand-written list and says so: is the gap it names now the *only* one?
+1. **Close round 8's three findings — [M10-R53](reviews/M10.md#m10-r53) blocks the tag.** Four live
+   documents (ARCHITECTURE, the constant's doc, both READMEs) publish *"a legal phone-bearing body
+   cannot reach the allowance at all"*, and it is false: measured, a **2.6 MB** contact export is a
+   `400` through the real binary. No behaviour is wrong — the refusal is the fail-closed path working
+   — but a README may not claim an availability envelope the product does not have.
+   [M10-R54](reviews/M10.md#m10-r54) is the harness that cannot see it and
+   [M10-R55](reviews/M10.md#m10-r55) three doc sites round 7's own closures named.
+   **One decision is owed with R53:** the refusal line for a legal phone-dense body now has a real
+   number (~2.6 MB grouped / ~6 MB compact), so *is 500,000 still the threshold you want?* The
+   reviewer's read is yes — an ordinary 367 KB tool result spends 1% and the M7 turn spends 0 — but
+   it is a call, not a fact.
 2. **The CC battery — CC-01 / CC-03 / CC-04 / CC-09** (step 10 above). Needs the maintainer at the
    keyboard with Claude Code pointed at the proxy. **No key configuration required.**
 3. **Bump `Cargo.toml` to `1.2.1`** — a `chore(release):` commit at tag time, as `1.2.0` was. Left
@@ -2129,6 +2130,34 @@ none a live leak, none a live DoS, **none changing product behaviour**.
 >
 > **220 default / 253 onnx green**, `fmt`, `clippy -D warnings` and the 15-warning `cargo doc`
 > baseline all clean.
+
+**Round 8 (2026-07-30) — closure verification: all six round-7 closures hold as code**, two of them
+by mutation. Deleting R47's guard clause reds **FAILOPEN-BUD *and* DOS-08** — R48's `FailOpen`
+positions put the wrapper inside `shipped_chains()`, so the two closures reinforce each other — and
+disabling the refusal outright reds **six** guards, every one that exists for the fail-closed budget.
+DOS-BUD's unit counts reproduce exactly on an idle box. **Three new findings, none needing a code
+change, and the first one blocks the tag's docs.**
+
+> **[M10-R53](reviews/M10.md#m10-r53) is the fourth publication of these numbers and the fourth to be
+> wrong — this time in the *optimistic* direction, which is new.** *"A legal phone-bearing body cannot
+> reach the allowance at all"* rests on `.any()` short-circuiting on accept, and that reasoning holds
+> only for DOS-BUD's own rendering. `347 XXXXXXX` is `LongBlock`, the **only** shape family with a
+> single applicable region, and the only rendering no other family's regex can match inside: 1 unit.
+> Every other legal rendering costs 2–29, because the overlapping rescan proposes sub-candidates that
+> each pay their family's whole region list. (And *"pays for all nine"* is wrong too — the validator
+> loops the regions of one **shape family**, at most six.) Measured: five of six legal 16 MiB
+> phone-bearing payloads are **refused**, including DOS-BUD's own table in the grouped rendering — and
+> through the real `.exe` a **2.6 MB** `SELECT name, phone` export is a `400`. Nothing leaks and
+> nothing is forwarded; the fail-closed path is correct. What is wrong is the availability envelope
+> four documents publish. The rule to carry: **the cost of a phone candidate is a property of its
+> *rendering*, not of its validity** — M10-R43's "a rate measured at one scale does not transfer"
+> with `scale` replaced by `shape`.
+
+| ID | Title | Sev | Status |
+|---|---|---|---|
+| [M10-R53](reviews/M10.md#m10-r53) | *"A legal phone-bearing body cannot reach the allowance at all"* is false in four documents: five of six legal 16 MiB payloads are refused, and the binary refuses a **2.6 MB** contact export | measurement | [ ] |
+| [M10-R54](reviews/M10.md#m10-r54) | DOS-BUD holds the phone **rendering** constant, so M10-R49 gave it a non-vacuity assertion and left it a single-point grid | guard | [ ] |
+| [M10-R55](reviews/M10.md#m10-r55) | Round 7 left three more doc sites its own findings named — and M10-R48's closure note asserts a TESTING edit the diff does not contain | docs | [ ] |
 
 <a id="backlog"></a>
 ## Backlog — documented, not scheduled
