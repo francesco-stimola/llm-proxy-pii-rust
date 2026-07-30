@@ -1785,24 +1785,31 @@ only the false positives we imagined. Run:
 
 ### What is left before the tag
 
-Written 2026-07-29, **rewritten 2026-07-30 after round 4's findings were closed.** The milestone's
-scope items are all `[x]`, all **34** review findings across four rounds are `[x]`, and the suite is
-green on both feature sets (**217 default / 250 onnx**, zero warnings; `fmt`, `clippy -D warnings`
-clean; `cargo doc` 15 warnings, all pre-existing). Nothing is left in the code.
+Written 2026-07-29, **rewritten 2026-07-30 after review round 5.** The milestone's scope items are all
+`[x]` and 34 of 41 review findings are `[x]`; the suite is green on both feature sets (**217 default /
+250 onnx**, zero warnings; `fmt`, `clippy -D warnings` clean; `cargo doc` 15 warnings, all
+pre-existing). **Round 5 asked exactly the question its predecessor's fix invited and the answer was
+yes:** a `_within` seam whose default drops the budget *was* inherited on the shipped path — not by a
+wrapper, by the leaf that mints the allowance. So one thing is left in the code, and it is a blocker.
 
-1. **Review round 5 — closure verification of round 4.** Round 4's seven findings are closed but
-   **unverified**, and three of them changed shipped behaviour: the validation allowance is now
-   per-**request** rather than per-field, only the phone validator charges it, and the threshold moved
-   50,000 → 500,000. The things to attack, in order: whether **`try_detect_within` can be reached
-   with a *fresh* allowance on any path** (the wrappers each had to override it — a missed one
-   restores the old behaviour silently and every test stays green); whether `FailOpen`'s new
-   distinction between a failed detector and an exhausted request holds; and whether the refusal
-   guards, which cross a **test** allowance rather than the shipped 500,000, still fail when the
-   property breaks. Round 4's own verdict table is the model — a closure is checked against the
-   finding's own `file:line`s, or against nothing.
-2. **The CC battery — CC-01 / CC-03 / CC-04 / CC-09** (step 10 above). Needs the maintainer at the
+1. **Close round 5 — [M10-R35](reviews/M10.md#m10-r35) first, and it is a decision.** The fix is one
+   method (`StructuredRecognizers::redetect_within`), verified against a patched build of this commit:
+   the 15.63 MiB body goes from `200` in 17.2 s to a `400` in 2.2 s with the suite still green. Two
+   things need the maintainer rather than the builder: whether to take the **structural** version
+   (fold the budget into `try_detect` / `redetect` and delete the `_within` pair, so a seventh
+   detector is safe by construction), and whether charging the later fixpoint passes — which halves
+   the effective allowance for any body that masks something — leaves **500,000** the right number.
+   Re-run DOS-BUD before answering. [M10-R36](reviews/M10.md#m10-r36) and
+   [M10-R38](reviews/M10.md#m10-r38) are re-measurements that must land **after** it, or they get
+   published twice.
+2. **Review round 6 — closure verification of round 5.** Three of the seven are corrections to numbers
+   this milestone has now published wrong twice, and one (R35) changes shipped behaviour again. The
+   model stays round 4's: a closure is checked against the finding's own `file:line`s, or against
+   nothing — and, since round 5, against a **mutated** tree wherever the claim is "this guard would
+   fail".
+3. **The CC battery — CC-01 / CC-03 / CC-04 / CC-09** (step 10 above). Needs the maintainer at the
    keyboard with Claude Code pointed at the proxy. **No key configuration required.**
-3. **Bump `Cargo.toml` to `1.2.1`** — a `chore(release):` commit at tag time, as `1.2.0` was. Left
+4. **Bump `Cargo.toml` to `1.2.1`** — a `chore(release):` commit at tag time, as `1.2.0` was. Left
    at `1.2.0` on purpose: `release-build-publish.yml` refuses to publish a tag that disagrees with
    the manifest, so the mismatch is currently *protective*, not a gap.
 
@@ -1966,6 +1973,39 @@ than quietly re-scored.
 > **detector** from an exhausted **request** allowance: round 4 hunted for a fail-open path and found
 > none, and the reason none existed — nothing wraps the structured recognizers in `FailOpen` *today* —
 > was itself the defect.
+
+**Round 5 (2026-07-30) — closure verification: four of seven hold.** Both feature sets green at the
+time (**217 default / 250 onnx**, zero warnings; `fmt` and `clippy -D warnings` clean on both;
+`cargo doc` 15 warnings, all pre-existing), DOS-BUD's unit counts reproduced exactly, and two closures
+were verified by **mutating** the tree in a throwaway worktree rather than by reading it (E2E-05 fails
+when the actionable clause is stripped; M10-R34's modulus really is what moved the floor). Seven new
+findings, one of them the reason `v1.2.1` still cannot be cut:
+[M10-R28](reviews/M10.md#m10-r28)'s closure and [M10-R30](reviews/M10.md#m10-r30)'s do **not** hold,
+and [M10-R33](reviews/M10.md#m10-r33)'s no longer does either. All three were re-opened as new
+findings rather than re-scored.
+
+> **[M10-R35](reviews/M10.md#m10-r35) is the tag blocker, and it is one missing method.** Round 4 made
+> `CompositeDetector`, `CachingDetector` and `FailOpen` forward the budget explicitly, and warned in
+> the trait's own doc that inheriting the default would hand the detector underneath a fresh
+> allowance. `StructuredRecognizers` — the one detector whose cost the budget exists to bound, and the
+> only place in the tree that *mints* an allowance — overrides `try_detect_within` and **not**
+> `redetect_within`, so every fixpoint pass after the first starts from a full 500,000.
+> `redetect_within(200 KB of groups, Budget::new(1))` returns `Ok` with **0 spent**. Measured on the
+> real `.exe` at the shipped default: a legal **15.63 MiB body answers `200` in 17.2 s**, against
+> 0.36 s with the tier off and a published per-request ceiling of **~1.4 s**. The one-line fix makes it
+> a `400` in 2.2 s — and leaves the whole suite green on 217, which is why nothing saw it. *The
+> obligation to carry a budget is not the wrapper's; it is every implementor's, and the sharpest case
+> is the leaf, where the default does not ignore the budget but replaces it.*
+
+| ID | Title | Sev | Status |
+|---|---|---|---|
+| [M10-R35](reviews/M10.md#m10-r35) | The budget bounds **pass 0** of a request, not a request: `StructuredRecognizers` never overrides `redetect_within`, so a legal 15.63 MiB body answers 200 in 17.2 s | **BLOCKER** | [ ] |
+| [M10-R36](reviews/M10.md#m10-r36) | The headline "refused in 0.19 s" does not reproduce and contradicts the row above it in its own table — DOS-BUD prints 3.07 s | measurement | [ ] |
+| [M10-R37](reviews/M10.md#m10-r37) | Both READMEs' fail-closed bullet still describes the pre-M10-R28 unit: "a **single field** … exhausts the budget", remedy "shrink the field" | docs | [ ] |
+| [M10-R38](reviews/M10.md#m10-r38) | The budget constant's own SQL table publishes a row DOS-BUD refutes, and the "≈50,000 numbers per request" figure resting on it is ~1.7× pessimistic | measurement | [ ] |
+| [M10-R39](reviews/M10.md#m10-r39) | `mask_all_within`'s doc says `mask_all` passes `Budget::unlimited`; twenty lines above, `mask_all` passes a real allowance and says so | low | [ ] |
+| [M10-R40](reviews/M10.md#m10-r40) | E2E-05's digit-run check exempts every run shorter than four digits, while the record claims every run is checked | low | [ ] |
+| [M10-R41](reviews/M10.md#m10-r41) | `FailOpen` identifies a budget refusal by a global side-condition, not by the error; correct today only via an invariant nothing states | low | [ ] |
 
 <a id="backlog"></a>
 ## Backlog — documented, not scheduled

@@ -25,7 +25,7 @@ that way?"*
 | [M7.md](M7.md) | M7 / M7.1 — NER latency · system-prompt cache | 23, all closed |
 | [M8.md](M8.md) | M8 / M8.1 — GLiNER · national phone recognizer | 8, all closed |
 | [M9.md](M9.md) | M9 / M9.1 — GPU optimization · per-backend binaries | 29, all closed |
-| [M10.md](M10.md) | M10 — national phone coverage + release hygiene | 34, all closed (round 5 pending) |
+| [M10.md](M10.md) | M10 — national phone coverage + release hygiene | 41, 34 closed (round 5's seven open) |
 
 **The page to read here is [M10-R28](M10.md#m10-r28), the fourth turn of one wheel.** M10-R2 was a DoS
 on the domestic-phone validator. Its fix was undone by the input **repeating**
@@ -47,6 +47,15 @@ time in two rounds — *a closure is checked against the finding's own locations
 Round 4 also went hunting for a path where an exhausted budget fails **open** and found none. The
 reason it found none — nothing wraps the structured recognizers in `FailOpen` *today* — turned out to
 be the defect underneath.
+
+**And the wheel turned a fifth time: [M10-R35](M10.md#m10-r35).** Making the unit a request needed a
+new `_within` seam on the detector trait, whose default *silently drops the budget*. Round 4 saw that
+hazard clearly and closed it for all three **wrappers**. The detector it missed is the **leaf** — the
+one whose cost the budget exists to bound, and the only place in the tree that mints an allowance — so
+every fixpoint pass after the first started from a full one, and a legal 15.63 MiB body answered
+`200` in **17.2 s** against a published ceiling of ~1.4 s. The one-line fix leaves the whole suite
+green, which is the part to take away: *an obligation that a trait default can satisfy is not carried
+by the type system, and "every test passes" is the signature of that, not evidence against it.*
 
 ---
 
