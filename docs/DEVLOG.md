@@ -3,6 +3,37 @@
 Newest first. One entry per meaningful change — note *what* and *why*, not just
 *what*. This is the running history so context is never lost between sessions.
 
+## 2026-07-29 — "the CC battery needs a live API key" was never true, and it kept costing decisions
+
+**Corrected on the maintainer's report, and the interesting part is *why* it survived.** The CC
+battery does **not** need a credential configured on the proxy. The proxy holds none: it forwards
+the client's own (`src/proxy.rs::messages_auth`), which is precisely why M6's live run returned 200
+on the first try with **nothing configured** — a fact recorded in this file and in the ROADMAP's own
+M6 section. What the battery needs is a human with a working Claude Code pointed at the proxy.
+
+**The claim was a summary drifting from its source.** M5's constraint was real and correctly
+written: *a live provider*, at a time when the proxy was OpenAI-compat-only and Claude Code
+**could not route through it at all**. M6 shipped the native route and made that false — but the
+compressed form, "needs a live `ANTHROPIC_API_KEY`", had already been copied into the ROADMAP and
+`TESTING.md`, and it outlived the milestone that falsified it. `MANUAL_VERIFICATION.md`, the
+runbook, said the right thing the whole time (*"the recommended mode is the proxy holds no
+credential at all"*) — nobody read it, because the summaries were closer to hand.
+
+**What it cost, concretely:** M10 recorded its own open box as blocked on a credential nobody had,
+when it was blocked on an hour of the maintainer's time. I repeated the claim to a review agent
+across three rounds, so it was never challenged. *A wrong summary of a correct document is worse
+than no summary — it is the version people act on.*
+
+Fixed at all three points that state it, each carrying the correction rather than a silent edit,
+plus a rule that generalizes: **when the ROADMAP, `TESTING.md` and `MANUAL_VERIFICATION.md` disagree
+about how to run something, the runbook wins** — it is the one written while doing it.
+
+Also in this pass: `v1.2.1` comes out of M10's *name* (heading and Status-table link). The tag still
+appears in the Status **cell** as `tag `v1.2.1` (planned)`, which is the documented convention and
+what `release-build-publish.yml` actually parses — the guard scopes itself to `^\| \[M` rows, so
+renaming the milestone cannot move it. And the ROADMAP now carries a **What is left before the tag**
+section: round-4 verification, the four CC scenarios, and the `1.2.1` manifest bump at tag time.
+
 ## 2026-07-29 — M10 review round 3: every DoS number this milestone published measured the wrong thing
 
 **The blind spot all three rounds shared: every one of them used `unit.repeat(n)`.** M10-R2's

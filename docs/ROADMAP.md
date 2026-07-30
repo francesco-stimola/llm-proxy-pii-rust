@@ -50,7 +50,7 @@ it, which a first dry run proved was not a hypothetical.
 | [M8.1 — national phone recognizer (opt-in)](#m81) | ✅ complete · tag `v1.1.0` |
 | [M9 — GPU optimization](#m9) | ✅ complete |
 | [M9.1 — one release binary per backend](#m91) | ✅ complete · tag `v1.2.0` |
-| [M10 — v1.2.1: national phone coverage + release hygiene](#m10) | 🔨 code-complete · tag `v1.2.1` (planned) |
+| [M10 — national phone coverage + release hygiene](#m10) | 🔨 code-complete · tag `v1.2.1` (planned) |
 
 ---
 
@@ -1394,7 +1394,7 @@ user, NVIDIA device or not. Key-ed accelerators now get **their own artifact** i
 > build step, which every leg runs.
 
 <a id="m10"></a>
-## M10 — v1.2.1: national phone coverage + release hygiene 🔨
+## M10 — national phone coverage + release hygiene 🔨
 
 **Opened 2026-07-29, from a documentation pass that turned into a measurement.** Writing down what
 `PII_LOCALES` does surfaced that it does less than everyone assumed. A throwaway probe drove
@@ -1501,7 +1501,7 @@ N. That number decides the default, and we do not have it yet.
 - [x] `TESTING.md` catalogs the new cases; `ARCHITECTURE.md`'s matrix is **re-measured**, not
       re-asserted
 
-### Also in `v1.2.1` — four rough edges of the shipped binary
+### Also in this milestone — four rough edges of the shipped binary
 
 All four surfaced on 2026-07-29, three while documenting how to run the released binary and the
 fourth by running it. None is about detection, and each is the kind of defect that only shows up
@@ -1739,8 +1739,20 @@ operator who set it); the README's `PII_LOCALES` rows and the `it,us`-is-inert w
 only once the code makes them false.
 
 **10 · Which [CC scenarios](TESTING.md#cc-battery) this milestone actually needs — and why not all
-nine.** The battery is expensive (live key, two runs each, human eyes on two traces), so spend it
-where automated tests are structurally blind. **They are blind to exactly one thing here:
+nine.** The battery is expensive (a real Claude Code session, two runs each, human eyes on two
+traces), so spend it where automated tests are structurally blind.
+
+  > **It does *not* need a key configured on the proxy, and getting that wrong has now cost this
+  > project real decisions — including one in this milestone.** The proxy holds **no credential**:
+  > it forwards the client's own, which is why [M6](#m6)'s live run got a 200 on the first try with
+  > nothing configured. What the battery needs is a **human with a working Claude Code**, pointed at
+  > the proxy — the runbook is [`MANUAL_VERIFICATION.md`](MANUAL_VERIFICATION.md), which has said so
+  > correctly all along. The error is a *summary* drifting from its source: "needs a live provider"
+  > (true, and inherited from [M5](#m5), when the proxy was OpenAI-compat-only and Claude Code
+  > **could not** route through it at all) got compressed into "needs a live `ANTHROPIC_API_KEY`"
+  > (false since M6 shipped the native route). **When this file, `TESTING.md` and
+  > `MANUAL_VERIFICATION.md` disagree about how to run something, the runbook wins** — it is the one
+  > that was written while doing it. **They are blind to exactly one thing here:
 over-masking real agent traffic, and the harm is functional rather than privacy.** A masked line
 number or port inside `tool_use.input` hands the model `[PHONE_1]` where it needed `8080` — the
 agent then does the wrong thing, and no corpus test will show you that because a corpus contains
@@ -1760,13 +1772,35 @@ only the false positives we imagined. Run:
   them reads as a full battery that passed.
 
   > **Not run — and that is the one M10 box that is open, stated plainly rather than quietly
-  > dropped.** CC-01/03/04/09 need a live `ANTHROPIC_API_KEY` and a human watching two traces; this
-  > environment has neither, exactly as in [M6](#m6) and [M9](#m9). **What automated tests could
-  > reach, they reached**, and the specific risk the battery exists to cover here — over-masking a
-  > digit run inside `tool_use.input` — has its cheap, automated approximation in **PHONE-OM**: the
-  > shipped default yields **zero** `Phone` spans on a real 22 KiB Claude Code turn. That is not the
-  > same evidence as a live session (a fixture is still a fixture, and it carries no tool *results*),
-  > so the battery stays owed before `v1.2.1` is cut.
+  > dropped.** CC-01/03/04/09 need a **human driving a real Claude Code session through the proxy**
+  > and watching two traces; an agent working inside the repo cannot route its own session, which is
+  > the same limit as in [M6](#m6) and [M9](#m9). *(An earlier version of this note said they needed
+  > a live `ANTHROPIC_API_KEY`. They do not — see the box above. That sentence is what made this box
+  > read as blocked on something nobody had, rather than on ten minutes of the maintainer's time.)*
+  > **What automated tests could reach, they reached**, and the specific risk the battery exists to
+  > cover here — over-masking a digit run inside `tool_use.input` — has its cheap, automated
+  > approximation in **PHONE-OM**: the shipped default yields **zero** `Phone` spans on a real
+  > 22 KiB Claude Code turn. That is not the same evidence as a live session (a fixture is still a
+  > fixture, and it carries no tool *results*), so the battery stays owed before the tag is cut.
+
+### What is left before the tag
+
+Written 2026-07-29 so the next session does not have to reconstruct it. Everything below is
+**outside** the code: the milestone's scope items are all `[x]` and the suite is green on both
+feature sets (`fmt`, `clippy -D warnings`, `cargo doc` all clean; M10 adds no doc warnings).
+
+1. **Review round 4 — closure verification of round 3.** Rounds 1–3 produced **26 findings, all
+   closed**; round 4 was launched and died on a server error before recording anything, so the
+   round-3 closures are **unverified**. The one to attack is [M10-R20](reviews/M10.md#m10-r20)'s
+   fix: `StructuredRecognizers` now returns `Err` when a field exhausts the validator budget, which
+   is a **fail-closed change on the request path** — the question is whether it can ever fail
+   *open* instead (`detect()` is `try_detect().unwrap_or_default()`; check `FailOpen`,
+   `CompositeDetector`, `Vault::mask_all`'s fixpoint, `pii::cache`).
+2. **The CC battery — CC-01 / CC-03 / CC-04 / CC-09** (step 10 above). Needs the maintainer at the
+   keyboard with Claude Code pointed at the proxy. **No key configuration required.**
+3. **Bump `Cargo.toml` to `1.2.1`** — a `chore(release):` commit at tag time, as `1.2.0` was. Left
+   at `1.2.0` on purpose: `release-build-publish.yml` refuses to publish a tag that disagrees with
+   the manifest, so the mismatch is currently *protective*, not a gap.
 
 <a id="m10-ledger"></a>
 ### Review ledger — M10 → [`reviews/M10.md`](reviews/M10.md)

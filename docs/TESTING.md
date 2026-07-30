@@ -470,6 +470,13 @@ Workspace + fixtures: [`tools/claude-code-session/`](../tools/claude-code-sessio
 directory and Claude Code routes itself through the proxy. It is manual on purpose: it compares
 what two runs *logged* and *returned* to a real client, which needs eyes on the trace.
 
+> **What it needs, stated once so no summary has to guess: a working Claude Code and a human.**
+> **Not** a credential on the proxy — the proxy holds none and forwards the client's own
+> (`src/proxy.rs::messages_auth`; M6's live run got 200 on the first try with nothing configured).
+> Every time a doc has compressed this to "needs a live `ANTHROPIC_API_KEY`" it has made the battery
+> look blocked on something unobtainable instead of on an hour of the maintainer's time — most
+> recently in M10. If you are reading a summary that says otherwise, the summary is stale.
+
 **Every scenario runs twice**, and the pair is the point:
 
 | run | `PII_DEBUG_SKIP_DEMASK` | proves |
@@ -908,8 +915,16 @@ PII). Placeholder-**presence** asserts are on the **specific masked field** (or 
 > Claude Code refused as injection attempts are [rewritten as ordinary work](#cc-prompt-design), and a realistic
 > turn masks in ~2.5 s at the default (`NER_POOL_SIZE` unset) instead of the claimed 27 s, so 9 scenarios ×
 > 2 runs is practical. What remains is
-> irreducibly manual: a human, a live key, and eyes on two traces. The automated mock coverage above remains the
-> permanent guarantee; the battery is what proves it on real traffic.
+> irreducibly manual: **a human with a working Claude Code, pointed at the proxy, and eyes on two traces.** The
+> automated mock coverage above remains the permanent guarantee; the battery is what proves it on real traffic.
+>
+> **It does not need a key configured on the proxy — and this line used to say it did.** The proxy holds *no*
+> credential: it forwards the client's own, which is why M6's live run returned 200 on the first try with nothing
+> configured. "A live key" was a compression of M5's true constraint (*a live provider*, back when the proxy was
+> OpenAI-compat-only and Claude Code could not route through it at all), and it survived the milestone that made
+> it false. It then cost real decisions — M10 recorded the battery as blocked on a credential nobody had, rather
+> than on ten minutes at the keyboard. **`MANUAL_VERIFICATION.md` is the source of truth for *how to run* this;
+> when a summary here disagrees with the runbook, the runbook wins.**
 
 ### Dependency footprint (M2.5-R1)
 - DEP-01 — `tests/dependency_footprint.rs` (`default_build_excludes_the_onnx_and_hf_stack`): `cargo tree` on the **default** features must contain no `hf-hub`/`hf-xet`/`aws-lc`/`ort`/`tokenizers` — the ONNX/HF stack (heavy, native) stays behind the `onnx` feature so the shipped default build is native-dep-free.
