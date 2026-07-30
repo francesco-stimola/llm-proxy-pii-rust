@@ -3,6 +3,50 @@
 Newest first. One entry per meaningful change — note *what* and *why*, not just
 *what*. This is the running history so context is never lost between sessions.
 
+## 2026-07-30 — M10 round 7: the harness that answers "can real traffic hit this?" was measuring non-numbers
+
+All five of round 6's closures hold — verified by **mutation** and by the **compiler**, which is the
+bar worth keeping: a `detect`-only implementor is `error[E0046]`, and putting the budget-dropping
+defect back into `CachingDetector::redetect` reds DOS-08 and DOS-09 and *nothing else in the suite*.
+Six new findings, none a live leak, none a behaviour change, none needing a decision.
+
+**The one that reframes the milestone is R49.** `DOS-BUD`'s "phone column" emitted **eleven digits**,
+and no Italian plan accepts eleven — so the harness whose entire job is answering *"can real traffic
+reach the budget?"* masked **nothing at any size**, and every unit it published for two rounds was the
+cost of *rejecting non-numbers*. It could not have told anyone: its verdict column printed `0 left`,
+which is exactly what a correctly-masked column prints. *A measurement harness needs its own
+non-vacuity assertion* — the M4-R13 bar for corpora, applied to the thing doing the measuring.
+Reporting `N masked` is the whole fix and would have caught it on the first run.
+
+**With a real column the answer inverts, and it is a better answer.** `national_phone_valid` is
+`.any()` over the enabled regions, and `.any()` short-circuits on **accept** — so a real number costs
+~1 unit while a candidate every plan rejects pays for all nine. The largest phone-bearing request the
+proxy accepts, **16 MiB / 221,941 numbers**, spends **221,941 of 500,000** in 2.56 s. So *a legal
+phone-bearing body cannot reach the allowance at all*; `MAX_BODY_BYTES` binds first. What reaches the
+budget is text that **fails** validation — the adversarial shape, by construction, which is the right
+thing for a fail-closed bound to be reachable by. Every "refusal line in rows" this project published
+is retired: for that payload shape there isn't one.
+
+**R47 is the one that mattered for safety.** `FailOpen`'s *"never swallow a budget refusal"* — the
+line M10-R41 added — was asserted by **nothing**. Delete it and the whole suite stayed green while a
+body the request path must refuse was forwarded through `Caching(Composite([FailOpen(Structured)])))`.
+M10-R41's own *"test that would have caught it"* had prescribed exactly the missing case. **A closure
+that takes the fix and leaves the prescribed test has closed half the finding** — second time here.
+`FAILOPEN-BUD` now asserts both sides of the distinction, verified by mutation.
+
+Also: R48 put the three `FailOpen` positions into `shipped_chains()` and, where the list still cannot
+be derived from the wiring, **says so** rather than implying a completeness the code cannot deliver.
+R50 retired the **5.2 s** worst case — measured under load *and* on the broken column; idle it is
+2.56 s, and refusals land at 1.4–1.9 s. *A published number is measured on an idle box or it is not
+measured*, and the contention is usually our own build. R51 fixed two sites round 6's closures had
+themselves named (fourth and fifth of that class). R52 recorded that a private field reaches a
+module's **descendants**, so the `DetectError` literal still compiles inside `pii::*` — the claim was
+weaker than it looked, and this milestone has now been wrong about what the compiler enforces twice,
+both times in the reassuring direction.
+
+**220 default / 253 onnx green**, `fmt`, `clippy -D warnings` and the 15-warning `cargo doc` baseline
+all clean.
+
 ## 2026-07-30 — M10 round 6: both of round 5's closures claimed more than they delivered
 
 Round 5's fix **holds** — verified on the real `.exe` at the shipped default, a legal 15.63 MiB body

@@ -212,11 +212,11 @@ vengono suddivisi in finestre, così funzionano anche i documenti lunghi.
   CPU-bound gira fuori dall'executor asincrono. Ma *lineare è una forma, non un tetto*: un corpo
   legale da 15,6 MiB di testo denso di cifre teneva occupato un worker per **57 s**, perché
   l'ammontare di validazioni telefoniche era riferito a un *campo* e quanti campi ha un corpo lo
-  sceglie il client. Riferito alla **richiesta**, lo stesso corpo viene rifiutato in **2,2 s**, e la
-  validazione telefonica in sé è limitata a ~1,6 s di CPU. Ciò che resta è lineare nei byte — il
-  corpo legale più lento misurato costa **5,2 s** per un risultato di database da 6 MB, e
-  `MAX_BODY_BYTES` lo limita. Un corpo grande non può bloccare il proxy per tutti. *Un proxy giù non
-  protegge nulla.*
+  sceglie il client. Riferito alla **richiesta**, lo stesso corpo viene rifiutato in **1,6 s**, e la
+  validazione telefonica in sé è limitata a ~1,5 s di CPU. Ciò che resta è lineare nei byte: il corpo
+  legale più lento è un risultato di database da **16 MiB** con una colonna telefono su ogni riga —
+  221.941 numeri mascherati in **2,6 s** — ed è `MAX_BODY_BYTES` a limitarlo. Un corpo grande non può
+  bloccare il proxy per tutti. *Un proxy giù non protegge nulla.*
 - **Deterministico.** Lo stesso valore ottiene sempre lo stesso segnaposto all'interno di una
   richiesta, così le conversazioni multi-turno stateless restano coerenti.
 

@@ -969,23 +969,29 @@ fn next_char_boundary(input: &str, i: usize) -> usize {
 /// **The number is a CPU ceiling on validation, and it was chosen against a legal payload rather
 /// than an adversarial one.** One unit is one `parse()`, measured at **~3 µs** on the shipped release
 /// build (not the ~6.5 µs the library's own docs suggest), so 500,000 bounds a request's
-/// domestic-phone *validation* at **~1.6 s**.
+/// domestic-phone *validation* at **~1.5 s**.
 ///
-/// The **legal** payload that set the number is a database tool result with one phone column, which
-/// is what an agent produces by accident. These are `DOS-BUD`'s printed rows, through the whole
+/// The **legal** payload it is measured against is a database tool result with one phone column,
+/// which is what an agent produces by accident. These are `DOS-BUD`'s printed rows, through the whole
 /// fixpoint as a request pays it — **not** re-typed, and not a single-pass measurement:
 ///
 /// | tool result | rows | units | verdict |
 /// |---|---|---|---|
-/// | 35 KB | 500 | 10,010 | masked |
-/// | 367 KB | 5,000 | 100,010 | masked |
-/// | 1.5 MB | 20,000 | 290,010 | masked |
-/// | 3.8 MB | 50,000 | 500,000 | **refused** |
+/// | 357 KB | 5,000 | 5,000 | masked |
+/// | 3.7 MB | 50,000 | 50,000 | masked |
+/// | **16 MiB** (`MAX_BODY_BYTES`) | **221,941** | **221,941** | **masked** |
 ///
-/// So the refusal line for this shape sits at **~25,000–35,000 rows**, bracketed by measurement
-/// rather than computed from a per-number rate — the rate is not constant (the memo absorbs more as a
-/// table grows), and applying one measured at one scale to another an order of magnitude away is
-/// M10-R20's defect wearing a units label (M10-R38).
+/// **A legal phone-bearing body cannot reach the allowance at all**, and one line of control flow is
+/// why: `national_phone_valid` is `.any()` over the enabled regions and `.any()` short-circuits on
+/// **accept**, so a *real* number costs ~1 unit while a candidate every plan rejects pays for all
+/// nine. The largest phone-bearing request the proxy accepts spends **221,941 of 500,000** — a 2.25×
+/// margin against the biggest legal payload that can exist, since `MAX_BODY_BYTES` binds first. What
+/// reaches the allowance is digit-dense text that **fails** validation, which is the adversarial
+/// shape by construction — the right thing for a fail-closed bound to be reachable by.
+///
+/// *(For two rounds this table said otherwise, because DOS-BUD's "phone column" was eleven digits and
+/// no Italian plan accepts eleven — it masked nothing at any size, so every unit was a rejection cost
+/// and the "refusal line" derived from it was a fact about non-numbers. M10-R49.)*
 ///
 /// An earlier draft of this constant read 50,000 units and would have refused the 367 KB row — an
 /// entirely ordinary `tool_result`. *A fail-closed threshold whose refusal is a routine event is the
@@ -995,10 +1001,10 @@ fn next_char_boundary(input: &str, i: usize) -> usize {
 ///
 /// **What this does not bound, stated because leaving it out was a finding twice.** The allowance
 /// caps *validator calls*. Regex scanning and the mask rewrite are linear in body size and entity
-/// count, bounded only by `MAX_BODY_BYTES` — 228 ms for 16 MiB with the tier off, but the dominant
-/// term on a body that masks tens of thousands of values: the slowest legal body measured costs
-/// **5.2 s**, against 57 s before the allowance became per-request. The DoS is closed by removing a
-/// multiplier the client chose, not by making the ceiling small. See `docs/ARCHITECTURE.md` for the
+/// count, bounded only by `MAX_BODY_BYTES` — 229 ms for 16 MiB with the tier off. The slowest legal
+/// body measured is that 16 MiB phone-bearing result at **2.56 s**, and every refusal lands at
+/// ~1.4–1.9 s, against **57 s** before the allowance became per-request. The DoS is closed by removing
+/// a multiplier the client chose, not by making the ceiling small. See `docs/ARCHITECTURE.md` for the
 /// full table.
 ///
 /// (`cargo test` builds unoptimized, where the same calls take far longer — which is why DOS-06's

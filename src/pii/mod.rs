@@ -192,12 +192,18 @@ pub struct DetectError {
     /// to be at zero became a `400` on a proxy configured to degrade to structured-only.
     ///
     /// **Private, and read through [`is_budget_exhausted`](Self::is_budget_exhausted) (M10-R45).**
-    /// The closure that added it said *"a new error site has to choose"* — which was a convention
-    /// while the field was `pub`, since `DetectError { .. }` remained constructible literally and
-    /// would default the flag by omission being impossible only inside this module. One private
-    /// field makes the two constructors the **only** way to build one outside `pii/mod.rs`, so the
-    /// choice is enforced rather than asked for. This milestone has spent two rounds on obligations
-    /// that a compiler was not checking.
+    /// Making it private is what pushes every error site through
+    /// [`unavailable`](Self::unavailable) or [`budget_exhausted`](Self::budget_exhausted), so the
+    /// choice is made rather than defaulted.
+    ///
+    /// **The reach of that is narrower than "outside this module", and saying otherwise was
+    /// M10-R52.** Rust privacy extends to a module's **descendants**, and `pii::composite`,
+    /// `pii::recognizers` and `pii::onnx` are all children of `pii` — which is where every error
+    /// site in this crate lives. So a `DetectError { .. }` literal still compiles there, and the
+    /// guarantee is *"no other crate can build one"* plus a convention inside `pii`, not a proof.
+    /// Recorded rather than engineered around: moving the type to a leaf module to buy the stronger
+    /// version would scatter it away from the trait it belongs to, and the constructors are two lines
+    /// each. **The claim is weaker than it looked; the code is what it is.**
     budget_exhausted: bool,
 }
 

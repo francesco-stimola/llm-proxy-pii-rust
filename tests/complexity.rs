@@ -34,7 +34,7 @@ use std::time::{Duration, Instant};
 
 use llm_proxy_pii_rust::pii::anonymizer::Vault;
 use llm_proxy_pii_rust::pii::cache::CachingDetector;
-use llm_proxy_pii_rust::pii::composite::CompositeDetector;
+use llm_proxy_pii_rust::pii::composite::{CompositeDetector, FailOpen};
 use llm_proxy_pii_rust::pii::recognizers::{
     StructuredRecognizers, MAX_PHONE_VALIDATIONS_PER_REQUEST,
 };
@@ -573,7 +573,7 @@ fn budget_refusal_line_and_cost() {
         "{:>10}  {:>6}  {:>9}  {:>8}  {:>7}",
         "bytes", "rows", "verdict", "ms", "spent"
     );
-    for rows in [500usize, 5_000, 20_000, 50_000, 80_000] {
+    for rows in [500usize, 5_000, 20_000, 30_000, 40_000, 50_000] {
         let mut dump = String::from("id,customer,city,phone,email,total\n");
         for r in 0..rows as u64 {
             // **The phone column is an odometer too, and the first version of this was not.** A
@@ -582,13 +582,18 @@ fn budget_refusal_line_and_cost() {
             // reads as sub-linear cost when it is really a generator artefact. That is DOS-06's own
             // trap (M10-R20), reproduced here while measuring the fix for it — third time in this
             // milestone. Enumerating `(b, c)` keeps every row's number distinct.
+            // **A real Italian mobile: `3XX XXXXXXX`, ten digits (M10-R49).** The first version
+            // emitted `3NN NNNN NNNN` — *eleven* digits, which no Italian plan accepts, so the
+            // column this table is named after masked **nothing at any size** and every unit
+            // published from it was the cost of *rejecting* candidates. The verdict column printed
+            // `0 left`, which is what a correctly-masked column prints too: an instrument that
+            // cannot tell success from vacancy, on the harness whose whole job is answering "can
+            // real traffic reach the budget?".
             dump.push_str(&format!(
-                "{},Customer Name {},Milano,3{:02} {:04} {:04},user{}@example.com,{}.50\n",
+                "{},Customer Name {},Milano,347 {:07},user{}@example.com,{}.50\n",
                 10_000 + r,
                 r,
-                (r / 81_000_000) % 100,
-                1000 + r % 9000,
-                1000 + (r / 9000) % 9000,
+                1_000_000 + r % 9_000_000,
                 r,
                 100 + r % 900
             ));
@@ -602,8 +607,10 @@ fn budget_refusal_line_and_cost() {
         // where that has to show up.
         let started = Instant::now();
         let mut vault = Vault::new();
+        // Report how many phones were **masked**, not how many were left: "0 left" is what a
+        // correctly-masked column and an entirely unmatched one both print (M10-R49).
         let verdict = match vault.mask_all(&dump, &detector, &budget) {
-            Ok(masked) => format!("{} left", masked.matches("[PHONE_").count()),
+            Ok(masked) => format!("{} masked", masked.matches("[PHONE_").count()),
             Err(_) => "REFUSED".to_string(),
         };
         println!(
@@ -613,6 +620,46 @@ fn budget_refusal_line_and_cost() {
             verdict,
             started.elapsed().as_secs_f64() * 1000.0,
             budget.spent()
+        );
+    }
+
+    // **The question the whole harness exists for: can a *legal* phone-bearing body reach the
+    // allowance at all?** `MAX_BODY_BYTES` caps a request at 16 MiB, so this asks the SQL shape at
+    // exactly that size. A valid number short-circuits `.any()` on the **first** region that accepts
+    // it, so it costs ~1 unit; only a *rejected* candidate pays all nine. That asymmetry is the whole
+    // answer, and it was invisible while the column emitted 11-digit non-numbers (M10-R49).
+    println!("\n--- the same SQL shape at MAX_BODY_BYTES: the legal worst case ---");
+    {
+        let mut dump = String::from("id,customer,city,phone,email,total\n");
+        let mut r = 0u64;
+        while dump.len() < 16 * 1024 * 1024 {
+            dump.push_str(&format!(
+                "{},Customer Name {},Milano,347 {:07},user{}@example.com,{}.50\n",
+                10_000 + r,
+                r,
+                1_000_000 + r % 9_000_000,
+                r,
+                100 + r % 900
+            ));
+            r += 1;
+        }
+        let budget = llm_proxy_pii_rust::pii::Budget::new(
+            llm_proxy_pii_rust::pii::recognizers::MAX_PHONE_VALIDATIONS_PER_REQUEST,
+        );
+        let mut vault = Vault::new();
+        let started = Instant::now();
+        let verdict = match vault.mask_all(&dump, &detector, &budget) {
+            Ok(masked) => format!("{} masked", masked.matches("[PHONE_").count()),
+            Err(_) => "REFUSED".to_string(),
+        };
+        println!(
+            "{:>10} bytes  {:>6} rows  {:>14}  {:>8.0} ms  spent {} of {}",
+            dump.len(),
+            r,
+            verdict,
+            started.elapsed().as_secs_f64() * 1000.0,
+            budget.spent(),
+            budget.initial()
         );
     }
 
@@ -668,17 +715,33 @@ fn budget_refusal_line_and_cost() {
     println!();
 }
 
-/// Every detector arrangement `AppState::new` can build, so a guard about the **chain** is not
-/// secretly a guard about one type (M10-R42).
+/// Every **wrapper position** the detector chain can put between `PrivacyStage` and the recognizers,
+/// so a guard about the chain is not secretly a guard about one arrangement (M10-R42 / M10-R48).
 ///
-/// The wiring is `CachingDetector` (optional) over `CompositeDetector` (one element in the default
-/// build) over `StructuredRecognizers`. All four combinations are shipped shapes.
+/// `build_detector` composes `CachingDetector` (optional, `PII_CACHE_ENTRIES`) over
+/// `CompositeDetector` over the recognizers, and wraps a non-required NER in `FailOpen`. The list
+/// below is the cross-product of those positions plus the bare leaf.
+///
+/// **It is a hand-written list, and that is a known weakness rather than an oversight (M10-R48).**
+/// Nothing ties it to `AppState::new`, so a seventh wrapper added to the wiring does not appear here
+/// by itself — the same shape as the finding this function exists to close, one level up. It cannot
+/// be derived today (`build_detector` takes a `Config` and returns an opaque `Box<dyn PiiDetector>`,
+/// with no way to enumerate what it built), so the honest mitigation is to name the gap here and to
+/// keep the list in the same file as the wiring's own review notes. **`FailOpen` was the position it
+/// omitted**, and it is the one where the line that makes a budget refusal un-swallowable lives —
+/// see `FAILOPEN-BUD` in `pii::composite`, which asserts that line directly.
 fn shipped_chains() -> Vec<(&'static str, Box<dyn PiiDetector>)> {
     fn leaf() -> Box<dyn PiiDetector> {
         Box::new(StructuredRecognizers::new())
     }
     fn composed() -> Box<dyn PiiDetector> {
         Box::new(CompositeDetector::new(vec![leaf()]))
+    }
+    // The recognizers are never `FailOpen`-wrapped by today's wiring — the NER is. Including the
+    // shape anyway is the point: "not reachable today" is what round 4 concluded about the fail-open
+    // question, and the reason it was true turned out to be the defect (M10-R41).
+    fn fail_open_leaf() -> Box<dyn PiiDetector> {
+        Box::new(FailOpen(leaf()))
     }
     vec![
         ("bare", leaf()),
@@ -687,6 +750,18 @@ fn shipped_chains() -> Vec<(&'static str, Box<dyn PiiDetector>)> {
         (
             "cached+composed",
             Box::new(CachingDetector::new(composed(), 16)),
+        ),
+        ("fail-open", fail_open_leaf()),
+        (
+            "composed(fail-open)",
+            Box::new(CompositeDetector::new(vec![fail_open_leaf()])),
+        ),
+        (
+            "cached+composed(fail-open)",
+            Box::new(CachingDetector::new(
+                Box::new(CompositeDetector::new(vec![fail_open_leaf()])),
+                16,
+            )),
         ),
     ]
 }

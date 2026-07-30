@@ -66,7 +66,7 @@ pub struct Config {
     /// **Deliberately not readable from the environment, and that is the point of writing it here
     /// rather than reading it there.** It lives on `Config` because this is where the request limits
     /// live (`max_body_bytes` is its neighbour), and because the guards need to reach a refusal
-    /// without burning the real allowance — 500,000 units is ~1.6 s in `--release` and ~25 s
+    /// without burning the real allowance — 500,000 units is ~1.5 s in `--release` and ~25 s
     /// unoptimized, so three `cargo test` cases that each exhaust it would add over a minute to
     /// every run, and a slow guard is a guard someone eventually marks `#[ignore]`.
     ///

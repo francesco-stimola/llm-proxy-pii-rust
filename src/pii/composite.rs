@@ -236,4 +236,59 @@ mod tests {
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].kind, PiiKind::Email);
     }
+
+    /// **FAILOPEN-BUD (M10-R41, added by M10-R47) — the one line that must not be fail-open.**
+    ///
+    /// `FailOpen` exists to swallow a **detector** failure. It must *not* swallow an exhausted
+    /// **request allowance**: the text was not fully examined, so its PII status is unknown, and
+    /// answering `Ok(vec![])` there forwards a partially scanned body with a clean bill of health.
+    ///
+    /// **Nothing asserted that for two rounds.** M10-R41's own *"test that would have caught it"*
+    /// prescribed this case; the closure took the fix and left the test. Deleting
+    /// `Err(err) if err.is_budget_exhausted() => Err(err)` left the whole suite green while a body
+    /// the request path must refuse was forwarded through `Caching(Composite([FailOpen(Structured)]))`
+    /// (M10-R47).
+    ///
+    /// Both directions are asserted, because either alone is satisfied by a wrapper that has stopped
+    /// distinguishing them: swallow everything and (a) passes; propagate everything and (b) passes.
+    /// *A guard for a distinction has to exercise both sides of it.*
+    #[test]
+    fn fail_open_swallows_a_failed_detector_but_never_an_exhausted_allowance() {
+        // (a) A detector that is simply unavailable is swallowed — the wrapper's whole purpose.
+        let unavailable = super::FailOpen(Box::new(FailingDetector));
+        assert_eq!(
+            unavailable
+                .try_detect("hello", &Budget::per_call())
+                .expect("an unavailable detector must be swallowed"),
+            Vec::new()
+        );
+
+        // (b) An exhausted allowance propagates, on **both** entry points. A one-unit budget over a
+        //     field of phone-shaped candidates is the cheapest way to reach a real refusal.
+        let field = "row 11 4821 7390 end 82 4192 5503 idx 91 7734 2086 zz";
+        let bounded = super::FailOpen(Box::new(StructuredRecognizers::new()));
+        for method in ["try_detect", "redetect"] {
+            let budget = Budget::new(1);
+            let outcome = if method == "try_detect" {
+                bounded.try_detect(field, &budget)
+            } else {
+                bounded.redetect(field, &budget)
+            };
+            let err = outcome.expect_err(
+                "FailOpen swallowed an exhausted request allowance and reported 'no PII here' for a \
+                 body it never finished scanning — a partial scan forwarded with a clean bill of \
+                 health (M10-R41 / M10-R47)",
+            );
+            assert!(
+                err.is_budget_exhausted(),
+                "{method}: the refusal must be flagged as an exhausted allowance, or the wrapper is \
+                 propagating it for the wrong reason: {err:?}"
+            );
+            assert!(
+                budget.is_exhausted(),
+                "{method}: the allowance was not actually spent — this case is not reaching a real \
+                 refusal, and would pass against a wrapper that propagates everything"
+            );
+        }
+    }
 }

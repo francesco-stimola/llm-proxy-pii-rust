@@ -1785,28 +1785,27 @@ only the false positives we imagined. Run:
 
 ### What is left before the tag
 
-Written 2026-07-29, **rewritten 2026-07-30 after round 7.** The milestone's scope items are all `[x]`
-and **46 of 52** review findings are closed; round 7's six are open. The suite is green on both feature
-sets (**219 default / 252 onnx**, zero warnings; `fmt`, `clippy -D warnings` clean; `cargo doc` 15
-warnings, all pre-existing), the real `.exe` masks, injects, restores and refuses as published, and
-**nothing round 7 found changes product behaviour**.
+Written 2026-07-29, **rewritten 2026-07-30 after round 7's findings were closed.** The milestone's
+scope items are all `[x]`, all **52** review findings across seven rounds are `[x]`, and the suite is
+green on both feature sets (**220 default / 253 onnx**, zero warnings; `fmt`, `clippy -D warnings`
+clean; `cargo doc` 15 warnings, all pre-existing). Nothing is left in the code.
 
-1. **Close round 7's six findings.** Two are guards for shipped code that nothing asserts —
-   [M10-R47](reviews/M10.md#m10-r47) (deleting `FailOpen`'s budget rule leaves the suite 219/219 green
-   while a `FailOpen(structured)` chain forwards DOS-07's body) and
-   [M10-R48](reviews/M10.md#m10-r48) (`shipped_chains()` is a hand-written list that disagrees with
-   `build_detector`); one fix closes both. Two are numbers the harness refutes —
-   [M10-R49](reviews/M10.md#m10-r49) (the refusal line is ~41,000 rows, and DOS-BUD's *"phone column"*
-   holds no valid phone) and [M10-R50](reviews/M10.md#m10-r50) (the **5.2 s** worst case both READMEs
-   publish measures 1.46 s on an idle box and contradicts the two-term model beside it) — and both are
-   **release-facing prose**, so they want fixing before the tag even though neither is a safety issue.
-   Then [M10-R51](reviews/M10.md#m10-r51) and [M10-R52](reviews/M10.md#m10-r52).
+1. **Review round 8 — closure verification of round 7.** The two worth attacking are the ones that
+   changed *numbers* rather than code. [M10-R49](reviews/M10.md#m10-r49): DOS-BUD's phone column is a
+   real ten-digit Italian mobile now, its verdict column reports `N masked` instead of `N left`, and a
+   new row measures the SQL shape at `MAX_BODY_BYTES` — re-run it and check the conclusion it
+   supports, that a **legal phone-bearing body cannot reach the allowance** because `.any()`
+   short-circuits on accept. That claim is now load-bearing in ARCHITECTURE, the constant's doc and
+   both READMEs. [M10-R50](reviews/M10.md#m10-r50): every ceiling figure was re-measured on an idle
+   box; verify them there, and check that no *contended* measurement has crept back into a product
+   doc. Then [M10-R47](reviews/M10.md#m10-r47)'s **FAILOPEN-BUD** — mutate the guard clause away and
+   confirm it reds — and [M10-R48](reviews/M10.md#m10-r48)'s `shipped_chains()`, which is still a
+   hand-written list and says so: is the gap it names now the *only* one?
 2. **The CC battery — CC-01 / CC-03 / CC-04 / CC-09** (step 10 above). Needs the maintainer at the
    keyboard with Claude Code pointed at the proxy. **No key configuration required.**
 3. **Bump `Cargo.toml` to `1.2.1`** — a `chore(release):` commit at tag time, as `1.2.0` was. Left
    at `1.2.0` on purpose: `release-build-publish.yml` refuses to publish a tag that disagrees with
    the manifest, so the mismatch is currently *protective*, not a gap.
-
 <a id="m10-ledger"></a>
 ### Review ledger — M10 → [`reviews/M10.md`](reviews/M10.md)
 **Round 1 (2026-07-29): 12 findings, all 12 closed.** The headline claim holds — verified through the real
@@ -2095,12 +2094,41 @@ none a live leak, none a live DoS, **none changing product behaviour**.
 
 | ID | Title | Sev | Status |
 |---|---|---|---|
-| [M10-R47](reviews/M10.md#m10-r47) | `FailOpen`'s "never swallow a budget refusal" is asserted by no test: delete the line and the suite is 219/219 green while a `FailOpen(structured)` chain forwards DOS-07's body | guard | [ ] |
-| [M10-R48](reviews/M10.md#m10-r48) | `shipped_chains()` says *"every arrangement `AppState::new` can build"* and is a hand-written four — wrong in both directions, with nothing tying it to `build_detector` | guard | [ ] |
-| [M10-R49](reviews/M10.md#m10-r49) | The refusal line is ~41,000 rows, not 25,000–35,000 — and DOS-BUD's *"phone column"* is 11 digits, so it masks **zero** phones at every size | measurement | [ ] |
-| [M10-R50](reviews/M10.md#m10-r50) | The **5.2 s** worst case in both READMEs measures 1.46 s idle, contradicts the two-term model beside it, and is attributed to masking its row never did | measurement | [ ] |
-| [M10-R51](reviews/M10.md#m10-r51) | Two round-6 closures each left a site their own finding named, both in `TESTING.md`: DOS-08's entry still claims what M10-R42 disproved, E2E-05 is still *1 MiB* | docs | [ ] |
-| [M10-R52](reviews/M10.md#m10-r52) | *"The two constructors are the only way to build a `DetectError`"* is false in every module below `pii` — which is all four error sites | low | [ ] |
+| [M10-R47](reviews/M10.md#m10-r47) | `FailOpen`'s "never swallow a budget refusal" is asserted by no test: delete the line and the suite is 219/219 green while a `FailOpen(structured)` chain forwards DOS-07's body | guard | [x] |
+| [M10-R48](reviews/M10.md#m10-r48) | `shipped_chains()` says *"every arrangement `AppState::new` can build"* and is a hand-written four — wrong in both directions, with nothing tying it to `build_detector` | guard | [x] |
+| [M10-R49](reviews/M10.md#m10-r49) | The refusal line is ~41,000 rows, not 25,000–35,000 — and DOS-BUD's *"phone column"* is 11 digits, so it masks **zero** phones at every size | measurement | [x] |
+| [M10-R50](reviews/M10.md#m10-r50) | The **5.2 s** worst case in both READMEs measures 1.46 s idle, contradicts the two-term model beside it, and is attributed to masking its row never did | measurement | [x] |
+| [M10-R51](reviews/M10.md#m10-r51) | Two round-6 closures each left a site their own finding named, both in `TESTING.md`: DOS-08's entry still claims what M10-R42 disproved, E2E-05 is still *1 MiB* | docs | [x] |
+| [M10-R52](reviews/M10.md#m10-r52) | *"The two constructors are the only way to build a `DetectError`"* is false in every module below `pii` — which is all four error sites | low | [x] |
+
+> **All six closed (2026-07-30), and two of them were numbers this project had published.** R47 is the
+> one that mattered: `FailOpen`'s *"never swallow a budget refusal"* was asserted by **nothing** for
+> two rounds — delete the line and the whole suite stayed green while a body the request path must
+> refuse was forwarded. **FAILOPEN-BUD** now asserts both sides of the distinction, verified by
+> mutation. R48 put the three `FailOpen` positions into `shipped_chains()` and, where the list still
+> cannot be derived from the wiring, says so instead of implying otherwise.
+>
+> **R49 is the one to remember.** DOS-BUD's "phone column" was **eleven digits**, and no Italian plan
+> accepts eleven — so the harness that exists to answer *"can real traffic reach the budget?"* masked
+> **nothing at any size**, and every unit it published was the cost of *rejecting* non-numbers. Its
+> verdict column printed `0 left`, which is what a correctly-masked column prints too: an instrument
+> that could not tell success from vacancy. With a real column the answer inverts — `.any()`
+> short-circuits on **accept**, so a valid number costs ~1 unit against ~9 for a rejected one, and the
+> largest phone-bearing request the proxy accepts (**16 MiB, 221,941 numbers**) spends **221,941 of
+> 500,000**. *A legal phone-bearing body cannot reach the allowance at all*; `MAX_BODY_BYTES` binds
+> first. What reaches it is text that **fails** validation — the adversarial shape, which is the right
+> thing for a fail-closed bound to be reachable by.
+>
+> R50 retired the **5.2 s** worst case: it was measured under load *and* on the broken column. Idle,
+> the slowest legal body is that 16 MiB result at **2.56 s** and every refusal lands at ~1.4–1.9 s.
+> Third time a contended measurement reached a product doc — *a published number is measured on an
+> idle box or it is not measured.* R51 fixed two sites round 6's own closures had named (fourth and
+> fifth of that class), and R52 recorded that a private field reaches a module's **descendants**, so
+> the `DetectError` literal still compiles inside `pii::*` — the claim was weaker than it looked, and
+> the record says so rather than the code pretending otherwise.
+>
+> **220 default / 253 onnx green**, `fmt`, `clippy -D warnings` and the 15-warning `cargo doc`
+> baseline all clean.
 
 <a id="backlog"></a>
 ## Backlog — documented, not scheduled

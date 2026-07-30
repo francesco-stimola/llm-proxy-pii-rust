@@ -209,10 +209,11 @@ hardware; large fields are chunked so long documents work too.
   field *size* and entity *count*, and CPU-bound work runs off the async executor. But *linear is
   a shape, not a budget*: a legal 15.6 MiB body of digit-dense text held a worker for **57 s**,
   because the phone-validation allowance was scoped to a *field* and the client picks how many
-  fields a body has. Scoped to the **request**, the same body is refused in **2.2 s**, and phone
-  validation itself is capped at ~1.6 s of CPU. What is left is linear in bytes — the slowest legal
-  body measured is **5.2 s** for a 6 MB database result, and `MAX_BODY_BYTES` bounds that. A large
-  body can't stall the proxy for everyone. *A proxy that is down protects nothing.*
+  fields a body has. Scoped to the **request**, the same body is refused in **1.6 s**, and phone
+  validation itself is capped at ~1.5 s of CPU. What is left is linear in bytes: the slowest legal
+  body is a **16 MiB** database result with a phone column in every row — 221,941 numbers masked in
+  **2.6 s** — and `MAX_BODY_BYTES` is what bounds that. A large body can't stall the proxy for
+  everyone. *A proxy that is down protects nothing.*
 - **Deterministic.** The same value always maps to the same placeholder within a request, so
   stateless multi-turn conversations stay coherent.
 

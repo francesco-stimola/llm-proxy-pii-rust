@@ -281,43 +281,57 @@ exactly the reason above.
 
 **What the budget costs, and the number is chosen against a legal payload.** One unit is one
 `phonenumber::parse()`, measured at **~3 µs** on the shipped release build, so **500,000** bounds a
-request's domestic-phone *validation* at **~1.6 s** of CPU. Every row below is printed by `DOS-BUD`
+request's domestic-phone *validation* at **~1.5 s** of CPU. Every row below is printed by `DOS-BUD`
 (`cargo test --release --test complexity -- --ignored --nocapture budget_refusal_line`) — *a number a
 reader must trust goes stale; a number they can re-run is a fact*:
 
 | body | verdict | units | wall clock |
 |---|---|---|---|
 | M7 22 KiB Claude Code turn | masked | **0** | — |
-| 35 KB SQL result, 500 rows, one phone column | masked | 10,010 | 45 ms |
-| 367 KB SQL result, 5,000 rows | masked | 100,010 | 423 ms |
-| 1.5 MB SQL result, 20,000 rows | masked | 290,010 | 1.13 s |
-| 3.8 MB SQL result, 50,000 rows | **refused** | 500,000 | 3.82 s |
-| 6.1 MB SQL result, 80,000 rows | **refused** | 500,000 | 5.23 s |
-| 2 MiB field, *nothing but* phone-shaped groups | masked | 499,380 | 1.57 s |
-| 3 MiB+ field, same shape | **refused** | 500,000 | 1.60 s |
-| 1 x 200 KB field | masked | — | 160 ms |
-| 5 x 200 KB fields (1 MB) | masked | — | 846 ms |
-| **15.6 MiB across 78 x 200 KB fields** | **refused** | 500,000 | **2.24 s** |
-| 16 MiB, phone tier **off** - the unbudgeted floor | masked | 0 | 228 ms |
+| 357 KB SQL result, 5,000 rows, one phone column | masked | 5,000 | 46 ms |
+| 3.7 MB SQL result, 50,000 rows | masked | 50,000 | 514 ms |
+| **16 MiB SQL result, 221,941 rows — `MAX_BODY_BYTES`** | **masked** | **221,941** | **2.56 s** |
+| 2 MiB field, *nothing but* phone-shaped groups | masked | 499,380 | 1.36 s |
+| 3 MiB+ field, same shape | **refused** | 500,000 | 1.44 s |
+| 1 x 200 KB field | masked | — | 151 ms |
+| 5 x 200 KB fields (1 MB) | masked | — | 814 ms |
+| **15.6 MiB across 78 x 200 KB fields** | **refused** | 500,000 | **1.61 s** |
+| 16 MiB, phone tier **off** - the unbudgeted floor | masked | 0 | 229 ms |
 
-**The 367 KB row is why the number is 500,000 and not 50,000.** At 50,000 units that entirely
-ordinary `tool_result` — a database query an agent runs by accident — came back a `400`. *A
-fail-closed threshold whose refusal is a routine event is the wrong threshold:* every refusal costs
-the agent a turn, and a bound that fires on legal traffic teaches its operator to raise it rather
-than to trust it. Which is also why it is **not** an environment variable (M10-R27): a CPU bound an
-operator can raise is not a bound. Headroom against a conversation is total — the M7 turn spends
-**zero** units, pinned by `PHONE-BUD`. The refusal line for a phone-bearing database result sits
-around **25,000–35,000 rows**, measured; a table that size is not a turn an agent means to send.
+> **A legal phone-bearing body cannot reach the allowance at all, and the reason is one line of
+> control flow.** `national_phone_valid` is `.any()` over the enabled regions, and `.any()`
+> short-circuits on **accept** — so a *real* number costs about **one** unit, while a candidate that
+> every plan rejects pays for all nine. The largest phone-bearing request the proxy will accept is
+> 16 MiB, and it spends **221,941 of 500,000** — a 2.25x margin against the biggest legal payload
+> that exists, not against an estimate. `MAX_BODY_BYTES` binds first.
+>
+> What reaches the allowance is digit-dense text that **fails** validation. That is the adversarial
+> shape by construction, which is the right thing for a fail-closed bound to be reachable by.
+>
+> **This was invisible for two rounds because DOS-BUD's "phone column" was eleven digits** and no
+> Italian plan accepts eleven (M10-R49). It masked **nothing** at any size, so every unit published
+> from it was a rejection cost — ~20 per row instead of ~1 — and the "refusal line" derived from it
+> (~25,000 rows) was a fact about non-numbers. The verdict column printed `0 left`, which is exactly
+> what a correctly-masked column prints too: *an instrument that cannot tell success from vacancy,
+> on the harness whose whole job is to answer "can real traffic reach this?"*. It reports
+> `N masked` now.
+
+**The 367 KB row is why the number is 500,000 and not 50,000.** At 50,000 units an entirely ordinary
+`tool_result` came back a `400` under the *rejection* cost that dominates a mixed body. *A fail-closed
+threshold whose refusal is a routine event is the wrong threshold:* every refusal costs the agent a
+turn, and a bound that fires on legal traffic teaches its operator to raise it rather than to trust
+it. Which is also why it is **not** an environment variable (M10-R27): a CPU bound an operator can
+raise is not a bound. Headroom against a conversation is total — the M7 turn spends **zero** units,
+pinned by `PHONE-BUD`.
 
 > **The budget bounds validation, not the whole request — and saying otherwise would be M10-R30 in a
 > new place.** Two terms make up a request's CPU: `units x ~3 µs`, which the allowance caps at
-> ~1.6 s, **plus** regex scanning and the mask rewrite, which are linear in body size and entity
-> count and bounded only by `MAX_BODY_BYTES`. That floor is small on its own — 16 MiB with the phone
-> tier off is **228 ms** — but on a body that actually *masks* tens of thousands of values it
-> dominates the tail: the worst legal body measured here costs **5.2 s**, not 1.6 s.
+> ~1.5 s, **plus** regex scanning and the mask rewrite, linear in body size and entity count and
+> bounded only by `MAX_BODY_BYTES` — **229 ms** for 16 MiB with the tier off. The slowest legal body
+> measured is the 16 MiB phone-bearing one at **2.56 s**, and every refusal lands at ~1.4–1.9 s.
 >
 > What changed is not that the ceiling vanished; it is that it stopped being **multiplied by a factor
-> the client picks**. 57 s → 2.24 s on the same 78-field body, and what remains is linear in bytes.
+> the client picks**. 57 s -> 1.61 s on the same 78-field body, and what remains is linear in bytes.
 > *Linear is a shape, not a budget* — so the shape is published with the number beside it, rather
 > than the validation term alone wearing the word "ceiling".
 

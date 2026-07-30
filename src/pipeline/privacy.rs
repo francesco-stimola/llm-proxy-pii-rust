@@ -78,7 +78,7 @@ impl PrivacyStage {
     /// Build the stage with an explicit per-request validation allowance (M10-R28).
     ///
     /// **This exists so a guard can reach a refusal without paying for one.** The shipped allowance
-    /// is ~1.6 s of CPU in `--release` and ~25 s unoptimized; DOS-07, DOS-06 and E2E-05 all need to
+    /// is ~1.5 s of CPU in `--release` and ~25 s unoptimized; DOS-07, DOS-06 and E2E-05 all need to
     /// *cross* it, and three cases at 25 s each is how a guard ends up `#[ignore]`d — which in this
     /// milestone alone has hidden three findings. Lowering the number does not weaken any of them:
     /// what they assert is that the allowance belongs to the **request** and that exhausting it
