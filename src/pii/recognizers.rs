@@ -781,7 +781,7 @@ impl Recognizer {
         let mut at = 0usize;
         while at <= input.len() {
             // **Stop the moment the allowance is gone, whichever recognizer spent it.** The field
-            // is going to be refused by `try_detect_within` regardless, so there is nothing to buy
+            // is going to be refused by `try_detect` regardless, so there is nothing to buy
             // by finishing the scan — and the alternative, letting the loop run on with a
             // saturated budget, is how a partial scan would end up looking like a complete one.
             if budget.is_exhausted() && self.validate.is_some() {
@@ -909,7 +909,7 @@ impl Recognizer {
                 None => {
                     // Give up rather than shrink further on an empty allowance. Returning `None`
                     // here is a *miss*, not a silent pass: the caller's budget is already spent,
-                    // so `try_detect_within` refuses the whole field below.
+                    // so `try_detect` refuses the whole field below.
                     if budget.is_exhausted() {
                         return None;
                     }
@@ -966,29 +966,40 @@ fn next_char_boundary(input: &str, i: usize) -> usize {
 /// [`try_detect`](PiiDetector::try_detect) / [`redetect`](PiiDetector::redetect) rather than passed
 /// to an optional sibling of theirs (M10-R35), is what makes the name honest.
 ///
-/// **The number is a CPU ceiling, and it was chosen against a legal payload rather than an
-/// adversarial one.** One unit is one `parse()`, measured at **~2.7 µs** on the shipped release
-/// build (not the ~6.5 µs the library's own docs suggest), so 500,000 bounds a whole request's
-/// domestic-phone work at **~1.4 s**. Without any budget the same ceiling is ~95 s, since
-/// `MAX_BODY_BYTES` permits 16 MiB and a 200 KB field of pure phone-shaped groups already costs
-/// 50,000 units — so this is a **40× reduction of the worst case**, not a marginal one.
+/// **The number is a CPU ceiling on validation, and it was chosen against a legal payload rather
+/// than an adversarial one.** One unit is one `parse()`, measured at **~3 µs** on the shipped release
+/// build (not the ~6.5 µs the library's own docs suggest), so 500,000 bounds a request's
+/// domestic-phone *validation* at **~1.6 s**.
 ///
 /// The **legal** payload that set the number is a database tool result with one phone column, which
-/// is what an agent produces by accident (`DOS-BUD` re-measures all of this on demand):
+/// is what an agent produces by accident. These are `DOS-BUD`'s printed rows, through the whole
+/// fixpoint as a request pays it — **not** re-typed, and not a single-pass measurement:
 ///
 /// | tool result | rows | units | verdict |
 /// |---|---|---|---|
-/// | 35 KB | 500 | 5,005 | masked |
-/// | 145 KB | 2,000 | 20,005 | masked |
-/// | 367 KB | 5,000 | 50,005 | masked |
-/// | ~3.6 MB | ~50,000 | ~500,000 | refused |
+/// | 35 KB | 500 | 10,010 | masked |
+/// | 367 KB | 5,000 | 100,010 | masked |
+/// | 1.5 MB | 20,000 | 290,010 | masked |
+/// | 3.8 MB | 50,000 | 500,000 | **refused** |
 ///
-/// ≈10 units per number, so the allowance is ≈**50,000 phone numbers per request**. An earlier draft
-/// of this constant read 50,000 units and would have refused the 367 KB row — an entirely ordinary
-/// `tool_result`. *A fail-closed threshold whose refusal is a routine event is the wrong threshold:*
-/// every refusal costs the agent a turn, and a bound that fires on legal traffic teaches its
-/// operator to raise it rather than to trust it. Headroom against a conversation is total — the M7
-/// 22 KiB Claude Code turn spends **0** units, pinned by PHONE-BUD.
+/// So the refusal line for this shape sits at **~25,000–35,000 rows**, bracketed by measurement
+/// rather than computed from a per-number rate — the rate is not constant (the memo absorbs more as a
+/// table grows), and applying one measured at one scale to another an order of magnitude away is
+/// M10-R20's defect wearing a units label (M10-R38).
+///
+/// An earlier draft of this constant read 50,000 units and would have refused the 367 KB row — an
+/// entirely ordinary `tool_result`. *A fail-closed threshold whose refusal is a routine event is the
+/// wrong threshold:* every refusal costs the agent a turn, and a bound that fires on legal traffic
+/// teaches its operator to raise it rather than to trust it. Headroom against a conversation is
+/// total — the M7 22 KiB Claude Code turn spends **0** units, pinned by PHONE-BUD.
+///
+/// **What this does not bound, stated because leaving it out was a finding twice.** The allowance
+/// caps *validator calls*. Regex scanning and the mask rewrite are linear in body size and entity
+/// count, bounded only by `MAX_BODY_BYTES` — 228 ms for 16 MiB with the tier off, but the dominant
+/// term on a body that masks tens of thousands of values: the slowest legal body measured costs
+/// **5.2 s**, against 57 s before the allowance became per-request. The DoS is closed by removing a
+/// multiplier the client chose, not by making the ceiling small. See `docs/ARCHITECTURE.md` for the
+/// full table.
 ///
 /// (`cargo test` builds unoptimized, where the same calls take far longer — which is why DOS-06's
 /// refusal case is not wrapped in a wall-clock budget. The number must come from the product, not

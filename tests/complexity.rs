@@ -33,6 +33,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use llm_proxy_pii_rust::pii::anonymizer::Vault;
+use llm_proxy_pii_rust::pii::cache::CachingDetector;
+use llm_proxy_pii_rust::pii::composite::CompositeDetector;
 use llm_proxy_pii_rust::pii::recognizers::{
     StructuredRecognizers, MAX_PHONE_VALIDATIONS_PER_REQUEST,
 };
@@ -666,80 +668,182 @@ fn budget_refusal_line_and_cost() {
     println!();
 }
 
-/// **DOS-08 (M10-R35) — every fixpoint pass is charged to the request, not just pass 0.**
+/// Every detector arrangement `AppState::new` can build, so a guard about the **chain** is not
+/// secretly a guard about one type (M10-R42).
 ///
-/// M10-R28 made the allowance per-request and M10-R30 named the fixpoint as the other half of why
-/// the old bound did not exist: `Vault::mask_all` calls detection up to five times per field. The
-/// fix threaded a budget through a `_within` seam whose *default* silently delegated to the
-/// budget-less pair — so every wrapper carried an obligation to override **both** methods, and the
-/// penalty for missing one was a fresh allowance and a green suite. `StructuredRecognizers`, the
-/// only detector whose cost the budget bounds, overrode `try_detect_within` and not
-/// `redetect_within`. A legal 15.63 MiB body answered `200` in 17.2 s against a published ceiling
-/// of ~1.4 s, and **not one test could see it**.
+/// The wiring is `CachingDetector` (optional) over `CompositeDetector` (one element in the default
+/// build) over `StructuredRecognizers`. All four combinations are shipped shapes.
+fn shipped_chains() -> Vec<(&'static str, Box<dyn PiiDetector>)> {
+    fn leaf() -> Box<dyn PiiDetector> {
+        Box::new(StructuredRecognizers::new())
+    }
+    fn composed() -> Box<dyn PiiDetector> {
+        Box::new(CompositeDetector::new(vec![leaf()]))
+    }
+    vec![
+        ("bare", leaf()),
+        ("composed", composed()),
+        ("cached", Box::new(CachingDetector::new(leaf(), 16))),
+        (
+            "cached+composed",
+            Box::new(CachingDetector::new(composed(), 16)),
+        ),
+    ]
+}
+
+/// **DOS-08 (M10-R35, widened by M10-R42) — every fixpoint pass is charged to the request, through
+/// every shape the detector chain takes.**
 ///
-/// The seam is gone — `try_detect` and `redetect` both take the budget, and `redetect`'s default
-/// forwards the same one — so the defect is now unrepresentable rather than untested. This guard is
-/// what says so out loud, and it is deliberately phrased over the **trait**, not over
-/// `StructuredRecognizers`: a seventh detector that drops the allowance fails here.
+/// M10-R28 made the allowance per-request and M10-R30 named the fixpoint as the other half of why the
+/// old bound did not exist: `Vault::mask_all` calls detection up to five times per field. The fix
+/// threaded a budget through a `_within` seam whose *default* silently minted a fresh allowance, and
+/// `StructuredRecognizers` — the leaf — overrode one of the two methods and not the other. A legal
+/// 15.63 MiB body answered `200` in 17.2 s, and **not one test could see it**.
+///
+/// **The first version of this guard could not see it either, one level up.** It constructed a bare
+/// `StructuredRecognizers` and was described in three documents as *"phrased over the trait, so a
+/// seventh detector that drops the allowance fails here"*. What was phrased over the trait were the
+/// *method names it called*; what it quantified over was **one concrete type — the one already
+/// fixed**. Reintroducing the identical defect in `CachingDetector::redetect`, a shipped wrapper on
+/// the default request path, left all 218 tests green while the request under-charged **21x**
+/// (205,065 -> 9,765 units) and forwarded a body it must refuse. *A guard aimed at the instance
+/// relocates the blind spot* — M4-R7 -> R9's "a fix that only re-ranks relocates the leak", in its
+/// testing form.
+///
+/// So it loops over [`shipped_chains`]. The axis it now varies is the **detector composition**, and
+/// what it holds constant is written into TESTING's table rather than left as a dash — that dash is
+/// what the sixth arrival of this lesson looked like.
 #[test]
 fn every_fixpoint_pass_is_charged_to_the_request_budget() {
     // Small enough to be instant, dense enough that a scan certainly validates something.
     let field = distinct_digit_groups(4_000, 0);
 
-    // (a) The direct claim: `redetect` — the fixpoint's passes 1..n — charges like `try_detect`.
-    //     With an allowance of one unit, both must refuse. Before M10-R35 the second returned `Ok`
-    //     with a full scan and spent nothing, which is exactly the shape a partial scan takes.
-    for (label, call) in [("try_detect", 0usize), ("redetect", 1usize)] {
-        let detector = StructuredRecognizers::new();
-        let budget = Budget::new(1);
-        let outcome = if call == 0 {
-            detector.try_detect(&field, &budget)
-        } else {
-            detector.redetect(&field, &budget)
-        };
+    for (chain, detector) in shipped_chains() {
+        // (a) The direct claim: `redetect` — the fixpoint's passes 1..n — charges like `try_detect`.
+        //     With an allowance of one unit, both must refuse. Before M10-R35 the second returned
+        //     `Ok` with a full scan and spent nothing, which is the shape a partial scan takes.
+        for method in ["try_detect", "redetect"] {
+            let budget = Budget::new(1);
+            let outcome = if method == "try_detect" {
+                detector.try_detect(&field, &budget)
+            } else {
+                detector.redetect(&field, &budget)
+            };
+            assert!(
+                outcome.is_err(),
+                "{chain}: {method} did not refuse on a one-unit allowance — it is scanning without \
+                 charging the request, so the fixpoint's later passes are unbounded (M10-R35)"
+            );
+            assert!(
+                budget.spent() > 0,
+                "{chain}: {method} spent nothing on a field full of phone-shaped candidates"
+            );
+        }
+
+        // (b) One budget across a whole `mask_all`, on text where the **second** pass does phone
+        //     work.
+        //
+        //     **The obvious two-pass example is the wrong one here, and finding that out is the
+        //     point.** M4-R17's `4111111111111111555 867 5309` does need two passes — masking the
+        //     phone exposes a Luhn-valid card — but the exposed value is a *card*, and card
+        //     validation is deliberately free (M10-R29). Total spend equals pass 0's, and the
+        //     assertion below fails on correct code. What is needed is masking that exposes a
+        //     **phone**, and an ASCII word boundary is what does it: in `...com347 1234567` there is
+        //     no boundary between `m` and `3`, so the phone family cannot match. Mask the email and
+        //     `[EMAIL_1]347 1234567` puts a `]` there.
+        let two_pass = "write to bob@test.com347 1234567 today";
+        let budget = Budget::new(MAX_PHONE_VALIDATIONS_PER_REQUEST);
+        let mut vault = Vault::new();
+        let masked = vault
+            .mask_all(two_pass, detector.as_ref(), &budget)
+            .unwrap_or_else(|e| panic!("{chain}: this must converge, not refuse: {e}"));
         assert!(
-            outcome.is_err(),
-            "{label} did not refuse on a one-unit allowance — it is scanning without charging the \
-             request, so the fixpoint's later passes are unbounded (M10-R35)"
+            masked.contains("[PHONE_"),
+            "{chain}: the phone exposed by masking the email must be masked too — without that this \
+             case is not exercising a later pass at all: {masked}"
         );
+
+        let one_pass_only = Budget::new(MAX_PHONE_VALIDATIONS_PER_REQUEST);
+        let _ = detector
+            .try_detect(two_pass, &one_pass_only)
+            .unwrap_or_else(|e| panic!("{chain}: pass 0 alone must not refuse: {e}"));
         assert!(
-            budget.spent() > 0,
-            "{label} spent nothing on a field full of phone-shaped candidates"
+            budget.spent() > one_pass_only.spent(),
+            "{chain}: the whole fixpoint ({} units) cost no more than its first pass ({} units) — \
+             the later passes are not being charged to the request's allowance (M10-R35)",
+            budget.spent(),
+            one_pass_only.spent()
         );
     }
+}
 
-    // (b) The end-to-end claim, which is what an attacker actually exercises: one budget across a
-    //     whole `mask_all`, on text where the **second** pass does phone work.
+/// **DOS-09 (M10-R42) — the same claim end to end, on the shape the cache makes reachable.**
+///
+/// DOS-07 drives `PrivacyStage` with **distinct** fields and no cache; that is the M10-R28 attack. The
+/// M10-R35 attack is its complement: **identical** fields with the cache on, so pass 0 is served from
+/// the cache for free while `redetect` — deliberately never cached, because later passes run on
+/// per-request masked text — is where the whole cost lands. A `redetect` that drops the allowance is
+/// therefore invisible to every guard that omits the cache, which is exactly how the defect survived
+/// one level up (M10-R42).
+///
+/// The body is M10-R35's own: a lead `11` group no enabled plan accepts, so nothing is masked and
+/// every pass re-validates the whole field. Measured on the shipped chain, 20 x 20 KB fields:
+/// **205,065** units charged against **9,765** with the defect present — a 21x differential, which
+/// decides refuse-versus-forward at any allowance between the two.
+#[test]
+fn identical_fields_through_the_cached_chain_are_charged_on_every_pass() {
+    const FIELDS: usize = 20;
+    const TEST_BUDGET: usize = 20_000;
+
+    // One field, repeated verbatim — the case the detection cache exists for (M7's system prompt),
+    // and the one where pass 0 becomes free while the later passes do not.
     //
-    //     **The obvious two-pass example is the wrong one here, and finding that out is the point.**
-    //     M4-R17's `4111111111111111555 867 5309` does need two passes — masking the phone exposes a
-    //     Luhn-valid card — but the exposed value is a *card*, and card validation is deliberately
-    //     free (M10-R29). Total spend equals pass 0's, and the assertion below would fail on correct
-    //     code. What is needed is masking that exposes a **phone**, and an ASCII word boundary is
-    //     what does it: in `…com347 1234567` there is no boundary between `m` and `3`, so the phone
-    //     family cannot match. Mask the email and `[EMAIL_1]347 1234567` puts a `]` there.
-    let two_pass = "write to bob@test.com347 1234567 today";
-    let detector = StructuredRecognizers::new();
-    let budget = Budget::new(MAX_PHONE_VALIDATIONS_PER_REQUEST);
-    let mut vault = Vault::new();
-    let masked = vault
-        .mask_all(two_pass, &detector, &budget)
-        .expect("this must converge, not refuse");
-    assert!(
-        masked.contains("[PHONE_"),
-        "the phone exposed by masking the email must be masked too — without that this case is not \
-         exercising a later pass at all: {masked}"
-    );
+    // **Identical across fields, distinct *within* one — and getting that backwards is this
+    // milestone's oldest trap arriving for the fifth time.** The first draft repeated a single
+    // literal group, so the per-scan memo collapsed a 20 KB field to *one* validated candidate and
+    // the request was forwarded — which reads as "the budget is not charged" when it is really the
+    // generator saying nothing was there to charge for (M10-R20, DOS-06's odometer, DOS-BUD's SQL
+    // column). The cache keys on the whole field, so identical fields still hit it; the odometer is
+    // what keeps each field's own scan expensive.
+    //
+    // The lead `11` is rejected by every enabled plan, so nothing is masked and every pass
+    // re-validates the whole field — which is the point: the cost lands on `redetect`, which is
+    // never cached.
+    let mut field = String::from("a@b.com ");
+    let mut i = 0u64;
+    while field.len() < 20 * 1024 {
+        i += 1;
+        field.push_str(&format!(
+            "row 11 {:04} {:04} end ",
+            1000 + i % 9000,
+            1000 + (i / 9000) % 9000
+        ));
+    }
+    let messages: Vec<serde_json::Value> = (0..FIELDS)
+        .map(|_| serde_json::json!({ "role": "user", "content": field.clone() }))
+        .collect();
 
-    let one_pass_only = Budget::new(MAX_PHONE_VALIDATIONS_PER_REQUEST);
-    let _ = detector
-        .try_detect(two_pass, &one_pass_only)
-        .expect("pass 0 alone must not refuse");
+    let cached = CachingDetector::new(
+        Box::new(CompositeDetector::new(vec![Box::new(
+            StructuredRecognizers::new(),
+        )])),
+        16,
+    );
+    let stage = PrivacyStage::with_validation_budget(Box::new(cached), TEST_BUDGET);
+    let mut ctx = RequestContext::new();
+    let mut req = ProxyRequest {
+        body: serde_json::json!({ "messages": messages }),
+    };
+    stage.on_request(&mut req, &mut ctx);
+
+    let reason = ctx.block.expect(
+        "twenty identical digit-dense fields must be REFUSED through the cached chain. A cache hit \
+         legitimately spends nothing on pass 0 — but the later passes are never cached, so if this \
+         request is forwarded, some wrapper is handing the detector a fresh allowance on `redetect` \
+         (M10-R42)",
+    );
     assert!(
-        budget.spent() > one_pass_only.spent(),
-        "the whole fixpoint ({} units) cost no more than its first pass ({} units) — the later \
-         passes are not being charged to the request's allowance (M10-R35)",
-        budget.spent(),
-        one_pass_only.spent()
+        reason.contains("budget") && reason.contains("per request"),
+        "the refusal must name the allowance and its unit, got: {reason}"
     );
 }

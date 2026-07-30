@@ -114,7 +114,7 @@ impl FailOpen {
     ) -> Result<Vec<PiiEntity>, DetectError> {
         match outcome {
             Ok(found) => Ok(found),
-            Err(err) if err.budget_exhausted => Err(err),
+            Err(err) if err.is_budget_exhausted() => Err(err),
             Err(err) => {
                 // Log the detector label only — never the input.
                 tracing::warn!(

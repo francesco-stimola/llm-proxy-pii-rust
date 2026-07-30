@@ -190,7 +190,15 @@ pub struct DetectError {
     /// wiring-dependent argument whose collapse round 4 identified as the defect underneath its own
     /// empty fail-open hunt. A genuine GPU or tokenizer failure arriving while the budget happened
     /// to be at zero became a `400` on a proxy configured to degrade to structured-only.
-    pub budget_exhausted: bool,
+    ///
+    /// **Private, and read through [`is_budget_exhausted`](Self::is_budget_exhausted) (M10-R45).**
+    /// The closure that added it said *"a new error site has to choose"* — which was a convention
+    /// while the field was `pub`, since `DetectError { .. }` remained constructible literally and
+    /// would default the flag by omission being impossible only inside this module. One private
+    /// field makes the two constructors the **only** way to build one outside `pii/mod.rs`, so the
+    /// choice is enforced rather than asked for. This milestone has spent two rounds on obligations
+    /// that a compiler was not checking.
+    budget_exhausted: bool,
 }
 
 impl DetectError {
@@ -213,6 +221,12 @@ impl DetectError {
             message: message.into(),
             budget_exhausted: true,
         }
+    }
+
+    /// Whether this is an exhausted **request allowance** rather than an unavailable **detector** —
+    /// the one distinction [`FailOpen`](composite::FailOpen) must not collapse.
+    pub fn is_budget_exhausted(&self) -> bool {
+        self.budget_exhausted
     }
 }
 
