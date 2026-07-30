@@ -939,13 +939,26 @@ impl PiiDetector for StructuredRecognizers {
             rec.push_candidates(input, &mut candidates, &budget);
         }
         if budget.get() == 0 {
-            // Value-free, as `DetectError` requires — the field's *size* is not input-derived
-            // content, and it is the one number an operator needs to act on.
+            // **Actionable, because an unactionable refusal is a badly chosen threshold
+            // (M10-R27).** This reaches the client verbatim: `privacy.rs` blocks the request
+            // with `DetectError`'s `Display`, which becomes the 400 body. And the client is
+            // usually an *agent*, which cannot connect the failure to its cause on its own —
+            // the 400 arrives when it tries to send a turn to the model, not from the tool
+            // whose output is oversized, so its instinct is to retry the identical request
+            // and fail identically. Saying what to change is the difference between a task
+            // that adapts and a task that wedges.
+            //
+            // Value-free, as `DetectError` requires: the field's *size* is not input-derived
+            // content, and it is the one number the caller needs in order to act.
             return Err(DetectError {
                 detector: "structured",
                 message: format!(
                     "a {} byte field exceeded the domestic-phone validation budget of {} \
-                     checks; blocking rather than forwarding a partially scanned field",
+                     checks. The request was blocked rather than forwarded with a partially \
+                     scanned field. Retrying it unchanged will fail identically — reduce this \
+                     single field instead: for a tool result, add a LIMIT to the query or \
+                     return fewer rows per call, and drop the oversized turn rather than \
+                     resending it.",
                     input.len(),
                     MAX_PHONE_VALIDATIONS_PER_FIELD
                 ),

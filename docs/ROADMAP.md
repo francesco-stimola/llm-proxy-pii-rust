@@ -1897,6 +1897,17 @@ as [M10-R23](reviews/M10.md#m10-r23). Seven new findings, **all now closed.**
 | [M10-R24](reviews/M10.md#m10-r24) | DOS-05, DEP-02 and CFG-01 are absent from `docs/TESTING.md`, and its complexity model is a milestone behind | docs | [x] |
 | [M10-R25](reviews/M10.md#m10-r25) | ARCHITECTURE still names `every_declared_shape_is_needed_by_a_corpus_case`, which M10-R17's fix deleted | low | [x] |
 | [M10-R26](reviews/M10.md#m10-r26) | The promoted invariant "a trunk anchor guarantees a candidate can only begin where a number begins" is false, and PHONE-NAT-04 is pinned to the one region set where it cannot fail | guard | [x] |
+| [M10-R27](reviews/M10.md#m10-r27) | The M10-R20 budget refuses with an error its own client — an agent — cannot connect to a cause it controls, so it retries identically and wedges | usability | [x] |
+
+> **[M10-R27](reviews/M10.md#m10-r27) came from the maintainer, not from a review round**, and is
+> recorded the same way as the rest: *a finding's value does not depend on who noticed it.* The
+> question that produced it — "how often can this happen, and does the agent just redo the query
+> with a `LIMIT`?" — is one the builder had not asked, having priced the *probability* of the
+> refusal without pricing the *failure it produces*. The rule it leaves: **a fail-closed threshold
+> is only as good as the failure it produces**; when the party receiving the refusal is an agent,
+> "can it act on this?" is a design question. Two alternative fixes (a configurable budget, a higher
+> default) are written up in the record as **considered and not taken**, with the reasoning, so the
+> next reader inherits the decision rather than re-deriving it.
 
 <a id="backlog"></a>
 ## Backlog — documented, not scheduled
