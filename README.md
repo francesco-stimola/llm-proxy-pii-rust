@@ -209,11 +209,15 @@ hardware; large fields are chunked so long documents work too.
   field *size* and entity *count*, and CPU-bound work runs off the async executor. But *linear is
   a shape, not a budget*: a legal 15.6 MiB body of digit-dense text held a worker for **57 s**,
   because the phone-validation allowance was scoped to a *field* and the client picks how many
-  fields a body has. Scoped to the **request**, the same body is refused in **1.6 s**, and phone
-  validation itself is capped at ~1.5 s of CPU. What is left is linear in bytes: the slowest legal
-  body is a **16 MiB** database result with a phone column in every row — 221,941 numbers masked in
-  **2.6 s** — and `MAX_BODY_BYTES` is what bounds that. A large body can't stall the proxy for
-  everyone. *A proxy that is down protects nothing.*
+  fields a body has. Scoped to the **request**, the same body is refused in **1.6 s**, phone
+  validation is capped at ~1.5 s of CPU, and across every shape measured a request costs at most
+  about **3 s** — the rest is linear in bytes and bounded by `MAX_BODY_BYTES`. A large body can't
+  stall the proxy for everyone. *A proxy that is down protects nothing.*
+- **The allowance is reachable by a large, legal body, and that is worth knowing.** A phone number
+  costs 1–29 validation units depending on how it is written, so a dense contact export starts
+  getting refused somewhere around **2.6 MB** (`320 123 4567`-style grouping) to **6 MB**
+  (`347 1234567`). An ordinary tool result — say 367 KB — spends about **1%** of the allowance, and a
+  typical chat turn spends none at all.
 - **Deterministic.** The same value always maps to the same placeholder within a request, so
   stateless multi-turn conversations stay coherent.
 

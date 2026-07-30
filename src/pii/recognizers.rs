@@ -977,21 +977,29 @@ fn next_char_boundary(input: &str, i: usize) -> usize {
 ///
 /// | tool result | rows | units | verdict |
 /// |---|---|---|---|
-/// | 357 KB | 5,000 | 5,000 | masked |
-/// | 3.7 MB | 50,000 | 50,000 | masked |
-/// | **16 MiB** (`MAX_BODY_BYTES`) | **221,941** | **221,941** | **masked** |
+/// | 357 KB, `347 XXXXXXX` column | 5,000 | 5,000 | masked |
+/// | 3.7 MB, same rendering | 50,000 | 50,000 | masked |
+/// | **16 MiB** (`MAX_BODY_BYTES`), same rendering | 221,941 | 221,941 | masked |
+/// | **16 MiB, the same numbers written `3XX XXX XXXX`** | 219,095 | **500,000** | **refused** |
 ///
-/// **A legal phone-bearing body cannot reach the allowance at all**, and one line of control flow is
-/// why: `national_phone_valid` is `.any()` over the enabled regions and `.any()` short-circuits on
-/// **accept**, so a *real* number costs ~1 unit while a candidate every plan rejects pays for all
-/// nine. The largest phone-bearing request the proxy accepts spends **221,941 of 500,000** — a 2.25×
-/// margin against the biggest legal payload that can exist, since `MAX_BODY_BYTES` binds first. What
-/// reaches the allowance is digit-dense text that **fails** validation, which is the adversarial
-/// shape by construction — the right thing for a fail-closed bound to be reachable by.
+/// **What a phone number costs depends on how it is written — 1 to 29 units (M10-R53).**
+/// `national_phone_valid` is `.any()` over the regions whose plans use that candidate's *shape
+/// family*, so the accept path is cheap; but `Scan::Overlapping` resumes one `char` past each
+/// match's **start**, so a grouped or pair-separated number also proposes sub-candidates from inside
+/// itself, and each of those is rejected and pays its family's whole region list. `347 1234567` costs
+/// **1** — `LongBlock` is the only single-region family and the only shape no other family's regex
+/// matches inside — while `320 123 4567` costs 12, `612 34 56 78` costs 26 and `01 23 45 67 89`
+/// costs 29.
 ///
-/// *(For two rounds this table said otherwise, because DOS-BUD's "phone column" was eleven digits and
-/// no Italian plan accepts eleven — it masked nothing at any size, so every unit was a rejection cost
-/// and the "refusal line" derived from it was a fact about non-numbers. M10-R49.)*
+/// So the reachable band for a **legal** phone-bearing body starts around **2.6 MB** (a dense grouped
+/// column) and around **6 MB** (the cheapest rendering), both inside `MAX_BODY_BYTES`. An ordinary
+/// 367 KB tool result spends ~1%; the M7 22 KiB turn spends 0.
+///
+/// *(Two earlier versions of this table were wrong in the same direction. The first measured an
+/// eleven-digit "phone column" no Italian plan accepts, so it masked nothing and published rejection
+/// costs — M10-R49. The second fixed the column and concluded a legal body could never reach the
+/// allowance, from the one rendering that is the global minimum — M10-R53. **A conclusion drawn from
+/// one point of a grid is a fact about that point.**)*
 ///
 /// An earlier draft of this constant read 50,000 units and would have refused the 367 KB row — an
 /// entirely ordinary `tool_result`. *A fail-closed threshold whose refusal is a routine event is the
@@ -1001,11 +1009,10 @@ fn next_char_boundary(input: &str, i: usize) -> usize {
 ///
 /// **What this does not bound, stated because leaving it out was a finding twice.** The allowance
 /// caps *validator calls*. Regex scanning and the mask rewrite are linear in body size and entity
-/// count, bounded only by `MAX_BODY_BYTES` — 229 ms for 16 MiB with the tier off. The slowest legal
-/// body measured is that 16 MiB phone-bearing result at **2.56 s**, and every refusal lands at
-/// ~1.4–1.9 s, against **57 s** before the allowance became per-request. The DoS is closed by removing
-/// a multiplier the client chose, not by making the ceiling small. See `docs/ARCHITECTURE.md` for the
-/// full table.
+/// count, bounded only by `MAX_BODY_BYTES` — 229 ms for 16 MiB with the tier off. Across every shape
+/// measured a request costs at most about **3 s**, against **57 s** before the allowance became
+/// per-request. The DoS is closed by removing a multiplier the client chose, not by making the ceiling
+/// small. See `docs/ARCHITECTURE.md` for the full table.
 ///
 /// (`cargo test` builds unoptimized, where the same calls take far longer — which is why DOS-06's
 /// refusal case is not wrapped in a wall-clock budget. The number must come from the product, not

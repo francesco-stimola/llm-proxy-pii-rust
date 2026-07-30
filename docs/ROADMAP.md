@@ -1784,27 +1784,35 @@ only the false positives we imagined. Run:
   > fixture, and it carries no tool *results*), so the battery stays owed before the tag is cut.
 
 ### What is left before the tag
+Written 2026-07-29, **rewritten 2026-07-30 after round 8's findings were closed.** The milestone's
+scope items are all `[x]`, all **55** review findings across eight rounds are `[x]`, and the suite is
+green on both feature sets (**220 default / 253 onnx**, zero warnings; `fmt`, `clippy -D warnings`
+clean; `cargo doc` 15 warnings, all pre-existing). Nothing is left in the code — round 8 confirmed
+that by mutation, and none of its three findings needed a source change.
 
-Written 2026-07-29, **rewritten 2026-07-30 after round 8.** The milestone's scope items are all `[x]`,
-**52 of 55** review findings across eight rounds are `[x]`, and the suite is green on both feature sets
-(**220 default / 253 onnx**, zero warnings; `fmt`, `clippy -D warnings` clean; `cargo doc` 15 warnings,
-all pre-existing). **Nothing is left in the code** — round 8 confirmed that by mutation, and its three
-findings need no source change.
+> **The convergence call, because it is the thing to decide next.** Rounds 5–8 found **zero live
+> defects in `src/`**: the fail-closed budget is now pinned from six directions, and round 8's own
+> attempts to break it came back with reasons rather than findings. What has not converged is the loop
+> between *measurement* and *prose* — R53 was the fourth publication of these numbers and the fourth
+> to be wrong, and R55 was the ninth *"a closure skipped a site its own finding named"*. Both classes
+> now have a mechanical guard (DOS-BUD's rendering axis; FAILOPEN-BUD and the catalogue entries),
+> which is what makes them stop rather than another round. **A reasonable stopping rule: cut the tag
+> when a round produces only doc findings for a second consecutive time** — round 8 was the first.
 
-1. **Close round 8's three findings — [M10-R53](reviews/M10.md#m10-r53) blocks the tag.** Four live
-   documents (ARCHITECTURE, the constant's doc, both READMEs) publish *"a legal phone-bearing body
-   cannot reach the allowance at all"*, and it is false: measured, a **2.6 MB** contact export is a
-   `400` through the real binary. No behaviour is wrong — the refusal is the fail-closed path working
-   — but a README may not claim an availability envelope the product does not have.
-   [M10-R54](reviews/M10.md#m10-r54) is the harness that cannot see it and
-   [M10-R55](reviews/M10.md#m10-r55) three doc sites round 7's own closures named.
-   **One decision is owed with R53:** the refusal line for a legal phone-dense body now has a real
-   number (~2.6 MB grouped / ~6 MB compact), so *is 500,000 still the threshold you want?* The
-   reviewer's read is yes — an ordinary 367 KB tool result spends 1% and the M7 turn spends 0 — but
-   it is a call, not a fact.
+1. **Review round 9 — closure verification of round 8.** The one to attack is
+   [M10-R53](reviews/M10.md#m10-r53)'s replacement claim, since its predecessor was wrong twice: the
+   band *"refusals start around 2.6 MB grouped and 6 MB at the cheapest rendering"* is now in
+   ARCHITECTURE, the constant's doc and both READMEs. Re-run DOS-BUD on an **idle** box, check the
+   per-rendering unit table and the two-rendering `MAX_BODY_BYTES` row, and try a rendering or region
+   the table does not list. Then [M10-R54](reviews/M10.md#m10-r54)'s generator — it had a 10,000-row
+   period on the first draft and measured the grouped rendering as *cheaper* than the cheapest, so
+   verify the odometer is really distinct at 16 MiB — and [M10-R47](reviews/M10.md#m10-r47)'s
+   FAILOPEN-BUD by mutation.
 2. **The CC battery — CC-01 / CC-03 / CC-04 / CC-09** (step 10 above). Needs the maintainer at the
    keyboard with Claude Code pointed at the proxy. **No key configuration required.**
 3. **Bump `Cargo.toml` to `1.2.1`** — a `chore(release):` commit at tag time, as `1.2.0` was. Left
+   at `1.2.0` on purpose: `release-build-publish.yml` refuses to publish a tag that disagrees with
+   the manifest, so the mismatch is currently *protective*, not a gap.
    at `1.2.0` on purpose: `release-build-publish.yml` refuses to publish a tag that disagrees with
    the manifest, so the mismatch is currently *protective*, not a gap.
 <a id="m10-ledger"></a>
@@ -2155,9 +2163,36 @@ change, and the first one blocks the tag's docs.**
 
 | ID | Title | Sev | Status |
 |---|---|---|---|
-| [M10-R53](reviews/M10.md#m10-r53) | *"A legal phone-bearing body cannot reach the allowance at all"* is false in four documents: five of six legal 16 MiB payloads are refused, and the binary refuses a **2.6 MB** contact export | measurement | [ ] |
-| [M10-R54](reviews/M10.md#m10-r54) | DOS-BUD holds the phone **rendering** constant, so M10-R49 gave it a non-vacuity assertion and left it a single-point grid | guard | [ ] |
-| [M10-R55](reviews/M10.md#m10-r55) | Round 7 left three more doc sites its own findings named — and M10-R48's closure note asserts a TESTING edit the diff does not contain | docs | [ ] |
+| [M10-R53](reviews/M10.md#m10-r53) | *"A legal phone-bearing body cannot reach the allowance at all"* is false in four documents: five of six legal 16 MiB payloads are refused, and the binary refuses a **2.6 MB** contact export | measurement | [x] |
+| [M10-R54](reviews/M10.md#m10-r54) | DOS-BUD holds the phone **rendering** constant, so M10-R49 gave it a non-vacuity assertion and left it a single-point grid | guard | [x] |
+| [M10-R55](reviews/M10.md#m10-r55) | Round 7 left three more doc sites its own findings named — and M10-R48's closure note asserts a TESTING edit the diff does not contain | docs | [x] |
+
+> **All three closed (2026-07-30). The threshold stays at 500,000 — the maintainer's call — and the
+> documents now say what the product does.** [M10-R53](reviews/M10.md#m10-r53) is the sharpest finding
+> of the milestone that is not a defect: *"a legal phone-bearing body cannot reach the allowance"* was
+> published in four places on the strength of one measurement, and the measurement was of
+> `347 1234567` — the **global minimum**. `LongBlock` is the only single-region family and the only
+> shape no other family's regex matches inside, so it costs **1** unit where `320 123 4567` costs 12,
+> `612 34 56 78` costs 26 and `01 23 45 67 89` costs **29**: `Scan::Overlapping` makes every other
+> rendering propose sub-candidates from inside itself, each rejected and each paying its family's whole
+> region list. Measured through the real `.exe`: a **2.6 MB** `SELECT name, phone` export is a `400`.
+> Nothing leaks and nothing is forwarded — the refusal is the fail-closed path working — but the
+> availability envelope was wrong in the **optimistic** direction, which is a first for this milestone.
+>
+> **The rule: *a conclusion drawn from one point of a grid is a fact about that point.*** DOS-BUD now
+> varies the rendering (R54) and its axis row names what it holds constant; the per-rendering unit
+> table and a two-rendering `MAX_BODY_BYTES` row are in the harness, so the band — refusals start
+> around **2.6 MB** grouped and **6 MB** at the cheapest rendering — is re-runnable rather than
+> quoted. R55 closed the 7th–9th instance of *"a closure skipped a site its own finding named"*, and
+> `FAILOPEN-BUD` is now in the test catalogue where R47 said it belonged.
+>
+> **Writing R54's second rendering reproduced the milestone's oldest trap a sixth time**: the first
+> generator had a 10,000-row period, the memo served 95% of a 16 MiB dump for free, and the grouped
+> rendering measured *cheaper* than the cheapest — the exact opposite of the finding. It is an odometer
+> now. *A modular generator looks varied at every call site; only the aggregate shows it is not.*
+>
+> **220 default / 253 onnx green**, `fmt`, `clippy -D warnings` and the 15-warning `cargo doc`
+> baseline all clean.
 
 <a id="backlog"></a>
 ## Backlog — documented, not scheduled

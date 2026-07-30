@@ -290,7 +290,8 @@ reader must trust goes stale; a number they can re-run is a fact*:
 | M7 22 KiB Claude Code turn | masked | **0** | — |
 | 357 KB SQL result, 5,000 rows, one phone column | masked | 5,000 | 46 ms |
 | 3.7 MB SQL result, 50,000 rows | masked | 50,000 | 514 ms |
-| **16 MiB SQL result, 221,941 rows — `MAX_BODY_BYTES`** | **masked** | **221,941** | **2.56 s** |
+| **16 MiB SQL result, `347 XXXXXXX` column** | masked | 221,941 | 2.4 s |
+| **16 MiB SQL result, same numbers written `3XX XXX XXXX`** | **refused** | 500,000 | 1.29 s |
 | 2 MiB field, *nothing but* phone-shaped groups | masked | 499,380 | 1.36 s |
 | 3 MiB+ field, same shape | **refused** | 500,000 | 1.44 s |
 | 1 x 200 KB field | masked | — | 151 ms |
@@ -298,15 +299,34 @@ reader must trust goes stale; a number they can re-run is a fact*:
 | **15.6 MiB across 78 x 200 KB fields** | **refused** | 500,000 | **1.61 s** |
 | 16 MiB, phone tier **off** - the unbudgeted floor | masked | 0 | 229 ms |
 
-> **A legal phone-bearing body cannot reach the allowance at all, and the reason is one line of
-> control flow.** `national_phone_valid` is `.any()` over the enabled regions, and `.any()`
-> short-circuits on **accept** — so a *real* number costs about **one** unit, while a candidate that
-> every plan rejects pays for all nine. The largest phone-bearing request the proxy will accept is
-> 16 MiB, and it spends **221,941 of 500,000** — a 2.25x margin against the biggest legal payload
-> that exists, not against an estimate. `MAX_BODY_BYTES` binds first.
+> **How much a phone number costs depends on how it is written, and the spread is 1 to 29 units.**
+> `national_phone_valid` is `.any()` over the regions whose plans use that candidate's **shape
+> family**, so the accept path is cheap — but `Scan::Overlapping` resumes one `char` past each match's
+> *start*, so a grouped or pair-separated number also proposes **sub-candidates from inside itself**,
+> and each of those is rejected and pays its family's whole region list. Measured on
+> `try_detect("call {number} now")`, shipped default:
 >
-> What reaches the allowance is digit-dense text that **fails** validation. That is the adversarial
-> shape by construction, which is the right thing for a fail-closed bound to be reachable by.
+> | rendering | units | | rendering | units |
+> |---|---|---|---|---|
+> | `347 1234567` (IT, `LongBlock`) | **1** | | `320 123 4567` (IT, grouped) | **12** |
+> | `030 12345678` (DE) | 1 | | `210 123 456` (PT) | 14 |
+> | `011 5627111` (IT landline) | 2 | | `612 34 56 78` (ES) | 26 |
+> | `020 7946 0958` (GB) | 3 | | `67 22 33 44` (LV) | 28 |
+> | `010 12345678` (CN landline) | 4 | | `01 23 45 67 89` (FR) | **29** |
+>
+> So the reachable band for a **legal** phone-bearing body starts at about **2.6 MB** for a dense
+> grouped column and about **6 MB** for the cheapest rendering — both inside `MAX_BODY_BYTES`. A
+> 2.6 MB `SELECT name, phone` export is refused, fail-closed and with an actionable message, and it is
+> not an adversarial body. An ordinary 367 KB tool result spends **~1%** of the allowance and a real
+> 22 KiB Claude Code turn spends **0**.
+>
+> **This paragraph replaces the opposite claim, and how that got published is the lesson (M10-R53).**
+> Four documents said a legal phone-bearing body *could not reach the allowance at all*, on the
+> strength of one measurement: DOS-BUD's `347 XXXXXXX` column. That rendering is the **global
+> minimum** — `LongBlock` is the only single-region family and the only shape no other family's regex
+> matches inside — so the harness had generalized from the cheapest legal input that exists. *A
+> conclusion drawn from one point of a grid is a fact about that point*, and the grid axis nobody had
+> varied was **how the number is written**.
 >
 > **This was invisible for two rounds because DOS-BUD's "phone column" was eleven digits** and no
 > Italian plan accepts eleven (M10-R49). It masked **nothing** at any size, so every unit published
@@ -327,8 +347,12 @@ pinned by `PHONE-BUD`.
 > **The budget bounds validation, not the whole request — and saying otherwise would be M10-R30 in a
 > new place.** Two terms make up a request's CPU: `units x ~3 µs`, which the allowance caps at
 > ~1.5 s, **plus** regex scanning and the mask rewrite, linear in body size and entity count and
-> bounded only by `MAX_BODY_BYTES` — **229 ms** for 16 MiB with the tier off. The slowest legal body
-> measured is the 16 MiB phone-bearing one at **2.56 s**, and every refusal lands at ~1.4–1.9 s.
+> bounded only by `MAX_BODY_BYTES` — **229 ms** for 16 MiB with the tier off. Across every shape
+> measured, a request costs at most about **3 s**: a 16 MiB body that is masked takes 2.4 s, and one
+> that is refused takes **1.3–2.9 s** depending on how far the scan gets before the allowance is gone.
+> *(An earlier version of this line said "every refusal lands at ~1.4–1.9 s". That band came only from
+> DOS-BUD's adversarial rows, whose candidates are rejected and whose scan therefore stops early; a
+> **legal** refused body runs further and costs more — M10-R53.)*
 >
 > What changed is not that the ceiling vanished; it is that it stopped being **multiplied by a factor
 > the client picks**. 57 s -> 1.61 s on the same 78-field body, and what remains is linear in bytes.

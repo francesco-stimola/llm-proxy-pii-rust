@@ -623,21 +623,75 @@ fn budget_refusal_line_and_cost() {
         );
     }
 
+    // **The axis this harness held constant for three rounds: how the number is *written* (M10-R54).**
+    //
+    // Rows and bytes were varied; rendering, region and density were not — so every conclusion drawn
+    // from the table was a fact about `347 XXXXXXX`, which turns out to be the **global minimum**:
+    // `LongBlock` is the only single-region family and the only shape no other family's regex matches
+    // inside. `Scan::Overlapping` resumes one `char` past each match's *start*, so any other rendering
+    // also proposes sub-candidates from inside itself, each rejected and each paying its family's
+    // whole region list. That is a 1-vs-29 spread, and on it rests the answer to *"can real traffic
+    // reach the allowance?"* — which two consecutive rounds published wrongly, in the reassuring
+    // direction, from one point of this grid (M10-R49, M10-R53).
+    println!("\n--- the same number, written every legal way: units for one candidate ---");
+    println!("{:>18}  {:>6}  note", "rendering", "units");
+    for (number, note) in [
+        ("347 1234567", "IT mobile, LongBlock — the global minimum"),
+        ("030 12345678", "DE"),
+        ("011 5627111", "IT landline"),
+        ("020 7946 0958", "GB"),
+        ("010 12345678", "CN landline"),
+        ("912 345 678", "ES"),
+        ("020 123 4567", "NL"),
+        ("138 0013 8000", "CN mobile"),
+        ("320 123 4567", "IT mobile, grouped — same country as row 1"),
+        ("210 123 456", "PT"),
+        ("612 34 56 78", "ES grouped"),
+        ("67 22 33 44", "LV"),
+        ("01 23 45 67 89", "FR TrunkPairs — the maximum"),
+    ] {
+        let budget = llm_proxy_pii_rust::pii::Budget::new(
+            llm_proxy_pii_rust::pii::recognizers::MAX_PHONE_VALIDATIONS_PER_REQUEST,
+        );
+        let _ = detector.try_detect(&format!("call {number} now"), &budget);
+        println!("{number:>18}  {:>6}  {note}", budget.spent());
+    }
+
     // **The question the whole harness exists for: can a *legal* phone-bearing body reach the
-    // allowance at all?** `MAX_BODY_BYTES` caps a request at 16 MiB, so this asks the SQL shape at
-    // exactly that size. A valid number short-circuits `.any()` on the **first** region that accepts
-    // it, so it costs ~1 unit; only a *rejected* candidate pays all nine. That asymmetry is the whole
-    // answer, and it was invisible while the column emitted 11-digit non-numbers (M10-R49).
-    println!("\n--- the same SQL shape at MAX_BODY_BYTES: the legal worst case ---");
-    {
+    // allowance?** `MAX_BODY_BYTES` caps a request at 16 MiB, so this asks the SQL shape at exactly
+    // that size — in **two** renderings, because one is not a measurement of anything but itself.
+    println!("\n--- the same SQL shape at MAX_BODY_BYTES, in two legal renderings ---");
+    for (label, grouped) in [
+        ("347 XXXXXXX (cheapest)", false),
+        ("3XX XXX XXXX (grouped)", true),
+    ] {
         let mut dump = String::from("id,customer,city,phone,email,total\n");
         let mut r = 0u64;
         while dump.len() < 16 * 1024 * 1024 {
+            let phone = if grouped {
+                // The same Italian mobiles, written the way an export usually writes them.
+                //
+                // **An odometer over `(a, b, c)`, and the first draft was `(20 + r%80, r%1000,
+                // r%10000)` — period 10,000 rows.** The per-scan memo then served 95% of a 16 MiB
+                // dump for free and the grouped rendering measured *cheaper* than the cheapest one,
+                // which is the opposite of the finding this row exists to show. **Sixth appearance
+                // of this trap in M10** (DOS-05, DOS-06's draft, PHONE-NAT-10, DOS-BUD's SQL column,
+                // DOS-09's draft, here). It is not carelessness — it is that a modular generator
+                // *looks* varied at every call site, and only the aggregate shows it is not.
+                format!(
+                    "3{:02} {:03} {:04}",
+                    20 + (r / 10_000_000) % 80,
+                    (r / 10_000) % 1000,
+                    r % 10_000
+                )
+            } else {
+                format!("347 {:07}", 1_000_000 + r % 9_000_000)
+            };
             dump.push_str(&format!(
-                "{},Customer Name {},Milano,347 {:07},user{}@example.com,{}.50\n",
+                "{},Customer Name {},Milano,{},user{}@example.com,{}.50\n",
                 10_000 + r,
                 r,
-                1_000_000 + r % 9_000_000,
+                phone,
                 r,
                 100 + r % 900
             ));
@@ -653,7 +707,7 @@ fn budget_refusal_line_and_cost() {
             Err(_) => "REFUSED".to_string(),
         };
         println!(
-            "{:>10} bytes  {:>6} rows  {:>14}  {:>8.0} ms  spent {} of {}",
+            "{label:>24}  {:>9} bytes  {:>7} rows  {:>14}  {:>7.0} ms  spent {} of {}",
             dump.len(),
             r,
             verdict,

@@ -3,6 +3,53 @@
 Newest first. One entry per meaningful change — note *what* and *why*, not just
 *what*. This is the running history so context is never lost between sessions.
 
+## 2026-07-30 — M10 round 8: the availability claim was a property of one rendering
+
+All six of round 7's closures hold, verified by mutation and by recompiling the cases they describe.
+Three new findings, none needing a source change — and one of them is the sharpest thing this milestone
+has produced that is not a defect.
+
+**M10-R53.** Four live documents said *"a legal phone-bearing body cannot reach the allowance at all"*.
+It is false, and it was published on the strength of one measurement: DOS-BUD's `347 XXXXXXX` column.
+That rendering is the **global minimum** — `LongBlock` is the only single-region family and the only
+shape no other family's regex matches inside — so it costs **1** unit, while `320 123 4567` costs 12,
+`612 34 56 78` costs 26 and `01 23 45 67 89` costs **29**. `Scan::Overlapping` resumes one `char` past
+each match's *start*, so every other rendering also proposes sub-candidates from inside itself, each
+rejected and each paying its family's whole region list. Measured through the real `.exe`: 1.2 MB of
+IT mobiles → `200`; **2.6 MB grouped → `400`**; 6.0 MB compact → `400`. Five of six legal 16 MiB
+payloads are refused.
+
+Nothing leaks and nothing is forwarded — the refusal is the fail-closed path working, with an
+actionable message. What was wrong is the answer to M10-R27's question, *can real traffic hit this?*,
+and it is the first time in this milestone a published availability figure was wrong in the
+**optimistic** direction. *A conclusion drawn from one point of a grid is a fact about that point* —
+and the tell was there all along: the harness had one column, the conclusion was about all columns.
+
+**The threshold stays at 500,000** (the maintainer's call). An ordinary 367 KB tool result spends ~1%,
+the M7 turn spends 0, and what gets refused is a multi-megabyte contact export. M10-R27's rule — *a
+refusal that is a routine event is the wrong threshold* — now has a concrete counterexample instead of
+a hypothetical one, and it is written down rather than smoothed over.
+
+**R54** gives DOS-BUD the axis it held constant for three rounds: a per-rendering unit table and the
+`MAX_BODY_BYTES` row in **two** legal renderings. **R55** closed the 7th–9th instance of *"a closure
+skipped a site its own finding named"* — nine is enough to name the mechanism rather than the lapse:
+**the interesting half of a fix crowds out the checklist half**, and a closure note written while the
+interesting half is fresh reads as complete because it is complete *about the part its author was
+thinking in*.
+
+**And the oldest trap arrived a sixth time, on me, writing R54's second rendering.** The first
+generator had a 10,000-row period, so the memo served 95% of a 16 MiB dump for free and the grouped
+rendering measured **cheaper** than the cheapest — the exact opposite of what the row exists to show,
+and green. *A modular generator looks varied at every call site; only the aggregate shows it is not.*
+
+**Where the milestone stands:** rounds 5–8 found **zero live defects in `src/`**. The code has
+converged; the loop between measurement and prose had not, and the two mechanical guards this round
+added are what should end it. A reasonable stopping rule for the tag: **a round that produces only doc
+findings for a second consecutive time.** Round 8 was the first.
+
+**220 default / 253 onnx green**, `fmt`, `clippy -D warnings` and the 15-warning `cargo doc` baseline
+all clean.
+
 ## 2026-07-30 — M10 round 7: the harness that answers "can real traffic hit this?" was measuring non-numbers
 
 All five of round 6's closures hold — verified by **mutation** and by the **compiler**, which is the

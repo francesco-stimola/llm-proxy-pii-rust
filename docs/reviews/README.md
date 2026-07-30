@@ -25,7 +25,7 @@ that way?"*
 | [M7.md](M7.md) | M7 / M7.1 — NER latency · system-prompt cache | 23, all closed |
 | [M8.md](M8.md) | M8 / M8.1 — GLiNER · national phone recognizer | 8, all closed |
 | [M9.md](M9.md) | M9 / M9.1 — GPU optimization · per-backend binaries | 29, all closed |
-| [M10.md](M10.md) | M10 — national phone coverage + release hygiene | 55, 52 closed (round 8 open) |
+| [M10.md](M10.md) | M10 — national phone coverage + release hygiene | 55, all closed (round 9 pending) |
 
 **The page to read here is [M10-R28](M10.md#m10-r28), the fourth turn of one wheel.** M10-R2 was a DoS
 on the domestic-phone validator. Its fix was undone by the input **repeating**
