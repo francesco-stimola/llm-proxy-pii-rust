@@ -75,7 +75,10 @@ impl AppState {
                 config.pii_cache_entries,
             ));
         }
-        let stages: Vec<Box<dyn Stage>> = vec![Box::new(PrivacyStage::new(detector))];
+        let stages: Vec<Box<dyn Stage>> = vec![Box::new(PrivacyStage::with_validation_budget(
+            detector,
+            config.pii_max_phone_validations,
+        ))];
         if config.debug_skip_demask {
             // Loud, so it can't quietly linger in a real deployment (M2.6).
             tracing::warn!(

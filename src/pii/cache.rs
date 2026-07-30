@@ -21,7 +21,7 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-use super::{DetectError, PiiDetector, PiiEntity};
+use super::{Budget, DetectError, PiiDetector, PiiEntity};
 
 /// Fields below this are cheap to scan and not worth a cache slot; fields above this are left
 /// uncached so a single runaway body can't evict everything useful or balloon memory. The system
@@ -118,6 +118,43 @@ impl PiiDetector for CachingDetector {
     fn redetect(&self, input: &str) -> Result<Vec<PiiEntity>, DetectError> {
         // Never cached — see the module doc. Later passes run on per-request masked text.
         self.inner.redetect(input)
+    }
+
+    /// Forwards the caller's [`Budget`] (M10-R28) — the wrapper must, or the detector underneath
+    /// would get a fresh allowance per field via the trait default.
+    ///
+    /// **A cache hit spends nothing, and that is correct rather than a loophole.** The budget bounds
+    /// *work actually done*: a hit did none, and the soundness argument in the module doc is that a
+    /// hit returns exactly what a fresh scan would. So a body repeating one 200 KB field pays for it
+    /// once — which is the M7 system-prompt case this cache exists for. The M10-R28 body cannot use
+    /// that: its fields are distinct by construction, so every one of them is a miss and every one
+    /// of them is charged.
+    ///
+    /// An error is still **never** inserted: the `?` below returns before the insert, so an
+    /// exhausted-budget refusal cannot be replayed from the cache to a later request that had its
+    /// own full allowance.
+    fn try_detect_within(
+        &self,
+        input: &str,
+        budget: &Budget,
+    ) -> Result<Vec<PiiEntity>, DetectError> {
+        if !Self::cacheable(input) {
+            return self.inner.try_detect_within(input, budget);
+        }
+        if let Some(hit) = self.cache.lock().unwrap().get(input) {
+            return Ok(hit);
+        }
+        let detected = self.inner.try_detect_within(input, budget)?;
+        self.cache
+            .lock()
+            .unwrap()
+            .insert(input.to_string(), detected.clone());
+        Ok(detected)
+    }
+
+    fn redetect_within(&self, input: &str, budget: &Budget) -> Result<Vec<PiiEntity>, DetectError> {
+        // Never cached, exactly as [`redetect`](Self::redetect) — but the budget still travels.
+        self.inner.redetect_within(input, budget)
     }
 }
 

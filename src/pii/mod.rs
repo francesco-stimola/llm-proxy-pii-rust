@@ -185,6 +185,76 @@ impl std::fmt::Display for DetectError {
 
 impl std::error::Error for DetectError {}
 
+/// A **per-request** allowance of expensive validator calls, shared by every field and every
+/// fixpoint pass of one request (M10-R28).
+///
+/// **The unit is the whole point.** M10 first bounded this per *field*, and a field is a unit the
+/// client multiplies: the same 15.6 MiB that is refused in one field answered `200` in **57 s**
+/// split across 78 legal `messages[].content` fields, indistinguishable from the binary that had no
+/// budget at all. `Vault::mask_all` then re-minted the allowance on each of its five passes, so the
+/// published bound did not hold in *any* unit (M10-R30). A budget scoped to something the caller can
+/// multiply is not a bound — it is a rate.
+///
+/// So there is exactly one of these per request, created by `PrivacyStage::on_request` beside the
+/// `Vault` it already owns, and threaded down through
+/// [`mask_all_within`](crate::pii::anonymizer::Vault::mask_all_within) and
+/// [`try_detect_within`](PiiDetector::try_detect_within).
+///
+/// **Not `Sync`, deliberately.** A `Cell` rather than an `AtomicUsize`: one request's masking is
+/// single-threaded (the whole pipeline runs inside one `spawn_blocking`), so a shared counter would
+/// buy atomics nobody needs and, worse, would make it *possible* to share one budget between
+/// requests. The type system should refuse that, and this way it does.
+pub struct Budget {
+    left: std::cell::Cell<usize>,
+    initial: usize,
+}
+
+impl Budget {
+    /// A budget of `calls` cache-missing validator invocations.
+    pub fn new(calls: usize) -> Self {
+        Self {
+            left: std::cell::Cell::new(calls),
+            initial: calls,
+        }
+    }
+
+    /// A budget that never runs out — for callers with no request to bound: unit tests, the
+    /// measurement harnesses, and the `#[ignore]`d evaluation suites. **Never** on the request
+    /// path; `PrivacyStage` always creates a real one.
+    pub fn unlimited() -> Self {
+        Self {
+            left: std::cell::Cell::new(usize::MAX),
+            initial: usize::MAX,
+        }
+    }
+
+    /// Charge one expensive validator call. Saturates at zero rather than wrapping — an exhausted
+    /// budget stays exhausted, which is what [`is_exhausted`](Self::is_exhausted) rests on.
+    pub fn spend(&self) {
+        self.left.set(self.left.get().saturating_sub(1));
+    }
+
+    /// Whether the allowance is gone. The caller's contract is **fail closed**: stop scanning and
+    /// report an error — never return the partial result as a success.
+    pub fn is_exhausted(&self) -> bool {
+        self.left.get() == 0
+    }
+
+    /// The allowance this budget started with, so an error message can quote the real number
+    /// instead of restating a constant that may not be the one in force.
+    pub fn initial(&self) -> usize {
+        self.initial
+    }
+
+    /// How much of the allowance has been charged. Exists so **headroom against real traffic is a
+    /// measurement rather than a claim**: M10 asserted the budget was unreachable by ordinary bodies
+    /// and could not show it, which is how M10-R30's per-pass multiplier went unnoticed. PHONE-BUD
+    /// pins the M7 Claude Code turn's spend against this.
+    pub fn spent(&self) -> usize {
+        self.initial - self.left.get()
+    }
+}
+
 /// Engine-agnostic PII detector.
 ///
 /// Deterministic recognizers and the ML NER model both implement this, so the
@@ -218,5 +288,32 @@ pub trait PiiDetector: Send + Sync {
     /// no-recall-loss claim that rests on it is measured, not assumed (S4; DEVLOG 2026-07-18).
     fn redetect(&self, input: &str) -> Result<Vec<PiiEntity>, DetectError> {
         self.try_detect(input)
+    }
+
+    /// [`try_detect`](Self::try_detect) charged against a **caller-owned** [`Budget`] instead of one
+    /// minted per call (M10-R28).
+    ///
+    /// The default ignores the budget and delegates, which is right for every detector whose cost is
+    /// not the thing being bounded (the NER pays per token, and `MAX_BODY_BYTES` already bounds
+    /// tokens). **A wrapper is a different matter:** `CompositeDetector`, `FailOpen` and
+    /// `CachingDetector` must forward the budget explicitly, because inheriting this default would
+    /// route the call to plain `try_detect` and hand the detector underneath a *fresh* allowance —
+    /// restoring the per-field behaviour silently, on the one path that matters.
+    fn try_detect_within(
+        &self,
+        input: &str,
+        budget: &Budget,
+    ) -> Result<Vec<PiiEntity>, DetectError> {
+        let _ = budget;
+        self.try_detect(input)
+    }
+
+    /// [`redetect`](Self::redetect) charged against a caller-owned [`Budget`]. Same forwarding
+    /// obligation for wrappers as [`try_detect_within`](Self::try_detect_within) — and the reason
+    /// this exists at all is that the fixpoint's later passes are where the re-minting happened
+    /// (M10-R30): five passes over one field, each previously starting from a full allowance.
+    fn redetect_within(&self, input: &str, budget: &Budget) -> Result<Vec<PiiEntity>, DetectError> {
+        let _ = budget;
+        self.redetect(input)
     }
 }

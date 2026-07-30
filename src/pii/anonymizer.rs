@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use once_cell::sync::Lazy;
 use regex::{Captures, Regex};
 
-use super::{DetectError, PiiDetector, PiiEntity, PiiKind};
+use super::{Budget, DetectError, PiiDetector, PiiEntity, PiiKind};
 
 /// How many times [`Vault::mask_all`] re-detects before giving up. Masking exposes PII at
 /// most a handful of times in practice (each pass must break a token apart to reveal a new
@@ -111,6 +111,35 @@ impl Vault {
         text: &str,
         detector: &dyn PiiDetector,
     ) -> Result<String, DetectError> {
+        // A fresh **real** allowance, not [`Budget::unlimited`]: this is the shape M10-R20 shipped,
+        // and a public entry point that quietly drops a fail-closed bound is how the bound stops
+        // existing. A caller with a request to charge uses `mask_all_within`; a caller without one
+        // still gets the per-call ceiling rather than none.
+        self.mask_all_within(
+            text,
+            detector,
+            &Budget::new(crate::pii::recognizers::MAX_PHONE_VALIDATIONS_PER_REQUEST),
+        )
+    }
+
+    /// [`mask_all`](Self::mask_all) charged against a **caller-owned** [`Budget`] shared by every
+    /// field and every pass of one request (M10-R28 / M10-R30).
+    ///
+    /// **The fixpoint is half of why the old bound did not exist.** This loop calls detection up to
+    /// [`MAX_MASK_PASSES`] times plus one confirming `redetect`, and each of those calls used to
+    /// mint a fresh allowance — so one field could legitimately spend five times the published
+    /// budget without ever "exceeding" it. The budget travels with the request now, which is what
+    /// makes the number in `MAX_PHONE_VALIDATIONS_PER_REQUEST` mean what its name says.
+    ///
+    /// `mask_all` itself keeps working for callers with nothing to bound (unit tests, the streaming
+    /// demask path, the measurement harnesses) by passing [`Budget::unlimited`]. The request path
+    /// uses this method; `PrivacyStage::on_request` is the one place that creates a real budget.
+    pub fn mask_all_within(
+        &mut self,
+        text: &str,
+        detector: &dyn PiiDetector,
+        budget: &Budget,
+    ) -> Result<String, DetectError> {
         let mut current = text.to_string();
         // Per-pass tally of the **maskable** (real-PII) detections, kept only to explain a
         // non-convergence on the fail-closed branch below. Value-free: kinds and counts, never
@@ -127,9 +156,9 @@ impl Vault {
             // card), never the NER, which is idempotent after pass 0 (S4). That is what bounds the
             // pass count on a fragment-dense field instead of letting the NER re-tag forever.
             let raw = if pass == 0 {
-                detector.try_detect(&current)?
+                detector.try_detect_within(&current, budget)?
             } else {
-                detector.redetect(&current)?
+                detector.redetect_within(&current, budget)?
             };
             let entities = keep_maskable(raw, &mut placeholder_tags_suppressed);
             if entities.is_empty() {
@@ -142,7 +171,7 @@ impl Vault {
         // The passes ran out having masked real PII on every one of them, so we do NOT know
         // `current` is clean. Confirm it with `redetect` (M4-R20) — and block if it isn't.
         let remaining = keep_maskable(
-            detector.redetect(&current)?,
+            detector.redetect_within(&current, budget)?,
             &mut placeholder_tags_suppressed,
         );
         if remaining.is_empty() {

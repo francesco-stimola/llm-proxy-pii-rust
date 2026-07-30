@@ -65,6 +65,8 @@ async fn spawn_proxy_cfg(upstream: SocketAddr, debug_skip_demask: bool) -> Socke
         pii_locales: vec!["it".to_string(), "us".to_string()],
         debug_skip_demask,
         pii_cache_entries: 0,
+        pii_max_phone_validations:
+            llm_proxy_pii_rust::pii::recognizers::MAX_PHONE_VALIDATIONS_PER_REQUEST,
     };
     let app = build_router(AppState::new(&config).await.expect("build app state"));
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -89,6 +91,39 @@ async fn spawn_proxy_cached(upstream: SocketAddr, cache_entries: usize) -> Socke
         pii_locales: vec!["it".to_string(), "us".to_string()],
         debug_skip_demask: false,
         pii_cache_entries: cache_entries,
+        pii_max_phone_validations:
+            llm_proxy_pii_rust::pii::recognizers::MAX_PHONE_VALIDATIONS_PER_REQUEST,
+    };
+    let app = build_router(AppState::new(&config).await.expect("build app state"));
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    addr
+}
+
+/// Spawn the proxy with the **shipped domestic-phone region set** and an explicit per-request
+/// validation allowance (M10-R28).
+///
+/// Two departures from [`spawn_proxy`], both deliberate. The locales are `default_locales()` rather
+/// than this file's usual `it,us`, because a refusal driven by one region is not the tier the product
+/// ships. And the allowance is a *test* number: crossing the shipped 500,000 costs ~25 s unoptimized,
+/// and what E2E-05 asserts — that the refusal reaches `error.message` intact — is not a claim about
+/// the size of the number. DOS-BUD pins the number itself, on `--release`.
+async fn spawn_proxy_budgeted(upstream: SocketAddr, validation_units: usize) -> SocketAddr {
+    let config = Config {
+        listen: "127.0.0.1:0".parse().unwrap(),
+        upstream_base_url: format!("http://{upstream}"),
+        upstream_api_key: None,
+        max_body_bytes: llm_proxy_pii_rust::config::DEFAULT_MAX_BODY_BYTES,
+        provider: "openai".to_string(),
+        upstream_chat_path: "/v1/chat/completions".to_string(),
+        upstream_messages_path: "/v1/messages".to_string(),
+        upstream_extra_headers: Vec::new(),
+        forward_request_headers: Vec::new(),
+        pii_locales: llm_proxy_pii_rust::config::default_locales(),
+        debug_skip_demask: false,
+        pii_cache_entries: 0,
+        pii_max_phone_validations: validation_units,
     };
     let app = build_router(AppState::new(&config).await.expect("build app state"));
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -113,6 +148,8 @@ async fn spawn_proxy_provider(upstream: SocketAddr, provider: &str) -> SocketAdd
         pii_locales: vec!["it".to_string(), "us".to_string()],
         debug_skip_demask: false,
         pii_cache_entries: 0,
+        pii_max_phone_validations:
+            llm_proxy_pii_rust::pii::recognizers::MAX_PHONE_VALIDATIONS_PER_REQUEST,
     };
     let app = build_router(AppState::new(&config).await.expect("build app state"));
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -839,9 +876,9 @@ async fn e2e05_budget_refusal_reaches_the_client_intact_and_carries_no_input_byt
     // The same odometer as DOS-06: `(b, c)` enumerated over 81 M combinations, so no candidate
     // recurs and the per-scan memo is inert. A modular-hash generator silently repeats after its
     // period and reports "the budget was never reached" as the product's doing (M10-R20).
-    let mut field = String::with_capacity(1024 * 1024 + 64);
+    let mut field = String::with_capacity(256 * 1024 + 64);
     let mut i = 0u64;
-    while field.len() < 1024 * 1024 {
+    while field.len() < 256 * 1024 {
         i += 1;
         field.push_str(&format!(
             "row {:02} {:04} {:04} end ",
@@ -852,7 +889,7 @@ async fn e2e05_budget_refusal_reaches_the_client_intact_and_carries_no_input_byt
     }
 
     let (upstream, hits) = spawn_counting_mock_upstream().await;
-    let proxy = spawn_proxy(upstream).await;
+    let proxy = spawn_proxy_budgeted(upstream, 20_000).await;
     let resp = reqwest::Client::new()
         .post(format!("http://{proxy}/v1/chat/completions"))
         .json(&json!({ "messages": [{ "role": "user", "content": field }] }))

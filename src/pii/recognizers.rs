@@ -43,12 +43,30 @@ use phonenumber::country::Id;
 use regex::Regex;
 
 use super::overlap::resolve_overlaps;
-use super::{Confidence, DetectError, PiiDetector, PiiEntity, PiiKind};
+use super::{Budget, Confidence, DetectError, PiiDetector, PiiEntity, PiiKind};
 
-/// A recognizer's extra check on the matched text.
+/// A recognizer's extra check on the matched text, charged against the request's [`Budget`].
 ///
 /// A **boxed closure**, not a bare `fn` pointer (M10) — see [`Recognizer::validate`].
-type Validator = Box<dyn Fn(&str) -> bool + Send + Sync>;
+///
+/// **The budget is a parameter rather than something the scan loop deducts (M10-R29).** It used to
+/// be charged once per candidate in [`Recognizer::push_candidates`], which meant *every* validator
+/// paid the phone tier's rate — including the nine always-on national-ID checksums, whose cost is
+/// pure arithmetic on ≤ 18 bytes. Fifty thousand of those is five milliseconds of work, refused as
+/// if it were half a second. Handing the budget to the validator instead lets each one charge what
+/// it actually costs: the phone families spend one unit per `phonenumber::parse()`, and the
+/// checksums spend nothing at all.
+type Validator = Box<dyn Fn(&str, &Budget) -> bool + Send + Sync>;
+
+/// A validator whose cost is negligible — a checksum over at most 18 bytes — adapted to the
+/// [`Validator`] shape without charging the request's budget (M10-R29).
+///
+/// Every national-ID and card check goes through here. It is a named function rather than a closure
+/// at each call site so that *not* charging is a visible, single decision rather than nine
+/// independently-written `|s, _|`s that a tenth recognizer might silently join.
+fn free<F: Fn(&str) -> bool + Send + Sync + 'static>(check: F) -> Validator {
+    Box::new(move |matched: &str, _budget: &Budget| check(matched))
+}
 
 /// One compiled recognizer: a category, its pattern, an optional validator applied to
 /// each raw match, and how the scan advances after one. Overlap priority comes from the
@@ -227,7 +245,7 @@ fn universal_recognizers() -> Vec<Recognizer> {
         Recognizer {
             kind: PiiKind::CreditCard,
             regex: Regex::new(r"(?-u:\b)(?:\d{4}[ -]\d{4}[ -]\d{4}[ -]\d{4}|\d{13,19})(?-u:\b)").unwrap(),
-            validate: Some(Box::new(credit_card_valid)),
+            validate: Some(free(credit_card_valid)),
             scan: Scan::Overlapping, // bounded: ≤ 19 digits — and this is the M4-R17 repro
             shrink_on_reject: false,
         },
@@ -282,7 +300,7 @@ fn national_id_recognizers() -> Vec<Recognizer> {
         Recognizer {
             kind: PiiKind::NationalId,
             regex: Regex::new(r"(?-u:\b)[A-Za-z]{6}\d{2}[A-Za-z]\d{2}[A-Za-z]\d{3}[A-Za-z](?-u:\b)").unwrap(),
-            validate: Some(Box::new(cf_check_valid)),
+            validate: Some(free(cf_check_valid)),
             scan: Scan::Overlapping,
             shrink_on_reject: false,
         },
@@ -295,7 +313,7 @@ fn national_id_recognizers() -> Vec<Recognizer> {
                 r"(?-u:\b)[A-Za-z]{2}\d{6}[A-Da-d](?-u:\b)|(?-u:\b)[A-Za-z]{2} \d{2} \d{2} \d{2} [A-Da-d](?-u:\b)",
             )
             .unwrap(),
-            validate: Some(Box::new(nino_prefix_valid)),
+            validate: Some(free(nino_prefix_valid)),
             scan: Scan::Overlapping,
             shrink_on_reject: false,
         },
@@ -304,7 +322,7 @@ fn national_id_recognizers() -> Vec<Recognizer> {
         Recognizer {
             kind: PiiKind::NationalId,
             regex: Regex::new(r"(?-u:\b)(?:[XYZxyz]\d{7}|\d{8})[A-Za-z](?-u:\b)").unwrap(),
-            validate: Some(Box::new(es_dni_nie_valid)),
+            validate: Some(free(es_dni_nie_valid)),
             scan: Scan::Overlapping,
             shrink_on_reject: false,
         },
@@ -316,7 +334,7 @@ fn national_id_recognizers() -> Vec<Recognizer> {
         Recognizer {
             kind: PiiKind::NationalId,
             regex: Regex::new(r"(?-u:\b)[12]\d{2}(?:0[1-9]|1[0-2]|20|3\d|4[0-2]|[5-9]\d)\d{10}(?-u:\b)").unwrap(),
-            validate: Some(Box::new(fr_nir_valid)),
+            validate: Some(free(fr_nir_valid)),
             scan: Scan::Overlapping,
             shrink_on_reject: false,
         },
@@ -331,7 +349,7 @@ fn national_id_recognizers() -> Vec<Recognizer> {
         Recognizer {
             kind: PiiKind::NationalId,
             regex: Regex::new(r"(?-u:\b)\d{9}(?-u:\b)").unwrap(),
-            validate: Some(Box::new(nine_digit_id_valid)),
+            validate: Some(free(nine_digit_id_valid)),
             scan: Scan::Overlapping,
             shrink_on_reject: false,
         },
@@ -343,7 +361,7 @@ fn national_id_recognizers() -> Vec<Recognizer> {
         Recognizer {
             kind: PiiKind::NationalId,
             regex: Regex::new(r"(?-u:\b)\d{11}(?-u:\b)").unwrap(),
-            validate: Some(Box::new(eleven_digit_id_valid)),
+            validate: Some(free(eleven_digit_id_valid)),
             scan: Scan::Overlapping,
             shrink_on_reject: false,
         },
@@ -351,7 +369,7 @@ fn national_id_recognizers() -> Vec<Recognizer> {
         Recognizer {
             kind: PiiKind::NationalId,
             regex: Regex::new(r"(?-u:\b)\d{6}-\d{5}(?-u:\b)").unwrap(),
-            validate: Some(Box::new(lv_code_valid)),
+            validate: Some(free(lv_code_valid)),
             scan: Scan::Overlapping,
             shrink_on_reject: false,
         },
@@ -360,7 +378,7 @@ fn national_id_recognizers() -> Vec<Recognizer> {
         Recognizer {
             kind: PiiKind::NationalId,
             regex: Regex::new(r"(?-u:\b)\d{17}[0-9Xx](?-u:\b)").unwrap(),
-            validate: Some(Box::new(zh_resident_id_valid)),
+            validate: Some(free(zh_resident_id_valid)),
             scan: Scan::Overlapping,
             shrink_on_reject: false,
         },
@@ -608,7 +626,7 @@ fn national_phone_recognizers(regions: &[(Id, &[PhoneShape])]) -> Vec<Recognizer
             Some(Recognizer {
                 kind: PiiKind::Phone,
                 regex: Regex::new(pattern).unwrap(),
-                validate: Some(Box::new(move |matched: &str| {
+                validate: Some(Box::new(move |matched: &str, budget: &Budget| {
                     // **No cheap pre-filter here, and that is a decision with a measurement
                     // behind it (M10-R13).** A digit-count gate derived from libphonenumber's
                     // `possible_length` metadata was added to make rejection cheap — the
@@ -632,12 +650,24 @@ fn national_phone_recognizers(regions: &[(Id, &[PhoneShape])]) -> Vec<Recognizer
                     // inputs, never against a list the author expected it to allow.
                     //
                     // **What bounds the cost instead is a fail-closed budget**, not a filter —
-                    // see [`MAX_PHONE_VALIDATIONS_PER_FIELD`], and note why: on a body whose
+                    // see [`MAX_PHONE_VALIDATIONS_PER_REQUEST`], and note why: on a body whose
                     // candidates are *distinct* the memo does nothing at all, and a validator
                     // call is ~6.5 µs per region however it is asked (M10-R20).
-                    applicable
-                        .iter()
-                        .any(|region| national_phone_valid(*region, matched))
+                    //
+                    // **The charge happens here, one unit per `parse()`, and both halves of that
+                    // are M10-R29.** It happens *here* because this is the only validator whose
+                    // cost the budget was sized for: the nine always-on national-ID checksums
+                    // are pure arithmetic on ≤ 18 bytes, and charging them the same rate refused
+                    // legal bodies in 45 ms — with the phone tier not even loaded — where the
+                    // previous release masked and forwarded them. And it is *per `parse()`*
+                    // because that is the ~6.5 µs the number was derived from; charging once per
+                    // candidate made one unit mean anywhere from one region to nine, so the
+                    // published bound could not be true in any single unit. `.any()` short-circuits on
+                    // accept, so a real number is charged only for the regions actually tried.
+                    applicable.iter().any(|region| {
+                        budget.spend();
+                        national_phone_valid(*region, matched)
+                    })
                 })),
                 scan: Scan::Overlapping,
                 // **Only the un-anchored families, and the asymmetry is the point (M10-R1).**
@@ -688,7 +718,9 @@ impl StructuredRecognizers {
     /// `every_structured_candidate_byte_is_covered` (M4-R10 / M4-R11).
     #[cfg(test)]
     pub(crate) fn raw_candidates(&self, input: &str) -> Vec<PiiEntity> {
-        let budget = std::cell::Cell::new(MAX_PHONE_VALIDATIONS_PER_FIELD);
+        // Unbounded on purpose: this exists to inspect the *resolver's* invariant over every
+        // candidate, so a budget refusal would silently shorten the very list under test.
+        let budget = Budget::unlimited();
         let mut candidates: Vec<PiiEntity> = Vec::new();
         for rec in &self.recognizers {
             rec.push_candidates(input, &mut candidates, &budget);
@@ -743,17 +775,16 @@ impl Recognizer {
     /// a partial scan. It is deliberately **not** consulted by the regex loop's structure —
     /// once it hits zero the scan stops accepting, and the error is raised one level up, so
     /// there is exactly one place that decides what a truncated scan means.
-    fn push_candidates(
-        &self,
-        input: &str,
-        out: &mut Vec<PiiEntity>,
-        budget: &std::cell::Cell<usize>,
-    ) {
+    fn push_candidates(&self, input: &str, out: &mut Vec<PiiEntity>, budget: &Budget) {
         let mut runs: Vec<Range<usize>> = Vec::new();
         let mut memo: std::collections::HashMap<&str, bool> = std::collections::HashMap::new();
         let mut at = 0usize;
         while at <= input.len() {
-            if budget.get() == 0 && self.validate.is_some() {
+            // **Stop the moment the allowance is gone, whichever recognizer spent it.** The field
+            // is going to be refused by `try_detect_within` regardless, so there is nothing to buy
+            // by finishing the scan — and the alternative, letting the loop run on with a
+            // saturated budget, is how a partial scan would end up looking like a complete one.
+            if budget.is_exhausted() && self.validate.is_some() {
                 break;
             }
             let Some(m) = self.regex.find_at(input, at) else {
@@ -765,8 +796,11 @@ impl Recognizer {
                     let verdict = match memo.get(m.as_str()) {
                         Some(known) => *known,
                         None => {
-                            budget.set(budget.get().saturating_sub(1));
-                            let v = check(m.as_str());
+                            // The validator charges the budget itself, at its own rate — see
+                            // [`Validator`] (M10-R29). The memo is what keeps a *repeating*
+                            // candidate from being charged twice; on distinct candidates it does
+                            // nothing, which is exactly the case the budget exists for.
+                            let v = check(m.as_str(), budget);
                             memo.insert(m.as_str(), v);
                             v
                         }
@@ -856,7 +890,7 @@ impl Recognizer {
         span: Range<usize>,
         check: &Validator,
         memo: &mut std::collections::HashMap<&'a str, bool>,
-        budget: &std::cell::Cell<usize>,
+        budget: &Budget,
     ) -> Option<Range<usize>> {
         if !self.shrink_on_reject {
             return None;
@@ -873,11 +907,13 @@ impl Recognizer {
             let verdict = match memo.get(prefix) {
                 Some(known) => *known,
                 None => {
-                    if budget.get() == 0 {
+                    // Give up rather than shrink further on an empty allowance. Returning `None`
+                    // here is a *miss*, not a silent pass: the caller's budget is already spent,
+                    // so `try_detect_within` refuses the whole field below.
+                    if budget.is_exhausted() {
                         return None;
                     }
-                    budget.set(budget.get() - 1);
-                    let v = check(prefix);
+                    let v = check(prefix, budget);
                     memo.insert(prefix, v);
                     v
                 }
@@ -900,8 +936,8 @@ fn next_char_boundary(input: &str, i: usize) -> usize {
     next.min(input.len())
 }
 
-/// How many times one field may invoke a **cache-missing** validator before the structured
-/// layer refuses the field (M10-R20).
+/// How many `phonenumber::parse()` calls one **request** may make before the structured layer
+/// refuses it (M10-R20, re-scoped by M10-R28).
 ///
 /// **This is a fail-closed bound on an unauthenticated CPU cost, not an optimisation** — the
 /// distinction matters because M10 already tried the optimisation and it was a leak (M10-R13).
@@ -919,15 +955,44 @@ fn next_char_boundary(input: &str, i: usize) -> usize {
 /// with a partial scan. That is the same call M5-R7 settled — *a detector may degrade its own
 /// recall, but it may never decide for the caller that degraded output is acceptable.*
 ///
-/// **The number, and it is chosen from the shipped build's worst case rather than from what a
-/// test can conveniently measure.** A validator call costs ~10 µs across the enabled regions in
-/// `--release`, so 50,000 bounds one field at **~0.5 s**. Headroom against real traffic is
-/// large: the M7 22 KiB Claude Code turn yields **zero** phone candidates, and reaching the
-/// budget takes on the order of **half a megabyte of nothing but phone-shaped digit groups** in
-/// a single field. (`cargo test` builds unoptimized, where the same 50,000 calls take ~25 s —
-/// which is why DOS-06's refusal case is not wrapped in a wall-clock budget. The number must
-/// come from the product, not from the profile the guard happens to run in.)
-const MAX_PHONE_VALIDATIONS_PER_FIELD: usize = 50_000;
+/// **`_PER_REQUEST`, and the name is the finding.** M10 first spelled this `_PER_FIELD` and meant
+/// it: [`try_detect`](PiiDetector::try_detect) minted a fresh allowance on every call, and
+/// `PrivacyStage` calls it once per text field, `Vault::mask_all` up to five times per field. So the
+/// real ceiling was `50,000 × fields × passes`, every factor of it chosen by the client — the same
+/// 15.6 MiB that is refused in one field answered `200` in **57 s** across 78 legal
+/// `messages[].content` fields, indistinguishable from the build with no budget at all (M10-R28),
+/// and the published per-field figure was not true in any unit (M10-R30). One [`Budget`] per
+/// request, created by `PrivacyStage` and threaded through
+/// [`try_detect_within`](PiiDetector::try_detect_within), is what makes the name honest.
+///
+/// **The number is a CPU ceiling, and it was chosen against a legal payload rather than an
+/// adversarial one.** One unit is one `parse()`, measured at **~2.7 µs** on the shipped release
+/// build (not the ~6.5 µs the library's own docs suggest), so 500,000 bounds a whole request's
+/// domestic-phone work at **~1.4 s**. Without any budget the same ceiling is ~95 s, since
+/// `MAX_BODY_BYTES` permits 16 MiB and a 200 KB field of pure phone-shaped groups already costs
+/// 50,000 units — so this is a **40× reduction of the worst case**, not a marginal one.
+///
+/// The **legal** payload that set the number is a database tool result with one phone column, which
+/// is what an agent produces by accident (`DOS-BUD` re-measures all of this on demand):
+///
+/// | tool result | rows | units | verdict |
+/// |---|---|---|---|
+/// | 35 KB | 500 | 5,005 | masked |
+/// | 145 KB | 2,000 | 20,005 | masked |
+/// | 367 KB | 5,000 | 50,005 | masked |
+/// | ~3.6 MB | ~50,000 | ~500,000 | refused |
+///
+/// ≈10 units per number, so the allowance is ≈**50,000 phone numbers per request**. An earlier draft
+/// of this constant read 50,000 units and would have refused the 367 KB row — an entirely ordinary
+/// `tool_result`. *A fail-closed threshold whose refusal is a routine event is the wrong threshold:*
+/// every refusal costs the agent a turn, and a bound that fires on legal traffic teaches its
+/// operator to raise it rather than to trust it. Headroom against a conversation is total — the M7
+/// 22 KiB Claude Code turn spends **0** units, pinned by PHONE-BUD.
+///
+/// (`cargo test` builds unoptimized, where the same calls take far longer — which is why DOS-06's
+/// refusal case is not wrapped in a wall-clock budget. The number must come from the product, not
+/// from the profile the guard happens to run in.)
+pub const MAX_PHONE_VALIDATIONS_PER_REQUEST: usize = 500_000;
 
 impl PiiDetector for StructuredRecognizers {
     fn detect(&self, input: &str) -> Vec<PiiEntity> {
@@ -937,13 +1002,25 @@ impl PiiDetector for StructuredRecognizers {
         self.try_detect(input).unwrap_or_default()
     }
 
+    /// Detection against a **per-call** allowance. This is the entry point for callers with no
+    /// request to charge — unit tests, the measurement harnesses, DOS-06 — and it keeps M10-R20's
+    /// original semantics exactly. The request path does **not** come through here: `PrivacyStage`
+    /// owns one [`Budget`] per request and calls
+    /// [`try_detect_within`](PiiDetector::try_detect_within) (M10-R28).
     fn try_detect(&self, input: &str) -> Result<Vec<PiiEntity>, DetectError> {
-        let budget = std::cell::Cell::new(MAX_PHONE_VALIDATIONS_PER_FIELD);
+        self.try_detect_within(input, &Budget::new(MAX_PHONE_VALIDATIONS_PER_REQUEST))
+    }
+
+    fn try_detect_within(
+        &self,
+        input: &str,
+        budget: &Budget,
+    ) -> Result<Vec<PiiEntity>, DetectError> {
         let mut candidates: Vec<PiiEntity> = Vec::new();
         for rec in &self.recognizers {
-            rec.push_candidates(input, &mut candidates, &budget);
+            rec.push_candidates(input, &mut candidates, budget);
         }
-        if budget.get() == 0 {
+        if budget.is_exhausted() {
             // **Actionable, because an unactionable refusal is a badly chosen threshold
             // (M10-R27).** This reaches the client verbatim: `privacy.rs` blocks the request
             // with `DetectError`'s `Display`, which becomes the 400 body. And the client is
@@ -953,19 +1030,30 @@ impl PiiDetector for StructuredRecognizers {
             // and fail identically. Saying what to change is the difference between a task
             // that adapts and a task that wedges.
             //
-            // Value-free, as `DetectError` requires: the field's *size* is not input-derived
-            // content, and it is the one number the caller needs in order to act.
+            // Value-free, as `DetectError` requires: the two numbers are a byte count and a
+            // constant, never input-derived content — and E2E-05 pins that structurally, by
+            // checking every digit run in this string against the request body.
+            //
+            // **It says "request", and after M10-R28 that is the truth rather than a widening.**
+            // The allowance is spent across every field of the request, so the field that trips
+            // it is where the budget ran out, not necessarily the one that consumed it — a body
+            // of many medium digit-dense fields reaches it just as a single huge one does. The
+            // advice has to cover both, or it sends an agent to shrink the wrong thing (M10-R29
+            // is what a confidently-misdirected refusal costs).
             return Err(DetectError {
                 detector: "structured",
                 message: format!(
-                    "a {} byte field exceeded the domestic-phone validation budget of {} \
-                     checks. The request was blocked rather than forwarded with a partially \
-                     scanned field. Retrying it unchanged will fail identically — reduce this \
-                     single field instead: for a tool result, add a LIMIT to the query or \
-                     return fewer rows per call, and drop the oversized turn rather than \
-                     resending it.",
-                    input.len(),
-                    MAX_PHONE_VALIDATIONS_PER_FIELD
+                    "this request exhausted the domestic-phone validation budget of {} number \
+                     checks; the allowance is per request and ran out while scanning a {} byte \
+                     field. The request was blocked rather than forwarded with a partially \
+                     scanned body. Retrying it unchanged will fail identically — send less \
+                     digit-dense text instead: for an oversized tool result, add a LIMIT to the \
+                     query or return fewer rows per call, and drop that turn rather than \
+                     resending it. Note that many medium digit-dense fields exhaust the \
+                     allowance just as one very large field does, so splitting the same content \
+                     across more fields will not help.",
+                    budget.initial(),
+                    input.len()
                 ),
             });
         }

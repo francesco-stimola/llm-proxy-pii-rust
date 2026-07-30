@@ -35,12 +35,52 @@ use std::time::{Duration, Instant};
 use llm_proxy_pii_rust::pii::anonymizer::Vault;
 use llm_proxy_pii_rust::pii::recognizers::StructuredRecognizers;
 use llm_proxy_pii_rust::pii::PiiDetector;
+use llm_proxy_pii_rust::pipeline::privacy::PrivacyStage;
+use llm_proxy_pii_rust::pipeline::{RequestContext, Stage};
+use llm_proxy_pii_rust::proxy::ProxyRequest;
+
+/// Digit groups the phone families match, **all distinct**: `offset` picks a stretch of the
+/// sequence, so two calls with different offsets share no candidate.
+///
+/// **An odometer, not a modular hash, and the difference is a finding.** A `(i * 7) % 9000` style
+/// generator looks distinct and silently starts repeating after its period — DOS-06's first draft did
+/// exactly that, produced a 4 MiB body the per-scan memo absorbed, and reported *"the budget was
+/// never reached"* as if that were the product's doing rather than the generator's. The digits below
+/// enumerate `(b, c)` over 81 M combinations, so nothing recurs within any body this suite builds.
+fn distinct_digit_groups(bytes: usize, offset: u64) -> String {
+    let mut s = String::with_capacity(bytes + 64);
+    let mut i = offset;
+    while s.len() < bytes {
+        i += 1;
+        s.push_str(&format!(
+            "row {:02} {:04} {:04} end ",
+            10 + (i / 81_000_000) % 80,
+            1000 + i % 9000,
+            1000 + (i / 9000) % 9000
+        ));
+    }
+    s
+}
 
 /// Wall-clock budget per case. Deliberately generous — `cargo test` builds unoptimized, and
 /// the bar is *linear vs quadratic*, not a benchmark. Every case sits orders of magnitude on
 /// either side of it (measured, debug profile): DOS-04's splice, for instance, is **~0.2 s**
 /// linear against **~52 s** quadratic.
-const BUDGET: Duration = Duration::from_secs(10);
+///
+/// **30 s, not 10 s, and the reason is contention rather than the code (M10).** Measured serially in
+/// the debug profile, the guarded cases run: splice 0.32 s · email 0.82 s · dense-real 0.89 s ·
+/// secret 1.16 s · arbitrary-groups 1.41 s · distinct-groups 1.78 s · **cards 2.25–3.34 s**. At
+/// 10 s the slowest of those had a 3× margin — and `cargo test --features onnx` runs every test
+/// binary at once, so the ONNX NER cases saturate the cores and a 1.9 s case was observed crossing
+/// 10 s. That is a **false red on a busy machine**, which is the worst failure mode a guard can
+/// have: it teaches its reader to re-run rather than to look.
+///
+/// 30 s keeps the separation it is actually for. The linear side needs a **9×** slowdown to reach
+/// it; the quadratic side is already past it when the machine is *idle* (52 s splice, 151 s for
+/// DOS-01's 200 KB field). Widening past ~30 s would start to shelter DOS-04's real regression, so
+/// this is not "make it big enough to never fail" — the ceiling is set by the fastest quadratic case
+/// on record.
+const BUDGET: Duration = Duration::from_secs(30);
 
 /// Run `work` on a worker thread and fail if it doesn't finish inside [`BUDGET`].
 ///
@@ -270,28 +310,7 @@ fn a_field_of_digit_groups_stays_affordable() {
 /// forwarded with a partial scan.
 #[test]
 fn a_field_of_distinct_digit_groups_is_bounded_or_refused() {
-    // Every candidate different: no two share their bytes, so the memo is inert.
-    //
-    // **An odometer, not a modular hash, and the difference is the whole finding.** A
-    // `(i * 7) % 9000` style generator looks distinct and silently starts repeating after its
-    // period — the first draft of this test did exactly that, produced a 4 MiB body the memo
-    // absorbed, and reported "the budget was never reached" as if that were the product's
-    // doing. The digits below enumerate `(b, c)` over 81 M combinations, so nothing recurs
-    // within any field this suite builds.
-    fn distinct(bytes: usize) -> String {
-        let mut s = String::with_capacity(bytes + 64);
-        let mut i = 0u64;
-        while s.len() < bytes {
-            i += 1;
-            s.push_str(&format!(
-                "row {:02} {:04} {:04} end ",
-                10 + (i / 81_000_000) % 80,
-                1000 + i % 9000,
-                1000 + (i / 9000) % 9000
-            ));
-        }
-        s
-    }
+    let distinct = |bytes: usize| distinct_digit_groups(bytes, 0);
 
     // **60 KB, sized for the unoptimized profile.** Every candidate here is a cache miss, so
     // the cost is the validator's ~6.5 µs per region — ~50× that in debug. The bar this case
@@ -308,18 +327,20 @@ fn a_field_of_distinct_digit_groups_is_bounded_or_refused() {
     assert!(round_trips, "the round-trip must stay exact");
     assert_ne!(masked, expected, "nothing was masked at all");
 
-    // The other half: a body big enough to exhaust the validation budget must come back as an
+    // The other half: a field big enough to exhaust the validation budget must come back as an
     // **error**, not as a quietly partial scan. `detect()` is the infallible view and returns
-    // nothing; `try_detect()` — which is what the request path uses — says why.
+    // nothing; `try_detect_within()` — the shape the request path uses — says why.
     //
-    // **Deliberately outside `within_budget`.** Driving the budget to exhaustion costs
-    // budget × per-call, which is ~0.5 s in the shipped build and ~25 s here. Wrapping it in a
-    // wall clock would size the *product's* bound to fit the *test profile*, which is exactly
-    // backwards — so this case asserts the policy and lets it take as long as debug takes.
-    let huge = distinct(4 * 1024 * 1024);
+    // **Against an explicit test allowance, not the shipped one.** Crossing the shipped 500,000
+    // units costs ~25 s unoptimized, and what this half asserts is the *policy* — refuse rather
+    // than truncate — which is not a claim about the number. Sizing the product's bound to fit the
+    // test profile would be exactly backwards; so would leaving a 25 s case in the default suite
+    // until someone marks it `#[ignore]`. DOS-BUD pins the real number on `--release`.
+    let huge = distinct(200 * 1024);
     let detector = StructuredRecognizers::new();
-    let err = detector.try_detect(&huge).expect_err(
-        "a 4 MiB field of distinct phone-shaped groups must exhaust the validation budget and \
+    let budget = llm_proxy_pii_rust::pii::Budget::new(20_000);
+    let err = detector.try_detect_within(&huge, &budget).expect_err(
+        "a 200 KB field of distinct phone-shaped groups must exhaust a 20,000 unit budget and \
          be REFUSED — silently returning a partial scan is a miss, and a miss is a leak",
     );
     assert!(
@@ -331,4 +352,284 @@ fn a_field_of_distinct_digit_groups_is_bounded_or_refused() {
         !err.message.contains("row "),
         "the error message must carry no input-derived text, got {err:?}"
     );
+}
+
+/// **DOS-07 (M10-R28) — the axis every complexity guard before it held constant: the number of
+/// *fields*.**
+///
+/// DOS-01…03 vary field size, DOS-04 entity count, DOS-05 the alphabet, DOS-06 periodicity — and all
+/// six measure **one string**, because `try_detect(&str)` is the shape they were handed. The masking
+/// path takes a **body**. So M10-R20's fix bounded a field, the client kept choosing how many fields
+/// it sent, and the same 15.6 MiB that is refused in one field answered `200` in 57 s across 78
+/// legal `messages[].content` fields — indistinguishable from the binary with no budget at all.
+///
+/// This drives `PrivacyStage::on_request`, not `try_detect`, and every field here is **individually
+/// far below** the allowance. That is the whole point: each one would pass alone, and the request
+/// must still be refused, because the allowance belongs to the request.
+///
+/// It is deliberately the row from M10-R28's table where HEAD and the pre-fix build were
+/// indistinguishable — if this ever passes by *forwarding*, the bound has gone back to being a rate.
+#[test]
+fn a_body_that_splits_digit_dense_text_across_many_fields_is_refused_as_one_request() {
+    const FIELDS: usize = 20;
+    const PER_FIELD: usize = 20 * 1024;
+    /// A **test** allowance, not the shipped one. Each 20 KB field above spends ~4,900 units, so
+    /// every field here is comfortably *under* this on its own and the twenty together are four
+    /// times over it — which is exactly the shape of the finding. Crossing the shipped 500,000
+    /// costs ~25 s unoptimized; the claim under test is the **unit** of the allowance, not its
+    /// size, and DOS-BUD pins the size on `--release`.
+    const TEST_BUDGET: usize = 20_000;
+
+    let messages: Vec<serde_json::Value> = (0..FIELDS)
+        .map(|i| {
+            // A distinct stretch of the odometer per field, so no two fields share a candidate and
+            // nothing is absorbed by a per-field memo. `PrivacyStage` here wraps the bare
+            // recognizers (no `CachingDetector`), so identical fields would be charged anyway —
+            // this is faithful to the finding's repro rather than convenient.
+            serde_json::json!({
+                "role": "user",
+                "content": distinct_digit_groups(PER_FIELD, (i as u64) * 5_000_000),
+            })
+        })
+        .collect();
+
+    // **Non-vacuity first: one field alone must pass.** Without this the test could be green
+    // because 20 KB is already over the allowance, which would prove nothing about the *request*
+    // being the unit — the entire content of M10-R28.
+    let one_field =
+        PrivacyStage::with_validation_budget(Box::new(StructuredRecognizers::new()), TEST_BUDGET);
+    let mut solo_ctx = RequestContext::new();
+    let mut solo_req = ProxyRequest {
+        body: serde_json::json!({
+            "messages": [{ "role": "user", "content": distinct_digit_groups(PER_FIELD, 0) }]
+        }),
+    };
+    one_field.on_request(&mut solo_req, &mut solo_ctx);
+    assert!(
+        solo_ctx.block.is_none(),
+        "a single {PER_FIELD} byte field must be well under the allowance, or this guard proves \
+         nothing about the request being the unit. Got: {:?}",
+        solo_ctx.block
+    );
+
+    let stage =
+        PrivacyStage::with_validation_budget(Box::new(StructuredRecognizers::new()), TEST_BUDGET);
+    let mut ctx = RequestContext::new();
+    let mut req = ProxyRequest {
+        body: serde_json::json!({ "messages": messages }),
+    };
+    stage.on_request(&mut req, &mut ctx);
+
+    let reason = ctx.block.expect(
+        "twenty fields that each pass on their own must be REFUSED together — if the request is \
+         forwarded, the validation budget is scoped to a unit the client multiplies, which is a \
+         rate and not a bound (M10-R28)",
+    );
+    assert!(
+        reason.contains("budget"),
+        "the refusal must say what was exhausted, got: {reason}"
+    );
+    // The message has to name the *request* as the unit, or it sends an agent to shrink one field
+    // when the cost came from twenty (M10-R29 is what a confidently-misdirected refusal costs).
+    assert!(
+        reason.contains("per request"),
+        "the refusal must name the unit the allowance actually has, got: {reason}"
+    );
+    // Never log raw PII, not even in an error we control — and this one is built from a request.
+    assert!(
+        !reason.contains("row "),
+        "the refusal must carry no input-derived text, got: {reason}"
+    );
+}
+
+/// **The sibling of CFG-01 that M10-R29 was missing.** CFG-01 pins that `PII_LOCALES=` means *no
+/// region*; this pins what that has to **cost**: nothing.
+///
+/// The budget is sized for `phonenumber::parse()` at ~6.5 µs a call. It used to be decremented by
+/// every recognizer that had a validator — including the nine always-on national-ID checksums, which
+/// are arithmetic over ≤ 18 bytes. So 800 KB of bare 9-digit tokens was refused in 45 ms **with the
+/// phone tier not loaded at all**: fifty thousand checksums, five milliseconds of real work, charged
+/// as if it were a third of a second. The previous release masked and forwarded the same body.
+///
+/// An operator who set `PII_LOCALES=` in response to the `phonenumber` supply-chain advisory that
+/// ARCHITECTURE documents was getting the phone tier's refusals without the phone tier.
+#[test]
+fn a_digit_dense_field_is_masked_not_refused_when_no_phone_region_is_enabled() {
+    // 800 KB, the size that was a 400 before M10-R29 — distinct so nothing is memoized away.
+    let mut field = String::with_capacity(800 * 1024 + 64);
+    let mut i = 0u64;
+    while field.len() < 800 * 1024 {
+        i += 1;
+        field.push_str(&format!("id={:09},", 100_000_000 + i % 800_000_000));
+    }
+
+    // The empty locale set: CFG-01's "none". No phone recognizer is constructed at all, so nothing
+    // here may charge the phone budget.
+    let detector = StructuredRecognizers::with_locales::<&str>(&[]);
+    let stage = PrivacyStage::new(Box::new(detector));
+    let mut ctx = RequestContext::new();
+    let mut req = ProxyRequest {
+        body: serde_json::json!({ "messages": [{ "role": "user", "content": field }] }),
+    };
+    stage.on_request(&mut req, &mut ctx);
+
+    assert!(
+        ctx.block.is_none(),
+        "with no phone region enabled, a digit-dense field must be masked and forwarded, not \
+         refused — the phone budget may only be charged by the phone validator (M10-R29). Got: {:?}",
+        ctx.block
+    );
+    // And it really was scanned: the always-on national-ID tier masks a good share of these
+    // (M4-R6's mod-11 over-masks), so a silent empty pass would be the other way to fail.
+    assert!(
+        !ctx.vault.is_empty(),
+        "the always-on national-ID recognizers must still have matched — an unrefused but \
+         unscanned field would be the same leak wearing a 200"
+    );
+}
+
+/// **DOS-BUD (M10-R30) — where the refusal line actually falls, on the shipped profile.**
+///
+/// `#[ignore]`d and run on demand:
+/// `cargo test --release --test complexity -- --ignored --nocapture budget_refusal_line`
+///
+/// The published bound was quoted from a constant for three review rounds and was wrong in every
+/// direction at once: stated per *field* when it was per *call*, at 0.5 s when a sub-budget field
+/// measured 1.32 s, and about "phone-shaped" text when bare 9-digit tokens reached it too. The fix
+/// for all three is that the number now comes from **here** — a measurement anyone can re-run —
+/// rather than from prose next to the constant.
+#[test]
+#[ignore = "measurement, not a guard: run with --release to reproduce the published figures"]
+fn budget_refusal_line_and_cost() {
+    let detector = StructuredRecognizers::new();
+
+    println!("\n--- one field, phone-shaped distinct groups (default region set) ---");
+    println!(
+        "{:>10}  {:>9}  {:>8}  {:>7}",
+        "bytes", "verdict", "ms", "spent"
+    );
+    for kb in [128usize, 512, 1024, 2048, 3072, 4096, 8192] {
+        let field = distinct_digit_groups(kb * 1024, 0);
+        let budget = llm_proxy_pii_rust::pii::Budget::new(
+            llm_proxy_pii_rust::pii::recognizers::MAX_PHONE_VALIDATIONS_PER_REQUEST,
+        );
+        let started = Instant::now();
+        let verdict = match detector.try_detect_within(&field, &budget) {
+            Ok(found) => format!("{} spans", found.len()),
+            Err(_) => "REFUSED".to_string(),
+        };
+        println!(
+            "{:>10}  {:>9}  {:>8.0}  {:>7}",
+            field.len(),
+            verdict,
+            started.elapsed().as_secs_f64() * 1000.0,
+            budget.spent()
+        );
+    }
+
+    println!("\n--- one request, the same total bytes split across N fields (M10-R28) ---");
+    println!("{:>3}  {:>10}  {:>9}  {:>8}", "N", "total", "verdict", "ms");
+    for fields in [1usize, 5, 20, 78] {
+        let per = 200 * 1024;
+        let messages: Vec<serde_json::Value> = (0..fields)
+            .map(|i| {
+                serde_json::json!({
+                    "role": "user",
+                    "content": distinct_digit_groups(per, (i as u64) * 5_000_000),
+                })
+            })
+            .collect();
+        let stage = PrivacyStage::new(Box::new(StructuredRecognizers::new()));
+        let mut ctx = RequestContext::new();
+        let mut req = ProxyRequest {
+            body: serde_json::json!({ "messages": messages }),
+        };
+        let started = Instant::now();
+        stage.on_request(&mut req, &mut ctx);
+        println!(
+            "{:>3}  {:>10}  {:>9}  {:>8.0}",
+            fields,
+            fields * per,
+            if ctx.block.is_some() {
+                "REFUSED"
+            } else {
+                "200"
+            },
+            started.elapsed().as_secs_f64() * 1000.0
+        );
+    }
+
+    // **The case the threshold is actually chosen against**, and it is not the adversarial one: a
+    // tool result from a database, where phone-shaped text is a *column* rather than the whole
+    // payload. This is the body an agent produces by accident, so it is what "can real traffic reach
+    // the budget?" has to be answered with — the question M10-R27 was raised to ask and M10-R30
+    // found unanswerable from the doc comment alone.
+    println!("\n--- a realistic SQL tool result: one phone column among ordinary columns ---");
+    println!(
+        "{:>10}  {:>6}  {:>9}  {:>8}  {:>7}",
+        "bytes", "rows", "verdict", "ms", "spent"
+    );
+    for rows in [500usize, 5_000, 20_000, 50_000, 80_000] {
+        let mut dump = String::from("id,customer,city,phone,email,total\n");
+        for r in 0..rows as u64 {
+            // **The phone column is an odometer too, and the first version of this was not.** A
+            // `(r * 7) % 9000` column repeats after its period, and the per-scan memo then serves
+            // the repeats for free: 20,000 rows measured the *same* 30,781 units as 10,000, which
+            // reads as sub-linear cost when it is really a generator artefact. That is DOS-06's own
+            // trap (M10-R20), reproduced here while measuring the fix for it — third time in this
+            // milestone. Enumerating `(b, c)` keeps every row's number distinct.
+            dump.push_str(&format!(
+                "{},Customer Name {},Milano,3{:02} {:04} {:04},user{}@example.com,{}.50\n",
+                10_000 + r,
+                r,
+                (r / 81_000_000) % 100,
+                1000 + r % 9000,
+                1000 + (r / 9000) % 9000,
+                r,
+                100 + r % 900
+            ));
+        }
+        let budget = llm_proxy_pii_rust::pii::Budget::new(
+            llm_proxy_pii_rust::pii::recognizers::MAX_PHONE_VALIDATIONS_PER_REQUEST,
+        );
+        let started = Instant::now();
+        let verdict = match detector.try_detect_within(&dump, &budget) {
+            Ok(found) => format!("{} spans", found.len()),
+            Err(_) => "REFUSED".to_string(),
+        };
+        println!(
+            "{:>10}  {:>6}  {:>9}  {:>8.0}  {:>7}",
+            dump.len(),
+            rows,
+            verdict,
+            started.elapsed().as_secs_f64() * 1000.0,
+            budget.spent()
+        );
+    }
+
+    println!("\n--- the same body with the phone tier off, for the tier's share of the cost ---");
+    let field = distinct_digit_groups(200 * 1024, 0);
+    for (label, det) in [
+        ("default (9 regions)", StructuredRecognizers::new()),
+        (
+            "PII_LOCALES= (none)",
+            StructuredRecognizers::with_locales::<&str>(&[]),
+        ),
+    ] {
+        let budget = llm_proxy_pii_rust::pii::Budget::new(
+            llm_proxy_pii_rust::pii::recognizers::MAX_PHONE_VALIDATIONS_PER_REQUEST,
+        );
+        let started = Instant::now();
+        let verdict = match det.try_detect_within(&field, &budget) {
+            Ok(found) => format!("{} spans", found.len()),
+            Err(_) => "REFUSED".to_string(),
+        };
+        println!(
+            "{label:>22}  {:>9}  {:>8.0} ms  spent {}",
+            verdict,
+            started.elapsed().as_secs_f64() * 1000.0,
+            budget.spent()
+        );
+    }
+    println!();
 }

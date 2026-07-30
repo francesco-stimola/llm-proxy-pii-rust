@@ -61,12 +61,35 @@ it, so you never need to ask the user to reveal the real value.";
 /// engine-agnostic [`PiiDetector`].
 pub struct PrivacyStage {
     detector: Box<dyn PiiDetector>,
+    /// Per-request validation allowance handed to every field of one request (M10-R28).
+    validation_budget: usize,
 }
 
 impl PrivacyStage {
-    /// Build the stage around a concrete detector (deterministic, ML, or both).
+    /// Build the stage around a concrete detector (deterministic, ML, or both), with the shipped
+    /// per-request validation allowance.
     pub fn new(detector: Box<dyn PiiDetector>) -> Self {
-        Self { detector }
+        Self::with_validation_budget(
+            detector,
+            crate::pii::recognizers::MAX_PHONE_VALIDATIONS_PER_REQUEST,
+        )
+    }
+
+    /// Build the stage with an explicit per-request validation allowance (M10-R28).
+    ///
+    /// **This exists so a guard can reach a refusal without paying for one.** The shipped allowance
+    /// is ~1.4 s of CPU in `--release` and ~25 s unoptimized; DOS-07, DOS-06 and E2E-05 all need to
+    /// *cross* it, and three cases at 25 s each is how a guard ends up `#[ignore]`d — which in this
+    /// milestone alone has hidden three findings. Lowering the number does not weaken any of them:
+    /// what they assert is that the allowance belongs to the **request** and that exhausting it
+    /// refuses rather than truncates, and neither claim is about the size of the number.
+    ///
+    /// The number itself is pinned separately, on the shipped constant, by DOS-BUD.
+    pub fn with_validation_budget(detector: Box<dyn PiiDetector>, units: usize) -> Self {
+        Self {
+            detector,
+            validation_budget: units,
+        }
     }
 }
 
@@ -81,15 +104,23 @@ impl Stage for PrivacyStage {
         // `detect_error` captures a *required* detector failure so we can fail
         // closed after the walk (its message carries no input text).
         let mut detect_error: Option<crate::pii::DetectError> = None;
+        // **One validation budget for the whole request, created here beside the vault (M10-R28).**
+        // The vault is already per-request for the same reason: both are state that belongs to the
+        // request rather than to a field. Before this, each field minted its own allowance and each
+        // of `mask_all`'s five passes minted another, so the ceiling was `budget × fields × passes`
+        // — and every one of those factors is chosen by the client. A budget scoped to something the
+        // caller can multiply is a rate, not a bound.
+        let budget = crate::pii::Budget::new(self.validation_budget);
         let outcome = {
             let detector = self.detector.as_ref();
             let vault = &mut ctx.vault;
             let error_slot = &mut detect_error;
+            let budget = &budget;
             // `mask_all`, not `mask`: masking rewrites the bytes around what it replaced and
             // can *expose* a value that was not recognizable before (a phone inside a longer
             // digit run splits it and reveals a Luhn-valid card), so it re-detects to a
             // fixpoint — M4-R17.
-            let mut mask = |text: &str| match vault.mask_all(text, detector) {
+            let mut mask = |text: &str| match vault.mask_all_within(text, detector, budget) {
                 Ok(masked) => masked,
                 Err(err) => {
                     if error_slot.is_none() {

@@ -161,3 +161,51 @@ fn the_shared_fixture_keeps_its_shape() {
         "one user message, and it is where all the PII is"
     );
 }
+
+/// **PHONE-BUD (M10-R28 / M10-R30) — the headroom the budget's number rests on, measured over a
+/// real turn instead of asserted in a doc comment.**
+///
+/// `MAX_PHONE_VALIDATIONS_PER_REQUEST` is defended by the claim that ordinary traffic cannot come
+/// near it. M10 made that claim and could not show it: the allowance was per *call*, `mask_all`
+/// re-minted it up to five times per field, and `PrivacyStage` called it once per field — so "the
+/// budget" was not a number any single quantity had, and nobody noticed for three rounds (M10-R30).
+///
+/// Now there is one budget per request, so headroom is a thing you can put a number on. This charges
+/// **every field of the 22 KiB Claude Code turn against one budget**, exactly as the request path
+/// does, and pins the total. The assertion is loose on purpose — an order of magnitude, not a
+/// fixture-fragile constant — because what must never regress is the *margin*, not the digit.
+#[test]
+fn a_real_claude_code_turn_spends_almost_none_of_the_request_budget() {
+    use llm_proxy_pii_rust::pii::recognizers::MAX_PHONE_VALIDATIONS_PER_REQUEST;
+    use llm_proxy_pii_rust::pii::Budget;
+
+    let detector = StructuredRecognizers::new();
+    let budget = Budget::new(MAX_PHONE_VALIDATIONS_PER_REQUEST);
+
+    let mut bytes = 0usize;
+    for field in m7_turn::realistic_turn() {
+        bytes += field.text.len();
+        detector
+            .try_detect_within(&field.text, &budget)
+            .expect("a real 22 KiB turn must never exhaust the request budget");
+    }
+
+    // Non-vacuity, the same bar as the guard above: a fixture that shrank proves nothing.
+    assert!(
+        bytes > 20_000,
+        "the M7 fixture is only {bytes} bytes — this measurement is meaningless on a stub"
+    );
+
+    let spent = budget.spent();
+    println!(
+        "PHONE-BUD: a real {bytes} byte Claude Code turn spends {spent} of \
+         {MAX_PHONE_VALIDATIONS_PER_REQUEST} validation units"
+    );
+    assert!(
+        spent * 100 < MAX_PHONE_VALIDATIONS_PER_REQUEST,
+        "a real {bytes} byte Claude Code turn spent {spent} of {MAX_PHONE_VALIDATIONS_PER_REQUEST} \
+         validation units — over 1% of the whole request allowance on one ordinary turn. The number \
+         is defended by having wide headroom against real traffic; if this fails, either the \
+         headroom is gone or the budget is being charged for work it was not sized for (M10-R29)."
+    );
+}

@@ -59,6 +59,23 @@ pub struct Config {
     /// [`DEFAULT_PII_CACHE_ENTRIES`]. Sound because a hit is keyed on the *exact*
     /// bytes of a deterministic scan, so it can never mask less (see `pii::cache`).
     pub pii_cache_entries: usize,
+    /// Per-**request** allowance of `phonenumber::parse()` calls before the request is refused
+    /// (M10-R28). Defaults to
+    /// [`MAX_PHONE_VALIDATIONS_PER_REQUEST`](crate::pii::recognizers::MAX_PHONE_VALIDATIONS_PER_REQUEST).
+    ///
+    /// **Deliberately not readable from the environment, and that is the point of writing it here
+    /// rather than reading it there.** It lives on `Config` because this is where the request limits
+    /// live (`max_body_bytes` is its neighbour), and because the guards need to reach a refusal
+    /// without burning the real allowance — 500,000 units is ~1.4 s in `--release` and ~25 s
+    /// unoptimized, so three `cargo test` cases that each exhaust it would add over a minute to
+    /// every run, and a slow guard is a guard someone eventually marks `#[ignore]`.
+    ///
+    /// It is **not** an env var because a fail-closed CPU bound an operator can raise is not a
+    /// bound — the first response to a refusal would be to raise it, and the DoS M10-R20 closed
+    /// would reopen by configuration. M10-R27 settled that explicitly. If you are here to wire this
+    /// to `PII_MAX_PHONE_VALIDATIONS`: that is the decision you would be reversing, and
+    /// `docs/reviews/M10.md#m10-r27` records why.
+    pub pii_max_phone_validations: usize,
 }
 
 /// Default max request body: 16 MiB — comfortably above long-context payloads
@@ -168,6 +185,9 @@ impl Config {
             pii_locales,
             debug_skip_demask,
             pii_cache_entries,
+            // No `std::env::var` here on purpose — see the field's doc comment. An operator who
+            // can raise a fail-closed CPU bound does not have a bound.
+            pii_max_phone_validations: crate::pii::recognizers::MAX_PHONE_VALIDATIONS_PER_REQUEST,
         })
     }
 }
@@ -182,7 +202,7 @@ impl Config {
 /// the code that implements it cannot disagree — and because the resolved list is what
 /// `Config`'s `Debug` prints at startup, an operator can *see* which regions are active
 /// instead of inferring them from the absence of a variable.
-fn default_locales() -> Vec<String> {
+pub fn default_locales() -> Vec<String> {
     crate::pii::recognizers::PHONE_REGIONS
         .iter()
         .map(|region| region.code.to_string())
@@ -293,6 +313,9 @@ impl fmt::Debug for Config {
             .field("pii_locales", &self.pii_locales)
             .field("debug_skip_demask", &self.debug_skip_demask)
             .field("pii_cache_entries", &self.pii_cache_entries)
+            // A bound, not a value: safe to log, and worth logging — a startup line that shows it
+            // is how an operator learns the refusal exists before meeting it (M10-R33).
+            .field("pii_max_phone_validations", &self.pii_max_phone_validations)
             .finish()
     }
 }

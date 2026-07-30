@@ -57,6 +57,8 @@ async fn spawn_proxy(upstream: SocketAddr) -> SocketAddr {
         pii_locales: vec!["it".to_string(), "us".to_string()],
         debug_skip_demask: false,
         pii_cache_entries: 0,
+        pii_max_phone_validations:
+            llm_proxy_pii_rust::pii::recognizers::MAX_PHONE_VALIDATIONS_PER_REQUEST,
     };
     let app = build_router(AppState::new(&config).await.expect("build app state"));
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
