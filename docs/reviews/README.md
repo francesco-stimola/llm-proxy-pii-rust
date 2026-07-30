@@ -25,7 +25,7 @@ that way?"*
 | [M7.md](M7.md) | M7 / M7.1 — NER latency · system-prompt cache | 23, all closed |
 | [M8.md](M8.md) | M8 / M8.1 — GLiNER · national phone recognizer | 8, all closed |
 | [M9.md](M9.md) | M9 / M9.1 — GPU optimization · per-backend binaries | 29, all closed |
-| [M10.md](M10.md) | M10 — national phone coverage + release hygiene | 46, all closed (round 7 pending) |
+| [M10.md](M10.md) | M10 — national phone coverage + release hygiene | 52, 46 closed (round 7's six open) |
 
 **The page to read here is [M10-R28](M10.md#m10-r28), the fourth turn of one wheel.** M10-R2 was a DoS
 on the domestic-phone validator. Its fix was undone by the input **repeating**
@@ -80,6 +80,15 @@ And `try_detect` became the **required** trait method with `detect` derived, so 
 implementor does not compile: the four test doubles that stopped building are that fix's whole
 regression suite, and they are worth more than a test would be. **Prefer the guarantee the compiler
 gives over the one a test remembers to ask for.**
+
+**Round 7 verified both by mutating the tree, and the compiler half holds exactly as stated** —
+a `detect`-only implementor is `error[E0046]`, and DOS-08/DOS-09 are the *only* two failures in the
+suite when the defect is put back. The guard half is one word weaker than the sentence above: the
+chains are a **hand-written list of four**, not a projection of the wiring, and the position it omits
+is `FailOpen` — where the one line that makes a budget refusal un-swallowable is asserted by nothing
+at all ([M10-R47](M10.md#m10-r47), [M10-R48](M10.md#m10-r48)). *A guard widened from a type to a list
+of instances has moved the blind spot, not removed it* — which is the same lesson arriving where its
+own fix landed.
 
 ---
 

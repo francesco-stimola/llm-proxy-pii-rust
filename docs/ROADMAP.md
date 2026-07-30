@@ -1785,22 +1785,22 @@ only the false positives we imagined. Run:
 
 ### What is left before the tag
 
-Written 2026-07-29, **rewritten 2026-07-30 after round 6's findings were closed.** The milestone's
-scope items are all `[x]`, all **46** review findings across six rounds are `[x]`, and the suite is
-green on both feature sets (**219 default / 252 onnx**, zero warnings; `fmt`, `clippy -D warnings`
-clean; `cargo doc` 15 warnings, all pre-existing). Nothing is left in the code.
+Written 2026-07-29, **rewritten 2026-07-30 after round 7.** The milestone's scope items are all `[x]`
+and **46 of 52** review findings are closed; round 7's six are open. The suite is green on both feature
+sets (**219 default / 252 onnx**, zero warnings; `fmt`, `clippy -D warnings` clean; `cargo doc` 15
+warnings, all pre-existing), the real `.exe` masks, injects, restores and refuses as published, and
+**nothing round 7 found changes product behaviour**.
 
-1. **Review round 7 — closure verification of round 6.** Two of the five were the *claims made about*
-   the M10-R35 fix rather than the fix, and both closures are the kind that need checking against a
-   mutated tree rather than a reading. [M10-R42](reviews/M10.md#m10-r42): DOS-08 now loops over every
-   chain `AppState::new` can build and **DOS-09** drives the cached chain end to end — re-run the
-   record's mutation (`CachingDetector::redetect` dropping the budget) and confirm both red while the
-   rest stays green. [M10-R44](reviews/M10.md#m10-r44): `try_detect` is now the **required** trait
-   method and `detect` the derived one, so a `detect`-only implementor does not compile — check that
-   claim by writing one, and check that no `detect` on the request path still mints or swallows.
-   [M10-R43](reviews/M10.md#m10-r43) re-published the budget constant's own table from DOS-BUD's rows
-   for the **fifth** version of those numbers; verify every one against the harness, and verify that
-   the four documents carrying the previously over-strong sentences now say what the code does.
+1. **Close round 7's six findings.** Two are guards for shipped code that nothing asserts —
+   [M10-R47](reviews/M10.md#m10-r47) (deleting `FailOpen`'s budget rule leaves the suite 219/219 green
+   while a `FailOpen(structured)` chain forwards DOS-07's body) and
+   [M10-R48](reviews/M10.md#m10-r48) (`shipped_chains()` is a hand-written list that disagrees with
+   `build_detector`); one fix closes both. Two are numbers the harness refutes —
+   [M10-R49](reviews/M10.md#m10-r49) (the refusal line is ~41,000 rows, and DOS-BUD's *"phone column"*
+   holds no valid phone) and [M10-R50](reviews/M10.md#m10-r50) (the **5.2 s** worst case both READMEs
+   publish measures 1.46 s on an idle box and contradicts the two-term model beside it) — and both are
+   **release-facing prose**, so they want fixing before the tag even though neither is a safety issue.
+   Then [M10-R51](reviews/M10.md#m10-r51) and [M10-R52](reviews/M10.md#m10-r52).
 2. **The CC battery — CC-01 / CC-03 / CC-04 / CC-09** (step 10 above). Needs the maintainer at the
    keyboard with Claude Code pointed at the proxy. **No key configuration required.**
 3. **Bump `Cargo.toml` to `1.2.1`** — a `chore(release):` commit at tag time, as `1.2.0` was. Left
@@ -2056,6 +2056,51 @@ for row**. Five new findings, none of them a live leak or a live DoS:
 | [M10-R44](reviews/M10.md#m10-r44) | `try_detect`'s own default routes to `detect`, which mints **and** swallows: a five-line `detect`-only wrapper forwards DOS-07's body with a partial scan reported as clean | guard | [x] |
 | [M10-R45](reviews/M10.md#m10-r45) | `DetectError`'s fields are `pub` and the struct is not `#[non_exhaustive]`, so a literal bypasses both constructors — *"a new error site has to choose"* is a convention | low | [x] |
 | [M10-R46](reviews/M10.md#m10-r46) | Two **present-tense** comments still name the deleted `try_detect_within`, both in the file that deleted it | low | [x] |
+
+**Round 7 (2026-07-30) — closure verification: all five of round 6's hold**, and the two that needed a
+mutated tree got one. With `CachingDetector::redetect` minting again, **DOS-08 and DOS-09 are the only
+two failures in the entire default suite** (217 / 2, `--no-fail-fast`) — R42's guard is not decoration.
+A `detect`-only implementor is **`error[E0046]`**, so R44's inversion is carried by the compiler. Every
+unit count the constant and ARCHITECTURE publish reproduces **exactly** on two DOS-BUD runs. The real
+release `.exe` was driven end to end on OS-assigned ports: a PII turn is masked upstream
+(`[EMAIL_1] [PHONE_1] [IBAN_1]`), augmented, and **restored** to the client, and a 15.63 MiB body is a
+**`400` in 1.36 s** with the upstream never contacted. Both feature sets green (**219 / 252**, zero
+warnings; `fmt`, `clippy -D warnings`, `cargo doc`'s 15-warning baseline all clean). Six new findings,
+none a live leak, none a live DoS, **none changing product behaviour**.
+
+> **The one line nothing asserts.** `FailOpen` swallows a failed *detector* and propagates an exhausted
+> *request* — the distinction [M10-R41](reviews/M10.md#m10-r41) moved onto the error so the wrapper
+> could read it. **Delete that line and the suite is 219/219 green**, and DOS-07's own body driven
+> through `Caching(Composite([FailOpen(Structured)])))` is **forwarded**: a partially scanned body with
+> a clean bill of health, which is the failure R41 exists to prevent. R41's own *"test that would have
+> caught it"* prescribed exactly that guard; the closure took the fix and left the guard
+> ([M10-R47](reviews/M10.md#m10-r47)). The reason no guard sees it is
+> [M10-R48](reviews/M10.md#m10-r48): `shipped_chains()` claims to be *"every arrangement `AppState::new`
+> can build"* and is a hand-written four that includes a shape the wiring never builds (`bare`) and
+> omits the one it does (`FailOpen`) — **R42's own defect one level up: the guard was aimed at a type,
+> so it was widened to a list, and the list is the new instance.** TESTING's axis row records it with
+> the `—` that same finding declared is never the honest answer.
+
+> **And the numbers moved again — this time the harness disagrees with the prose.** The refusal line is
+> **not** 25,000–35,000 rows: DOS-BUD prints no row between 20,000 and 50,000, and running them shows
+> **40,000 rows masked at 490,010 units**, so the line is ≈41,000. Its *"one phone column"* is eleven
+> digits where an Italian mobile is ten, so **zero phones are masked** in the payload the threshold was
+> chosen against — a column that really validates spends 284,500 units at 40,000 rows and refuses near
+> 70,000 ([M10-R49](reviews/M10.md#m10-r49)). And the **5.2 s** worst case both READMEs publish measures
+> **1.46 s** here on an idle box, is contradicted by the same table's 3 MiB row at the same 500,000
+> units, and cannot be derived from the two-term model printed beside it — the mechanism is contention,
+> reproduced directly (the same command printed 3.64 s with a build running and 1.31 s alone)
+> ([M10-R50](reviews/M10.md#m10-r50)). *Wall clocks are machine- and load-dependent; the units are not,
+> and only one of the two columns says so.*
+
+| ID | Title | Sev | Status |
+|---|---|---|---|
+| [M10-R47](reviews/M10.md#m10-r47) | `FailOpen`'s "never swallow a budget refusal" is asserted by no test: delete the line and the suite is 219/219 green while a `FailOpen(structured)` chain forwards DOS-07's body | guard | [ ] |
+| [M10-R48](reviews/M10.md#m10-r48) | `shipped_chains()` says *"every arrangement `AppState::new` can build"* and is a hand-written four — wrong in both directions, with nothing tying it to `build_detector` | guard | [ ] |
+| [M10-R49](reviews/M10.md#m10-r49) | The refusal line is ~41,000 rows, not 25,000–35,000 — and DOS-BUD's *"phone column"* is 11 digits, so it masks **zero** phones at every size | measurement | [ ] |
+| [M10-R50](reviews/M10.md#m10-r50) | The **5.2 s** worst case in both READMEs measures 1.46 s idle, contradicts the two-term model beside it, and is attributed to masking its row never did | measurement | [ ] |
+| [M10-R51](reviews/M10.md#m10-r51) | Two round-6 closures each left a site their own finding named, both in `TESTING.md`: DOS-08's entry still claims what M10-R42 disproved, E2E-05 is still *1 MiB* | docs | [ ] |
+| [M10-R52](reviews/M10.md#m10-r52) | *"The two constructors are the only way to build a `DetectError`"* is false in every module below `pii` — which is all four error sites | low | [ ] |
 
 <a id="backlog"></a>
 ## Backlog — documented, not scheduled
