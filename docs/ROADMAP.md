@@ -1785,31 +1785,25 @@ only the false positives we imagined. Run:
 
 ### What is left before the tag
 
-Written 2026-07-29, **rewritten 2026-07-30 after round 6.** The milestone's scope items are all `[x]`
-and the suite is green on both feature sets (**218 default / 251 onnx**, zero warnings; `fmt`,
-`clippy -D warnings` clean; `cargo doc` 15 warnings, all pre-existing). Round 6 verified six of the
-seven round-5 closures — including M10-R35's, on the real release `.exe` — and left **five open
-findings** (R42…R46). None is a live leak or a live DoS; the shipped binary refuses what it must and
-forwards what it should, measured end to end.
+Written 2026-07-29, **rewritten 2026-07-30 after round 6's findings were closed.** The milestone's
+scope items are all `[x]`, all **46** review findings across six rounds are `[x]`, and the suite is
+green on both feature sets (**219 default / 252 onnx**, zero warnings; `fmt`, `clippy -D warnings`
+clean; `cargo doc` 15 warnings, all pre-existing). Nothing is left in the code.
 
-1. **Close round 6's five findings.** Two of them are the *claims made about* the M10-R35 fix rather
-   than the fix: [M10-R42](reviews/M10.md#m10-r42) (DOS-08 is written against the leaf, so the same
-   defect in a shipped wrapper is invisible) and [M10-R44](reviews/M10.md#m10-r44) (`try_detect`'s own
-   default still routes to a minting, refusal-swallowing `detect`). Both change no visible behaviour;
-   R44's fix is a trait shape decision — **required `try_detect`, derived `detect`** — and is the
-   maintainer's call, exactly as R35's was. [M10-R43](reviews/M10.md#m10-r43) is the one that should
-   land before the tag: the budget constant's own doc ships to readers and is 2× optimistic in the
-   reassuring direction. [M10-R45](reviews/M10.md#m10-r45) and [M10-R46](reviews/M10.md#m10-r46) are
-   `low` — one attribute and two words.
-2. **Review round 7 — closure verification of round 6.** Round 5's model is the one to keep, and
-   round 6 kept it: a closure is checked against the finding's own `file:line`s, or against nothing —
-   and where the claim is *"this guard would fail"*, against a **mutated** tree rather than a reading.
-   That is what showed DOS-08 reds on the leaf and stays green on the wrapper. For R42/R44
-   specifically: re-run the mutations the record spells out, and check the four documents that carry
-   the over-strong sentences, not only the code.
-3. **The CC battery — CC-01 / CC-03 / CC-04 / CC-09** (step 10 above). Needs the maintainer at the
+1. **Review round 7 — closure verification of round 6.** Two of the five were the *claims made about*
+   the M10-R35 fix rather than the fix, and both closures are the kind that need checking against a
+   mutated tree rather than a reading. [M10-R42](reviews/M10.md#m10-r42): DOS-08 now loops over every
+   chain `AppState::new` can build and **DOS-09** drives the cached chain end to end — re-run the
+   record's mutation (`CachingDetector::redetect` dropping the budget) and confirm both red while the
+   rest stays green. [M10-R44](reviews/M10.md#m10-r44): `try_detect` is now the **required** trait
+   method and `detect` the derived one, so a `detect`-only implementor does not compile — check that
+   claim by writing one, and check that no `detect` on the request path still mints or swallows.
+   [M10-R43](reviews/M10.md#m10-r43) re-published the budget constant's own table from DOS-BUD's rows
+   for the **fifth** version of those numbers; verify every one against the harness, and verify that
+   the four documents carrying the previously over-strong sentences now say what the code does.
+2. **The CC battery — CC-01 / CC-03 / CC-04 / CC-09** (step 10 above). Needs the maintainer at the
    keyboard with Claude Code pointed at the proxy. **No key configuration required.**
-4. **Bump `Cargo.toml` to `1.2.1`** — a `chore(release):` commit at tag time, as `1.2.0` was. Left
+3. **Bump `Cargo.toml` to `1.2.1`** — a `chore(release):` commit at tag time, as `1.2.0` was. Left
    at `1.2.0` on purpose: `release-build-publish.yml` refuses to publish a tag that disagrees with
    the manifest, so the mismatch is currently *protective*, not a gap.
 
@@ -2010,13 +2004,15 @@ findings rather than re-scored.
 > **All seven closed (2026-07-30), and R35 was closed by deleting the seam rather than filling it.**
 > The maintainer chose the structural fix over the one-line override: `try_detect` and `redetect`
 > now **take** a `&Budget`, the `_within` pair is gone, and `Vault::mask_all` lost its budget-less
-> convenience for the same reason. There is no method left that a forgotten override could fall
-> through to which would mint another allowance. *An obligation a trait default can satisfy is not
-> carried by the type system — and "every test passes" is the signature of that, not evidence against
-> it.* **DOS-08** is the guard whose absence let it through, and it is phrased over the **trait**, not
-> the type: a seventh detector that drops the allowance fails there. R41 was closed the same way —
-> `DetectError` carries `budget_exhausted`, so `FailOpen` reads the error instead of correlating with
-> a global.
+> convenience for the same reason. *An obligation a trait default can satisfy is not carried by the
+> type system — and "every test passes" is the signature of that, not evidence against it.*
+> **DOS-08** is the guard whose absence let it through. R41 was closed the same way — `DetectError`
+> carries the distinction, so `FailOpen` reads the error instead of correlating with a global.
+>
+> *(Round 6 found both closures had claimed more than they delivered: DOS-08 quantified over the
+> **leaf type**, not the chain, so the same defect in a wrapper stayed green —
+> [M10-R42](reviews/M10.md#m10-r42); and `try_detect`'s own default still routed to a minting,
+> swallowing `detect` — [M10-R44](reviews/M10.md#m10-r44). Both closed; see the Round 6 block.)*
 >
 > **The threshold survived; the numbers around it did not.** Charging the fixpoint's later passes
 > roughly **doubles** what a masking body spends, so the refusal line for a phone-bearing database
@@ -2055,11 +2051,11 @@ for row**. Five new findings, none of them a live leak or a live DoS:
 
 | ID | Title | Sev | Status |
 |---|---|---|---|
-| [M10-R42](reviews/M10.md#m10-r42) | DOS-08 quantifies over `StructuredRecognizers`, not the chain: the same defect in a **wrapper** leaves all 218 tests green while the request under-charges 21× | guard | [ ] |
-| [M10-R43](reviews/M10.md#m10-r43) | The budget constant's own doc still publishes the pre-M10-R35 table and `≈50,000 numbers per request` — M10-R38's closure updated ARCHITECTURE and not the artefact it named | measurement | [ ] |
-| [M10-R44](reviews/M10.md#m10-r44) | `try_detect`'s own default routes to `detect`, which mints **and** swallows: a five-line `detect`-only wrapper forwards DOS-07's body with a partial scan reported as clean | guard | [ ] |
-| [M10-R45](reviews/M10.md#m10-r45) | `DetectError`'s fields are `pub` and the struct is not `#[non_exhaustive]`, so a literal bypasses both constructors — *"a new error site has to choose"* is a convention | low | [ ] |
-| [M10-R46](reviews/M10.md#m10-r46) | Two **present-tense** comments still name the deleted `try_detect_within`, both in the file that deleted it | low | [ ] |
+| [M10-R42](reviews/M10.md#m10-r42) | DOS-08 quantifies over `StructuredRecognizers`, not the chain: the same defect in a **wrapper** leaves all 218 tests green while the request under-charges 21× | guard | [x] |
+| [M10-R43](reviews/M10.md#m10-r43) | The budget constant's own doc still publishes the pre-M10-R35 table and `≈50,000 numbers per request` — M10-R38's closure updated ARCHITECTURE and not the artefact it named | measurement | [x] |
+| [M10-R44](reviews/M10.md#m10-r44) | `try_detect`'s own default routes to `detect`, which mints **and** swallows: a five-line `detect`-only wrapper forwards DOS-07's body with a partial scan reported as clean | guard | [x] |
+| [M10-R45](reviews/M10.md#m10-r45) | `DetectError`'s fields are `pub` and the struct is not `#[non_exhaustive]`, so a literal bypasses both constructors — *"a new error site has to choose"* is a convention | low | [x] |
+| [M10-R46](reviews/M10.md#m10-r46) | Two **present-tense** comments still name the deleted `try_detect_within`, both in the file that deleted it | low | [x] |
 
 <a id="backlog"></a>
 ## Backlog — documented, not scheduled

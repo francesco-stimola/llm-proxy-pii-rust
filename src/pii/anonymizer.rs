@@ -586,17 +586,17 @@ mod tests {
     struct NeverConverges;
 
     impl PiiDetector for NeverConverges {
-        fn detect(&self, input: &str) -> Vec<PiiEntity> {
+        fn try_detect(&self, input: &str, _budget: &Budget) -> Result<Vec<PiiEntity>, DetectError> {
             let Some(first) = input.chars().next() else {
-                return Vec::new();
+                return Ok(Vec::new());
             };
             let end = first.len_utf8();
-            vec![PiiEntity {
+            Ok(vec![PiiEntity {
                 kind: PiiKind::Person,
                 span: 0..end,
                 text: input[..end].to_string(),
                 confidence: Confidence::Structural,
-            }]
+            }])
         }
     }
 
@@ -634,8 +634,8 @@ mod tests {
     struct TagsPlaceholders;
 
     impl PiiDetector for TagsPlaceholders {
-        fn detect(&self, input: &str) -> Vec<PiiEntity> {
-            PLACEHOLDER_RE
+        fn try_detect(&self, input: &str, _budget: &Budget) -> Result<Vec<PiiEntity>, DetectError> {
+            Ok(PLACEHOLDER_RE
                 .find_iter(input)
                 .map(|m| PiiEntity {
                     kind: PiiKind::Person,
@@ -643,7 +643,7 @@ mod tests {
                     text: m.as_str().to_string(),
                     confidence: Confidence::Structural,
                 })
-                .collect()
+                .collect())
         }
     }
 
@@ -692,25 +692,25 @@ mod tests {
     }
 
     impl PiiDetector for Fragmenter {
-        fn detect(&self, input: &str) -> Vec<PiiEntity> {
+        fn try_detect(&self, input: &str, _budget: &Budget) -> Result<Vec<PiiEntity>, DetectError> {
             for (i, c) in input.char_indices() {
                 if c.is_ascii_alphabetic() {
-                    return vec![PiiEntity {
+                    return Ok(vec![PiiEntity {
                         kind: PiiKind::Organization,
                         span: i..i + c.len_utf8(),
                         text: c.to_string(),
                         confidence: Confidence::Structural,
-                    }];
+                    }]);
                 }
             }
-            Vec::new()
+            Ok(Vec::new())
         }
 
-        fn redetect(&self, input: &str, _budget: &Budget) -> Result<Vec<PiiEntity>, DetectError> {
+        fn redetect(&self, input: &str, budget: &Budget) -> Result<Vec<PiiEntity>, DetectError> {
             if self.idempotent {
                 Ok(Vec::new())
             } else {
-                self.try_detect(input, &Budget::per_call())
+                self.try_detect(input, budget)
             }
         }
     }

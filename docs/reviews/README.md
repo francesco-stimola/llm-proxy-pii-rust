@@ -25,7 +25,7 @@ that way?"*
 | [M7.md](M7.md) | M7 / M7.1 — NER latency · system-prompt cache | 23, all closed |
 | [M8.md](M8.md) | M8 / M8.1 — GLiNER · national phone recognizer | 8, all closed |
 | [M9.md](M9.md) | M9 / M9.1 — GPU optimization · per-backend binaries | 29, all closed |
-| [M10.md](M10.md) | M10 — national phone coverage + release hygiene | 46, 41 closed (round 6 open: R42…R46) |
+| [M10.md](M10.md) | M10 — national phone coverage + release hygiene | 46, all closed (round 7 pending) |
 
 **The page to read here is [M10-R28](M10.md#m10-r28), the fourth turn of one wheel.** M10-R2 was a DoS
 on the domestic-phone validator. Its fix was undone by the input **repeating**
@@ -67,13 +67,19 @@ was, and *correlating with a state is not distinguishing a kind.*
 **Round 6 verified that fix on the real binary — and found the wheel had turned once more, in the
 sentences written *about* it.** The fix holds, and six of round 5's seven closures with it: the
 15.63 MiB body is a `400` in 1.0 s. What does not
-is *"a seventh detector that drops the allowance fails at DOS-08"* — the guard constructs a bare
-`StructuredRecognizers`, so the same one-line defect in a shipped **wrapper** leaves all 218 tests
-green while the request under-charges 21× ([M10-R42](M10.md#m10-r42)) — and *"no method remains that a
-default could route to which would mint another"*, because `try_detect`'s own default still routes to
-`detect`, which mints *and* swallows the refusal ([M10-R44](M10.md#m10-r44)). Neither is reachable
-today. The lesson is the M4 one in its testing form: **a guard aimed at the instance relocates the
-blind spot**, exactly as a fix that only re-ranks relocates the leak.
+is *"a seventh detector that drops the allowance fails at DOS-08"* — the guard constructed a bare
+`StructuredRecognizers`, so the same one-line defect in a shipped **wrapper** left all 218 tests green
+while the request under-charged 21× ([M10-R42](M10.md#m10-r42)) — and *"no method remains that a
+default could route to which would mint another"*, because `try_detect`'s own default still routed to
+`detect`, which mints *and* swallows the refusal ([M10-R44](M10.md#m10-r44)).
+
+Both are closed, and the two fixes are the pair worth carrying out of this folder. The guard now
+quantifies over **every chain the wiring can build** rather than over the type that had the bug —
+*a guard aimed at the instance relocates the blind spot*, which is the M4 lesson in its testing form.
+And `try_detect` became the **required** trait method with `detect` derived, so a `detect`-only
+implementor does not compile: the four test doubles that stopped building are that fix's whole
+regression suite, and they are worth more than a test would be. **Prefer the guarantee the compiler
+gives over the one a test remembers to ask for.**
 
 ---
 

@@ -3,6 +3,54 @@
 Newest first. One entry per meaningful change — note *what* and *why*, not just
 *what*. This is the running history so context is never lost between sessions.
 
+## 2026-07-30 — M10 round 6: both of round 5's closures claimed more than they delivered
+
+Round 5's fix **holds** — verified on the real `.exe` at the shipped default, a legal 15.63 MiB body
+is a `400` in **1.0 s** where it was `200` in 17.2 s, upstream untouched — and six of its seven
+closures with it. What did not hold were the two sentences written *about* the fix, and both failed
+in the same direction: **they described a property of the shape and were implemented against an
+instance.**
+
+**M10-R42 — the guard.** Three documents said DOS-08 was *"phrased over the trait, so a seventh
+detector that drops the allowance fails here"*. What was phrased over the trait were the method names
+it called; what it quantified over was **one concrete type — the leaf, the one already fixed**.
+Reintroducing the identical defect in `CachingDetector::redetect`, a shipped wrapper on the default
+request path, left all 218 tests green while the request under-charged **21×** and forwarded a body
+it must refuse. *A guard aimed at the instance relocates the blind spot* — which is M4-R7 → R9's *"a
+fix that only re-ranks relocates the leak"* in its testing form. DOS-08 now loops over every chain
+`AppState::new` can build, and **DOS-09** adds the end-to-end half: 20 **identical** fields through
+the cached chain, the complement of DOS-07's distinct-fields-no-cache attack. Identical fields make
+pass 0 free from the cache, so the whole cost lands on `redetect` — which is deliberately never
+cached, and is therefore invisible to any guard without a cache in it. Both verified by **mutation**:
+red with the one-line defect, green without.
+
+**M10-R44 — the claim.** Four places said *"no method remains that a default could route to which
+would mint another allowance"*. True of `redetect`; false of `try_detect`, whose own default routed
+to `detect` — and every production `detect` **mints** an allowance *and* `unwrap_or_default()`s the
+refusal. A five-line wrapper implementing only `detect` compiled, never mentioned `Budget`, and
+forwarded DOS-07's body with the refusal not ignored but **erased**. So `try_detect` is now the
+**required** method and `detect` the derived one: `detect` is the convenience view, `try_detect` is
+the contract. The four detect-only test doubles that stopped compiling are this fix's entire
+regression suite, and they are worth more than a test would be — *the guarantee comes from the
+compiler, not from a case somebody remembered to write.*
+
+Also closed: the constant's own doc still carried the pre-round-5 table and *"≈50,000 phone numbers
+per request"*, 2× optimistic in the reassuring direction, because round 5's re-measurement updated
+ARCHITECTURE and never touched the constant the finding had named (R43 — *a closure is checked
+against the finding's own locations*, for the third time in this milestone). `DetectError`'s
+`budget_exhausted` is private now with an accessor, so the two constructors are the only way to build
+one outside its module — *"a new error site has to choose"* was a convention while the field was
+`pub` (R45). And two comments still refused a field *"by `try_detect_within`"*, deleted by the commit
+that wrote them (R46).
+
+**DOS-09's first draft repeated one literal group** — so the per-scan memo collapsed a 20 KB field to
+a single validated candidate and the request was forwarded, which reads as *"the budget is not
+charged"* when it is the generator saying there was nothing to charge for. Fifth time in this
+milestone. The fields have to be identical to **each other** and distinct **within**.
+
+**219 default / 252 onnx green**, `fmt`, `clippy -D warnings` and the 15-warning `cargo doc` baseline
+all clean.
+
 ## 2026-07-30 — M10 round 5: the fix for the wrong unit had a hole shaped exactly like itself
 
 **Round 4's fix threaded the per-request allowance through a *new pair* of trait methods** —
@@ -24,10 +72,10 @@ passes" is the signature of that, not evidence against it.*
 `try_detect` and `redetect` now **take** a `&Budget`; `redetect`'s default forwards the same one;
 `Vault::mask_all` lost its budget-less convenience for the identical reason — two entry points where
 one mints and the other accepts is precisely the shape of the finding. Every implementor and call site
-moved with the signature. There is no longer any method a forgotten override could fall through to
-that would mint another allowance: the only ways to create one are `Budget::new` / `per_call` /
-`unlimited`, each visible where it is written. **When forgetting to override is silently valid, the
-API is the defect.**
+moved with the signature. **When forgetting to override is silently valid, the API is the defect.**
+
+*(That turned over one half of the trait. Round 6 found the other: `try_detect`'s own default routed
+to `detect`, which mints an allowance **and** swallows the refusal — see the round-6 entry above.)*
 
 **The threshold survived the correction; the numbers around it did not.** Charging the later passes
 roughly **doubles** what a masking body spends, so the refusal line for a phone-bearing database

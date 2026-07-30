@@ -141,8 +141,10 @@ mod tests {
     }
 
     impl PiiDetector for FakeNer {
-        fn detect(&self, input: &str) -> Vec<PiiEntity> {
-            input
+        // A stand-in NER cannot fail and does not charge the budget — but since M10-R44 it says so
+        // here, in the required method, rather than inheriting a default that would decide for it.
+        fn try_detect(&self, input: &str, _budget: &Budget) -> Result<Vec<PiiEntity>, DetectError> {
+            Ok(input
                 .match_indices(self.needle)
                 .map(|(start, m)| PiiEntity {
                     kind: self.kind,
@@ -150,7 +152,7 @@ mod tests {
                     text: m.to_string(),
                     confidence: Confidence::Structural,
                 })
-                .collect()
+                .collect())
         }
     }
 

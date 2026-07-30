@@ -239,13 +239,25 @@ exactly the reason above.
 >
 > So the pair is gone. `try_detect` and `redetect` **take** a `&Budget`, and `redetect`'s default
 > forwards *the same one*; `Vault::mask_all` lost its budget-less convenience for the identical
-> reason. No method remains that a default could route to which would mint another — the only ways to
-> create an allowance are `Budget::new` / `per_call` / `unlimited`, which is one `grep`.
+> reason.
+>
+> **And that fixed one half of the trait (M10-R44).** `try_detect`'s *own* default still routed to
+> `detect` — and every production `detect` **mints** an allowance and `unwrap_or_default()`s the
+> refusal. A five-line wrapper implementing only `detect` compiled, never mentioned `Budget`, and
+> forwarded a body the request path must refuse, with the refusal not ignored but **erased**. Word
+> for word the sharpest case M10-R35 described, surviving in the half its fix did not turn over. So
+> the required method is now `try_detect` and `detect` is the derived one: `detect` is the
+> convenience view, `try_detect` is the contract. A detector that cannot fail writes `Ok(..)` — but it
+> writes it, and it sees the budget. **No method remains that a default could route to which would
+> mint another**, and the only ways to create an allowance are `Budget::new` / `per_call` /
+> `unlimited`, each visible at its call site.
 >
 > *An obligation that a trait default can satisfy is not carried by the type system — and "every test
 > passes" is the signature of that, not evidence against it.* The general form: **when forgetting to
 > override is silently valid, the API is the defect**; make the thing that must travel a parameter,
-> so omitting it does not compile.
+> so omitting it does not compile. Note which direction the guarantee comes from — the four
+> detect-only test doubles that stopped compiling are the whole regression suite for this, and they
+> are worth more than a test would be.
 
 > **`FailOpen` is not fail-open about the budget, and the distinction is a leak if collapsed.**
 > *"This detector is unavailable"* is a property of the **detector**; continuing without a

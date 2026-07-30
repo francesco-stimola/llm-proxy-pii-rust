@@ -340,30 +340,44 @@ impl Budget {
 /// ceiling of ~1.4 s.
 ///
 /// So the pair is gone. `try_detect` and `redetect` **take** the budget, and `redetect`'s default
-/// forwards *the same one*. There is no method left that a default can route to which would mint
-/// another: the only way to create an allowance is `Budget::new`, which is one grep and is not
-/// something a forgotten override can do by accident.
+/// forwards *the same one*.
+///
+/// **And `try_detect` is the *required* method, not the derived one (M10-R44).** Deleting the seam
+/// fixed one half of the trait and left the other: `try_detect`'s own default routed to `detect`,
+/// and every production `detect` **mints** an allowance *and* `unwrap_or_default()`s the refusal. So
+/// a five-line wrapper implementing only `detect` compiled, never mentioned `Budget`, and forwarded
+/// a body the request path must refuse — with the refusal not ignored but **erased**. That is
+/// word-for-word how M10-R35 described the sharpest case of its own defect, surviving in the half
+/// its fix did not turn over.
+///
+/// Inverting which one is derived is what makes the claim true: `detect` is the convenience view and
+/// has the default; `try_detect` is the contract and must be written. A detector that cannot fail
+/// writes `Ok(...)` — but it writes it, and it sees the budget. **There is now no method a default
+/// can route to which would mint another allowance**, and the only ways to create one —
+/// `Budget::new` / `per_call` / `unlimited` — are visible at their call sites.
 ///
 /// *An obligation a trait default can satisfy is not carried by the type system — and "every test
-/// passes" is the signature of that, not evidence against it.*
+/// passes" is the signature of that, not evidence against it.* Generalized: **when forgetting to
+/// override is silently valid, the API is the defect.**
 pub trait PiiDetector: Send + Sync {
-    /// Return all PII entities found in `input`. Infallible view — a detector
-    /// that can fail returns whatever it could detect (typically empty on error).
-    ///
-    /// **Not on the request path**, and deliberately: a detector that can exhaust an allowance mints
-    /// its own here, because there is no request to charge. `PrivacyStage` uses the fallible pair.
-    fn detect(&self, input: &str) -> Vec<PiiEntity>;
-
     /// Fallible detection, charged against the **caller's** [`Budget`] — one per request.
     ///
-    /// The default is infallible ([`detect`](Self::detect)) and ignores the budget, which is right
-    /// for a detector whose cost is not what is being bounded (the NER pays per token, and
-    /// `MAX_BODY_BYTES` already bounds tokens). A detector that can genuinely fail (ML inference, bad
-    /// config) overrides this so a *required* detector can fail the request **closed**; a **wrapper**
-    /// overrides it to forward `budget` to what it wraps.
-    fn try_detect(&self, input: &str, budget: &Budget) -> Result<Vec<PiiEntity>, DetectError> {
-        let _ = budget;
-        Ok(self.detect(input))
+    /// **Required (M10-R44).** A detector that cannot fail returns `Ok(..)`, and a detector whose
+    /// cost is not what is being bounded (the NER pays per token, and `MAX_BODY_BYTES` already bounds
+    /// tokens) may ignore `budget` — but it has to say so, in one line, where a reader can see it. A
+    /// **wrapper** forwards `budget` to what it wraps; there is no default that would do something
+    /// else on its behalf.
+    fn try_detect(&self, input: &str, budget: &Budget) -> Result<Vec<PiiEntity>, DetectError>;
+
+    /// Return all PII entities found in `input`. Infallible view — a detector that can fail returns
+    /// whatever it could detect (typically empty on error).
+    ///
+    /// **Not on the request path**, and deliberately: this mints its own allowance because there is
+    /// no request to charge, and it swallows a refusal. Both are fine *here* and are exactly why this
+    /// is the derived method rather than the required one — `PrivacyStage` uses the fallible pair.
+    fn detect(&self, input: &str) -> Vec<PiiEntity> {
+        self.try_detect(input, &Budget::per_call())
+            .unwrap_or_default()
     }
 
     /// Detection for a **fixpoint pass after the first** ([`Vault::mask_all`](crate::pii::anonymizer::Vault::mask_all), S4).
