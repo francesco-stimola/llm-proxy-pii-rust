@@ -25,16 +25,17 @@ that way?"*
 | [M7.md](M7.md) | M7 / M7.1 — NER latency · system-prompt cache | 23, all closed |
 | [M8.md](M8.md) | M8 / M8.1 — GLiNER · national phone recognizer | 8, all closed |
 | [M9.md](M9.md) | M9 / M9.1 — GPU optimization · per-backend binaries | 29, all closed |
-| [M10.md](M10.md) | M10 — national phone coverage + release hygiene | **26 — 19 closed, 7 open (one BLOCKER)** |
+| [M10.md](M10.md) | M10 — national phone coverage + release hygiene | **34 — 27 closed, 7 open (one BLOCKER)** |
 
 **Every open finding in the project belongs to M10**, and `v1.2.1` does not get cut until its ledger is
-clean. Rounds 1 and 2 are closed and were verified closed against pre-fix builds — including the sharpest
-one, [M10-R13](M10.md#m10-r13), where **the fix for [M10-R2](M10.md#m10-r2) relocated the leak it closed**
-into the one guard built to make that impossible. The blocker is now
-[M10-R20](M10.md#m10-r20): M10-R2's DoS is still reachable, because the memoization that fixed it only
-helps when the input **repeats**, and every guard and every published figure measured it on a repeated
-unit. Six guard/docs findings follow it, two of them the same shape as the one this milestone keeps
-promoting into its own docs — *an assertion made only where it cannot fail is not an assertion*.
+clean. Rounds 1–3 are closed, each verified against a pre-fix build. The blocker is
+[M10-R28](M10.md#m10-r28), and it is the third turn of the same wheel: M10-R2 was a DoS; its fix was
+undone by the input **repeating** ([M10-R20](M10.md#m10-r20)); *that* fix bounds a **field** while the
+body chooses its field count, so the same legal 15.6 MiB payload still costs 57 s — and a pre-fix build
+answers it in the same time. **Three fixes, one attack, still reachable.** Alongside it,
+[M10-R29](M10.md#m10-r29) has the same budget refusing legal requests it was never meant to see, and
+[M10-R31](M10.md#m10-r31) is a closure that corrected one of the two lines its finding named — the second
+time in two rounds.
 
 ---
 

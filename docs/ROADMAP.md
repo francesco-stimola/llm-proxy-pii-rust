@@ -1785,17 +1785,20 @@ only the false positives we imagined. Run:
 
 ### What is left before the tag
 
-Written 2026-07-29 so the next session does not have to reconstruct it. Everything below is
-**outside** the code: the milestone's scope items are all `[x]` and the suite is green on both
-feature sets (`fmt`, `clippy -D warnings`, `cargo doc` all clean; M10 adds no doc warnings).
+Written 2026-07-29, **updated 2026-07-30 after review round 4.** The milestone's scope items are all
+`[x]` and the suite is green on both feature sets (213 / 246 tests, zero warnings; `fmt`,
+`clippy -D warnings` clean; `cargo doc` 15 warnings, all pre-existing). Item 1 is no longer outside
+the code.
 
-1. **Review round 4 — closure verification of round 3.** Rounds 1–3 produced **26 findings, all
-   closed**; round 4 was launched and died on a server error before recording anything, so the
-   round-3 closures are **unverified**. The one to attack is [M10-R20](reviews/M10.md#m10-r20)'s
-   fix: `StructuredRecognizers` now returns `Err` when a field exhausts the validator budget, which
-   is a **fail-closed change on the request path** — the question is whether it can ever fail
-   *open* instead (`detect()` is `try_detect().unwrap_or_default()`; check `FailOpen`,
-   `CompositeDetector`, `Vault::mask_all`'s fixpoint, `pii::cache`).
+1. **[M10-R28](reviews/M10.md#m10-r28) — the tag blocker, and it needs a decision, not a patch.**
+   Round 4 ran the closure verification: the budget cannot fail *open* (that walk is in the record,
+   and it came back clean), but it bounds a **field** while the body chooses its field count, so
+   M10-R20's DoS is reachable at the shipped default with a legal body — verified against a pre-fix
+   build on the identical payload. Fixing it means a **per-request** budget, which needs a seam on
+   `PiiDetector` and a threshold with functional consequences. **Settle
+   [M10-R29](reviews/M10.md#m10-r29) first** — the same counter is currently spent by the always-on
+   national-ID validators, so any number chosen now would be measured against the wrong work, and
+   that one is refusing legal requests today.
 2. **The CC battery — CC-01 / CC-03 / CC-04 / CC-09** (step 10 above). Needs the maintainer at the
    keyboard with Claude Code pointed at the proxy. **No key configuration required.**
 3. **Bump `Cargo.toml` to `1.2.1`** — a `chore(release):` commit at tag time, as `1.2.0` was. Left
@@ -1908,6 +1911,32 @@ as [M10-R23](reviews/M10.md#m10-r23). Seven new findings, **all now closed.**
 > "can it act on this?" is a design question. Two alternative fixes (a configurable budget, a higher
 > default) are written up in the record as **considered and not taken**, with the reasoning, so the
 > next reader inherits the decision rather than re-deriving it.
+
+**Round 4 (2026-07-30) — closure verification: six of eight hold.** The fail-open hunt the round was
+commissioned for came back **empty** — an exhausted budget is an `Err` on every path
+(`detect` · `FailOpen` · `CompositeDetector` · `CachingDetector` · the `mask_all` fixpoint · the
+response path), and the walk is written out in the record. Both feature sets green (213 / 246, zero
+warnings), `cargo doc` 15 warnings all pre-existing, and every `phone_eval` figure reproduced exactly.
+[M10-R20](reviews/M10.md#m10-r20)'s closure does **not** hold and [M10-R26](reviews/M10.md#m10-r26)'s
+does not either; both are re-opened as new findings rather than quietly re-scored. Seven new findings.
+
+> **[M10-R28](reviews/M10.md#m10-r28) is the one that blocks the tag.** The budget bounds a *field*
+> and the body chooses its field count, so the DoS M10-R20 was raised for is reachable unchanged —
+> measured against a **pre-fix build on the identical body**, HEAD and `9751847` are indistinguishable.
+> It needs a threshold with functional consequences and a seam that does not exist yet, so it is the
+> maintainer's call, not a mechanical fix. [M10-R29](reviews/M10.md#m10-r29) is the same budget
+> counting work it was not written for, and it **refuses legal requests today** — settle it first, or
+> M10-R28's number gets measured against the wrong work.
+
+| ID | Title | Sev | Status |
+|---|---|---|---|
+| [M10-R28](reviews/M10.md#m10-r28) | The budget bounds a **field**, not a request: the same 15.6 MiB split across 78 fields answers 200 in 57 s, unchanged by its own fix | **BLOCKER** | [ ] |
+| [M10-R29](reviews/M10.md#m10-r29) | `MAX_PHONE_VALIDATIONS_PER_FIELD` is spent by every validating recognizer, so the always-on national-ID tier refuses legal requests with the phone tier off | correctness | [ ] |
+| [M10-R30](reviews/M10.md#m10-r30) | The published bound is per *pass*, not per field — `mask_all` re-mints it up to five times, and a sub-budget field measures 2–4× the published 0.5 s | measurement | [ ] |
+| [M10-R31](reviews/M10.md#m10-r31) | M10-R26's closure corrected ARCHITECTURE and left the disproved sentence in the source, at the line the finding named | guard | [ ] |
+| [M10-R32](reviews/M10.md#m10-r32) | M10-R27 changed client-visible behaviour with no test; DOS-06's assertions pass unchanged on the message it replaced | guard | [ ] |
+| [M10-R33](reviews/M10.md#m10-r33) | Both READMEs' fail-closed list omits the 400 this milestone added, and the "linear under load" bullet beside it is contradicted by measurement | docs | [ ] |
+| [M10-R34](reviews/M10.md#m10-r34) | PHONE-NAT-10's country-code aim names five regions and carries four | low | [ ] |
 
 <a id="backlog"></a>
 ## Backlog — documented, not scheduled
