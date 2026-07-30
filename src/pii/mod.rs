@@ -175,6 +175,45 @@ pub struct DetectError {
     pub detector: &'static str,
     /// A category / reason with no input text.
     pub message: String,
+    /// Whether this is *"the allowance for scanning this request ran out"* rather than *"this
+    /// detector is unavailable"* (M10-R41).
+    ///
+    /// **The two are different kinds of failure and [`FailOpen`](composite::FailOpen) must treat
+    /// them differently**, so it has to be able to *tell* — a detector failure is swallowed, an
+    /// exhausted request allowance is not. This flag is that distinction, on the error, where it
+    /// belongs.
+    ///
+    /// It used to be inferred from `budget.is_exhausted()` at the wrapper, which is a property of
+    /// the **request** asked about an error that may belong to the **detector**. That was correct
+    /// only via an unstated invariant (no detector returns `Ok` with an exhausted budget, and
+    /// `build_detector` orders the structured recognizers first) — the same
+    /// wiring-dependent argument whose collapse round 4 identified as the defect underneath its own
+    /// empty fail-open hunt. A genuine GPU or tokenizer failure arriving while the budget happened
+    /// to be at zero became a `400` on a proxy configured to degrade to structured-only.
+    pub budget_exhausted: bool,
+}
+
+impl DetectError {
+    /// A detector that could not run: unavailable, misconfigured, inference failed. **Fail-open
+    /// eligible** — a non-critical detector wrapped in [`FailOpen`](composite::FailOpen) is skipped.
+    pub fn unavailable(detector: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            detector,
+            message: message.into(),
+            budget_exhausted: false,
+        }
+    }
+
+    /// The request exhausted its validation allowance ([`Budget`]). **Never fail-open**: the text
+    /// was not fully examined, so its PII status is unknown, and reporting "no PII" would forward a
+    /// partially scanned body with a clean bill of health.
+    pub fn budget_exhausted(detector: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            detector,
+            message: message.into(),
+            budget_exhausted: true,
+        }
+    }
 }
 
 impl std::fmt::Display for DetectError {
@@ -197,8 +236,9 @@ impl std::error::Error for DetectError {}
 ///
 /// So there is exactly one of these per request, created by `PrivacyStage::on_request` beside the
 /// `Vault` it already owns, and threaded down through
-/// [`mask_all_within`](crate::pii::anonymizer::Vault::mask_all_within) and
-/// [`try_detect_within`](PiiDetector::try_detect_within).
+/// [`mask_all`](crate::pii::anonymizer::Vault::mask_all) into
+/// [`try_detect`](PiiDetector::try_detect) and [`redetect`](PiiDetector::redetect) — which **take**
+/// a budget rather than offering a budget-less sibling beside it (M10-R35).
 ///
 /// **Not `Sync`, deliberately.** A `Cell` rather than an `AtomicUsize`: one request's masking is
 /// single-threaded (the whole pipeline runs inside one `spawn_blocking`), so a shared counter would
@@ -216,6 +256,18 @@ impl Budget {
             left: std::cell::Cell::new(calls),
             initial: calls,
         }
+    }
+
+    /// The shipped per-request allowance, minted for a caller that has **no request to charge** —
+    /// unit tests, the measurement harnesses, the infallible [`PiiDetector::detect`] view.
+    ///
+    /// **Minting is allowed; minting *invisibly* is not (M10-R35).** The defect this milestone kept
+    /// producing was a budget appearing out of nowhere partway through a request, because a method
+    /// with a plausible name quietly created one. So there is no longer any method that mints
+    /// implicitly: every allowance comes from a `Budget::new` / `Budget::per_call` / `Budget::unlimited`
+    /// that a reader can see at the call site and `grep` can find.
+    pub fn per_call() -> Self {
+        Self::new(crate::pii::recognizers::MAX_PHONE_VALIDATIONS_PER_REQUEST)
     }
 
     /// A budget that never runs out — for callers with no request to bound: unit tests, the
@@ -259,15 +311,44 @@ impl Budget {
 ///
 /// Deterministic recognizers and the ML NER model both implement this, so the
 /// pipeline can combine or swap engines freely.
+///
+/// # The budget is a parameter, and there is exactly one fallible entry point per pass
+///
+/// **This shape is the fix for M10-R35, and the shape it replaced is the finding.** M10-R28 added a
+/// second pair of methods — `try_detect_within` / `redetect_within` — whose *defaults* delegated to
+/// the budget-less pair. Every wrapper therefore carried an obligation to override **both**, and the
+/// penalty for missing one was invisible: the call fell through to a method that **minted a fresh
+/// allowance**, restoring the unbounded behaviour with the whole suite green. Round 4 saw that hazard
+/// clearly and closed it for all three wrappers. It missed the **leaf** — `StructuredRecognizers`,
+/// the only detector whose cost the budget bounds and the only place that mints one — which overrode
+/// `try_detect_within` and not `redetect_within`, so every fixpoint pass after the first started from
+/// a full allowance and a legal 15.63 MiB body answered `200` in **17.2 s** against a published
+/// ceiling of ~1.4 s.
+///
+/// So the pair is gone. `try_detect` and `redetect` **take** the budget, and `redetect`'s default
+/// forwards *the same one*. There is no method left that a default can route to which would mint
+/// another: the only way to create an allowance is `Budget::new`, which is one grep and is not
+/// something a forgotten override can do by accident.
+///
+/// *An obligation a trait default can satisfy is not carried by the type system — and "every test
+/// passes" is the signature of that, not evidence against it.*
 pub trait PiiDetector: Send + Sync {
     /// Return all PII entities found in `input`. Infallible view — a detector
     /// that can fail returns whatever it could detect (typically empty on error).
+    ///
+    /// **Not on the request path**, and deliberately: a detector that can exhaust an allowance mints
+    /// its own here, because there is no request to charge. `PrivacyStage` uses the fallible pair.
     fn detect(&self, input: &str) -> Vec<PiiEntity>;
 
-    /// Fallible detection. The default is infallible ([`detect`](Self::detect));
-    /// a detector that can genuinely fail (ML inference, bad config) overrides
-    /// this so a *required* detector can fail the request **closed**.
-    fn try_detect(&self, input: &str) -> Result<Vec<PiiEntity>, DetectError> {
+    /// Fallible detection, charged against the **caller's** [`Budget`] — one per request.
+    ///
+    /// The default is infallible ([`detect`](Self::detect)) and ignores the budget, which is right
+    /// for a detector whose cost is not what is being bounded (the NER pays per token, and
+    /// `MAX_BODY_BYTES` already bounds tokens). A detector that can genuinely fail (ML inference, bad
+    /// config) overrides this so a *required* detector can fail the request **closed**; a **wrapper**
+    /// overrides it to forward `budget` to what it wraps.
+    fn try_detect(&self, input: &str, budget: &Budget) -> Result<Vec<PiiEntity>, DetectError> {
+        let _ = budget;
         Ok(self.detect(input))
     }
 
@@ -282,38 +363,16 @@ pub trait PiiDetector: Send + Sync {
     /// into a fail-closed 400 (CC-05/CC-08). So a detector that is **idempotent once the text is
     /// masked** overrides this to return nothing, and the fixpoint converges in O(1) NER passes.
     ///
-    /// The default **rescans** (`try_detect`) — the safe direction: a new detector re-runs on
-    /// every pass unless it explicitly declares itself masking-idempotent. Skipping a detector
-    /// here must be justified by "masking a neighbour cannot reveal one of its matches", and the
-    /// no-recall-loss claim that rests on it is measured, not assumed (S4; DEVLOG 2026-07-18).
-    fn redetect(&self, input: &str) -> Result<Vec<PiiEntity>, DetectError> {
-        self.try_detect(input)
-    }
-
-    /// [`try_detect`](Self::try_detect) charged against a **caller-owned** [`Budget`] instead of one
-    /// minted per call (M10-R28).
+    /// The default **rescans** ([`try_detect`](Self::try_detect)) — the safe direction: a new
+    /// detector re-runs on every pass unless it explicitly declares itself masking-idempotent.
+    /// Skipping a detector here must be justified by "masking a neighbour cannot reveal one of its
+    /// matches", and the no-recall-loss claim that rests on it is measured, not assumed (S4; DEVLOG
+    /// 2026-07-18).
     ///
-    /// The default ignores the budget and delegates, which is right for every detector whose cost is
-    /// not the thing being bounded (the NER pays per token, and `MAX_BODY_BYTES` already bounds
-    /// tokens). **A wrapper is a different matter:** `CompositeDetector`, `FailOpen` and
-    /// `CachingDetector` must forward the budget explicitly, because inheriting this default would
-    /// route the call to plain `try_detect` and hand the detector underneath a *fresh* allowance —
-    /// restoring the per-field behaviour silently, on the one path that matters.
-    fn try_detect_within(
-        &self,
-        input: &str,
-        budget: &Budget,
-    ) -> Result<Vec<PiiEntity>, DetectError> {
-        let _ = budget;
-        self.try_detect(input)
-    }
-
-    /// [`redetect`](Self::redetect) charged against a caller-owned [`Budget`]. Same forwarding
-    /// obligation for wrappers as [`try_detect_within`](Self::try_detect_within) — and the reason
-    /// this exists at all is that the fixpoint's later passes are where the re-minting happened
-    /// (M10-R30): five passes over one field, each previously starting from a full allowance.
-    fn redetect_within(&self, input: &str, budget: &Budget) -> Result<Vec<PiiEntity>, DetectError> {
-        let _ = budget;
-        self.redetect(input)
+    /// **The default forwards the caller's `budget`, and that is load-bearing (M10-R35).** These
+    /// later passes are where an allowance was previously re-minted — five passes over one field,
+    /// each starting full. A detector that overrides only `try_detect` is now correct here for free.
+    fn redetect(&self, input: &str, budget: &Budget) -> Result<Vec<PiiEntity>, DetectError> {
+        self.try_detect(input, budget)
     }
 }

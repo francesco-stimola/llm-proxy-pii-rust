@@ -34,7 +34,7 @@ use llm_proxy_pii_rust::pii::onnx::{
     available_cores, chunk_char_ranges, ExecutionProvider, OnnxNerDetector, CHUNK_OVERLAP_TOKENS,
     MAX_WINDOW_TOKENS, MODEL_MAX_TOKENS,
 };
-use llm_proxy_pii_rust::pii::PiiDetector;
+use llm_proxy_pii_rust::pii::{Budget, PiiDetector};
 
 fn load_detector() -> OnnxNerDetector {
     let model =
@@ -130,7 +130,7 @@ fn m4_r21_the_fixpoints_second_pass_roughly_doubles_ner_inference() {
     let mut vault = Vault::new();
     let started = Instant::now();
     let _ = vault
-        .mask_all(&input, &detector)
+        .mask_all(&input, &detector, &Budget::per_call())
         .expect("masking must converge");
     let mask_all_cost = started.elapsed();
 
@@ -165,7 +165,7 @@ fn onnx_ner_latency_and_recall_across_field_sizes() {
         let expected = 3 * reps; // Person + Organization + Location per sentence
         let started = Instant::now();
         let entities = detector
-            .try_detect(&input)
+            .try_detect(&input, &Budget::per_call())
             .unwrap_or_else(|err| panic!("reps={reps}: NER call failed: {err}"));
         let elapsed = started.elapsed();
         eprintln!(
@@ -345,7 +345,7 @@ fn m7_r3_intra_threads_changes_speed_not_detection() {
             .iter()
             .map(|input| {
                 detector
-                    .try_detect(input)
+                    .try_detect(input, &Budget::per_call())
                     .expect("NER must not error")
                     .iter()
                     .map(|e| (format!("{:?}", e.kind), e.span.start, e.span.end))
@@ -427,7 +427,7 @@ fn m5_r4_the_ner_treats_placeholders_as_inert() {
     );
 
     let entities = detector
-        .try_detect(&placeholders)
+        .try_detect(&placeholders, &Budget::per_call())
         .expect("NER must not error");
     assert!(
         entities.is_empty(),
@@ -449,7 +449,7 @@ fn m5_r4_the_ner_treats_placeholders_as_inert() {
     ]);
     let mut vault = Vault::new();
     vault
-        .mask_all(&placeholders, &composite)
+        .mask_all(&placeholders, &composite, &Budget::per_call())
         .expect("masking placeholder-dense text must reach a fixpoint, not exhaust its passes");
 }
 
@@ -479,6 +479,6 @@ Anthropic. Use GitHub for issues, Slack for chat, and the Anthropic Console for 
         .repeat(60);
     let mut vault = Vault::new();
     vault
-        .mask_all(&dense, &composite)
+        .mask_all(&dense, &composite, &Budget::per_call())
         .expect("S4: a dense system prompt must converge in one NER pass, not 400");
 }

@@ -6,6 +6,7 @@
 //! never knows how many engines are underneath — it just gets one detector.
 
 use super::overlap::resolve_overlaps;
+use super::recognizers::MAX_PHONE_VALIDATIONS_PER_REQUEST;
 use super::{Budget, DetectError, PiiDetector, PiiEntity};
 
 /// Runs every wrapped detector over the input and reconciles their spans with
@@ -29,14 +30,18 @@ impl CompositeDetector {
 
 impl PiiDetector for CompositeDetector {
     fn detect(&self, input: &str) -> Vec<PiiEntity> {
-        // Infallible view: never propagate — used where an error shouldn't block.
-        self.try_detect(input).unwrap_or_default()
+        // Infallible view: never propagate — used where an error shouldn't block. Not the request
+        // path, so it mints an allowance of its own.
+        self.try_detect(input, &Budget::new(MAX_PHONE_VALIDATIONS_PER_REQUEST))
+            .unwrap_or_default()
     }
 
-    fn try_detect(&self, input: &str) -> Result<Vec<PiiEntity>, DetectError> {
+    /// Forwards the caller's [`Budget`] to every sub-detector, so **one** allowance covers the whole
+    /// composite rather than one per engine (M10-R28).
+    fn try_detect(&self, input: &str, budget: &Budget) -> Result<Vec<PiiEntity>, DetectError> {
         let mut all = Vec::new();
         for detector in &self.detectors {
-            all.extend(detector.try_detect(input)?);
+            all.extend(detector.try_detect(input, budget)?);
         }
         Ok(resolve_overlaps(input, all))
     }
@@ -45,37 +50,14 @@ impl PiiDetector for CompositeDetector {
     /// the NER (idempotent after pass 0) contributes nothing while the structured recognizers
     /// rescan for PII the last mask may have exposed. Overlaps are resolved exactly as in
     /// [`try_detect`](Self::try_detect); the two differ only in which detectors speak.
-    fn redetect(&self, input: &str) -> Result<Vec<PiiEntity>, DetectError> {
+    ///
+    /// Overriding this is a **dispatch** decision — which children speak — not a budget one. Since
+    /// M10-R35 the budget is a parameter of both methods and there is no budget-less sibling for a
+    /// forgotten override to fall through to.
+    fn redetect(&self, input: &str, budget: &Budget) -> Result<Vec<PiiEntity>, DetectError> {
         let mut all = Vec::new();
         for detector in &self.detectors {
-            all.extend(detector.redetect(input)?);
-        }
-        Ok(resolve_overlaps(input, all))
-    }
-
-    /// Forwards the caller's [`Budget`] to every sub-detector, so **one** allowance covers the whole
-    /// composite rather than one per engine (M10-R28). Inheriting the trait default here would call
-    /// `self.try_detect`, which calls each child's `try_detect` — and the structured recognizers
-    /// would mint a fresh per-call budget, quietly restoring the unbounded behaviour on the shipped
-    /// path. That is the whole reason this override is not optional.
-    fn try_detect_within(
-        &self,
-        input: &str,
-        budget: &Budget,
-    ) -> Result<Vec<PiiEntity>, DetectError> {
-        let mut all = Vec::new();
-        for detector in &self.detectors {
-            all.extend(detector.try_detect_within(input, budget)?);
-        }
-        Ok(resolve_overlaps(input, all))
-    }
-
-    /// Same forwarding for the fixpoint's later passes — see
-    /// [`redetect`](Self::redetect) for which detectors speak on them.
-    fn redetect_within(&self, input: &str, budget: &Budget) -> Result<Vec<PiiEntity>, DetectError> {
-        let mut all = Vec::new();
-        for detector in &self.detectors {
-            all.extend(detector.redetect_within(input, budget)?);
+            all.extend(detector.redetect(input, budget)?);
         }
         Ok(resolve_overlaps(input, all))
     }
@@ -91,67 +73,50 @@ impl PiiDetector for FailOpen {
         self.0.detect(input)
     }
 
-    fn try_detect(&self, input: &str) -> Result<Vec<PiiEntity>, DetectError> {
-        Ok(self.0.try_detect(input).unwrap_or_else(|err| {
-            // Log the detector label only — never the input.
-            tracing::warn!(
-                detector = err.detector,
-                "detector failed; continuing without it"
-            );
-            Vec::new()
-        }))
-    }
-
-    /// Same fail-open contract as [`try_detect`](Self::try_detect), delegating to the inner
-    /// detector's [`redetect`](PiiDetector::redetect) — so a fail-open-wrapped NER stays
-    /// idempotent after pass 0 (it returns nothing) rather than re-running via the default.
-    fn redetect(&self, input: &str) -> Result<Vec<PiiEntity>, DetectError> {
-        Ok(self.0.redetect(input).unwrap_or_else(|err| {
-            tracing::warn!(
-                detector = err.detector,
-                "detector failed; continuing without it"
-            );
-            Vec::new()
-        }))
-    }
-
     /// Forwards the caller's [`Budget`] — and **stops being fail-open when the budget is what
-    /// failed** (M10-R28).
+    /// failed** (M10-R28, made structural by M10-R41).
     ///
     /// The two are different kinds of failure and conflating them is a leak. *"This detector is
     /// unavailable"* is a property of the **detector**, and continuing without a non-critical engine
     /// is exactly what this wrapper is for. *"The allowance for scanning this request ran out"* is a
     /// property of the **request**: the text was not fully examined, so its PII status is unknown,
     /// and answering `Ok(vec![])` there means forwarding a partially scanned body with a clean bill
-    /// of health. Round 4 was launched to ask whether an exhausted budget could ever fail *open*;
-    /// the answer was no only because nothing wraps the structured recognizers in `FailOpen` today.
-    /// That is a property of the wiring, not of the code, and wiring changes.
-    fn try_detect_within(
-        &self,
-        input: &str,
-        budget: &Budget,
-    ) -> Result<Vec<PiiEntity>, DetectError> {
-        match self.0.try_detect_within(input, budget) {
-            Ok(found) => Ok(found),
-            Err(err) if budget.is_exhausted() => Err(err),
-            Err(err) => {
-                // Log the detector label only — never the input.
-                tracing::warn!(
-                    detector = err.detector,
-                    "detector failed; continuing without it"
-                );
-                Ok(Vec::new())
-            }
-        }
+    /// of health. Round 4 was launched to ask whether an exhausted budget could ever fail *open*; the
+    /// answer was no only because nothing wraps the structured recognizers in `FailOpen` today. That
+    /// is a property of the wiring, not of the code, and wiring changes.
+    ///
+    /// **It asks the error, not the budget (M10-R41).** The first version matched on
+    /// `budget.is_exhausted()` — a property of the *request*, asked about an error that may belong to
+    /// the *detector*. It gave the right answer only through an unstated invariant (no detector
+    /// returns `Ok` with an exhausted budget, and `build_detector` orders the structured recognizers
+    /// first), and it turned a genuine GPU or tokenizer failure that happened to arrive at a spent
+    /// budget into a `400` on a proxy configured to degrade to structured-only. `DetectError` now
+    /// carries the distinction, so this reads what it means.
+    fn try_detect(&self, input: &str, budget: &Budget) -> Result<Vec<PiiEntity>, DetectError> {
+        Self::fail_open(self.0.try_detect(input, budget))
     }
 
-    /// Same contract as [`try_detect_within`](Self::try_detect_within) on the fixpoint's later
-    /// passes: a detector failure is swallowed, an exhausted allowance is not.
-    fn redetect_within(&self, input: &str, budget: &Budget) -> Result<Vec<PiiEntity>, DetectError> {
-        match self.0.redetect_within(input, budget) {
+    /// Same fail-open contract as [`try_detect`](Self::try_detect), delegating to the inner
+    /// detector's [`redetect`](PiiDetector::redetect) — so a fail-open-wrapped NER stays
+    /// idempotent after pass 0 (it returns nothing) rather than re-running via the default.
+    fn redetect(&self, input: &str, budget: &Budget) -> Result<Vec<PiiEntity>, DetectError> {
+        Self::fail_open(self.0.redetect(input, budget))
+    }
+}
+
+impl FailOpen {
+    /// Swallow a **detector** failure, propagate an exhausted **request** allowance.
+    ///
+    /// One place for the decision, so the two entry points cannot drift apart on it — which is the
+    /// shape of M10-R35 one level down.
+    fn fail_open(
+        outcome: Result<Vec<PiiEntity>, DetectError>,
+    ) -> Result<Vec<PiiEntity>, DetectError> {
+        match outcome {
             Ok(found) => Ok(found),
-            Err(err) if budget.is_exhausted() => Err(err),
+            Err(err) if err.budget_exhausted => Err(err),
             Err(err) => {
+                // Log the detector label only — never the input.
                 tracing::warn!(
                     detector = err.detector,
                     "detector failed; continuing without it"
@@ -234,11 +199,12 @@ mod tests {
         fn detect(&self, _input: &str) -> Vec<PiiEntity> {
             Vec::new()
         }
-        fn try_detect(&self, _input: &str) -> Result<Vec<PiiEntity>, super::DetectError> {
-            Err(super::DetectError {
-                detector: "failing",
-                message: "boom".to_string(),
-            })
+        fn try_detect(
+            &self,
+            _input: &str,
+            _budget: &Budget,
+        ) -> Result<Vec<PiiEntity>, super::DetectError> {
+            Err(super::DetectError::unavailable("failing", "boom"))
         }
     }
 
@@ -249,7 +215,9 @@ mod tests {
             Box::new(StructuredRecognizers::new()),
             Box::new(FailingDetector),
         ]);
-        assert!(composite.try_detect("mail bob@test.com").is_err());
+        assert!(composite
+            .try_detect("mail bob@test.com", &Budget::per_call())
+            .is_err());
     }
 
     #[test]
@@ -261,7 +229,7 @@ mod tests {
             Box::new(super::FailOpen(Box::new(FailingDetector))),
         ]);
         let got = composite
-            .try_detect("mail bob@test.com")
+            .try_detect("mail bob@test.com", &Budget::per_call())
             .expect("must not error");
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].kind, PiiKind::Email);

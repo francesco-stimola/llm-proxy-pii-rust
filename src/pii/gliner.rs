@@ -35,7 +35,7 @@ use tokenizers::Tokenizer;
 
 use super::gliner_decode::{decode_spans, split_words, GlinerLabel, SpanScore};
 use super::onnx::{build_session_pool, ExecutionProvider};
-use super::{DetectError, PiiDetector, PiiEntity};
+use super::{Budget, DetectError, PiiDetector, PiiEntity};
 
 /// Default detection threshold on the per-span sigmoid probability — **0.15, chosen by
 /// measurement** (DEVLOG M8, the threshold sweep), well below GLiNER's nominal 0.5 because
@@ -458,14 +458,13 @@ pub fn plan_word_windows(
 
 impl PiiDetector for GLiNerDetector {
     fn detect(&self, input: &str) -> Vec<PiiEntity> {
-        self.try_detect(input).unwrap_or_default()
+        self.try_detect(input, &Budget::per_call())
+            .unwrap_or_default()
     }
 
-    fn try_detect(&self, input: &str) -> Result<Vec<PiiEntity>, DetectError> {
-        self.infer(input).map_err(|err| DetectError {
-            detector: "gliner",
-            message: err.to_string(),
-        })
+    fn try_detect(&self, input: &str, _budget: &Budget) -> Result<Vec<PiiEntity>, DetectError> {
+        self.infer(input)
+            .map_err(|err| DetectError::unavailable("gliner", err.to_string()))
     }
 
     /// Idempotent after the fixpoint's pass 0, exactly like the token-classification NER
@@ -473,7 +472,7 @@ impl PiiDetector for GLiNerDetector {
     /// model on later passes buys no recall — it would only re-tag the fragments it emits.
     /// So the fixpoint converges in O(1) GLiNER passes. The 0-loss recall claim this rests
     /// on is re-measured per model (DEVLOG M8).
-    fn redetect(&self, _input: &str) -> Result<Vec<PiiEntity>, DetectError> {
+    fn redetect(&self, _input: &str, _budget: &Budget) -> Result<Vec<PiiEntity>, DetectError> {
         Ok(Vec::new())
     }
 }

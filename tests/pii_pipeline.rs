@@ -5,7 +5,7 @@
 use serde_json::{json, Value};
 
 use llm_proxy_pii_rust::pii::recognizers::StructuredRecognizers;
-use llm_proxy_pii_rust::pii::{DetectError, PiiDetector, PiiEntity};
+use llm_proxy_pii_rust::pii::{Budget, DetectError, PiiDetector, PiiEntity};
 use llm_proxy_pii_rust::pipeline::privacy::PrivacyStage;
 use llm_proxy_pii_rust::pipeline::{RequestContext, Stage};
 use llm_proxy_pii_rust::proxy::{ProxyRequest, ProxyResponse};
@@ -345,11 +345,8 @@ impl PiiDetector for AlwaysFails {
     fn detect(&self, _input: &str) -> Vec<PiiEntity> {
         Vec::new()
     }
-    fn try_detect(&self, _input: &str) -> Result<Vec<PiiEntity>, DetectError> {
-        Err(DetectError {
-            detector: "test",
-            message: "boom".to_string(),
-        })
+    fn try_detect(&self, _input: &str, _budget: &Budget) -> Result<Vec<PiiEntity>, DetectError> {
+        Err(DetectError::unavailable("test", "boom"))
     }
 }
 

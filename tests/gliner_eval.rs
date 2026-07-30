@@ -29,7 +29,7 @@ use llm_proxy_pii_rust::pii::gliner::{GLiNerDetector, GlinerParams, DEFAULT_THRE
 use llm_proxy_pii_rust::pii::gliner_decode::{default_gliner_labels, parse_gliner_labels};
 use llm_proxy_pii_rust::pii::onnx::ExecutionProvider;
 use llm_proxy_pii_rust::pii::recognizers::StructuredRecognizers;
-use llm_proxy_pii_rust::pii::{PiiDetector, PiiEntity, PiiKind};
+use llm_proxy_pii_rust::pii::{Budget, PiiDetector, PiiEntity, PiiKind};
 
 const CORPUS_JSON: &str = include_str!("corpus/ner_cases.json");
 
@@ -161,7 +161,7 @@ fn gliner_placeholder_inertness_canary() {
     ]);
     let mut vault = Vault::new();
     let masked = vault
-        .mask_all(text, &detector)
+        .mask_all(text, &detector, &Budget::per_call())
         .expect("mask_all must converge on placeholder-dense text, never fail closed");
     eprintln!("converged; masked = {masked:?}");
 }

@@ -21,6 +21,7 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 
+use super::recognizers::MAX_PHONE_VALIDATIONS_PER_REQUEST;
 use super::{Budget, DetectError, PiiDetector, PiiEntity};
 
 /// Fields below this are cheap to scan and not worth a cache slot; fields above this are left
@@ -95,33 +96,12 @@ impl CachingDetector {
 
 impl PiiDetector for CachingDetector {
     fn detect(&self, input: &str) -> Vec<PiiEntity> {
-        self.try_detect(input).unwrap_or_default()
-    }
-
-    fn try_detect(&self, input: &str) -> Result<Vec<PiiEntity>, DetectError> {
-        if !Self::cacheable(input) {
-            return self.inner.try_detect(input);
-        }
-        if let Some(hit) = self.cache.lock().unwrap().get(input) {
-            return Ok(hit);
-        }
-        // Run detection WITHOUT the lock held (the NER is the slow part; the lock is for the map
-        // only), then record it. A concurrent duplicate miss just inserts the same value twice.
-        let detected = self.inner.try_detect(input)?;
-        self.cache
-            .lock()
-            .unwrap()
-            .insert(input.to_string(), detected.clone());
-        Ok(detected)
-    }
-
-    fn redetect(&self, input: &str) -> Result<Vec<PiiEntity>, DetectError> {
-        // Never cached — see the module doc. Later passes run on per-request masked text.
-        self.inner.redetect(input)
+        self.try_detect(input, &Budget::new(MAX_PHONE_VALIDATIONS_PER_REQUEST))
+            .unwrap_or_default()
     }
 
     /// Forwards the caller's [`Budget`] (M10-R28) — the wrapper must, or the detector underneath
-    /// would get a fresh allowance per field via the trait default.
+    /// would get a fresh allowance per field.
     ///
     /// **A cache hit spends nothing, and that is correct rather than a loophole.** The budget bounds
     /// *work actually done*: a hit did none, and the soundness argument in the module doc is that a
@@ -133,18 +113,16 @@ impl PiiDetector for CachingDetector {
     /// An error is still **never** inserted: the `?` below returns before the insert, so an
     /// exhausted-budget refusal cannot be replayed from the cache to a later request that had its
     /// own full allowance.
-    fn try_detect_within(
-        &self,
-        input: &str,
-        budget: &Budget,
-    ) -> Result<Vec<PiiEntity>, DetectError> {
+    fn try_detect(&self, input: &str, budget: &Budget) -> Result<Vec<PiiEntity>, DetectError> {
         if !Self::cacheable(input) {
-            return self.inner.try_detect_within(input, budget);
+            return self.inner.try_detect(input, budget);
         }
         if let Some(hit) = self.cache.lock().unwrap().get(input) {
             return Ok(hit);
         }
-        let detected = self.inner.try_detect_within(input, budget)?;
+        // Run detection WITHOUT the lock held (the NER is the slow part; the lock is for the map
+        // only), then record it. A concurrent duplicate miss just inserts the same value twice.
+        let detected = self.inner.try_detect(input, budget)?;
         self.cache
             .lock()
             .unwrap()
@@ -152,9 +130,10 @@ impl PiiDetector for CachingDetector {
         Ok(detected)
     }
 
-    fn redetect_within(&self, input: &str, budget: &Budget) -> Result<Vec<PiiEntity>, DetectError> {
-        // Never cached, exactly as [`redetect`](Self::redetect) — but the budget still travels.
-        self.inner.redetect_within(input, budget)
+    fn redetect(&self, input: &str, budget: &Budget) -> Result<Vec<PiiEntity>, DetectError> {
+        // Never cached — see the module doc. Later passes run on per-request masked text. The budget
+        // still travels, which since M10-R35 it would even without this override.
+        self.inner.redetect(input, budget)
     }
 }
 
@@ -185,16 +164,18 @@ mod tests {
 
     impl PiiDetector for Counting {
         fn detect(&self, input: &str) -> Vec<PiiEntity> {
-            self.try_detect(input).unwrap_or_default()
+            self.try_detect(input, &Budget::per_call())
+                .unwrap_or_default()
         }
 
-        fn try_detect(&self, _input: &str) -> Result<Vec<PiiEntity>, DetectError> {
+        fn try_detect(
+            &self,
+            _input: &str,
+            _budget: &Budget,
+        ) -> Result<Vec<PiiEntity>, DetectError> {
             self.try_calls.fetch_add(1, Ordering::SeqCst);
             if self.fail {
-                return Err(DetectError {
-                    detector: "counting",
-                    message: "boom".to_string(),
-                });
+                return Err(DetectError::unavailable("counting", "boom"));
             }
             Ok(vec![PiiEntity {
                 kind: PiiKind::Email,
@@ -204,7 +185,7 @@ mod tests {
             }])
         }
 
-        fn redetect(&self, _input: &str) -> Result<Vec<PiiEntity>, DetectError> {
+        fn redetect(&self, _input: &str, _budget: &Budget) -> Result<Vec<PiiEntity>, DetectError> {
             self.redetect_calls.fetch_add(1, Ordering::SeqCst);
             Ok(Vec::new())
         }
@@ -220,8 +201,8 @@ mod tests {
         let caching = CachingDetector::new(inner, 8);
         let input = big();
 
-        let first = caching.try_detect(&input).unwrap();
-        let second = caching.try_detect(&input).unwrap();
+        let first = caching.try_detect(&input, &Budget::per_call()).unwrap();
+        let second = caching.try_detect(&input, &Budget::per_call()).unwrap();
 
         assert_eq!(
             first, second,
@@ -229,7 +210,7 @@ mod tests {
         );
         // The inner detector ran exactly once — the second call was served from cache.
         // (Downcast-free: re-run a third time and confirm the result is still identical.)
-        let third = caching.try_detect(&input).unwrap();
+        let third = caching.try_detect(&input, &Budget::per_call()).unwrap();
         assert_eq!(first, third);
     }
 
@@ -238,8 +219,8 @@ mod tests {
         // Below the threshold: not worth a slot, so it always hits the inner (and stays correct).
         let caching = CachingDetector::new(Box::new(Counting::new(false)), 8);
         let small = "a".repeat(MIN_CACHEABLE_LEN - 1);
-        let a = caching.try_detect(&small).unwrap();
-        let b = caching.try_detect(&small).unwrap();
+        let a = caching.try_detect(&small, &Budget::per_call()).unwrap();
+        let b = caching.try_detect(&small, &Budget::per_call()).unwrap();
         assert_eq!(a, b);
     }
 
@@ -249,11 +230,11 @@ mod tests {
         // inner (never served from the try_detect cache), because masked text varies per request.
         let caching = CachingDetector::new(Box::new(Counting::new(false)), 8);
         let input = big();
-        caching.redetect(&input).unwrap();
-        caching.redetect(&input).unwrap();
+        caching.redetect(&input, &Budget::per_call()).unwrap();
+        caching.redetect(&input, &Budget::per_call()).unwrap();
         // Prime the try_detect cache, then redetect again — still must delegate, not read the cache.
-        caching.try_detect(&input).unwrap();
-        let out = caching.redetect(&input).unwrap();
+        caching.try_detect(&input, &Budget::per_call()).unwrap();
+        let out = caching.redetect(&input, &Budget::per_call()).unwrap();
         assert!(
             out.is_empty(),
             "redetect must reflect the (empty) inner, not the cached try_detect"
@@ -265,11 +246,11 @@ mod tests {
         let caching = CachingDetector::new(Box::new(Counting::new(true)), 8);
         let input = big();
         assert!(
-            caching.try_detect(&input).is_err(),
+            caching.try_detect(&input, &Budget::per_call()).is_err(),
             "a detector error must propagate (fail closed)"
         );
         // And it wasn't cached as a success: a second call still errors (re-invokes the inner).
-        assert!(caching.try_detect(&input).is_err());
+        assert!(caching.try_detect(&input, &Budget::per_call()).is_err());
     }
 
     #[test]
@@ -278,17 +259,17 @@ mod tests {
         // (promotion) while cold keys roll off — proving eviction is bounded but LRU-ish.
         let caching = CachingDetector::new(Box::new(Counting::new(false)), 1);
         let hot = big();
-        caching.try_detect(&hot).unwrap(); // prime
+        caching.try_detect(&hot, &Budget::per_call()).unwrap(); // prime
 
         for i in 0..10 {
             let cold = format!("{}{i}", big()); // distinct, all cacheable
-            caching.try_detect(&cold).unwrap();
+            caching.try_detect(&cold, &Budget::per_call()).unwrap();
             // Touch the hot key so it keeps getting promoted.
-            let _ = caching.try_detect(&hot).unwrap();
+            let _ = caching.try_detect(&hot, &Budget::per_call()).unwrap();
         }
         // The value is content-derived, so correctness never depends on the cache — assert only
         // that the hot key still returns the right answer after all that churn.
-        let got = caching.try_detect(&hot).unwrap();
+        let got = caching.try_detect(&hot, &Budget::per_call()).unwrap();
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].kind, PiiKind::Email);
     }

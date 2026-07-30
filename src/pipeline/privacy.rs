@@ -120,7 +120,7 @@ impl Stage for PrivacyStage {
             // can *expose* a value that was not recognizable before (a phone inside a longer
             // digit run splits it and reveals a Luhn-valid card), so it re-detects to a
             // fixpoint — M4-R17.
-            let mut mask = |text: &str| match vault.mask_all_within(text, detector, budget) {
+            let mut mask = |text: &str| match vault.mask_all(text, detector, budget) {
                 Ok(masked) => masked,
                 Err(err) => {
                     if error_slot.is_none() {
@@ -694,7 +694,7 @@ fn merge_augmentation(message: &mut Value) {
 mod tests {
     use super::*;
     use crate::pii::recognizers::StructuredRecognizers;
-    use crate::pii::{Confidence, PiiEntity, PiiKind};
+    use crate::pii::{Budget, Confidence, PiiEntity, PiiKind};
 
     /// A vault mapping `[PERSON_1]` to `value` (built via `mask` from one entity).
     fn vault_for(value: &str) -> Vault {
@@ -758,7 +758,7 @@ mod tests {
         let detector = StructuredRecognizers::new();
         let mut vault = Vault::new();
         {
-            let mut mask = |t: &str| vault.mask_all(t, &detector).unwrap();
+            let mut mask = |t: &str| vault.mask_all(t, &detector, &Budget::per_call()).unwrap();
             mask_anthropic_request(body, &mut mask).expect("known Anthropic shape");
         }
         vault

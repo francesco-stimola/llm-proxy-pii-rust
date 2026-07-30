@@ -186,7 +186,7 @@ fn a_real_claude_code_turn_spends_almost_none_of_the_request_budget() {
     for field in m7_turn::realistic_turn() {
         bytes += field.text.len();
         detector
-            .try_detect_within(&field.text, &budget)
+            .try_detect(&field.text, &budget)
             .expect("a real 22 KiB turn must never exhaust the request budget");
     }
 

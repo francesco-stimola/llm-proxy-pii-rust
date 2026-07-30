@@ -43,7 +43,7 @@ use llm_proxy_pii_rust::pii::onnx::{
     available_cores, resolve_pool_and_intra, ExecutionProvider, OnnxNerDetector,
 };
 use llm_proxy_pii_rust::pii::recognizers::StructuredRecognizers;
-use llm_proxy_pii_rust::pii::{DetectError, PiiDetector, PiiEntity};
+use llm_proxy_pii_rust::pii::{Budget, DetectError, PiiDetector, PiiEntity};
 
 // ---------------------------------------------------------------------------
 // The fixture: one realistic Claude Code turn
@@ -103,13 +103,15 @@ impl<'a> CountingDetector<'a> {
 
 impl PiiDetector for CountingDetector<'_> {
     fn detect(&self, input: &str) -> Vec<PiiEntity> {
-        self.try_detect(input).unwrap_or_default()
+        self.try_detect(input, &Budget::per_call())
+            .unwrap_or_default()
     }
 
-    fn try_detect(&self, input: &str) -> Result<Vec<PiiEntity>, DetectError> {
+    fn try_detect(&self, input: &str, budget: &Budget) -> Result<Vec<PiiEntity>, DetectError> {
         self.calls.fetch_add(1, Ordering::Relaxed);
         self.bytes.fetch_add(input.len(), Ordering::Relaxed);
-        let out = self.inner.try_detect(input)?;
+        // Forwards the caller's allowance, like any wrapper (M10-R35).
+        let out = self.inner.try_detect(input, budget)?;
         self.found.lock().expect("not poisoned").push(out.len());
         Ok(out)
     }
@@ -270,7 +272,7 @@ fn mask_a_turn(detector: &dyn PiiDetector, fields: &[Field]) -> std::time::Durat
     let started = Instant::now();
     for f in fields {
         vault
-            .mask_all(&f.text, detector)
+            .mask_all(&f.text, detector, &Budget::per_call())
             .unwrap_or_else(|e| panic!("{}: masking must converge: {e}", f.name));
     }
     started.elapsed()
@@ -332,7 +334,7 @@ fn m7_s0_a_realistic_claude_code_turn_measured_per_field() {
         let calls_before = detector.calls();
         let started = Instant::now();
         let _masked = vault
-            .mask_all(&f.text, &detector)
+            .mask_all(&f.text, &detector, &Budget::per_call())
             .unwrap_or_else(|e| panic!("{}: masking must converge: {e}", f.name));
         let elapsed = started.elapsed().as_millis();
         rows.push((
@@ -727,7 +729,9 @@ fn m7_s0_what_the_ner_finds_in_boilerplate_that_has_no_pii() {
         if f.part == Part::UserMessage {
             continue; // this one is SUPPOSED to have PII
         }
-        let found = hybrid.try_detect(&f.text).expect("NER must not error");
+        let found = hybrid
+            .try_detect(&f.text, &Budget::per_call())
+            .expect("NER must not error");
         if found.is_empty() {
             continue;
         }

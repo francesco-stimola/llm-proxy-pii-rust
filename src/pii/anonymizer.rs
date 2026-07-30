@@ -106,35 +106,22 @@ impl Vault {
     ///
     /// The round-trip stays exact: each pass records raw value → placeholder, and
     /// [`demask`](Self::demask) restores every placeholder in one tolerant pass.
+    ///
+    /// # The allowance is the caller's, and there is only one way in (M10-R28 / M10-R30 / M10-R35)
+    ///
+    /// **The fixpoint was half of why the old bound did not exist.** This loop calls detection up to
+    /// `MAX_MASK_PASSES` times plus one confirming `redetect`, and each of those calls used to mint a
+    /// fresh allowance — so one field could legitimately spend five times the published budget
+    /// without ever "exceeding" it. A `budget` that travels with the **request** is what makes the
+    /// number in `MAX_PHONE_VALIDATIONS_PER_REQUEST` mean what its name says.
+    ///
+    /// There is deliberately **no** `mask_all(text, detector)` convenience beside this. That shape
+    /// existed for one round and is the shape M10-R35 is about: two entry points where one mints an
+    /// allowance and the other accepts it, so a caller on the request path could reach the minting
+    /// one and nothing would say so. Every caller now passes a budget explicitly — the ones with no
+    /// request to charge (unit tests, the measurement harnesses) create their own, visibly, at the
+    /// call site.
     pub fn mask_all(
-        &mut self,
-        text: &str,
-        detector: &dyn PiiDetector,
-    ) -> Result<String, DetectError> {
-        // A fresh **real** allowance, not [`Budget::unlimited`]: this is the shape M10-R20 shipped,
-        // and a public entry point that quietly drops a fail-closed bound is how the bound stops
-        // existing. A caller with a request to charge uses `mask_all_within`; a caller without one
-        // still gets the per-call ceiling rather than none.
-        self.mask_all_within(
-            text,
-            detector,
-            &Budget::new(crate::pii::recognizers::MAX_PHONE_VALIDATIONS_PER_REQUEST),
-        )
-    }
-
-    /// [`mask_all`](Self::mask_all) charged against a **caller-owned** [`Budget`] shared by every
-    /// field and every pass of one request (M10-R28 / M10-R30).
-    ///
-    /// **The fixpoint is half of why the old bound did not exist.** This loop calls detection up to
-    /// `MAX_MASK_PASSES` times plus one confirming `redetect`, and each of those calls used to
-    /// mint a fresh allowance — so one field could legitimately spend five times the published
-    /// budget without ever "exceeding" it. The budget travels with the request now, which is what
-    /// makes the number in `MAX_PHONE_VALIDATIONS_PER_REQUEST` mean what its name says.
-    ///
-    /// `mask_all` itself keeps working for callers with nothing to bound (unit tests, the streaming
-    /// demask path, the measurement harnesses) by passing [`Budget::unlimited`]. The request path
-    /// uses this method; `PrivacyStage::on_request` is the one place that creates a real budget.
-    pub fn mask_all_within(
         &mut self,
         text: &str,
         detector: &dyn PiiDetector,
@@ -156,9 +143,9 @@ impl Vault {
             // card), never the NER, which is idempotent after pass 0 (S4). That is what bounds the
             // pass count on a fragment-dense field instead of letting the NER re-tag forever.
             let raw = if pass == 0 {
-                detector.try_detect_within(&current, budget)?
+                detector.try_detect(&current, budget)?
             } else {
-                detector.redetect_within(&current, budget)?
+                detector.redetect(&current, budget)?
             };
             let entities = keep_maskable(raw, &mut placeholder_tags_suppressed);
             if entities.is_empty() {
@@ -171,7 +158,7 @@ impl Vault {
         // The passes ran out having masked real PII on every one of them, so we do NOT know
         // `current` is clean. Confirm it with `redetect` (M4-R20) — and block if it isn't.
         let remaining = keep_maskable(
-            detector.redetect_within(&current, budget)?,
+            detector.redetect(&current, budget)?,
             &mut placeholder_tags_suppressed,
         );
         if remaining.is_empty() {
@@ -191,10 +178,12 @@ impl Vault {
             placeholder_tags_suppressed,
             "masking did not reach a fixpoint; blocking the request (fail closed)"
         );
-        Err(DetectError {
-            detector: "vault",
-            message: format!("masking did not reach a fixpoint in {MAX_MASK_PASSES} passes"),
-        })
+        // Not a budget refusal: the allowance may be untouched. `unavailable` is the right kind —
+        // and `FailOpen` never sees this one anyway, since it is the vault's error, not a detector's.
+        Err(DetectError::unavailable(
+            "vault",
+            format!("masking did not reach a fixpoint in {MAX_MASK_PASSES} passes"),
+        ))
     }
 
     /// Replace each entity in `text` with a typed placeholder, recording the
@@ -619,7 +608,7 @@ mod tests {
         // the fixpoint must be **confirmed**, not assumed.
         let mut vault = Vault::new();
         let err = vault
-            .mask_all("still here", &NeverConverges)
+            .mask_all("still here", &NeverConverges, &Budget::per_call())
             .expect_err("a text that never converges must fail closed, not be forwarded");
 
         // The block reason must carry no input text (the never-log-raw-PII rule).
@@ -634,7 +623,7 @@ mod tests {
         let detector = StructuredRecognizers::new();
         let mut vault = Vault::new();
         let masked = vault
-            .mask_all("mail bob@test.com", &detector)
+            .mask_all("mail bob@test.com", &detector, &Budget::per_call())
             .expect("converges");
         assert_eq!(masked, "mail [EMAIL_1]");
     }
@@ -670,7 +659,7 @@ mod tests {
         ]);
         let mut vault = Vault::new();
         let masked = vault
-            .mask_all("mail bob@test.com", &composite)
+            .mask_all("mail bob@test.com", &composite, &Budget::per_call())
             .expect("a placeholder-tagging detector must not break convergence");
         assert_eq!(masked, "mail [EMAIL_1]");
         // The round-trip is untouched: the placeholder still restores to the real value.
@@ -717,11 +706,11 @@ mod tests {
             Vec::new()
         }
 
-        fn redetect(&self, input: &str) -> Result<Vec<PiiEntity>, DetectError> {
+        fn redetect(&self, input: &str, _budget: &Budget) -> Result<Vec<PiiEntity>, DetectError> {
             if self.idempotent {
                 Ok(Vec::new())
             } else {
-                self.try_detect(input)
+                self.try_detect(input, &Budget::per_call())
             }
         }
     }
@@ -734,7 +723,7 @@ mod tests {
         let composite = CompositeDetector::new(vec![Box::new(Fragmenter { idempotent: false })]);
         let mut vault = Vault::new();
         let err = vault
-            .mask_all("Slack", &composite)
+            .mask_all("Slack", &composite, &Budget::per_call())
             .expect_err("a detector that re-fragments every pass must exhaust the bound");
         assert!(
             !err.to_string().contains("Slack"),
@@ -750,7 +739,7 @@ mod tests {
         let composite = CompositeDetector::new(vec![Box::new(Fragmenter { idempotent: true })]);
         let mut vault = Vault::new();
         let masked = vault
-            .mask_all("Slack", &composite)
+            .mask_all("Slack", &composite, &Budget::per_call())
             .expect("an idempotent NER must let masking converge");
         assert_eq!(masked, "[ORG_1]lack");
     }
@@ -768,7 +757,7 @@ mod tests {
         let logs = capture_debug_logs(|| {
             let mut vault = Vault::new();
             let masked = vault
-                .mask_all("mail bob@test.com", &composite)
+                .mask_all("mail bob@test.com", &composite, &Budget::per_call())
                 .expect("converges");
             assert_eq!(masked, "mail [EMAIL_1]");
         });
@@ -797,7 +786,7 @@ mod tests {
         let logs = capture_debug_logs(|| {
             let mut vault = Vault::new();
             let _ = vault
-                .mask_all("mail bob@test.com", &detector)
+                .mask_all("mail bob@test.com", &detector, &Budget::per_call())
                 .expect("converges");
             // Emitted through the same subscriber the assertions below read, so it is present iff
             // capture is live. Value-free, like everything this crate logs.

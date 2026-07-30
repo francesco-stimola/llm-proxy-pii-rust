@@ -962,8 +962,9 @@ fn next_char_boundary(input: &str, i: usize) -> usize {
 /// 15.6 MiB that is refused in one field answered `200` in **57 s** across 78 legal
 /// `messages[].content` fields, indistinguishable from the build with no budget at all (M10-R28),
 /// and the published per-field figure was not true in any unit (M10-R30). One [`Budget`] per
-/// request, created by `PrivacyStage` and threaded through
-/// [`try_detect_within`](PiiDetector::try_detect_within), is what makes the name honest.
+/// request, created by `PrivacyStage` and **taken** by
+/// [`try_detect`](PiiDetector::try_detect) / [`redetect`](PiiDetector::redetect) rather than passed
+/// to an optional sibling of theirs (M10-R35), is what makes the name honest.
 ///
 /// **The number is a CPU ceiling, and it was chosen against a legal payload rather than an
 /// adversarial one.** One unit is one `parse()`, measured at **~2.7 µs** on the shipped release
@@ -996,26 +997,19 @@ pub const MAX_PHONE_VALIDATIONS_PER_REQUEST: usize = 500_000;
 
 impl PiiDetector for StructuredRecognizers {
     fn detect(&self, input: &str) -> Vec<PiiEntity> {
-        // Infallible view. It must NOT silently return a partial scan — that is a miss, and a
-        // miss is a leak — so an exhausted budget yields nothing here and the fallible callers
-        // (which is what the request path uses) see the error.
-        self.try_detect(input).unwrap_or_default()
+        // Infallible view, **not on the request path**. It mints its own allowance because there is
+        // no request to charge — the per-call semantics M10-R20 shipped. It must NOT silently return
+        // a partial scan (that is a miss, and a miss is a leak), so an exhausted budget yields
+        // nothing here and the fallible callers — which is what the request path uses — see the error.
+        self.try_detect(input, &Budget::new(MAX_PHONE_VALIDATIONS_PER_REQUEST))
+            .unwrap_or_default()
     }
 
-    /// Detection against a **per-call** allowance. This is the entry point for callers with no
-    /// request to charge — unit tests, the measurement harnesses, DOS-06 — and it keeps M10-R20's
-    /// original semantics exactly. The request path does **not** come through here: `PrivacyStage`
-    /// owns one [`Budget`] per request and calls
-    /// [`try_detect_within`](PiiDetector::try_detect_within) (M10-R28).
-    fn try_detect(&self, input: &str) -> Result<Vec<PiiEntity>, DetectError> {
-        self.try_detect_within(input, &Budget::new(MAX_PHONE_VALIDATIONS_PER_REQUEST))
-    }
-
-    fn try_detect_within(
-        &self,
-        input: &str,
-        budget: &Budget,
-    ) -> Result<Vec<PiiEntity>, DetectError> {
+    /// **The only place in the tree that does budgeted work, and — since M10-R35 — the only fallible
+    /// method this type overrides.** [`redetect`](PiiDetector::redetect) inherits the trait default,
+    /// which forwards the *same* budget here, so the fixpoint's later passes are charged by
+    /// construction rather than by an override somebody has to remember.
+    fn try_detect(&self, input: &str, budget: &Budget) -> Result<Vec<PiiEntity>, DetectError> {
         let mut candidates: Vec<PiiEntity> = Vec::new();
         for rec in &self.recognizers {
             rec.push_candidates(input, &mut candidates, budget);
@@ -1040,9 +1034,13 @@ impl PiiDetector for StructuredRecognizers {
             // of many medium digit-dense fields reaches it just as a single huge one does. The
             // advice has to cover both, or it sends an agent to shrink the wrong thing (M10-R29
             // is what a confidently-misdirected refusal costs).
-            return Err(DetectError {
-                detector: "structured",
-                message: format!(
+            //
+            // **Constructed as `budget_exhausted`, not as a bare `DetectError` (M10-R41).** This is
+            // the one error in the codebase that `FailOpen` must *not* swallow, and it now says so
+            // on the value instead of leaving the wrapper to infer it from a global side-condition.
+            return Err(DetectError::budget_exhausted(
+                "structured",
+                format!(
                     "this request exhausted the domestic-phone validation budget of {} number \
                      checks; the allowance is per request and ran out while scanning a {} byte \
                      field. The request was blocked rather than forwarded with a partially \
@@ -1055,7 +1053,7 @@ impl PiiDetector for StructuredRecognizers {
                     budget.initial(),
                     input.len()
                 ),
-            });
+            ));
         }
         Ok(self.finish(input, candidates))
     }
@@ -1724,7 +1722,9 @@ mod tests {
         );
 
         let mut vault = crate::pii::anonymizer::Vault::new();
-        let masked = vault.mask_all(input, &detector).unwrap();
+        let masked = vault
+            .mask_all(input, &detector, &Budget::per_call())
+            .unwrap();
         assert!(
             !masked.contains("1111"),
             "a card digit group was left in clear: {masked}"
@@ -1742,7 +1742,9 @@ mod tests {
         let input = "4111111111111111555 867 5309";
         let detector = StructuredRecognizers::new();
         let mut vault = crate::pii::anonymizer::Vault::new();
-        let masked = vault.mask_all(input, &detector).unwrap();
+        let masked = vault
+            .mask_all(input, &detector, &Budget::per_call())
+            .unwrap();
 
         assert!(
             !masked.contains("4111111111111111"),
@@ -1773,7 +1775,9 @@ mod tests {
             "sk-abcdefsk-123456@x.com",
         ] {
             let mut vault = crate::pii::anonymizer::Vault::new();
-            let masked = vault.mask_all(input, &detector).unwrap();
+            let masked = vault
+                .mask_all(input, &detector, &Budget::per_call())
+                .unwrap();
             assert!(
                 detector.detect(&masked).is_empty(),
                 "PII survived masking of {input:?} → {masked:?}"
@@ -1784,7 +1788,9 @@ mod tests {
         // A left-over bare `@domain` is explicitly NOT PII (M4-R11) — but the local part,
         // which is the identifying half, must be gone.
         let mut vault = crate::pii::anonymizer::Vault::new();
-        let masked = vault.mask_all("a@b.com@c.com", &detector).unwrap();
+        let masked = vault
+            .mask_all("a@b.com@c.com", &detector, &Budget::per_call())
+            .unwrap();
         assert!(
             !masked.contains("a@b.com"),
             "the email must be masked: {masked}"
@@ -1800,7 +1806,9 @@ mod tests {
         let detector = StructuredRecognizers::new();
         let input = "key sk-abcdef-sk-ghijkl123 end";
         let mut vault = crate::pii::anonymizer::Vault::new();
-        let masked = vault.mask_all(input, &detector).unwrap();
+        let masked = vault
+            .mask_all(input, &detector, &Budget::per_call())
+            .unwrap();
 
         assert!(
             !masked.contains("sk-"),
@@ -2291,7 +2299,9 @@ mod tests {
             "call 0800 1111 0800 1111 now", // in prose
         ] {
             let mut vault = Vault::new();
-            let masked = vault.mask_all(input, &detector).unwrap();
+            let masked = vault
+                .mask_all(input, &detector, &Budget::per_call())
+                .unwrap();
             assert!(
                 detector.detect(&masked).is_empty(),
                 "a national phone survived mask_all of {input:?}: {masked:?}"
@@ -2332,7 +2342,9 @@ mod tests {
             "01 23 45 67 89 06 12 34 56 78",
         ] {
             let mut vault = Vault::new();
-            let masked = vault.mask_all(input, &detector).unwrap();
+            let masked = vault
+                .mask_all(input, &detector, &Budget::per_call())
+                .unwrap();
             let survivors: String = masked
                 .chars()
                 .zip(masked.char_indices().map(|(i, _)| i))
@@ -2687,7 +2699,7 @@ mod tests {
 
             let detector = StructuredRecognizers::new();
             let mut vault = crate::pii::anonymizer::Vault::new();
-            let masked = vault.mask_all(&input, &detector).unwrap();
+            let masked = vault.mask_all(&input, &detector, &Budget::per_call()).unwrap();
 
             let leftovers = detector.detect(&masked);
             proptest::prop_assert!(

@@ -8,8 +8,8 @@
 
 use llm_proxy_pii_rust::pii::anonymizer::Vault;
 use llm_proxy_pii_rust::pii::recognizers::StructuredRecognizers;
-use llm_proxy_pii_rust::pii::PiiDetector;
 use llm_proxy_pii_rust::pii::PiiKind;
+use llm_proxy_pii_rust::pii::{Budget, PiiDetector};
 
 fn detect(input: &str) -> Vec<(PiiKind, String)> {
     StructuredRecognizers::new()
@@ -29,7 +29,7 @@ fn masked(input: &str) -> String {
     let detector = StructuredRecognizers::new();
     let mut vault = Vault::new();
     vault
-        .mask_all(input, &detector)
+        .mask_all(input, &detector, &Budget::per_call())
         .expect("the structured recognizers are infallible")
 }
 

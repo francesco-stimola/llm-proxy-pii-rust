@@ -33,8 +33,10 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use llm_proxy_pii_rust::pii::anonymizer::Vault;
-use llm_proxy_pii_rust::pii::recognizers::StructuredRecognizers;
-use llm_proxy_pii_rust::pii::PiiDetector;
+use llm_proxy_pii_rust::pii::recognizers::{
+    StructuredRecognizers, MAX_PHONE_VALIDATIONS_PER_REQUEST,
+};
+use llm_proxy_pii_rust::pii::{Budget, PiiDetector};
 use llm_proxy_pii_rust::pipeline::privacy::PrivacyStage;
 use llm_proxy_pii_rust::pipeline::{RequestContext, Stage};
 use llm_proxy_pii_rust::proxy::ProxyRequest;
@@ -110,7 +112,7 @@ fn detect_and_mask(input: String) -> (usize, String, bool) {
     let found = detector.detect(&input).len();
     let mut vault = Vault::new();
     let masked = vault
-        .mask_all(&input, &detector)
+        .mask_all(&input, &detector, &Budget::per_call())
         .expect("masking must succeed");
     let round_trips = vault.demask(&masked) == input;
     (found, masked, round_trips)
@@ -329,7 +331,7 @@ fn a_field_of_distinct_digit_groups_is_bounded_or_refused() {
 
     // The other half: a field big enough to exhaust the validation budget must come back as an
     // **error**, not as a quietly partial scan. `detect()` is the infallible view and returns
-    // nothing; `try_detect_within()` — the shape the request path uses — says why.
+    // nothing; `try_detect()` — the shape the request path uses — says why.
     //
     // **Against an explicit test allowance, not the shipped one.** Crossing the shipped 500,000
     // units costs ~25 s unoptimized, and what this half asserts is the *policy* — refuse rather
@@ -339,7 +341,7 @@ fn a_field_of_distinct_digit_groups_is_bounded_or_refused() {
     let huge = distinct(200 * 1024);
     let detector = StructuredRecognizers::new();
     let budget = llm_proxy_pii_rust::pii::Budget::new(20_000);
-    let err = detector.try_detect_within(&huge, &budget).expect_err(
+    let err = detector.try_detect(&huge, &budget).expect_err(
         "a 200 KB field of distinct phone-shaped groups must exhaust a 20,000 unit budget and \
          be REFUSED — silently returning a partial scan is a miss, and a miss is a leak",
     );
@@ -514,7 +516,7 @@ fn budget_refusal_line_and_cost() {
             llm_proxy_pii_rust::pii::recognizers::MAX_PHONE_VALIDATIONS_PER_REQUEST,
         );
         let started = Instant::now();
-        let verdict = match detector.try_detect_within(&field, &budget) {
+        let verdict = match detector.try_detect(&field, &budget) {
             Ok(found) => format!("{} spans", found.len()),
             Err(_) => "REFUSED".to_string(),
         };
@@ -592,9 +594,14 @@ fn budget_refusal_line_and_cost() {
         let budget = llm_proxy_pii_rust::pii::Budget::new(
             llm_proxy_pii_rust::pii::recognizers::MAX_PHONE_VALIDATIONS_PER_REQUEST,
         );
+        // **Through `mask_all`, not `try_detect` — the whole fixpoint, which is what a request
+        // pays (M10-R35).** Measuring one pass here is how the published figure came to be
+        // per-pass while claiming to be per-field; the later passes are charged now and this is
+        // where that has to show up.
         let started = Instant::now();
-        let verdict = match detector.try_detect_within(&dump, &budget) {
-            Ok(found) => format!("{} spans", found.len()),
+        let mut vault = Vault::new();
+        let verdict = match vault.mask_all(&dump, &detector, &budget) {
+            Ok(masked) => format!("{} left", masked.matches("[PHONE_").count()),
             Err(_) => "REFUSED".to_string(),
         };
         println!(
@@ -602,6 +609,31 @@ fn budget_refusal_line_and_cost() {
             dump.len(),
             rows,
             verdict,
+            started.elapsed().as_secs_f64() * 1000.0,
+            budget.spent()
+        );
+    }
+
+    // **What the budget does NOT bound, measured rather than inferred.** The allowance caps
+    // *validator* calls. Regex scanning and the mask rewrite are linear in the body and bounded only
+    // by `MAX_BODY_BYTES`, so the per-request CPU ceiling is `validation ≤ budget × per-call` **plus**
+    // that floor — and the floor is what a refused 6 MB body spends before it is refused. Publishing
+    // the validation term alone as "the ceiling" is the M10-R30 mistake in a new place, so this row
+    // exists to make the other term a number too.
+    println!("\n--- the unbudgeted linear floor: MAX_BODY_BYTES with the phone tier OFF ---");
+    {
+        let none = StructuredRecognizers::with_locales::<&str>(&[]);
+        let body = distinct_digit_groups(16 * 1024 * 1024, 0);
+        let budget = llm_proxy_pii_rust::pii::Budget::new(
+            llm_proxy_pii_rust::pii::recognizers::MAX_PHONE_VALIDATIONS_PER_REQUEST,
+        );
+        let mut vault = Vault::new();
+        let started = Instant::now();
+        let outcome = vault.mask_all(&body, &none, &budget);
+        println!(
+            "{:>10} bytes  {:>9}  {:>8.0} ms  spent {}",
+            body.len(),
+            if outcome.is_ok() { "200" } else { "REFUSED" },
             started.elapsed().as_secs_f64() * 1000.0,
             budget.spent()
         );
@@ -620,7 +652,7 @@ fn budget_refusal_line_and_cost() {
             llm_proxy_pii_rust::pii::recognizers::MAX_PHONE_VALIDATIONS_PER_REQUEST,
         );
         let started = Instant::now();
-        let verdict = match det.try_detect_within(&field, &budget) {
+        let verdict = match det.try_detect(&field, &budget) {
             Ok(found) => format!("{} spans", found.len()),
             Err(_) => "REFUSED".to_string(),
         };
@@ -632,4 +664,82 @@ fn budget_refusal_line_and_cost() {
         );
     }
     println!();
+}
+
+/// **DOS-08 (M10-R35) — every fixpoint pass is charged to the request, not just pass 0.**
+///
+/// M10-R28 made the allowance per-request and M10-R30 named the fixpoint as the other half of why
+/// the old bound did not exist: `Vault::mask_all` calls detection up to five times per field. The
+/// fix threaded a budget through a `_within` seam whose *default* silently delegated to the
+/// budget-less pair — so every wrapper carried an obligation to override **both** methods, and the
+/// penalty for missing one was a fresh allowance and a green suite. `StructuredRecognizers`, the
+/// only detector whose cost the budget bounds, overrode `try_detect_within` and not
+/// `redetect_within`. A legal 15.63 MiB body answered `200` in 17.2 s against a published ceiling
+/// of ~1.4 s, and **not one test could see it**.
+///
+/// The seam is gone — `try_detect` and `redetect` both take the budget, and `redetect`'s default
+/// forwards the same one — so the defect is now unrepresentable rather than untested. This guard is
+/// what says so out loud, and it is deliberately phrased over the **trait**, not over
+/// `StructuredRecognizers`: a seventh detector that drops the allowance fails here.
+#[test]
+fn every_fixpoint_pass_is_charged_to_the_request_budget() {
+    // Small enough to be instant, dense enough that a scan certainly validates something.
+    let field = distinct_digit_groups(4_000, 0);
+
+    // (a) The direct claim: `redetect` — the fixpoint's passes 1..n — charges like `try_detect`.
+    //     With an allowance of one unit, both must refuse. Before M10-R35 the second returned `Ok`
+    //     with a full scan and spent nothing, which is exactly the shape a partial scan takes.
+    for (label, call) in [("try_detect", 0usize), ("redetect", 1usize)] {
+        let detector = StructuredRecognizers::new();
+        let budget = Budget::new(1);
+        let outcome = if call == 0 {
+            detector.try_detect(&field, &budget)
+        } else {
+            detector.redetect(&field, &budget)
+        };
+        assert!(
+            outcome.is_err(),
+            "{label} did not refuse on a one-unit allowance — it is scanning without charging the \
+             request, so the fixpoint's later passes are unbounded (M10-R35)"
+        );
+        assert!(
+            budget.spent() > 0,
+            "{label} spent nothing on a field full of phone-shaped candidates"
+        );
+    }
+
+    // (b) The end-to-end claim, which is what an attacker actually exercises: one budget across a
+    //     whole `mask_all`, on text where the **second** pass does phone work.
+    //
+    //     **The obvious two-pass example is the wrong one here, and finding that out is the point.**
+    //     M4-R17's `4111111111111111555 867 5309` does need two passes — masking the phone exposes a
+    //     Luhn-valid card — but the exposed value is a *card*, and card validation is deliberately
+    //     free (M10-R29). Total spend equals pass 0's, and the assertion below would fail on correct
+    //     code. What is needed is masking that exposes a **phone**, and an ASCII word boundary is
+    //     what does it: in `…com347 1234567` there is no boundary between `m` and `3`, so the phone
+    //     family cannot match. Mask the email and `[EMAIL_1]347 1234567` puts a `]` there.
+    let two_pass = "write to bob@test.com347 1234567 today";
+    let detector = StructuredRecognizers::new();
+    let budget = Budget::new(MAX_PHONE_VALIDATIONS_PER_REQUEST);
+    let mut vault = Vault::new();
+    let masked = vault
+        .mask_all(two_pass, &detector, &budget)
+        .expect("this must converge, not refuse");
+    assert!(
+        masked.contains("[PHONE_"),
+        "the phone exposed by masking the email must be masked too — without that this case is not \
+         exercising a later pass at all: {masked}"
+    );
+
+    let one_pass_only = Budget::new(MAX_PHONE_VALIDATIONS_PER_REQUEST);
+    let _ = detector
+        .try_detect(two_pass, &one_pass_only)
+        .expect("pass 0 alone must not refuse");
+    assert!(
+        budget.spent() > one_pass_only.spent(),
+        "the whole fixpoint ({} units) cost no more than its first pass ({} units) — the later \
+         passes are not being charged to the request's allowance (M10-R35)",
+        budget.spent(),
+        one_pass_only.spent()
+    );
 }

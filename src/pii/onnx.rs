@@ -46,7 +46,7 @@ use tokenizers::{Encoding, Tokenizer};
 
 use super::ner_decode::{decode_entities, validate_label_count, TokenTag};
 use super::overlap::widen_to_char_boundaries;
-use super::{DetectError, PiiDetector, PiiEntity};
+use super::{Budget, DetectError, PiiDetector, PiiEntity};
 
 /// **The hard ceiling: the longest sequence the model can actually be handed.**
 ///
@@ -731,15 +731,14 @@ fn argmax(row: &[f32]) -> usize {
 impl PiiDetector for OnnxNerDetector {
     fn detect(&self, input: &str) -> Vec<PiiEntity> {
         // Infallible view: fail open (the caller decides whether to require it).
-        self.try_detect(input).unwrap_or_default()
+        self.try_detect(input, &Budget::per_call())
+            .unwrap_or_default()
     }
 
-    fn try_detect(&self, input: &str) -> Result<Vec<PiiEntity>, DetectError> {
-        self.infer(input).map_err(|err| DetectError {
-            detector: "onnx-ner",
-            // `infer` never embeds input text in its errors (see M2-R8).
-            message: err.to_string(),
-        })
+    fn try_detect(&self, input: &str, _budget: &Budget) -> Result<Vec<PiiEntity>, DetectError> {
+        // `infer` never embeds input text in its errors (see M2-R8).
+        self.infer(input)
+            .map_err(|err| DetectError::unavailable("onnx-ner", err.to_string()))
     }
 
     /// The NER runs **once**, on the fixpoint's pass 0 (S4). Masking a name to `[PERSON_1]` never
@@ -749,7 +748,7 @@ impl PiiDetector for OnnxNerDetector {
     /// real Claude Code system prompts (CC-05/CC-08). So it is idempotent after pass 0 — and this
     /// is also the latency win M4-R21 priced (the field's second full NER scan). See
     /// [`redetect`](PiiDetector::redetect) for the invariant this rests on.
-    fn redetect(&self, _input: &str) -> Result<Vec<PiiEntity>, DetectError> {
+    fn redetect(&self, _input: &str, _budget: &Budget) -> Result<Vec<PiiEntity>, DetectError> {
         Ok(Vec::new())
     }
 }
