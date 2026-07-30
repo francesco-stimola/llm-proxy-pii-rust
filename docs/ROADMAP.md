@@ -1785,31 +1785,26 @@ only the false positives we imagined. Run:
 
 ### What is left before the tag
 
-Written 2026-07-29, **rewritten 2026-07-30 after review round 5.** The milestone's scope items are all
-`[x]` and 34 of 41 review findings are `[x]`; the suite is green on both feature sets (**217 default /
-250 onnx**, zero warnings; `fmt`, `clippy -D warnings` clean; `cargo doc` 15 warnings, all
-pre-existing). **Round 5 asked exactly the question its predecessor's fix invited and the answer was
-yes:** a `_within` seam whose default drops the budget *was* inherited on the shipped path — not by a
-wrapper, by the leaf that mints the allowance. So one thing is left in the code, and it is a blocker.
+Written 2026-07-29, **rewritten 2026-07-30 after round 5's findings were closed.** The milestone's
+scope items are all `[x]`, all **41** review findings across five rounds are `[x]`, and the suite is
+green on both feature sets (**218 default / 251 onnx**, zero warnings; `fmt`, `clippy -D warnings`
+clean; `cargo doc` 15 warnings, all pre-existing). Nothing is left in the code.
 
-1. **Close round 5 — [M10-R35](reviews/M10.md#m10-r35) first, and it is a decision.** The fix is one
-   method (`StructuredRecognizers::redetect_within`), verified against a patched build of this commit:
-   the 15.63 MiB body goes from `200` in 17.2 s to a `400` in 2.2 s with the suite still green. Two
-   things need the maintainer rather than the builder: whether to take the **structural** version
-   (fold the budget into `try_detect` / `redetect` and delete the `_within` pair, so a seventh
-   detector is safe by construction), and whether charging the later fixpoint passes — which halves
-   the effective allowance for any body that masks something — leaves **500,000** the right number.
-   Re-run DOS-BUD before answering. [M10-R36](reviews/M10.md#m10-r36) and
-   [M10-R38](reviews/M10.md#m10-r38) are re-measurements that must land **after** it, or they get
-   published twice.
-2. **Review round 6 — closure verification of round 5.** Three of the seven are corrections to numbers
-   this milestone has now published wrong twice, and one (R35) changes shipped behaviour again. The
-   model stays round 4's: a closure is checked against the finding's own `file:line`s, or against
-   nothing — and, since round 5, against a **mutated** tree wherever the claim is "this guard would
-   fail".
-3. **The CC battery — CC-01 / CC-03 / CC-04 / CC-09** (step 10 above). Needs the maintainer at the
+1. **Review round 6 — closure verification of round 5.** [M10-R35](reviews/M10.md#m10-r35) was closed
+   by a **trait signature change**: `PiiDetector::try_detect` / `redetect` take a `&Budget`, the
+   `_within` pair is deleted, and `Vault::mask_all` requires one — so every implementor and every
+   call site moved. What to attack: whether any path can still reach detection with a **fresh**
+   allowance (the answer should now be structural — search `Budget::new` / `per_call` / `unlimited`
+   and check each is a caller with no request to charge); whether `DetectError::budget_exhausted` is
+   set on every error that must not be swallowed and on none that should be; whether **DOS-08**
+   genuinely fails when a detector drops the budget, since it is the guard whose absence let R35
+   through; and every figure in ARCHITECTURE's budget table, which is the **fourth** version of those
+   numbers. Round 5's model is the one to keep: a closure is checked against the finding's own
+   `file:line`s, or against nothing — and, where the claim is *"this guard would fail"*, against a
+   **mutated** tree rather than a reading.
+2. **The CC battery — CC-01 / CC-03 / CC-04 / CC-09** (step 10 above). Needs the maintainer at the
    keyboard with Claude Code pointed at the proxy. **No key configuration required.**
-4. **Bump `Cargo.toml` to `1.2.1`** — a `chore(release):` commit at tag time, as `1.2.0` was. Left
+3. **Bump `Cargo.toml` to `1.2.1`** — a `chore(release):` commit at tag time, as `1.2.0` was. Left
    at `1.2.0` on purpose: `release-build-publish.yml` refuses to publish a tag that disagrees with
    the manifest, so the mismatch is currently *protective*, not a gap.
 
@@ -1957,14 +1952,14 @@ than quietly re-scored.
 >
 > **The threshold moved because of a legal payload, not an adversarial one.** Charging per `parse()`
 > instead of per candidate (R29) shrank the effective allowance ~9×, and at 50,000 units an ordinary
-> **367 KB database tool result with one phone column** came back a `400`. Raised to **500,000**
-> (~1.4 s of CPU, ≈50,000 numbers per request) on the maintainer's call. *A fail-closed threshold
-> whose refusal is a routine event is the wrong threshold.* Not an environment variable: a CPU bound
-> an operator can raise is not a bound.
+> **367 KB database tool result with one phone column** came back a `400`. Raised to **500,000** on
+> the maintainer's call. *A fail-closed threshold whose refusal is a routine event is the wrong
+> threshold.* Not an environment variable: a CPU bound an operator can raise is not a bound.
 >
-> **Measured after:** the 15.6 MiB body that answered `200` in 57 s is **refused in 0.19 s**; a real
-> 22 KiB Claude Code turn spends **0** units; a 6.1 MB / 80,000-row SQL result is still masked.
-> **217 default / 250 onnx green**, `fmt` and `clippy -D warnings` clean on both.
+> *(The figures this block first carried — "0.19 s", "~1.4 s", "≈50,000 numbers" — were measured
+> before round 5 found that only pass 0 was charged, and are corrected below and in
+> [ARCHITECTURE](ARCHITECTURE.md). The threshold survived the correction; the numbers around it did
+> not.)*
 >
 > Two things outlived the round, both promoted. *A budget scoped to a unit the client can multiply is
 > a rate, not a bound* ([ARCHITECTURE](ARCHITECTURE.md)), and its testing companion — *when a guard's
@@ -1999,13 +1994,34 @@ findings rather than re-scored.
 
 | ID | Title | Sev | Status |
 |---|---|---|---|
-| [M10-R35](reviews/M10.md#m10-r35) | The budget bounds **pass 0** of a request, not a request: `StructuredRecognizers` never overrides `redetect_within`, so a legal 15.63 MiB body answers 200 in 17.2 s | **BLOCKER** | [ ] |
-| [M10-R36](reviews/M10.md#m10-r36) | The headline "refused in 0.19 s" does not reproduce and contradicts the row above it in its own table — DOS-BUD prints 3.07 s | measurement | [ ] |
-| [M10-R37](reviews/M10.md#m10-r37) | Both READMEs' fail-closed bullet still describes the pre-M10-R28 unit: "a **single field** … exhausts the budget", remedy "shrink the field" | docs | [ ] |
-| [M10-R38](reviews/M10.md#m10-r38) | The budget constant's own SQL table publishes a row DOS-BUD refutes, and the "≈50,000 numbers per request" figure resting on it is ~1.7× pessimistic | measurement | [ ] |
-| [M10-R39](reviews/M10.md#m10-r39) | `mask_all_within`'s doc says `mask_all` passes `Budget::unlimited`; twenty lines above, `mask_all` passes a real allowance and says so | low | [ ] |
-| [M10-R40](reviews/M10.md#m10-r40) | E2E-05's digit-run check exempts every run shorter than four digits, while the record claims every run is checked | low | [ ] |
-| [M10-R41](reviews/M10.md#m10-r41) | `FailOpen` identifies a budget refusal by a global side-condition, not by the error; correct today only via an invariant nothing states | low | [ ] |
+| [M10-R35](reviews/M10.md#m10-r35) | The budget bounds **pass 0** of a request, not a request: `StructuredRecognizers` never overrides `redetect_within`, so a legal 15.63 MiB body answers 200 in 17.2 s | **BLOCKER** | [x] |
+| [M10-R36](reviews/M10.md#m10-r36) | The headline "refused in 0.19 s" does not reproduce and contradicts the row above it in its own table — DOS-BUD prints 3.07 s | measurement | [x] |
+| [M10-R37](reviews/M10.md#m10-r37) | Both READMEs' fail-closed bullet still describes the pre-M10-R28 unit: "a **single field** … exhausts the budget", remedy "shrink the field" | docs | [x] |
+| [M10-R38](reviews/M10.md#m10-r38) | The budget constant's own SQL table publishes a row DOS-BUD refutes, and the "≈50,000 numbers per request" figure resting on it is ~1.7× pessimistic | measurement | [x] |
+| [M10-R39](reviews/M10.md#m10-r39) | `mask_all_within`'s doc says `mask_all` passes `Budget::unlimited`; twenty lines above, `mask_all` passes a real allowance and says so | low | [x] |
+| [M10-R40](reviews/M10.md#m10-r40) | E2E-05's digit-run check exempts every run shorter than four digits, while the record claims every run is checked | low | [x] |
+| [M10-R41](reviews/M10.md#m10-r41) | `FailOpen` identifies a budget refusal by a global side-condition, not by the error; correct today only via an invariant nothing states | low | [x] |
+
+> **All seven closed (2026-07-30), and R35 was closed by deleting the seam rather than filling it.**
+> The maintainer chose the structural fix over the one-line override: `try_detect` and `redetect`
+> now **take** a `&Budget`, the `_within` pair is gone, and `Vault::mask_all` lost its budget-less
+> convenience for the same reason. There is no method left that a forgotten override could fall
+> through to which would mint another allowance. *An obligation a trait default can satisfy is not
+> carried by the type system — and "every test passes" is the signature of that, not evidence against
+> it.* **DOS-08** is the guard whose absence let it through, and it is phrased over the **trait**, not
+> the type: a seventh detector that drops the allowance fails there. R41 was closed the same way —
+> `DetectError` carries `budget_exhausted`, so `FailOpen` reads the error instead of correlating with
+> a global.
+>
+> **The threshold survived; the numbers around it did not.** Charging the fixpoint's later passes
+> roughly **doubles** what a masking body spends, so the refusal line for a phone-bearing database
+> result moved from ~90,000 rows to **~25,000–35,000**. 500,000 stays: 5,000 rows — the ordinary
+> `tool_result` — spends 100,010 of it, and a real 22 KiB Claude Code turn still spends **0**.
+> Re-measured and republished in full, from DOS-BUD's own rows (R36 · R38): the 15.6 MiB / 78-field
+> body is **refused in 2.24 s** (was `200` in 57 s), and the honest ceiling is *~1.6 s of validation
+> plus work linear in the body* — the slowest legal body measured is **5.2 s**, not the 1.4 s this
+> ledger claimed a round ago. **218 default / 251 onnx green**, `fmt`, `clippy -D warnings` and
+> `cargo doc`'s 15-warning baseline all clean.
 
 <a id="backlog"></a>
 ## Backlog — documented, not scheduled

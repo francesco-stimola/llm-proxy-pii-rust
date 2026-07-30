@@ -197,23 +197,26 @@ vengono suddivisi in finestre, così funzionano anche i documenti lunghi.
 
 - **Fail closed.** Una forma di richiesta illeggibile, un tipo di blocco di contenuto
   sconosciuto, un rilevatore obbligatorio che fallisce, un mascheramento che non raggiunge un
-  punto fisso stabile, o un singolo campo così denso di cifre da esaurire il budget di validazione
-  telefonica **bloccano la richiesta (400)** invece di inoltrare qualcosa dallo stato PII
-  sconosciuto. L'ultimo è l'unico 400 che un corpo per il resto perfettamente legale può
-  provocare, ed è utile saperlo prima di incontrarlo: rimandare lo stesso corpo fallisce in modo
-  identico — va rimpicciolito il campo (un `LIMIT` sulla query dietro un risultato di tool troppo
-  grande, meno righe per chiamata). Solo `POST /v1/chat/completions` (e `POST /v1/messages` quando
+  punto fisso stabile, o una **richiesta** così densa di cifre da esaurire l'ammontare di
+  validazioni telefoniche **bloccano la richiesta (400)** invece di inoltrare qualcosa dallo stato
+  PII sconosciuto. L'ultimo è l'unico 400 che un corpo per il resto perfettamente legale può
+  provocare, ed è utile saperlo prima di incontrarlo: l'ammontare si spende sull'*intera richiesta*,
+  quindi distribuire lo stesso contenuto su più campi non aiuta, e rimandarla identica fallisce allo
+  stesso modo. Va mandato meno testo denso di cifre — un `LIMIT` sulla query dietro un risultato di
+  tool troppo grande, meno righe per chiamata. Solo `POST /v1/chat/completions` (e `POST /v1/messages` quando
   `UPSTREAM_PROVIDER=anthropic`) è proxato — tutto il resto è `404`, mai inoltrato.
 - **Mai loggare PII in chiaro.** I log riportano categorie, conteggi e segnaposto — mai i valori.
   Garantito da un test, non da una convenzione.
 - **Lineare sotto carico, e limitato per richiesta.** Il percorso di mascheramento è
   dimostrabilmente lineare sia nella *dimensione* del campo che nel *numero* di entità, e il lavoro
   CPU-bound gira fuori dall'executor asincrono. Ma *lineare è una forma, non un tetto*: un corpo
-  legale da 15,6 MiB di testo denso di cifre teneva occupato un worker per **57 s**, finché
-  l'ammontare di validazioni telefoniche non è stato riferito alla **richiesta** invece che al
-  campo — lo stesso corpo ora viene rifiutato in **0,19 s**, e il caso peggiore che una singola
-  richiesta può costare è **~1,4 s** di CPU. Un corpo grande non può bloccare il proxy per tutti.
-  *Un proxy giù non protegge nulla.*
+  legale da 15,6 MiB di testo denso di cifre teneva occupato un worker per **57 s**, perché
+  l'ammontare di validazioni telefoniche era riferito a un *campo* e quanti campi ha un corpo lo
+  sceglie il client. Riferito alla **richiesta**, lo stesso corpo viene rifiutato in **2,2 s**, e la
+  validazione telefonica in sé è limitata a ~1,6 s di CPU. Ciò che resta è lineare nei byte — il
+  corpo legale più lento misurato costa **5,2 s** per un risultato di database da 6 MB, e
+  `MAX_BODY_BYTES` lo limita. Un corpo grande non può bloccare il proxy per tutti. *Un proxy giù non
+  protegge nulla.*
 - **Deterministico.** Lo stesso valore ottiene sempre lo stesso segnaposto all'interno di una
   richiesta, così le conversazioni multi-turno stateless restano coerenti.
 

@@ -194,23 +194,25 @@ hardware; large fields are chunked so long documents work too.
 ### The bar it holds itself to
 
 - **Fail closed.** An unreadable request shape, an unknown content-block type, a required
-  detector that errors, masking that can't reach a stable fixpoint, or a single field so
-  digit-dense it exhausts the phone-validation budget all **block the request (400)** rather than
-  forward anything of unknown PII status. That last one is the only 400 an otherwise completely
-  legal body can trigger, and it is worth knowing before you meet it: retrying the same body fails
-  identically — shrink the field instead (a `LIMIT` on the query behind an oversized tool result,
-  fewer rows per call). Only `POST /v1/chat/completions`
+  detector that errors, masking that can't reach a stable fixpoint, or a **request** so digit-dense
+  it exhausts the phone-validation allowance all **block the request (400)** rather than forward
+  anything of unknown PII status. That last one is the only 400 an otherwise completely legal body
+  can trigger, and it is worth knowing before you meet it: the allowance is spent across the *whole
+  request*, so splitting the same content over more fields does not help, and retrying unchanged
+  fails identically. Send less digit-dense text — a `LIMIT` on the query behind an oversized tool
+  result, fewer rows per call. Only `POST /v1/chat/completions`
   (and `POST /v1/messages` when `UPSTREAM_PROVIDER=anthropic`) is proxied — everything else is
   `404`, never forwarded.
 - **Never log raw PII.** Logs carry kinds, counts and placeholders — never values. Enforced
   by a test, not by convention.
 - **Linear under load, and bounded per request.** The masking path is provably linear in both
   field *size* and entity *count*, and CPU-bound work runs off the async executor. But *linear is
-  a shape, not a budget*: a legal 15.6 MiB body of digit-dense text held a worker for **57 s**
-  until the phone validation allowance was scoped to the **request** instead of the field — the
-  same body is now refused in **0.19 s**, and the worst case any single request can cost is
-  **~1.4 s** of CPU. A large body can't stall the proxy for everyone. *A proxy that is down
-  protects nothing.*
+  a shape, not a budget*: a legal 15.6 MiB body of digit-dense text held a worker for **57 s**,
+  because the phone-validation allowance was scoped to a *field* and the client picks how many
+  fields a body has. Scoped to the **request**, the same body is refused in **2.2 s**, and phone
+  validation itself is capped at ~1.6 s of CPU. What is left is linear in bytes — the slowest legal
+  body measured is **5.2 s** for a 6 MB database result, and `MAX_BODY_BYTES` bounds that. A large
+  body can't stall the proxy for everyone. *A proxy that is down protects nothing.*
 - **Deterministic.** The same value always maps to the same placeholder within a request, so
   stateless multi-turn conversations stay coherent.
 

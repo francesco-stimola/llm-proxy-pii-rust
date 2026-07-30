@@ -873,6 +873,11 @@ async fn spawn_counting_mock_upstream() -> (SocketAddr, Arc<Mutex<usize>>) {
 /// easiest to breach by accident.
 #[tokio::test]
 async fn e2e05_budget_refusal_reaches_the_client_intact_and_carries_no_input_bytes() {
+    /// A **test** allowance, not the shipped 500,000 — see `spawn_proxy_budgeted`. Named because
+    /// assertion (c) below has to know it: the refusal may carry this number and the field's length,
+    /// and nothing else.
+    const VALIDATION_UNITS: usize = 20_000;
+
     // The same odometer as DOS-06: `(b, c)` enumerated over 81 M combinations, so no candidate
     // recurs and the per-scan memo is inert. A modular-hash generator silently repeats after its
     // period and reports "the budget was never reached" as the product's doing (M10-R20).
@@ -889,7 +894,7 @@ async fn e2e05_budget_refusal_reaches_the_client_intact_and_carries_no_input_byt
     }
 
     let (upstream, hits) = spawn_counting_mock_upstream().await;
-    let proxy = spawn_proxy_budgeted(upstream, 20_000).await;
+    let proxy = spawn_proxy_budgeted(upstream, VALIDATION_UNITS).await;
     let resp = reqwest::Client::new()
         .post(format!("http://{proxy}/v1/chat/completions"))
         .json(&json!({ "messages": [{ "role": "user", "content": field }] }))
@@ -926,21 +931,39 @@ async fn e2e05_budget_refusal_reaches_the_client_intact_and_carries_no_input_byt
         "the refusal must name a concrete way to shrink the field, got: {message}"
     );
 
-    // (c) no byte of the request survives in it. The message is built from the input's *length*
-    //     and a constant, so the only digit runs it may carry are those two numbers — anything
-    //     else is request-derived text in a string that is logged and returned to the client.
+    // (c) no byte of the request survives in it. The message is one `format!` over two integers —
+    //     the allowance and the field's length — so this is phrased as **"only these appear"**
+    //     rather than "nothing forbidden appears" (M10-R40).
+    //
+    //     **The negative phrasing had a hole exactly where it mattered.** It read
+    //     `!field.contains(run) || run.len() < 4`, and that disjunct passes *unconditionally* for
+    //     any 1-, 2- or 3-digit run drawn from the body — which is the length a truncation leaks
+    //     (M10-R1's orphaned `912`, three digits of a real Portuguese number). An assertion
+    //     disabled precisely where the interesting leak would sit is not an assertion (M10-R13).
+    //     The exemption existed to avoid false positives from short numbers; stating the allowed
+    //     set instead removes the need for it, and cannot be satisfied vacuously.
     assert!(
         !message.contains("row "),
         "the refusal must carry no input-derived text, got: {message}"
     );
+    let allowed = [VALIDATION_UNITS.to_string(), field.len().to_string()];
     let digit_runs: Vec<&str> = message
         .split(|c: char| !c.is_ascii_digit())
         .filter(|s| !s.is_empty())
         .collect();
+    assert!(
+        !digit_runs.is_empty(),
+        "no digits at all in the refusal — this check would pass vacuously: {message}"
+    );
     for run in &digit_runs {
         assert!(
-            !field.contains(run) || run.len() < 4,
-            "the refusal leaks the digit run {run:?} from the request body: {message}"
+            allowed.iter().any(|a| a == run),
+            "the refusal carries the digit run {run:?}, which is neither the allowance ({}) nor \
+             the field length ({}). Every number in this string must be one the code put there \
+             deliberately — a third one is request-derived text in a message that is both logged \
+             and returned to the client: {message}",
+            allowed[0],
+            allowed[1]
         );
     }
 

@@ -25,7 +25,7 @@ that way?"*
 | [M7.md](M7.md) | M7 / M7.1 — NER latency · system-prompt cache | 23, all closed |
 | [M8.md](M8.md) | M8 / M8.1 — GLiNER · national phone recognizer | 8, all closed |
 | [M9.md](M9.md) | M9 / M9.1 — GPU optimization · per-backend binaries | 29, all closed |
-| [M10.md](M10.md) | M10 — national phone coverage + release hygiene | 41, 34 closed (round 5's seven open) |
+| [M10.md](M10.md) | M10 — national phone coverage + release hygiene | 41, all closed (round 6 pending) |
 
 **The page to read here is [M10-R28](M10.md#m10-r28), the fourth turn of one wheel.** M10-R2 was a DoS
 on the domestic-phone validator. Its fix was undone by the input **repeating**
@@ -56,6 +56,13 @@ every fixpoint pass after the first started from a full one, and a legal 15.63 M
 `200` in **17.2 s** against a published ceiling of ~1.4 s. The one-line fix leaves the whole suite
 green, which is the part to take away: *an obligation that a trait default can satisfy is not carried
 by the type system, and "every test passes" is the signature of that, not evidence against it.*
+
+It was closed by **deleting the seam**, not filling it: `try_detect` and `redetect` now *take* a
+`&Budget`, so omitting it does not compile. The generalization is the one to carry out of this folder
+— **when forgetting to override is silently valid, the API is the defect.** Its sibling
+[M10-R41](M10.md#m10-r41) is the same idea about values rather than methods: `FailOpen` decided what
+to swallow by consulting a *global* (`budget.is_exhausted()`) instead of asking the error what kind it
+was, and *correlating with a state is not distinguishing a kind.*
 
 ---
 

@@ -223,11 +223,29 @@ exactly the reason above.
 > because `try_detect(&str)` is the shape they were handed; the masking path takes a **body**.
 >
 > There is now exactly **one `Budget` per request**, created by `PrivacyStage::on_request` beside
-> the `Vault` it already owns and threaded down through `mask_all_within` → `try_detect_within`.
-> `CompositeDetector`, `CachingDetector` and `FailOpen` **must** forward it, and each does so
-> explicitly: inheriting the trait default would route the call to plain `try_detect` and hand the
-> detector underneath a fresh allowance — restoring the per-field behaviour silently, on the one path
-> that matters. Measured after: the 15.6 MiB body is refused in **193 ms**.
+> the `Vault` it already owns and threaded down through `Vault::mask_all` into `try_detect` /
+> `redetect`. Measured after: the 15.6 MiB body is refused in **2.24 s**.
+
+> **The budget is a *parameter*, not an optional second seam — and that took two attempts
+> (M10-R35).** The first fix added a `try_detect_within` / `redetect_within` pair whose **defaults
+> delegated to the budget-less originals**. Every wrapper then carried an obligation to override
+> *both*, and the penalty for missing one was invisible: the call fell through to a method that
+> **minted a fresh allowance**. The round that introduced it saw the hazard clearly and closed it for
+> all three wrappers — and missed the **leaf**. `StructuredRecognizers` is the only detector whose
+> cost the budget bounds and the only place that mints one; it overrode `try_detect_within` and not
+> `redetect_within`, so every fixpoint pass after the first started full again and a legal 15.63 MiB
+> body answered `200` in **17.2 s** against a published ceiling of ~1.4 s. **The whole suite stayed
+> green**, before and after the one-line difference.
+>
+> So the pair is gone. `try_detect` and `redetect` **take** a `&Budget`, and `redetect`'s default
+> forwards *the same one*; `Vault::mask_all` lost its budget-less convenience for the identical
+> reason. No method remains that a default could route to which would mint another — the only ways to
+> create an allowance are `Budget::new` / `per_call` / `unlimited`, which is one `grep`.
+>
+> *An obligation that a trait default can satisfy is not carried by the type system — and "every test
+> passes" is the signature of that, not evidence against it.* The general form: **when forgetting to
+> override is silently valid, the API is the defect**; make the thing that must travel a parameter,
+> so omitting it does not compile.
 
 > **`FailOpen` is not fail-open about the budget, and the distinction is a leak if collapsed.**
 > *"This detector is unavailable"* is a property of the **detector**; continuing without a
@@ -237,23 +255,38 @@ exactly the reason above.
 > health. Round 4 hunted for a path where an exhausted budget fails *open* and found none, but only
 > because nothing wraps the structured recognizers in `FailOpen` **today**. That was a property of
 > the wiring, not of the code, and wiring changes.
+>
+> **It asks the error, not the budget (M10-R41).** The first version matched on
+> `budget.is_exhausted()` — a property of the **request**, asked about an error that may belong to the
+> **detector**. It gave the right answer, but only through an invariant nothing stated: no detector
+> returns `Ok` with an exhausted budget, *and* `build_detector` happens to order the structured
+> recognizers first. Same wiring-dependent argument, one level down. And it had a cost in the other
+> direction — a genuine GPU or tokenizer failure arriving while the budget was coincidentally spent
+> became a `400` on a proxy explicitly configured to degrade to structured-only. `DetectError` now
+> carries `budget_exhausted`, built by `DetectError::budget_exhausted(..)` vs
+> `DetectError::unavailable(..)`, so the wrapper reads what it means and the decision lives in one
+> function. *Correlating with a global state is not the same as distinguishing a kind.*
 
 **What the budget costs, and the number is chosen against a legal payload.** One unit is one
-`phonenumber::parse()`, measured at **~2.7 µs** on the shipped release build, so **500,000** bounds a
-request's domestic-phone work at **~1.4 s** of CPU — against **~95 s** for the same 16 MiB
-`MAX_BODY_BYTES` with no budget, a **40× reduction of the worst case**. The allowance works out to
-≈**50,000 phone numbers per request**. Re-measure any of it with `DOS-BUD`:
+`phonenumber::parse()`, measured at **~3 µs** on the shipped release build, so **500,000** bounds a
+request's domestic-phone *validation* at **~1.6 s** of CPU. Every row below is printed by `DOS-BUD`
+(`cargo test --release --test complexity -- --ignored --nocapture budget_refusal_line`) — *a number a
+reader must trust goes stale; a number they can re-run is a fact*:
 
-| body | verdict | wall clock |
-|---|---|---|
-| M7 22 KiB Claude Code turn | masked, **0 units spent** | — |
-| 35 KB SQL result, 500 rows, one phone column | masked (5,005 units) | 14 ms |
-| 367 KB SQL result, 5,000 rows | masked (50,005) | 120 ms |
-| 3.7 MB SQL result, 50,000 rows | masked (295,005) | 788 ms |
-| 6.1 MB SQL result, 80,000 rows | masked (445,005) | 1.23 s |
-| 2 MiB field, *nothing but* phone-shaped groups | masked (499,380) | 1.32 s |
-| 3 MiB+ field, same shape | **refused** | 1.32 s |
-| 15.6 MiB across 78 × 200 KB fields | **refused** | 193 ms |
+| body | verdict | units | wall clock |
+|---|---|---|---|
+| M7 22 KiB Claude Code turn | masked | **0** | — |
+| 35 KB SQL result, 500 rows, one phone column | masked | 10,010 | 45 ms |
+| 367 KB SQL result, 5,000 rows | masked | 100,010 | 423 ms |
+| 1.5 MB SQL result, 20,000 rows | masked | 290,010 | 1.13 s |
+| 3.8 MB SQL result, 50,000 rows | **refused** | 500,000 | 3.82 s |
+| 6.1 MB SQL result, 80,000 rows | **refused** | 500,000 | 5.23 s |
+| 2 MiB field, *nothing but* phone-shaped groups | masked | 499,380 | 1.57 s |
+| 3 MiB+ field, same shape | **refused** | 500,000 | 1.60 s |
+| 1 x 200 KB field | masked | — | 160 ms |
+| 5 x 200 KB fields (1 MB) | masked | — | 846 ms |
+| **15.6 MiB across 78 x 200 KB fields** | **refused** | 500,000 | **2.24 s** |
+| 16 MiB, phone tier **off** - the unbudgeted floor | masked | 0 | 228 ms |
 
 **The 367 KB row is why the number is 500,000 and not 50,000.** At 50,000 units that entirely
 ordinary `tool_result` — a database query an agent runs by accident — came back a `400`. *A
@@ -261,7 +294,20 @@ fail-closed threshold whose refusal is a routine event is the wrong threshold:* 
 the agent a turn, and a bound that fires on legal traffic teaches its operator to raise it rather
 than to trust it. Which is also why it is **not** an environment variable (M10-R27): a CPU bound an
 operator can raise is not a bound. Headroom against a conversation is total — the M7 turn spends
-**zero** units, pinned by `PHONE-BUD`.
+**zero** units, pinned by `PHONE-BUD`. The refusal line for a phone-bearing database result sits
+around **25,000–35,000 rows**, measured; a table that size is not a turn an agent means to send.
+
+> **The budget bounds validation, not the whole request — and saying otherwise would be M10-R30 in a
+> new place.** Two terms make up a request's CPU: `units x ~3 µs`, which the allowance caps at
+> ~1.6 s, **plus** regex scanning and the mask rewrite, which are linear in body size and entity
+> count and bounded only by `MAX_BODY_BYTES`. That floor is small on its own — 16 MiB with the phone
+> tier off is **228 ms** — but on a body that actually *masks* tens of thousands of values it
+> dominates the tail: the worst legal body measured here costs **5.2 s**, not 1.6 s.
+>
+> What changed is not that the ceiling vanished; it is that it stopped being **multiplied by a factor
+> the client picks**. 57 s → 2.24 s on the same 78-field body, and what remains is linear in bytes.
+> *Linear is a shape, not a budget* — so the shape is published with the number beside it, rather
+> than the validation term alone wearing the word "ceiling".
 
 **The validator is not a locale *discriminator*.** National plans overlap, so a number valid in
 one region can be valid in another — a GB mobile also validates as DE, and `0123456789` is a real

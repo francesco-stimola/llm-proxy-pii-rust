@@ -3,6 +3,62 @@
 Newest first. One entry per meaningful change — note *what* and *why*, not just
 *what*. This is the running history so context is never lost between sessions.
 
+## 2026-07-30 — M10 round 5: the fix for the wrong unit had a hole shaped exactly like itself
+
+**Round 4's fix threaded the per-request allowance through a *new pair* of trait methods** —
+`try_detect_within` / `redetect_within` — whose **defaults delegated to the budget-less originals**.
+So every implementor carried an obligation to override *both*, and the penalty for missing one was
+invisible: the call fell through to a method that **minted a fresh allowance**. Round 4 saw that
+hazard, wrote it into the trait's own doc comment, and closed it for all three **wrappers**.
+
+It missed the **leaf**. `StructuredRecognizers` is the only detector whose cost the budget bounds and
+the only place in the tree that mints one; it overrode `try_detect_within` and not
+`redetect_within`. Every fixpoint pass after the first therefore started from a full 500,000, and a
+legal **15.63 MiB body answered `200` in 17.2 s** against a ceiling this project had just published as
+~1.4 s. The one-line difference left **the entire suite green on both sides**.
+
+*An obligation a trait default can satisfy is not carried by the type system — and "every test
+passes" is the signature of that, not evidence against it.*
+
+**So the seam was deleted rather than filled** (the maintainer's call, over the one-line override).
+`try_detect` and `redetect` now **take** a `&Budget`; `redetect`'s default forwards the same one;
+`Vault::mask_all` lost its budget-less convenience for the identical reason — two entry points where
+one mints and the other accepts is precisely the shape of the finding. Every implementor and call site
+moved with the signature. There is no longer any method a forgotten override could fall through to
+that would mint another allowance: the only ways to create one are `Budget::new` / `per_call` /
+`unlimited`, each visible where it is written. **When forgetting to override is silently valid, the
+API is the defect.**
+
+**The threshold survived the correction; the numbers around it did not.** Charging the later passes
+roughly **doubles** what a masking body spends, so the refusal line for a phone-bearing database
+result moved from ~90,000 rows to ~25,000–35,000. 500,000 stays — the ordinary 5,000-row tool result
+spends 100,010 of it, and a real 22 KiB Claude Code turn still spends **0**. Everything else was
+re-measured and republished from DOS-BUD's own rows: the 15.6 MiB / 78-field body is **refused in
+2.24 s**, and the honest ceiling is *~1.6 s of validation **plus** work linear in the body* — the
+slowest legal body measured is **5.2 s**. Publishing the validation term alone as "the ceiling" would
+have been M10-R30 in a new place, one round after promoting the rule against it, so DOS-BUD gained a
+row for the unbudgeted floor (16 MiB, phone tier off: 228 ms) and the claim is stated as two terms.
+
+**Also closed:** `FailOpen` decided what to swallow by asking `budget.is_exhausted()` — a property of
+the *request*, asked about an error that may belong to the *detector*. Correct only through an
+unstated invariant, and it turned a genuine GPU or tokenizer failure arriving at a spent budget into a
+`400` on a proxy configured to degrade to structured-only. `DetectError` carries the distinction now,
+built by `budget_exhausted(..)` vs `unavailable(..)`, and one `fail_open` helper serves both entry
+points so they cannot drift apart. E2E-05's digit-run check was re-phrased from *"nothing forbidden
+appears"* to *"only these two integers appear"* — its exemption for runs under four digits disabled
+the assertion exactly where a truncation leaks (M10-R1's orphaned `912`).
+
+**The new guard is DOS-08**, the one whose absence let this through, and it is written against the
+**trait** rather than the type. Its second half failed first on correct code, which is the part worth
+keeping: the obvious two-pass input exposes a *card*, and card validation is deliberately free
+(M10-R29), so the fixpoint's spend equalled pass 0's. Masking has to expose a **phone** — and an ASCII
+word boundary is what creates one. *A guard for "the later passes cost something" must be built from
+work the budget actually charges.*
+
+Five findings, five complexity guards, and each written by the blind spot of the one before it: field
+size → entity count → alphabet → periodicity → field count → **fixpoint pass**. **218 default / 251
+onnx green**, `fmt`, `clippy -D warnings` and the 15-warning `cargo doc` baseline all clean.
+
 ## 2026-07-30 — M10 round 4: two closures fell, and the budget turned out to bound the wrong unit
 
 **Round 4 verified the round-3 closures and six of eight hold.** The headline is that the two that
