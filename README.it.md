@@ -216,11 +216,13 @@ vengono suddivisi in finestre, così funzionano anche i documenti lunghi.
   validazione telefonica è limitata a ~1,5 s di CPU, e su ogni forma misurata una richiesta costa al
   massimo circa **3 s** — il resto è lineare nei byte e limitato da `MAX_BODY_BYTES`. Un corpo grande
   non può bloccare il proxy per tutti. *Un proxy giù non protegge nulla.*
-- **L'ammontare è raggiungibile da un corpo grande e legale, ed è bene saperlo.** Un numero di
-  telefono costa 1–29 unità di validazione a seconda di come è scritto, quindi un export contatti
-  denso comincia a essere rifiutato intorno ai **2,6 MB** (raggruppamento `320 123 4567`) o ai
-  **6 MB** (`347 1234567`). Un tool result ordinario — poniamo 367 KB — spende circa l'**1%**
-  dell'ammontare, e un turno di chat tipico non spende nulla.
+- **L'ammontare è raggiungibile da un corpo grande e legale, ed è bene saperlo.** È un conteggio di
+  *numeri di telefono*, non di byte: circa **62.500** per richiesta quando sono scritti nel modo
+  raggruppato più comune (`320 123 4567`), e circa 500.000 nel rendering più economico
+  (`347 1234567`). La dimensione a cui questo si traduce dipende da cosa c'è intorno — gli stessi
+  62.500 numeri vengono rifiutati a **793 KB** come colonna sola, **2 MB** come `name,phone`,
+  **4,4 MB** come export a sei colonne. Un export ordinario da 5.000 righe spende l'**8%**
+  dell'ammontare; un turno di chat tipico non spende nulla.
 - **Deterministico.** Lo stesso valore ottiene sempre lo stesso segnaposto all'interno di una
   richiesta, così le conversazioni multi-turno stateless restano coerenti.
 

@@ -982,24 +982,31 @@ fn next_char_boundary(input: &str, i: usize) -> usize {
 /// | **16 MiB** (`MAX_BODY_BYTES`), same rendering | 221,941 | 221,941 | masked |
 /// | **16 MiB, the same numbers written `3XX XXX XXXX`** | 219,095 | **500,000** | **refused** |
 ///
-/// **What a phone number costs depends on how it is written — 1 to 29 units (M10-R53).**
+/// **The allowance is a count of numbers, and how many depends on how they are written (M10-R56).**
 /// `national_phone_valid` is `.any()` over the regions whose plans use that candidate's *shape
 /// family*, so the accept path is cheap; but `Scan::Overlapping` resumes one `char` past each
 /// match's **start**, so a grouped or pair-separated number also proposes sub-candidates from inside
-/// itself, and each of those is rejected and pays its family's whole region list. `347 1234567` costs
-/// **1** — `LongBlock` is the only single-region family and the only shape no other family's regex
-/// matches inside — while `320 123 4567` costs 12, `612 34 56 78` costs 26 and `01 23 45 67 89`
-/// costs 29.
+/// itself, and each of those is rejected and pays its family's whole region list.
 ///
-/// So the reachable band for a **legal** phone-bearing body starts around **2.6 MB** (a dense grouped
-/// column) and around **6 MB** (the cheapest rendering), both inside `MAX_BODY_BYTES`. An ordinary
-/// 367 KB tool result spends ~1%; the M7 22 KiB turn spends 0.
+/// Measured per row in a column of 20,000 — the figure a real payload meets: `347 XXXXXXX` **1.00**,
+/// any `+CC` form 1.02, `0X XX XX XX XX` (FR) 3.27, `6XX XX XX XX` (ES) 3.27, `3XX XXX XXXX`
+/// (**IT grouped**) **8.00**. So 500,000 units is ≈**62,500 phone numbers per request** at the most
+/// expensive column rendering and ≈500,000 at the cheapest.
 ///
-/// *(Two earlier versions of this table were wrong in the same direction. The first measured an
-/// eleven-digit "phone column" no Italian plan accepts, so it masked nothing and published rejection
-/// costs — M10-R49. The second fixed the column and concluded a legal body could never reach the
-/// allowance, from the one rendering that is the global minimum — M10-R53. **A conclusion drawn from
-/// one point of a grid is a fact about that point.**)*
+/// **The bytes are a property of the layout, not of the limit.** The same 62,500 grouped numbers are
+/// refused at **793 KB** as a bare column, **2.0 MB** as `name,phone` and **4.45 MB** as a six-column
+/// export. An ordinary 5,000-row export spends 8%; the M7 22 KiB turn spends 0.
+///
+/// *(Per candidate **in isolation** the numbers differ — `06 12 34 56 78` costs 46 on its own, a
+/// `+CC` form costs 0 because that recognizer has no validator — and the difference is the per-scan
+/// memo, which absorbs repeated sub-candidate prefixes in a column. Isolation measures how a
+/// rendering behaves; the column measures what a body costs.)*
+///
+/// *(Four published versions of this band were wrong, all optimistic: an eleven-digit column that
+/// masked nothing (M10-R49); `347 XXXXXXX` alone, the cheapest legal phone in the shipped set
+/// (M10-R53); a "2.6 MB" probe whose generator repeated (M10-R56). Each measurement was correct and
+/// each **generalization** was not. **A conclusion drawn from one point of a grid is a fact about
+/// that point.**)*
 ///
 /// An earlier draft of this constant read 50,000 units and would have refused the 367 KB row — an
 /// entirely ordinary `tool_result`. *A fail-closed threshold whose refusal is a routine event is the

@@ -68,6 +68,48 @@ the band is exact rather than arguable.
 **220 default / 253 onnx green**, `fmt`, `clippy -D warnings` on both feature sets and the 15-warning
 `cargo doc` baseline all clean.
 
+## 2026-07-30 — M10 round 9: the limit was never a number of bytes, and the review is done
+
+**No live defect in `src/`. Fifth consecutive round.** Round 9 drove the real `.exe` end to end
+(masked → forwarded → restored; refused → upstream never contacted), mutated the tree to re-verify
+FAILOPEN-BUD and DOS-08, counted the odometer's distinct substrings instead of assuming them, and
+simulated the release workflow's two guards. Six findings, none needing a source change.
+
+**M10-R56 — the band was wrong a fifth time, and the fix was to stop publishing it in megabytes.**
+The Italian grouped rendering `320 123 4567` — the ordinary way to write a mobile — costs **8.00 units
+per row in a column**, exactly and flatly: 62,499 rows spend 499,992 and are masked, 62,500 spend
+500,000 and are refused. So the allowance is ≈**62,500 phone numbers per request** at the worst column
+rendering and ≈500,000 at the cheapest. The **bytes** are a property of the payload's layout, not of
+the limit — the same 62,500 numbers are refused at **793 KB** as a bare column, **2.0 MB** as
+`name,phone` and **4.45 MB** as a six-column export. Publishing one of those as *the* refusal line is
+what went wrong four times running.
+
+**And R57 explains why the isolated cost table was misleading even after it was correct.** In
+isolation an FR pair-separated number costs 46 units and a `+CC` form costs **0** (that recognizer has
+no validator at all); in a *column* FR collapses to 3.27, because the per-scan memo absorbs the
+repeated sub-candidate prefixes. *Isolation measures how a rendering behaves; a column measures what a
+body costs* — and only the second answers "can real traffic reach this?".
+
+**The threshold stays at 500,000, re-confirmed by the maintainer on the corrected numbers.** What
+changed in its justification is the word *"rare"*: an ordinary 5,000-row export spends **8%**, not 1%,
+and the refused body can be sub-megabyte. M10-R27's rule now has a real counterexample, written into
+ARCHITECTURE rather than smoothed over.
+
+**Two mechanical guards, which is what actually ends the loop.** `DOS-BUD` now runs the SQL sweep in
+**both** renderings, three layouts at the refusal line, and a per-rendering column table — so the
+sixth version of these numbers was *read off the harness* rather than typed in, which the first five
+were (R58). And **CAT-01** extracts every guard id a `#[test]` declares and asserts it is named in
+`TESTING.md` — the check M10-R55 prescribed, M10-R59 found unbuilt (the tenth instance of "a closure
+skipped a site its own finding named"), and which **caught four uncatalogued ids on its first run**:
+`LOG-03` and `PROP-01a/b/c`, hidden inside the compressed entries `LOG-01/02/03` and `PROP-01`. That
+is how a missing entry hides, and it is the best evidence the guard is real.
+
+**Where the milestone stands: the review is done.** Rounds 5–9 found zero live defects in `src/`. What
+kept producing findings was the loop between measurement and prose, and both halves of it now have a
+guard instead of a promise. **61 findings across nine rounds, all closed. 221 default / 254 onnx
+green**, `fmt`, `clippy -D warnings` and the 15-warning `cargo doc` baseline all clean. What is owed
+before the tag needs the maintainer: the CC battery, and the `1.2.1` bump.
+
 ## 2026-07-30 — M10 round 8: the availability claim was a property of one rendering
 
 All six of round 7's closures hold, verified by mutation and by recompiling the cases they describe.

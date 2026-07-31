@@ -1784,51 +1784,39 @@ only the false positives we imagined. Run:
   > fixture, and it carries no tool *results*), so the battery stays owed before the tag is cut.
 
 ### What is left before the tag
-Written 2026-07-29, **rewritten 2026-07-31 after round 9.** The milestone's scope items are all `[x]`,
-**55 of 61** review findings across nine rounds are `[x]`, and the suite is green on both feature sets
-(**220 default / 253 onnx**, zero warnings; `fmt`, `clippy -D warnings` clean; `cargo doc` 15 warnings,
-all pre-existing). Nothing is left in the code — rounds 8 and 9 both confirmed that by mutation, and
-none of the nine findings they raised needs a source change.
 
-> **The convergence call, updated by round 9's result.** Rounds 5–**9** found **zero live defects in
-> `src/`**: the fail-closed budget is pinned from six directions, the request path was driven end to
-> end on the real `.exe` again, and both rounds' attempts to break it came back with reasons rather
-> than findings. **The code has converged.** What has not is the loop between *measurement* and
-> *prose*: R53 was the fourth publication of these numbers and [M10-R56](reviews/M10.md#m10-r56) is
-> the fifth, wrong by 3.3× and in the optimistic direction for the third round running.
+Written 2026-07-29, **rewritten 2026-07-30 after round 9's findings were closed.** The milestone's
+scope items are all `[x]`, all **61** review findings across nine rounds are `[x]`, and the suite is
+green on both feature sets (**221 default / 254 onnx**, zero warnings; `fmt`, `clippy -D warnings`
+clean; `cargo doc` 15 warnings, all pre-existing). Nothing is left in the code.
+
+> **The milestone is done reviewing.** Rounds 5–9 found **zero live defects in `src/`** — five
+> consecutive rounds, with round 9 driving the real `.exe` end to end and mutating the tree to check
+> its own guards. What kept producing findings was never the code: it was the loop between
+> *measurement* and *prose*, and both halves of that loop now have a mechanical guard rather than a
+> promise. `DOS-BUD` measures the rendering axis, three layouts and both column renderings, so the
+> published band is read off the harness instead of typed in; **CAT-01** extracts every guard id a
+> `#[test]` declares and asserts it is named in `TESTING.md`, which is the check M10-R55 prescribed,
+> M10-R59 found unbuilt, and which caught four uncatalogued ids on its first run.
 >
-> **Round 8's stopping rule was *"cut the tag when a round produces only doc findings for a second
-> consecutive time"*, and round 9 satisfies it literally** — nothing here changes product behaviour.
-> But it also disproves the premise the rule was offered on: *"both classes now have a mechanical
-> guard, which is what makes them stop"* is false in both halves
-> ([M10-R59](reviews/M10.md#m10-r59)), and the class it was meant to stop produced two more instances
-> in the very next round. **The reviewer's read: the tag is not blocked by the code, and
-> [M10-R56](reviews/M10.md#m10-r56)–[R61](reviews/M10.md#m10-r61) are all closable without touching
-> `src/`. What should not ship uncorrected is a README that is wrong by 3.3× about when the product
-> refuses a customer's contact export** — and [M10-R58](reviews/M10.md#m10-r58) is what stops the
-> sixth version of that number from being wrong too.
+> The threshold was re-confirmed at **500,000** on the corrected numbers (see
+> [M10-R56](reviews/M10.md#m10-r56)): ~62,500 phone numbers per request at the most expensive column
+> rendering, an ordinary 5,000-row export at 8%, the M7 turn at 0.
 
-1. **Close round 9 — six findings, none needing a source change.** The order that matters:
-   [M10-R58](reviews/M10.md#m10-r58) first (build the density row), because
-   [M10-R56](reviews/M10.md#m10-r56)'s replacement numbers should be *read off the harness* rather
-   than typed in from a review — that is the sixth attempt at this table and the first five were all
-   typed in. Then [M10-R57](reviews/M10.md#m10-r57) (the 1–46 spread),
-   [M10-R59](reviews/M10.md#m10-r59) (build R55's catalogue guard, or say plainly that judgement is
-   what is stopping the loop), and the two doc ones.
-   **One decision is owed with [M10-R56](reviews/M10.md#m10-r56):** the refusal line for a dense legal
-   contact export is **793 KB** one-column / **1.88 MB** for `name,phone` — not the ~2.6 MB the
-   threshold was re-confirmed against last round. *Is 500,000 still the number you want?* The
-   reviewer's read is still yes — an ordinary 354 KB tool result spends 8% even at the expensive
-   rendering, and the M7 turn spends 0 — but the word *"rare"* in the justification no longer fits, so
-   it is a call to re-make rather than a fact to restate.
-2. **The CC battery — CC-01 / CC-03 / CC-04 / CC-09** (step 10 above). Needs the maintainer at the
-   keyboard with Claude Code pointed at the proxy. **No key configuration required.**
-3. **Bump `Cargo.toml` to `1.2.1`** — a `chore(release):` commit at tag time, as `1.2.0` was. Left
+1. **The CC battery — CC-01 / CC-03 / CC-04 / CC-09** (step 10 above). Needs the maintainer at the
+   keyboard with Claude Code pointed at the proxy. **No key configuration required.** This is the last
+   thing owed before the tag that a review round cannot produce.
+2. **Bump `Cargo.toml` to `1.2.1`** — a `chore(release):` commit at tag time, as `1.2.0` was. Left
    at `1.2.0` on purpose: `release-build-publish.yml` refuses to publish a tag that disagrees with
    the manifest, so the mismatch is currently *protective*, not a gap. **Both halves of that guard
    were simulated in round 9 and behave as described** — `v1.2.1` is blocked today by the Status
    table's `(planned)` *and* by the manifest, and the table-only scoping means this paragraph cannot
-   move it.
+   move it. Dropping `(planned)` from the Status table is part of the release commit, not of this one.
+3. **A round 10 is optional and is not a gate.** If one is run, the thing to attack is
+   [M10-R56](reviews/M10.md#m10-r56)'s band — the **sixth** version of those numbers, and the first
+   five were wrong — plus whether `DOS-BUD`'s rendering set and `CAT-01`'s prefix list are themselves
+   one-point grids. Run it *after* the tag as release verification rather than before it as a blocker.
+
 <a id="m10-ledger"></a>
 ### Review ledger — M10 → [`reviews/M10.md`](reviews/M10.md)
 **Round 1 (2026-07-29): 12 findings, all 12 closed.** The headline claim holds — verified through the real
@@ -2240,12 +2228,12 @@ client, refused bodies never forwarded, the refusal message carrying no input-de
 
 | ID | Title | Sev | Status |
 |---|---|---|---|
-| [M10-R56](reviews/M10.md#m10-r56) | The replacement band is wrong in the same optimistic direction: the grouped column both READMEs name is refused at **793 KB**, not 2.6 MB — and *"multi-megabyte, rare"* is what the threshold decision rests on | measurement | [ ] |
-| [M10-R57](reviews/M10.md#m10-r57) | *"1 to 29 units"* is one sample per family and the French sample is the cheapest of its family: six ordinary French renderings cost **46**, the overall maximum is **65** | measurement | [ ] |
-| [M10-R58](reviews/M10.md#m10-r58) | M10-R54's fix item 2 — the density row *"where the refusal line lives"* — was not built, so the published band is still an off-harness number nothing re-runs | guard | [ ] |
-| [M10-R59](reviews/M10.md#m10-r59) | The tag's stopping rule rests on *"both classes now have a mechanical guard"*; the catalogue guard R55 prescribed was never built, and DOS-BUD's axis is aimed at the instance | guard | [ ] |
-| [M10-R60](reviews/M10.md#m10-r60) | M10-R53's closure narrowed *"four live sites and two narrative ones"* to *"all four live sites"* — the round-7 ledger block still asserts the refuted claim in the present tense | docs | [ ] |
-| [M10-R61](reviews/M10.md#m10-r61) | Two mechanical defects introduced by `e704ce6`: a duplicated sentence in ROADMAP's pre-tag list (already gone — that block was rewritten this round) and seven doubled apostrophes in the review record | low | [ ] |
+| [M10-R56](reviews/M10.md#m10-r56) | The replacement band is wrong in the same optimistic direction: the grouped column both READMEs name is refused at **793 KB**, not 2.6 MB — and *"multi-megabyte, rare"* is what the threshold decision rests on | measurement | [x] |
+| [M10-R57](reviews/M10.md#m10-r57) | *"1 to 29 units"* is one sample per family and the French sample is the cheapest of its family: six ordinary French renderings cost **46**, the overall maximum is **65** | measurement | [x] |
+| [M10-R58](reviews/M10.md#m10-r58) | M10-R54's fix item 2 — the density row *"where the refusal line lives"* — was not built, so the published band is still an off-harness number nothing re-runs | guard | [x] |
+| [M10-R59](reviews/M10.md#m10-r59) | The tag's stopping rule rests on *"both classes now have a mechanical guard"*; the catalogue guard R55 prescribed was never built, and DOS-BUD's axis is aimed at the instance | guard | [x] |
+| [M10-R60](reviews/M10.md#m10-r60) | M10-R53's closure narrowed *"four live sites and two narrative ones"* to *"all four live sites"* — the round-7 ledger block still asserts the refuted claim in the present tense | docs | [x] |
+| [M10-R61](reviews/M10.md#m10-r61) | Two mechanical defects introduced by `e704ce6`: a duplicated sentence in ROADMAP's pre-tag list (already gone — that block was rewritten this round) and seven doubled apostrophes in the review record | low | [x] |
 
 <a id="backlog"></a>
 ## Backlog — documented, not scheduled

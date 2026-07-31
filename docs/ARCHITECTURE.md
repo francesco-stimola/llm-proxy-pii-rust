@@ -291,7 +291,8 @@ reader must trust goes stale; a number they can re-run is a fact*:
 | 357 KB SQL result, 5,000 rows, one phone column | masked | 5,000 | 46 ms |
 | 3.7 MB SQL result, 50,000 rows | masked | 50,000 | 514 ms |
 | **16 MiB SQL result, `347 XXXXXXX` column** | masked | 221,941 | 2.4 s |
-| **16 MiB SQL result, same numbers written `3XX XXX XXXX`** | **refused** | 500,000 | 1.29 s |
+| **16 MiB SQL result, same numbers written `3XX XXX XXXX`** | **refused** | 500,000 | 1.6 s |
+| 62,500 grouped numbers — bare column (793 KB) · `name,phone` (2.0 MB) · 6-column (4.45 MB) | **refused** | 500,000 | — |
 | 2 MiB field, *nothing but* phone-shaped groups | masked | 499,380 | 1.36 s |
 | 3 MiB+ field, same shape | **refused** | 500,000 | 1.44 s |
 | 1 x 200 KB field | masked | — | 151 ms |
@@ -299,45 +300,43 @@ reader must trust goes stale; a number they can re-run is a fact*:
 | **15.6 MiB across 78 x 200 KB fields** | **refused** | 500,000 | **1.61 s** |
 | 16 MiB, phone tier **off** - the unbudgeted floor | masked | 0 | 229 ms |
 
-> **How much a phone number costs depends on how it is written, and the spread is 1 to 29 units.**
+> **The allowance is a count of *numbers*, and how many depends on how they are written.**
 > `national_phone_valid` is `.any()` over the regions whose plans use that candidate's **shape
 > family**, so the accept path is cheap — but `Scan::Overlapping` resumes one `char` past each match's
 > *start*, so a grouped or pair-separated number also proposes **sub-candidates from inside itself**,
-> and each of those is rejected and pays its family's whole region list. Measured on
-> `try_detect("call {number} now")`, shipped default:
+> and each of those is rejected and pays its family's whole region list.
 >
-> | rendering | units | | rendering | units |
+> **Per row in a column of 20,000 — the figure a real payload meets:**
+>
+> | column of | units/row | | column of | units/row |
 > |---|---|---|---|---|
-> | `347 1234567` (IT, `LongBlock`) | **1** | | `320 123 4567` (IT, grouped) | **12** |
-> | `030 12345678` (DE) | 1 | | `210 123 456` (PT) | 14 |
-> | `011 5627111` (IT landline) | 2 | | `612 34 56 78` (ES) | 26 |
-> | `020 7946 0958` (GB) | 3 | | `67 22 33 44` (LV) | 28 |
-> | `010 12345678` (CN landline) | 4 | | `01 23 45 67 89` (FR) | **29** |
+> | `347 XXXXXXX` (IT `LongBlock`) | **1.00** | | `0X XX XX XX XX` (FR pairs) | 3.27 |
+> | `+39 3XX XXXXXXX` (any `+CC`) | 1.02 | | `6XX XX XX XX` (ES grouped) | 3.27 |
+> | | | | `3XX XXX XXXX` (**IT grouped**) | **8.00** |
 >
-> So the reachable band for a **legal** phone-bearing body starts at about **2.6 MB** for a dense
-> grouped column and about **6 MB** for the cheapest rendering — both inside `MAX_BODY_BYTES`. A
-> 2.6 MB `SELECT name, phone` export is refused, fail-closed and with an actionable message, and it is
-> not an adversarial body. An ordinary 367 KB tool result spends **~1%** of the allowance and a real
-> 22 KiB Claude Code turn spends **0**.
+> So **500,000 units is ~62,500 phone numbers per request** at the most expensive column rendering
+> measured, and ~500,000 at the cheapest. The **bytes** at which that lands are a property of the
+> payload's layout, not of the limit — the same 62,500 grouped numbers are refused at **793 KB** as a
+> bare `phone` column, **2.0 MB** as `name,phone`, and **4.45 MB** as a six-column export. An ordinary
+> 5,000-row export spends **8%** of the allowance; a real 22 KiB Claude Code turn spends **0**.
 >
-> **This paragraph replaces the opposite claim, and how that got published is the lesson (M10-R53).**
-> Four documents said a legal phone-bearing body *could not reach the allowance at all*, on the
-> strength of one measurement: DOS-BUD's `347 XXXXXXX` column. That rendering is the **global
-> minimum** — `LongBlock` is the only single-region family and the only shape no other family's regex
-> matches inside — so the harness had generalized from the cheapest legal input that exists. *A
-> conclusion drawn from one point of a grid is a fact about that point*, and the grid axis nobody had
-> varied was **how the number is written**.
+> **Per candidate in isolation the numbers are different, and the difference is the memo.** One
+> `06 12 34 56 78` costs **46** units on its own — against 1 for `347 1234567`, 0 for a `+CC` form
+> (that recognizer has no validator at all) and 65 for the most expensive candidate found, which no
+> plan accepts. In a *column* those collapse, because the per-scan memo absorbs the repeated
+> sub-candidate prefixes: FR drops from 46 to 3.27. *Isolation measures how a rendering behaves; the
+> column measures what a body costs, and only the second one answers "can real traffic reach this?".*
 >
-> **This was invisible for two rounds because DOS-BUD's "phone column" was eleven digits** and no
-> Italian plan accepts eleven (M10-R49). It masked **nothing** at any size, so every unit published
-> from it was a rejection cost — ~20 per row instead of ~1 — and the "refusal line" derived from it
-> (~25,000 rows) was a fact about non-numbers. The verdict column printed `0 left`, which is exactly
-> what a correctly-masked column prints too: *an instrument that cannot tell success from vacancy,
-> on the harness whose whole job is to answer "can real traffic reach this?"*. It reports
-> `N masked` now.
+> **Four published versions of this band were wrong, all in the optimistic direction, and the shape of
+> the error never changed (M10-R49 · R53 · R56).** An eleven-digit column that masked nothing; then
+> `347 XXXXXXX` alone, which is the cheapest legal phone in the shipped set; then a "2.6 MB" figure
+> from a probe whose generator repeated, so the memo served most of it free. Each time the measurement
+> was correct and the **generalization** was not. *A conclusion drawn from one point of a grid is a
+> fact about that point* — so the band is now published as a count with a density note, re-run by
+> `DOS-BUD` in both renderings and three layouts, rather than as a megabyte figure.
 
-**The 367 KB row is why the number is 500,000 and not 50,000.** At 50,000 units an entirely ordinary
-`tool_result` came back a `400` under the *rejection* cost that dominates a mixed body. *A fail-closed
+**The number is 500,000 and not 50,000 because of an ordinary tool result.** At 50,000 units a 367 KB
+database result was refused. *A fail-closed
 threshold whose refusal is a routine event is the wrong threshold:* every refusal costs the agent a
 turn, and a bound that fires on legal traffic teaches its operator to raise it rather than to trust
 it. Which is also why it is **not** an environment variable (M10-R27): a CPU bound an operator can

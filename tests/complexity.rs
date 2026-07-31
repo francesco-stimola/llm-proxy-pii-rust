@@ -568,61 +568,189 @@ fn budget_refusal_line_and_cost() {
     // payload. This is the body an agent produces by accident, so it is what "can real traffic reach
     // the budget?" has to be answered with — the question M10-R27 was raised to ask and M10-R30
     // found unanswerable from the doc comment alone.
-    println!("\n--- a realistic SQL tool result: one phone column among ordinary columns ---");
+    //
+    // **In BOTH renderings, because one is not a measurement of anything but itself (M10-R56/R58).**
+    // The refusal line for a legal body lives here, and for three rounds this sweep ran only the
+    // cheapest rendering — so the published band was an off-harness number nothing re-ran. A column
+    // of `347 XXXXXXX` costs ~1 unit per row; the same numbers written `3XX XXX XXXX` cost ~8, and
+    // that factor is the whole difference between "multi-megabyte, rare" and "sub-megabyte".
+    println!("\n--- a realistic SQL tool result: one phone column, both renderings ---");
     println!(
-        "{:>10}  {:>6}  {:>9}  {:>8}  {:>7}",
-        "bytes", "rows", "verdict", "ms", "spent"
+        "{:>22}  {:>10}  {:>7}  {:>12}  {:>8}  {:>7}",
+        "rendering", "bytes", "rows", "verdict", "ms", "spent"
     );
-    for rows in [500usize, 5_000, 20_000, 30_000, 40_000, 50_000] {
-        let mut dump = String::from("id,customer,city,phone,email,total\n");
+    for (label, grouped) in [("347 XXXXXXX", false), ("3XX XXX XXXX", true)] {
+        for rows in [5_000usize, 20_000, 50_000, 62_500, 100_000, 250_000] {
+            let mut dump = String::from("id,customer,city,phone,email,total\n");
+            for r in 0..rows as u64 {
+                // Odometers in both renderings: a modular column repeats and the per-scan memo then
+                // serves the repeats for free, which reads as sub-linear cost when it is a generator
+                // artefact. That trap has now produced a published number twice (M10-R49, M10-R56).
+                let phone = if grouped {
+                    format!(
+                        "3{:02} {:03} {:04}",
+                        20 + (r / 10_000_000) % 80,
+                        (r / 10_000) % 1000,
+                        r % 10_000
+                    )
+                } else {
+                    format!("347 {:07}", 1_000_000 + r % 9_000_000)
+                };
+                dump.push_str(&format!(
+                    "{},Customer Name {},Milano,{},user{}@example.com,{}.50\n",
+                    10_000 + r,
+                    r,
+                    phone,
+                    r,
+                    100 + r % 900
+                ));
+            }
+            let budget = llm_proxy_pii_rust::pii::Budget::new(
+                llm_proxy_pii_rust::pii::recognizers::MAX_PHONE_VALIDATIONS_PER_REQUEST,
+            );
+            // Through `mask_all`, not `try_detect` — the whole fixpoint, which is what a request
+            // pays (M10-R35). Measuring one pass is how the published figure came to be per-pass
+            // while claiming to be per-field.
+            let started = Instant::now();
+            let mut vault = Vault::new();
+            // Report how many phones were **masked**, not how many were left: "0 left" is what a
+            // correctly-masked column and an entirely unmatched one both print (M10-R49).
+            let verdict = match vault.mask_all(&dump, &detector, &budget) {
+                Ok(masked) => format!("{} masked", masked.matches("[PHONE_").count()),
+                Err(_) => "REFUSED".to_string(),
+            };
+            println!(
+                "{label:>22}  {:>10}  {:>7}  {:>12}  {:>8.0}  {:>7}",
+                dump.len(),
+                rows,
+                verdict,
+                started.elapsed().as_secs_f64() * 1000.0,
+                budget.spent()
+            );
+        }
+    }
+
+    // **The allowance is a count of numbers, not a count of bytes — and publishing it in bytes is
+    // what went wrong four times (M10-R56).** At a given rendering the cost per phone number is
+    // flat, so the *row* limit is fixed; the *byte* limit is whatever surrounds the column. Three
+    // layouts at the grouped rendering, all at the same 62,500 rows, show the same refusal at three
+    // very different sizes — which is why the band is published as numbers with a density note
+    // rather than as a megabyte figure.
+    println!("\n--- one limit, three layouts: the refusal line is rows, not bytes ---");
+    println!(
+        "{:>26}  {:>10}  {:>7}  {:>12}  {:>7}",
+        "layout", "bytes", "rows", "verdict", "spent"
+    );
+    for (layout, rows) in [
+        ("phone only", 62_500usize),
+        ("phone only (one row less)", 62_499),
+        ("name,phone", 62_500),
+        ("6-column export", 62_500),
+    ] {
+        let mut dump = String::new();
         for r in 0..rows as u64 {
-            // **The phone column is an odometer too, and the first version of this was not.** A
-            // `(r * 7) % 9000` column repeats after its period, and the per-scan memo then serves
-            // the repeats for free: 20,000 rows measured the *same* 30,781 units as 10,000, which
-            // reads as sub-linear cost when it is really a generator artefact. That is DOS-06's own
-            // trap (M10-R20), reproduced here while measuring the fix for it — third time in this
-            // milestone. Enumerating `(b, c)` keeps every row's number distinct.
-            // **A real Italian mobile: `3XX XXXXXXX`, ten digits (M10-R49).** The first version
-            // emitted `3NN NNNN NNNN` — *eleven* digits, which no Italian plan accepts, so the
-            // column this table is named after masked **nothing at any size** and every unit
-            // published from it was the cost of *rejecting* candidates. The verdict column printed
-            // `0 left`, which is what a correctly-masked column prints too: an instrument that
-            // cannot tell success from vacancy, on the harness whose whole job is answering "can
-            // real traffic reach the budget?".
-            dump.push_str(&format!(
-                "{},Customer Name {},Milano,347 {:07},user{}@example.com,{}.50\n",
-                10_000 + r,
-                r,
-                1_000_000 + r % 9_000_000,
-                r,
-                100 + r % 900
-            ));
+            let phone = format!(
+                "3{:02} {:03} {:04}",
+                20 + (r / 10_000_000) % 80,
+                (r / 10_000) % 1000,
+                r % 10_000
+            );
+            match layout {
+                "name,phone" => dump.push_str(&format!("Customer Name {r},{phone}\n")),
+                "6-column export" => dump.push_str(&format!(
+                    "{},Customer Name {},Milano,{},user{}@example.com,{}.50\n",
+                    10_000 + r,
+                    r,
+                    phone,
+                    r,
+                    100 + r % 900
+                )),
+                _ => dump.push_str(&format!("{phone}\n")),
+            }
         }
         let budget = llm_proxy_pii_rust::pii::Budget::new(
             llm_proxy_pii_rust::pii::recognizers::MAX_PHONE_VALIDATIONS_PER_REQUEST,
         );
-        // **Through `mask_all`, not `try_detect` — the whole fixpoint, which is what a request
-        // pays (M10-R35).** Measuring one pass here is how the published figure came to be
-        // per-pass while claiming to be per-field; the later passes are charged now and this is
-        // where that has to show up.
-        let started = Instant::now();
         let mut vault = Vault::new();
-        // Report how many phones were **masked**, not how many were left: "0 left" is what a
-        // correctly-masked column and an entirely unmatched one both print (M10-R49).
         let verdict = match vault.mask_all(&dump, &detector, &budget) {
             Ok(masked) => format!("{} masked", masked.matches("[PHONE_").count()),
             Err(_) => "REFUSED".to_string(),
         };
         println!(
-            "{:>10}  {:>6}  {:>9}  {:>8.0}  {:>7}",
+            "{layout:>26}  {:>10}  {:>7}  {:>12}  {:>7}",
             dump.len(),
             rows,
             verdict,
-            started.elapsed().as_secs_f64() * 1000.0,
             budget.spent()
         );
     }
-
+    // **Per-candidate cost is not per-row cost, and only the second one answers the question
+    // (M10-R57).** In isolation an FR pair-separated number costs up to 46 units; in a *column* of
+    // them the per-scan memo absorbs the repeated sub-candidate prefixes and the marginal cost
+    // collapses. The refusal line a real payload meets is the column figure, so that is what the band
+    // has to be published from — the isolation table above measures how a rendering behaves, not what
+    // a body costs.
+    println!("\n--- cost per row in a COLUMN of 20,000, by rendering ---");
+    println!(
+        "{:>26}  {:>8}  {:>10}  {:>12}",
+        "column of", "spent", "units/row", "verdict"
+    );
+    for (label, make) in [
+        (
+            "347 XXXXXXX (IT LongBlock)",
+            (|r: u64| format!("347 {:07}", 1_000_000 + r % 9_000_000)) as fn(u64) -> String,
+        ),
+        ("3XX XXX XXXX (IT grouped)", |r: u64| {
+            format!(
+                "3{:02} {:03} {:04}",
+                20 + (r / 10_000_000) % 80,
+                (r / 10_000) % 1000,
+                r % 10_000
+            )
+        }),
+        ("0X XX XX XX XX (FR pairs)", |r: u64| {
+            format!(
+                "0{} {:02} {:02} {:02} {:02}",
+                1 + (r / 100_000_000) % 9,
+                (r / 1_000_000) % 100,
+                (r / 10_000) % 100,
+                (r / 100) % 100,
+                r % 100
+            )
+        }),
+        ("6XX XX XX XX (ES grouped)", |r: u64| {
+            format!(
+                "6{:02} {:02} {:02} {:02}",
+                10 + (r / 1_000_000) % 90,
+                (r / 10_000) % 100,
+                (r / 100) % 100,
+                r % 100
+            )
+        }),
+        ("+39 3XX XXXXXXX (+CC)", |r: u64| {
+            format!("+39 3{:02} {:07}", 20 + r % 80, 1_000_000 + r % 9_000_000)
+        }),
+    ] {
+        let mut dump = String::new();
+        for r in 0..20_000u64 {
+            dump.push_str(&make(r));
+            dump.push('\n');
+        }
+        let budget = llm_proxy_pii_rust::pii::Budget::new(
+            llm_proxy_pii_rust::pii::recognizers::MAX_PHONE_VALIDATIONS_PER_REQUEST,
+        );
+        let mut vault = Vault::new();
+        let verdict = match vault.mask_all(&dump, &detector, &budget) {
+            Ok(masked) => format!("{} masked", masked.matches("[PHONE_").count()),
+            Err(_) => "REFUSED".to_string(),
+        };
+        println!(
+            "{label:>26}  {:>8}  {:>10.2}  {:>12}",
+            budget.spent(),
+            budget.spent() as f64 / 20_000.0,
+            verdict
+        );
+    }
     // **The axis this harness held constant for three rounds: how the number is *written* (M10-R54).**
     //
     // Rows and bytes were varied; rendering, region and density were not — so every conclusion drawn

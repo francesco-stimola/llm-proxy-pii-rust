@@ -213,11 +213,12 @@ hardware; large fields are chunked so long documents work too.
   validation is capped at ~1.5 s of CPU, and across every shape measured a request costs at most
   about **3 s** — the rest is linear in bytes and bounded by `MAX_BODY_BYTES`. A large body can't
   stall the proxy for everyone. *A proxy that is down protects nothing.*
-- **The allowance is reachable by a large, legal body, and that is worth knowing.** A phone number
-  costs 1–29 validation units depending on how it is written, so a dense contact export starts
-  getting refused somewhere around **2.6 MB** (`320 123 4567`-style grouping) to **6 MB**
-  (`347 1234567`). An ordinary tool result — say 367 KB — spends about **1%** of the allowance, and a
-  typical chat turn spends none at all.
+- **The allowance is reachable by a large, legal body, and that is worth knowing.** It is a count of
+  *phone numbers*, not of bytes: about **62,500** per request when they are written the common
+  grouped way (`320 123 4567`), and about 500,000 at the cheapest rendering (`347 1234567`). The size
+  that lands on depends on what surrounds them — the same 62,500 numbers are refused at **793 KB** as
+  a bare column, **2 MB** as `name,phone`, **4.4 MB** as a six-column export. An ordinary 5,000-row
+  export spends **8%** of the allowance; a typical chat turn spends none at all.
 - **Deterministic.** The same value always maps to the same placeholder within a request, so
   stateless multi-turn conversations stay coherent.
 
