@@ -173,8 +173,35 @@ the client gets restored (OFF) — the full chain, not two independently-plausib
 - **CC-09 — the query text must be PII-free.** The original `SELECT '…' FROM DUAL` carried the values as
   **literals in the query text**, so *reading* the `.sql` masked them before the query ran and the
   `tool_result` path was never exercised. **Fixed 2026-07-18:** run `fixtures/cc09-setup.sql` once,
-  **out-of-band** (a local SQLite file is enough — the `python-sql` MCP server takes an absolute-path
-  `sqlite` connection), to create a synthetic `cc09_customers`; then the agent runs the PII-free
-  `SELECT * FROM cc09_customers` (that is now `customer-lookup.sql`). The PII rides in the **result**,
-  not the **text**. Never point this at a real table — synthetic data only. Verified leak-clean
-  2026-07-18 (DBG-02 = 0 on all six values).
+  **out-of-band** against a throwaway DB, to create a synthetic `cc09_customers`; then the agent runs
+  the PII-free `SELECT * FROM cc09_customers` (that is now `customer-lookup.sql`). The PII rides in the
+  **result**, not the **text**. Never point this at a real table — synthetic data only. Verified
+  leak-clean 2026-07-18 and 2026-07-31 (DBG-02 = 0 on all six values, both times).
+
+## CC-09's setup, which is not one line
+
+The two sentences above used to end with *"a local SQLite file is enough — the `python-sql` MCP server
+takes an absolute-path `sqlite` connection"*. **That is false, and it cost the 2026-07-31 run twenty
+minutes.** That server resolves connection **names** out of a connections file; handing it a path
+returns `Unknown connection`. The 2026-07-18 run worked because the owner had added such a connection
+by hand — and nothing recorded it, so by the next run it was gone and `list-connections` returned
+**only real corporate Oracle schemas**.
+
+Adding the fixture to the machine's own connections file is the obvious fix and the wrong one: that
+file holds live credentials, and it leaves a session whose entire job is to emit PII one tool call
+away from a production table. So the workspace carries **its own** server instead:
+
+1. **Create the DB, out-of-band.** Any client that speaks SQLite; `fixtures/cc09-setup.sql` is plain
+   `CREATE` + `INSERT`. Put it at `tools/claude-code-session/scratch/cc09.db` (gitignored).
+2. **Write `scratch/cc09-connections.yaml`** with exactly one entry — `CC09`, `db_type: sqlite`,
+   `database:` the absolute path from step 1, `read_only: true`.
+3. **Copy `fixtures/cc09-mcp.example.json` to `tools/claude-code-session/.mcp.json`** and fill in the
+   two absolute paths (your SQL MCP server binary; the file from step 2). `.mcp.json` is **gitignored**
+   — the paths are machine-specific. Claude Code asks you to trust the server on next start; **if you
+   decline it, the scenario has no tools and passes in silence.**
+4. **Name the server in the prompt** — *"usa il tool MCP `cc09-sqlite`"*. If the machine's ordinary SQL
+   server is also loaded (it will be, from user scope), the agent otherwise has two to choose from.
+
+The point of the separate server is not tidiness. It makes *"never point this at a real table"* a
+property of the wiring rather than a warning in a document: this session has exactly one reachable
+database, and it is read-only and synthetic.

@@ -678,7 +678,9 @@ is a finding. *Client* is the only thing the flag changes. Paths are relative to
 - **Setup (once, out-of-band — NOT through the proxy):** run `fixtures/cc09-setup.sql` against a
   **throwaway** DB (a local SQLite file is enough) to create `cc09_customers` with one synthetic row
   (email/phone/ssn/card/iban/secret). This puts the PII in the query **result**, not the query **text**.
-  Never point this at a real table — synthetic data only.
+  Never point this at a real table — synthetic data only. **The wiring is four steps, not one, and the
+  one-line version of it was wrong for two milestones** — see
+  [`MANUAL_VERIFICATION.md` → *CC-09's setup*](MANUAL_VERIFICATION.md#cc-09s-setup-which-is-not-one-line).
 - **Ask:** `Con il tool MCP SQL, esegui SELECT * FROM cc09_customers e mostrami il risultato.`
   (equivalently `fixtures/customer-lookup.sql`, which is now exactly that PII-free query).
 - **Upstream:** the `tool_result` carries `[EMAIL_n]`, `[PHONE_1]`, `[SSN_1]`, `[CARD_1]`, `[IBAN_1]`,

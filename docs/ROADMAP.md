@@ -1771,24 +1771,29 @@ only the false positives we imagined. Run:
   *"five scenarios deliberately not run, because M10 cannot reach them"* is a result; silence about
   them reads as a full battery that passed.
 
-  > **Not run — and that is the one M10 box that is open, stated plainly rather than quietly
-  > dropped.** CC-01/03/04/09 need a **human driving a real Claude Code session through the proxy**
-  > and watching two traces; an agent working inside the repo cannot route its own session, which is
-  > the same limit as in [M6](#m6) and [M9](#m9). *(An earlier version of this note said they needed
-  > a live `ANTHROPIC_API_KEY`. They do not — see the box above. That sentence is what made this box
-  > read as blocked on something nobody had, rather than on ten minutes of the maintainer's time.)*
-  > **What automated tests could reach, they reached**, and the specific risk the battery exists to
-  > cover here — over-masking a digit run inside `tool_use.input` — has its cheap, automated
-  > approximation in **PHONE-OM**: the shipped default yields **zero** `Phone` spans on a real
-  > 22 KiB Claude Code turn. That is not the same evidence as a live session (a fixture is still a
-  > fixture, and it carries no tool *results*), so the battery stays owed before the tag is cut.
+  > **Run 2026-07-31 — four scenarios × two postures, all pass.** With the owner driving a real
+  > Claude Code session on the hybrid (`NER_REQUIRED=1`, both green startup lines, no credential on
+  > the proxy). 47 forwarded requests, **zero** fixpoint 400, **DBG-02 = 0** on all 16 raw values
+  > across both logs. The masked bodies are **byte-identical between postures**, and the tokens the
+  > client reads on ON (`[PERSON_4]`, `[EMAIL_2]`, `[IBAN_1]`) are the ones the OFF trace shows
+  > leaving and restores — one round-trip seen from both ends. **The risk this subset exists for is
+  > answered:** `Read`'s line numbers `1`…`5` passed untouched beside a masked phone column, the SQL
+  > result's `"id":1` / `"row_count":1` passed untouched beside six masked fields, and a 199 KB real
+  > turn yielded zero `Phone` spans — PHONE-OM's offline result with tool *results* included. CC-04
+  > is the sharpest: identical `tool_use.input` in both runs, `first-contact.txt` holding
+  > `bob@test.com` after OFF and `[EMAIL_2]` after ON. **Five scenarios deliberately not run**
+  > (CC-02/05/06/07/08 — M10 never edits that code). Full account: DEVLOG 2026-07-31; the run also
+  > corrected a two-milestone-old falsehood about CC-09's MCP setup, now
+  > [four steps in the runbook](MANUAL_VERIFICATION.md#cc-09s-setup-which-is-not-one-line).
 
 ### What is left before the tag
 
-Written 2026-07-29, **rewritten 2026-07-30 after round 9's findings were closed.** The milestone's
-scope items are all `[x]`, all **61** review findings across nine rounds are `[x]`, and the suite is
-green on both feature sets (**221 default / 254 onnx**, zero warnings; `fmt`, `clippy -D warnings`
-clean; `cargo doc` 15 warnings, all pre-existing). Nothing is left in the code.
+Written 2026-07-29, rewritten 2026-07-30 after round 9's findings were closed, **and again 2026-07-31
+when the CC battery landed.** The milestone's scope items are all `[x]`, all **61** review findings
+across nine rounds are `[x]`, and the suite is green on both feature sets (**221 default / 254 onnx**,
+zero warnings; `fmt`, `clippy -D warnings` clean; `cargo doc` 15 warnings, all pre-existing). Nothing
+is left in the code, and **the one thing no review round could produce — a live Claude Code session —
+has now been run**. What remains is the release commit itself, which is the maintainer's call.
 
 > **The milestone is done reviewing.** Rounds 5–9 found **zero live defects in `src/`** — five
 > consecutive rounds, with round 9 driving the real `.exe` end to end and mutating the tree to check
@@ -1803,9 +1808,9 @@ clean; `cargo doc` 15 warnings, all pre-existing). Nothing is left in the code.
 > [M10-R56](reviews/M10.md#m10-r56)): ~62,500 phone numbers per request at the most expensive column
 > rendering, an ordinary 5,000-row export at 8%, the M7 turn at 0.
 
-1. **The CC battery — CC-01 / CC-03 / CC-04 / CC-09** (step 10 above). Needs the maintainer at the
-   keyboard with Claude Code pointed at the proxy. **No key configuration required.** This is the last
-   thing owed before the tag that a review round cannot produce.
+1. ~~**The CC battery — CC-01 / CC-03 / CC-04 / CC-09**~~ — **done 2026-07-31**, all four in both
+   postures, zero leaks and zero fixpoint 400 (step 10 above; DEVLOG for the full account). Nothing
+   the tag waits on is left in this line.
 2. **Bump `Cargo.toml` to `1.2.1`** — a `chore(release):` commit at tag time, as `1.2.0` was. Left
    at `1.2.0` on purpose: `release-build-publish.yml` refuses to publish a tag that disagrees with
    the manifest, so the mismatch is currently *protective*, not a gap. **Both halves of that guard

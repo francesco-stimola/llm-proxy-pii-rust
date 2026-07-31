@@ -1,0 +1,8 @@
+# The live MCP wiring for CC-09 — machine-specific (absolute paths to a server
+# binary and a connections file), so it is built locally from the committed
+# template and never committed itself.
+#
+#   fixtures/cc09-mcp.example.json  ->  .mcp.json
+#
+# See docs/MANUAL_VERIFICATION.md -> CC-09.
+.mcp.json

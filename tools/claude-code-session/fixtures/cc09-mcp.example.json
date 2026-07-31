@@ -1,0 +1,33 @@
+{
+  "_comment": [
+    "Template for ../.mcp.json — CC-09's SQL tool. Copy it up one level, replace both",
+    "absolute paths, and Claude Code will offer to trust the server on next start.",
+    "",
+    "This server is deliberately SEPARATE from the machine's ordinary SQL MCP server:",
+    "it reads a connections file that holds exactly one entry, a read-only SQLite file",
+    "of synthetic rows. A session whose job is to emit PII then has no reachable path",
+    "to a production table — 'never point this at a real table' becomes a property of",
+    "the wiring instead of a warning in a doc.",
+    "",
+    "The connections file (scratch/cc09-connections.yaml, gitignored) is:",
+    "  connections:",
+    "    CC09:",
+    "      db_type: sqlite",
+    "      database: <abs path>/tools/claude-code-session/scratch/cc09.db",
+    "      options:",
+    "        read_only: true",
+    "",
+    "Create cc09.db out-of-band from fixtures/cc09-setup.sql — never through the proxy.",
+    "Any MCP server that can serve a local SQLite file works; this one is what the",
+    "2026-07-18 and 2026-07-31 runs used."
+  ],
+  "mcpServers": {
+    "cc09-sqlite": {
+      "type": "stdio",
+      "command": "<abs path to your SQL MCP server executable>",
+      "env": {
+        "SQL_MCP_CONNECTIONS_FILE": "<abs path>/tools/claude-code-session/scratch/cc09-connections.yaml"
+      }
+    }
+  }
+}

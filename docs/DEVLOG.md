@@ -3,6 +3,72 @@
 Newest first. One entry per meaningful change — note *what* and *why*, not just
 *what*. This is the running history so context is never lost between sessions.
 
+## 2026-07-31 — The CC battery, M10's subset: four scenarios × two postures, and the numerics nobody masked
+
+**The last box M10 owed, and the one no review round could produce.** CC-01 / CC-03 / CC-04 / CC-09,
+each run twice (`PII_DEBUG_SKIP_DEMASK` unset, then `=1`), against real Anthropic through the proxy,
+with the owner driving a real Claude Code session in `tools/claude-code-session/`. Hybrid confirmed
+before trusting anything: `cargo build-onnx` immediately before launch, `NER_REQUIRED=1`, both green
+lines (`ONNX NER detector loaded … pool_size=1 intra_threads=12 provider="cpu"`, `listening on
+http://127.0.0.1:8787`), `upstream_api_key: None` — the client's own credential, forwarded verbatim,
+200 on the first request as in M6.
+
+**All four pass both postures.** 47 forwarded requests across the two logs, **zero** fixpoint 400,
+zero `ERROR`, one `WARN` (the `PII_DEBUG_SKIP_DEMASK` banner, on the run that set it). **DBG-02 = 0**
+on all 16 raw values — three emails, four phones, three SSNs, two IBANs, the card, the secret in
+full, and the three names — across **both** logs.
+
+**What the pair proves that neither half does.** On Run ON the client read `[PERSON_4]`, `[EMAIL_2]`,
+`[IBAN_1]`; on Run OFF *those same three tokens* are what the trace shows leaving, and the client got
+`Jane Doe` / `jane.doe@example.com` / `IT60X…123456` back. Same input, same provider, same
+assignment — one round-trip seen from both ends, not two plausible halves. The masked bodies are
+**byte-identical between postures** (request-side masking does not depend on the flag), which is the
+comparison that would have been a finding had it failed. CC-04 isolates the de-mask to a two-line
+diff: identical `tool_use.input` (`{"content":"[EMAIL_2]", …}`) in both runs, while `first-contact.txt`
+on disk holds `bob@test.com` after OFF and **`[EMAIL_2]` after ON** — the placeholder on disk, the
+clearest artifact the battery produces.
+
+**The M10 question — over-masking real agent traffic — is answered, and the answer is clean.** This
+is what the four were chosen for: no corpus test can show a masked line number corrupting a tool
+argument, because a corpus holds only the false positives we imagined. On live traffic: the `Read`
+tool result's line numbers `1`…`5` passed **untouched** while the phone column beside them became
+`[PHONE_1..3]`; the SQL result's `"id":1` and `"row_count":1` passed untouched beside six masked
+fields; and a 199 KB real turn yielded **zero** `Phone` spans. (The single `[PHONE_2]` in that body
+is literal text of our own augmentation prompt — *"for example [EMAIL_1], [PHONE_2], …"* — not a
+detection. Worth checking rather than assuming, since a grep for `[PHONE_` alone would have read as
+an over-mask.) PHONE-OM's offline result now has its live twin, with tool *results* included.
+
+**Five scenarios deliberately not run — CC-02, CC-05, CC-06, CC-07, CC-08.** M10 touches the
+deterministic layer only; the NER, determinism across turns, secrets, thinking blocks and streaming
+are all code this milestone never edited, and re-running them would buy confidence in the wrong
+place. Saying so is the result; silence would read as a full battery that passed. Two of them were
+nonetheless visible in passing: the NER masked `Jane Doe` as `[PERSON_4]` on every turn (so the
+hybrid was demonstrably running, which is CC-02's *concern* though not its assertions), and a
+`thinking` block was replayed with its signature and accepted (CC-07's invariant — but the block's
+content was empty, so it is an indication, not a run).
+
+**A setup defect in the runbook, found the only way it could be.** `MANUAL_VERIFICATION.md` and
+`TESTING.md` both said CC-09's throwaway DB is reached because *"the `python-sql` MCP server takes an
+absolute-path `sqlite` connection"*. It does not: it resolves connection **names** out of a
+connections file, and passing a path returns `Unknown connection`. The 2026-07-18 run worked because
+the owner had added such a connection by hand; nothing recorded that, and by today it was gone —
+`list-connections` returned **only real corporate Oracle schemas**. Adding the fixture to that file
+would have been the obvious fix and the wrong one: it holds live credentials, and it would leave a
+session whose whole job is to emit PII one tool call away from a production table. Instead the
+fixture workspace now carries its own **`.mcp.json`** (server `cc09-sqlite`) pointed at a connections
+file of its own, holding exactly one read-only SQLite entry. The rule *"never point this at a real
+table"* stops being a warning and becomes a property of the wiring. `.mcp.json` is gitignored
+(absolute machine paths); `fixtures/cc09-mcp.example.json` is the committed template, and the runbook
+now says how to build both.
+
+**One artifact, recorded because it is visible to a user and is not a defect.** On Run OFF the model
+sometimes explains the masking it was told about — *"i valori sono placeholder tipizzati … non
+modificarli"* — while the values around that sentence have already been restored to the real ones.
+The de-mask substitutes tokens; it cannot rewrite meta-commentary about them, and it should not try.
+Harmless to privacy, mildly confusing to read. (As in M6, the raw SQL row also appears in Claude
+Code's **local** tool-output pane: that result never traverses the proxy, and the masked copy is what
+goes upstream.)
+
 ## 2026-07-31 — M10 round 9: the axis was added, the claim was not emitted, and the number is wrong again
 
 All four closures checked hold as **edits**. R47's guard clause is load-bearing by mutation — deleting
