@@ -3,6 +3,34 @@
 Newest first. One entry per meaningful change — note *what* and *why*, not just
 *what*. This is the running history so context is never lost between sessions.
 
+## 2026-07-31 — `v1.2.1` cut, and what the release page actually contains
+
+**Tagged from `cee931d`, published green: ten binaries, three guards satisfied, curated body.** The
+order is the part worth keeping, because it is what stopped this tag from being broken: push to
+`main` → let `ci.yml` run → run **Manual build** by hand (the ten-target cross-compile, which
+otherwise happens for the first time *after* the tag is public) → only then tag. `ci.yml`
+deliberately does not cross-compile, so without that middle step the `DEP-02` defect found today —
+real, and invisible on Windows — would have surfaced with the release already out.
+
+**The `CHANGELOG.md` guard shipped with this release** and is now the third precondition beside the
+ROADMAP row and the manifest: a tag this file does not describe is refused before anything is
+published. All three were simulated locally against the real files before the tag went up, using
+the same `grep`/`awk` the workflow runs.
+
+**One prediction in that design was wrong, and the correction is worth more than the prediction
+was.** `generate_release_notes: true` was described — in the workflow comment, in the commit
+message, and in the options put to the maintainer — as appending *the commit list*, with "45
+commits" named as what the auto-generated half would show. It does not: GitHub generates notes from
+**pull requests**. This repo pushes straight to `main`, so there were none, and the generated half
+of the v1.2.1 body reduced to a single `**Full Changelog**: …/compare/v1.2.0...v1.2.1` line.
+
+The outcome is the one we wanted, reached for the opposite reason — a curated section plus a
+compare link, with no noise. But the option the maintainer *declined* (auto-notes only) would not
+have produced a noisy page as described; it would have produced an **almost empty one**: a title
+and a link. A choice offered on a wrong description is a choice that was not really offered, which
+is why this is recorded rather than quietly enjoyed. The comment in `release-build-publish.yml` now
+states the measured behaviour.
+
 ## 2026-07-31 — CI's first look at M10, and the guard that was green because of the OS it ran on
 
 **The 31 M10 commits reached CI for the first time today, and it went red immediately.** Both test

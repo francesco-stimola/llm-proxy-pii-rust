@@ -160,9 +160,16 @@ jobs:
           echo "published $published binaries:"
           find out -type f -printf '  %f\n' | sort
 
-      # `body_path` + `generate_release_notes` is deliberately both: the curated section leads, and
-      # GitHub appends its generated commit/contributor list underneath it. Neither alone is the
-      # release page you want — the first says what changed, the second proves it is complete.
+      # `body_path` + `generate_release_notes` is deliberately both: the curated section leads and
+      # GitHub appends its generated notes underneath.
+      #
+      # What those generated notes actually contain, measured on v1.2.1 rather than assumed: GitHub
+      # lists **pull requests**, not commits. This repo pushes straight to `main`, so there are none
+      # and the generated half reduces to a single `**Full Changelog**: …/compare/vA...vB` line.
+      # That is a good outcome — the compare link is exactly "what changed since the last release",
+      # with none of the noise a 45-commit list would carry — but it means `generate_release_notes`
+      # ALONE would publish a release page with a title and a link and nothing else. The curated
+      # section is not decoration here; it is the entire content.
       - uses: softprops/action-gh-release@v3
         with:
           files: out/*
