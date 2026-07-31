@@ -451,6 +451,7 @@ Procedura completa: [`docs/MANUAL_VERIFICATION.md`](docs/MANUAL_VERIFICATION.md)
 
 | | |
 |---|---|
+| [Changelog](CHANGELOG.md) | Cosa è cambiato in ogni release — ed è ciò che mostra la pagina Release |
 | [Architettura e invarianti](docs/ARCHITECTURE.md) | Come funziona, e **cosa non deve mai rompersi** |
 | [Strategia di test](docs/TESTING.md) | Le guardie, e perché esiste ciascuna |
 | [Verifica manuale](docs/MANUAL_VERIFICATION.md) | Dimostra la catena end-to-end contro un provider reale |

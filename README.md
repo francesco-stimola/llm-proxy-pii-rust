@@ -437,6 +437,7 @@ procedure: [`docs/MANUAL_VERIFICATION.md`](docs/MANUAL_VERIFICATION.md).
 
 | | |
 |---|---|
+| [Changelog](CHANGELOG.md) | What changed in each release — and what the release page shows |
 | [Architecture & invariants](docs/ARCHITECTURE.md) | How it works, and **what must never break** |
 | [Testing strategy](docs/TESTING.md) | The guards, and why each one exists |
 | [Manual verification](docs/MANUAL_VERIFICATION.md) | Prove the chain end-to-end against a real provider |

@@ -10,6 +10,10 @@ name: Release build & publish
 # still the only automated cross-target compile that gates a release, and its status badge is what
 # the READMEs show ("last tag built successfully?"). Run `manual-build.yml` on a branch FIRST to
 # catch a target break before tagging — nothing here builds until the tag is pushed.
+#
+# Three guards run before anything is published, and each closes a different way a release can be
+# a lie: the ROADMAP must name the tag as cut, `Cargo.toml` must agree with it, and `CHANGELOG.md`
+# must describe it. All three are checked at tag push — the one moment where refusing is cheap.
 on:
   push:
     tags:
@@ -99,6 +103,38 @@ jobs:
             exit 1
           fi
 
+      # The third guard, same family as the two above. Those two ask "can the docs explain this
+      # release?" and "is it what it says it is?"; this one asks the question a reader of the
+      # release page actually has — **what changed?** — and makes the answer a precondition rather
+      # than a follow-up. `generate_release_notes` alone answers it with the raw commit list, which
+      # for this repo means a release's two real features buried under forty review-round commits.
+      #
+      # Extraction is by literal prefix, not regex: a version contains dots, and `1.2.1` as a
+      # pattern also matches `1x2x1`. The section runs to the next `## ` heading, so the file's own
+      # order (newest first) is the only convention this depends on.
+      - name: The CHANGELOG must describe this release
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          version="${tag#v}"
+          file="CHANGELOG.md"
+          awk -v v="$version" '
+            BEGIN { hdr = "## [" v "]" }
+            index($0, hdr) == 1 { inside = 1; next }
+            inside && /^## / { exit }
+            inside { print }
+          ' "$file" > release-body.md
+          if ! grep -q '[^[:space:]]' release-body.md; then
+            echo "::error::$file has no section for $tag."
+            echo "Add one at the top of the file, newest first:"
+            echo "    ## [${version}] — $(date -u +%Y-%m-%d)"
+            echo "and describe what changed for someone running this version."
+            echo "--- sections currently in $file ---"
+            grep -E '^## \[' "$file" || echo "(none at all)"
+            exit 1
+          fi
+          echo "OK: $file describes $tag ($(wc -l < release-body.md) lines)."
+
       # v8 is the current major on Node 24 (v6 still targets Node 20; v7 was the first on Node 24).
       - uses: actions/download-artifact@v8
         with:
@@ -124,7 +160,11 @@ jobs:
           echo "published $published binaries:"
           find out -type f -printf '  %f\n' | sort
 
+      # `body_path` + `generate_release_notes` is deliberately both: the curated section leads, and
+      # GitHub appends its generated commit/contributor list underneath it. Neither alone is the
+      # release page you want — the first says what changed, the second proves it is complete.
       - uses: softprops/action-gh-release@v3
         with:
           files: out/*
+          body_path: release-body.md
           generate_release_notes: true
