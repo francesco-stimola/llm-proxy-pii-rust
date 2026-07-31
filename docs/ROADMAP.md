@@ -50,7 +50,7 @@ it, which a first dry run proved was not a hypothetical.
 | [M8.1 — national phone recognizer (opt-in)](#m81) | ✅ complete · tag `v1.1.0` |
 | [M9 — GPU optimization](#m9) | ✅ complete |
 | [M9.1 — one release binary per backend](#m91) | ✅ complete · tag `v1.2.0` |
-| [M10 — national phone coverage + release hygiene](#m10) | 🔨 code-complete · tag `v1.2.1` (planned) |
+| [M10 — national phone coverage + release hygiene](#m10) | ✅ complete · tag `v1.2.1` |
 
 ---
 
@@ -1394,7 +1394,7 @@ user, NVIDIA device or not. Key-ed accelerators now get **their own artifact** i
 > build step, which every leg runs.
 
 <a id="m10"></a>
-## M10 — national phone coverage + release hygiene 🔨
+## M10 — national phone coverage + release hygiene ✅
 
 **Opened 2026-07-29, from a documentation pass that turned into a measurement.** Writing down what
 `PII_LOCALES` does surfaced that it does less than everyone assumed. A throwaway probe drove
@@ -1786,14 +1786,17 @@ only the false positives we imagined. Run:
   > corrected a two-milestone-old falsehood about CC-09's MCP setup, now
   > [four steps in the runbook](MANUAL_VERIFICATION.md#cc-09s-setup-which-is-not-one-line).
 
-### What is left before the tag
+<a id="what-is-left-before-the-tag"></a>
+### The road to the tag, and what it took
+*(was "What is left before the tag" until the tag was cut — the old anchor still resolves, because
+[reviews/M10.md](reviews/M10.md) refers to it by that name and the archive is history, not a draft.)*
 
-Written 2026-07-29, rewritten 2026-07-30 after round 9's findings were closed, **and again 2026-07-31
-when the CC battery landed.** The milestone's scope items are all `[x]`, all **61** review findings
-across nine rounds are `[x]`, and the suite is green on both feature sets (**221 default / 254 onnx**,
-zero warnings; `fmt`, `clippy -D warnings` clean; `cargo doc` 15 warnings, all pre-existing). Nothing
-is left in the code, and **the one thing no review round could produce — a live Claude Code session —
-has now been run**. What remains is the release commit itself, which is the maintainer's call.
+Written 2026-07-29, rewritten 2026-07-30 after round 9's findings were closed, **and closed out
+2026-07-31 when the CC battery landed and `v1.2.1` was cut.** The milestone's scope items are all
+`[x]`, all **61** review findings across nine rounds are `[x]`, and the suite is green on both
+feature sets (**221 default / 254 onnx**, zero warnings; `fmt`, `clippy -D warnings` clean;
+`cargo doc` 15 warnings, all pre-existing). Nothing is left in the code, and **the one thing no
+review round could produce — a live Claude Code session — was run before the tag, not after.**
 
 > **The milestone is done reviewing.** Rounds 5–9 found **zero live defects in `src/`** — five
 > consecutive rounds, with round 9 driving the real `.exe` end to end and mutating the tree to check
@@ -1811,12 +1814,12 @@ has now been run**. What remains is the release commit itself, which is the main
 1. ~~**The CC battery — CC-01 / CC-03 / CC-04 / CC-09**~~ — **done 2026-07-31**, all four in both
    postures, zero leaks and zero fixpoint 400 (step 10 above; DEVLOG for the full account). Nothing
    the tag waits on is left in this line.
-2. **Bump `Cargo.toml` to `1.2.1`** — a `chore(release):` commit at tag time, as `1.2.0` was. Left
-   at `1.2.0` on purpose: `release-build-publish.yml` refuses to publish a tag that disagrees with
-   the manifest, so the mismatch is currently *protective*, not a gap. **Both halves of that guard
-   were simulated in round 9 and behave as described** — `v1.2.1` is blocked today by the Status
-   table's `(planned)` *and* by the manifest, and the table-only scoping means this paragraph cannot
-   move it. Dropping `(planned)` from the Status table is part of the release commit, not of this one.
+2. ~~**Bump `Cargo.toml` to `1.2.1`**~~ — **done 2026-07-31**, together with dropping `(planned)`
+   from the Status table, in one `chore(release):` commit. Until that commit the mismatch was
+   *protective* rather than a gap: `release-build-publish.yml` refuses to publish a tag that
+   disagrees with **either** the manifest or the table, and **both halves were simulated in round 9**
+   and behaved as described. The two edits belong in the same commit precisely because either one
+   alone leaves the guard armed against a release that is otherwise ready.
 3. **A round 10 is optional and is not a gate.** If one is run, the thing to attack is
    [M10-R56](reviews/M10.md#m10-r56)'s band — the **sixth** version of those numbers, and the first
    five were wrong — plus whether `DOS-BUD`'s rendering set and `CAT-01`'s prefix list are themselves
