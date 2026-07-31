@@ -51,6 +51,7 @@ it, which a first dry run proved was not a hypothetical.
 | [M9 — GPU optimization](#m9) | ✅ complete |
 | [M9.1 — one release binary per backend](#m91) | ✅ complete · tag `v1.2.0` |
 | [M10 — national phone coverage + release hygiene](#m10) | ✅ complete · tag `v1.2.1` |
+| [M11 — deterministic coverage: VAT numbers + plates](#m11) | 📋 planned |
 
 ---
 
@@ -2243,8 +2244,81 @@ client, refused bodies never forwarded, the refusal message carrying no input-de
 | [M10-R60](reviews/M10.md#m10-r60) | M10-R53's closure narrowed *"four live sites and two narrative ones"* to *"all four live sites"* — the round-7 ledger block still asserts the refuted claim in the present tense | docs | [x] |
 | [M10-R61](reviews/M10.md#m10-r61) | Two mechanical defects introduced by `e704ce6`: a duplicated sentence in ROADMAP's pre-tag list (already gone — that block was rewritten this round) and seven doubled apostrophes in the review record | low | [x] |
 
+<a id="m11"></a>
+## M11 — deterministic coverage: VAT numbers + plates 📋
+
+**Opened 2026-07-31, from a coverage comparison rather than a defect.** Set against a
+document-level anonymizer built on a fine-tuned multilingual encoder over **22** entity types,
+this proxy's **10** looks thin — and the useful answer was not *"get to 22"*. The two counts
+measure different things: five of those 22 are one address split into
+street / number / postcode / city / province where this emits a single `[LOCATION_1]`, which is
+resolution rather than reach, and several more are categories this proxy must **not** mask
+(below). What the comparison did surface is a real, cheap gap: **identifiers with a verifiable
+form that we simply have not written a recognizer for.** That is this milestone, and nothing else.
+
+**Scope — the deterministic tier only.**
+- [ ] **Italian Partita IVA** — 11 digits, mod-10 checksum with position doubling. Structurally the
+  twin of the Codice Fiscale recognizer that already ships; the work is the corpus, not the code.
+- [ ] **EU VAT numbers (VIES)** — per-country format + checksum, for the countries already covered
+  by the national-ID tier. Same family, same always-on posture, one recognizer per country.
+- [ ] **Italian vehicle plate (`AA123BB`)** — **the one that has to earn its place.** No checksum
+  exists, so the only defence is the shape, and a shape with no verifier is how M4-R1's "FP-prone"
+  objection started. Measure precision against an adversarial corpus of uppercase-alphanumeric
+  tokens (git short SHAs, enum variants, ticket ids, `AWS`-style prefixes) **before** deciding
+  whether it ships at all, let alone on by default.
+- [ ] Corpora + adversarial negatives per recognizer, on the `PHONE-NAT` model: a positive set of
+  real renderings and a negative set of things that merely look like one. **A category ships when
+  it is measured** — the rule that produced the nine phone regions, applied unchanged.
+- [ ] Catalogue every new guard id in `TESTING.md` (`CAT-01` enforces this) and re-publish the
+  coverage tables in both READMEs and `ARCHITECTURE.md`.
+
+**Three decisions that are the maintainer's, and are open.** Each changes product-visible behaviour,
+so none is the builder's to take:
+1. **Which `PiiKind` a VAT number gets.** `NationalId`/`[NATID_n]` reuses an existing token and
+   ships without touching the vault, but a P.IVA is a *business* identifier that is personal data
+   only when it identifies a sole trader. A new `TaxId`/`[TAXID_n]` is more honest and is a new
+   public token.
+2. **Always-on, or gated?** National IDs are always on regardless of `PII_LOCALES` (privacy-first).
+   VAT numbers most likely inherit that. The plate, if it ships, probably should not.
+3. **The plate's precision floor.** What false-positive rate makes it shippable — and on which
+   corpus. "It looked fine" is what M10 spent nine rounds unlearning.
+
+**What M11 deliberately excludes, and why it is not an omission.**
+- **Free-form address, age, gender** — no rule can confirm them; they need a model. Deferred to the
+  model work below rather than solved by switching on a second engine.
+- **Dates, times, amounts — excluded on purpose, permanently, as a default.** This is the sharp
+  one. A document anonymizer can mask a date: an over-mask is visible to the human holding the
+  document, and costs nothing. **This proxy sits on live agent traffic**, where `[DATE_1]` in place
+  of `2026-07-31` inside a `tool_use.input` corrupts the call and the agent then does the wrong
+  thing quietly. That is precisely the harm [M10](#m10) spent nine review rounds bounding, and the
+  reason the CC battery checks that `Read`'s line numbers and a SQL result's `id` survive intact.
+  If these are ever wanted, they are opt-in, model-side, and measured for over-mask first.
+
 <a id="backlog"></a>
 ## Backlog — documented, not scheduled
+
+### One model with more kinds — replace the NER, don't stack a second engine
+**The maintainer's stated direction (2026-07-31), and the measurements agree with it.** The way to
+reach contextual PII — address above all — is a **better single model**, not XLM-R and GLiNER
+running side by side.
+
+Stacking is already known to be a bad trade here, from this project's own numbers: GLiNER int8's
+Person recall is **0.58** against XLM-R's **0.83** ([M8](#m8)), so the second engine is *worse* at
+the job the first one exists for; it costs **~510 MB on top** (≈1.07 GB for the pair) and a second
+inference pass, on a path where [M7](#m7) measured the NER as **~100% of masking latency**. Two
+models is paying twice for a partial upgrade.
+
+External evidence that one model can carry the whole load: a comparable local-first anonymizer
+reports a fine-tuned multilingual encoder covering **22 entity types** in **0.3B parameters /
+~0.5 GB**, at micro-F1 **0.989** on a 7,000-row held-out Italian set. That is *less* RAM than this
+project's current pair and more coverage — which is the shape to aim at, whether by fine-tuning or
+by adopting a model already trained for the task. Those are the vendor's own published figures,
+measured on their distribution, not something reproduced here.
+
+Not scheduled, and one thing must be settled before it can be: **a model swap re-opens the
+determinism guard** (`ARCHITECTURE.md` → *Execution providers*) and every published recall figure,
+and it changes what `[PERSON_n]`/`[ORG_n]`/`[LOCATION_n]` mean in traffic operators already depend
+on. It is a milestone of its own, not an upgrade to drop into a patch.
 
 ### Option B — native provider adapters
 The heavy alternative to M3's Option A: support a provider's **native** API instead of its OpenAI-compat

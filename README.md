@@ -54,8 +54,9 @@ Point your existing OpenAI-compatible client at the proxy. Nothing else in your 
 
 ## What it masks
 
-**Ten kinds**, each becoming a typed, numbered placeholder. The same value always gets the same
-token within a request, so a masked conversation still makes sense to the model.
+**10 kinds · 10 national ID schemes · 9 domestic phone plans · 10 languages.** Each kind becomes a
+typed, numbered placeholder, and the same value always gets the same token within a request — so a
+masked conversation still makes sense to the model.
 
 | kind | placeholder | engine | what makes it a match | coverage |
 |---|---|---|---|---|
@@ -81,6 +82,23 @@ are merged; where they disagree on the same characters the deterministic match w
 two engines — the NER emits only Person/Organization/Location and could not produce an email if
 it tried. Which layer does more depends entirely on the traffic: a SQL result or a CSV export is
 almost all deterministic, an ordinary chat turn is mostly NER.
+
+### What it deliberately does not mask
+
+Coverage is more useful stated in both directions, and a kind count compares badly across tools —
+a document anonymizer that splits an address into street / number / postcode / city / province
+reports five categories where this emits one `[LOCATION_1]`. That is resolution, not reach.
+
+| not masked | why not |
+|---|---|
+| **dates · times · amounts** | No rule confirms them, and this proxy sits on **live agent traffic**: `[DATE_1]` where the model needed `2026-07-31` corrupts a tool call, and the agent then does the wrong thing quietly. A document anonymizer can afford that trade — an over-mask is visible to the human holding the document. A proxy cannot. **Excluded on purpose, not pending.** |
+| **free-form addresses** | Nothing verifies "12 Rue de la Paix". It needs a model — `address` is in the optional GLiNER engine's default labels, off until its over-mask cost is measured. Tracked in [ROADMAP → *One model with more kinds*](docs/ROADMAP.md#backlog) |
+| **age · gender** | Contextual attributes, same reason as above, and rarely the leak that matters in agent traffic |
+| **a country not in the tables above** | Coverage here is a **list, not a rule**: 10 ID schemes, 9 domestic phone plans. A Brazilian mobile written without `+55` is not masked — not because the pattern is hard, but because *an unmeasured plan is not one we ship* |
+
+The line through all four: **this masks what it can confirm, and says so where it cannot.** A
+category is added when there is a corpus that measures it — which is how the nine phone regions
+got here, and what [M11](docs/ROADMAP.md#m11) applies to VAT numbers next.
 
 **The 10 national ID schemes:** 🇺🇸 SSN · 🇮🇹 Codice Fiscale · 🇬🇧 NINO · 🇪🇸 DNI/NIE · 🇫🇷 NIR ·
 🇩🇪 Steuer-ID · 🇳🇱 BSN · 🇵🇹 NIF · 🇱🇻 personal code · 🇨🇳 Resident ID. Masked **regardless of

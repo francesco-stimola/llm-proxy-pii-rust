@@ -54,9 +54,9 @@ Fai puntare il tuo client compatibile con OpenAI al proxy. Nient'altro nel tuo s
 
 ## Cosa maschera
 
-**Dieci categorie**, ognuna diventa un segnaposto tipizzato e numerato. Lo stesso valore riceve
-sempre lo stesso token all'interno di una richiesta, così una conversazione mascherata resta
-comprensibile per il modello.
+**10 categorie · 10 schemi di documento nazionale · 9 piani telefonici · 10 lingue.** Ogni categoria
+diventa un segnaposto tipizzato e numerato, e lo stesso valore riceve sempre lo stesso token
+all'interno di una richiesta — così una conversazione mascherata resta comprensibile per il modello.
 
 | categoria | segnaposto | motore | cosa fa scattare il match | copertura |
 |---|---|---|---|---|
@@ -83,6 +83,25 @@ Nessuna categoria ha due motori — il NER emette solo Persona/Organizzazione/Lu
 produrre un'email nemmeno volendo. Quale livello faccia di più dipende interamente dal traffico:
 un risultato SQL o un export CSV è quasi tutto deterministico, un turno di chat ordinario è in
 gran parte NER.
+
+### Cosa non maschera, deliberatamente
+
+La copertura è più utile dichiarata in entrambe le direzioni, e un conteggio di categorie si
+confronta male tra strumenti diversi: un anonimizzatore di documenti che spezza un indirizzo in
+via / numero / CAP / città / provincia dichiara cinque categorie dove qui ne esce un solo
+`[LOCATION_1]`. È risoluzione, non portata.
+
+| non mascherato | perché no |
+|---|---|
+| **date · orari · importi** | Nessuna regola li conferma, e questo proxy sta sul **traffico vivo di un agent**: `[DATE_1]` dove al modello serviva `2026-07-31` corrompe una tool call, e l'agent poi fa la cosa sbagliata in silenzio. Un anonimizzatore di documenti può permetterselo — un over-mask è visibile alla persona che ha il documento in mano. Un proxy no. **Escluse apposta, non in attesa.** |
+| **indirizzi in forma libera** | Niente verifica "via Roma 12". Serve un modello — `address` è tra le etichette di default del motore opzionale GLiNER, spento finché il costo di over-mask non è misurato. Tracciato in [ROADMAP → *One model with more kinds*](docs/ROADMAP.md#backlog) |
+| **età · genere** | Attributi contestuali, stessa ragione, e raramente la fuga che conta nel traffico di un agent |
+| **un paese non nelle tabelle qui sopra** | Qui la copertura è un **elenco, non una regola**: 10 schemi di documento, 9 piani telefonici. Un cellulare brasiliano scritto senza `+55` non viene mascherato — non perché il pattern sia difficile, ma perché *un piano non misurato non è un piano che spediamo* |
+
+Il filo che unisce le quattro righe: **si maschera ciò che si può confermare, e si dichiara dove
+non si può.** Una categoria si aggiunge quando esiste un corpus che la misura — è così che sono
+arrivate le nove regioni telefoniche, ed è ciò che [M11](docs/ROADMAP.md#m11) applica ora alle
+partite IVA.
 
 **I 10 schemi di documento nazionale:** 🇺🇸 SSN · 🇮🇹 Codice Fiscale · 🇬🇧 NINO · 🇪🇸 DNI/NIE ·
 🇫🇷 NIR · 🇩🇪 Steuer-ID · 🇳🇱 BSN · 🇵🇹 NIF · 🇱🇻 codice personale · 🇨🇳 Resident ID. Mascherati
