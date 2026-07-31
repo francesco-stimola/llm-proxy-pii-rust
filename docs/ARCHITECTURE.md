@@ -1393,8 +1393,8 @@ cannot recognise as breaking.
 
 **Accepted tradeoff — `phonenumber` in the DEFAULT build (M8.1).** The national-phone recognizers link the
 `phonenumber` crate (libphonenumber port) in the *default* build, not behind `onnx`. It is deliberately kept
-default-eligible because it is **pure Rust** — no `*-sys`, no `cc`/bindgen, nothing on the native-dep-free
-forbidden list — so `tests/dependency_footprint.rs` stays green. Two real costs are accepted and named here so
+default-eligible because it is **pure Rust** — no `*-sys`, no `cc`/bindgen, nothing
+`tests/dependency_footprint.rs` forbids on any target, so that guard stays green. Two real costs are named so
 a future `cargo-deny` advisory isn't a surprise: (1) **~3 MB** of binary from the embedded worldwide numbering
 metadata (converted to a postcard blob at build time, `Lazy`-deserialized once at runtime — no XML parsing on
 the hot path); (2) a few **unmaintained transitive deps** — `oncemutex` (2016), `regex-cache` 0.2.1, an old
@@ -1413,8 +1413,26 @@ judged worth it.
 free because `Cargo.lock` already carried `time 0.3.53` — `cargo tree` said otherwise: it was there only under
 `--features onnx`, via `hf-hub → hf-xet → tracing-appender`. So it is a genuinely new default-build dependency
 (`time` + `time-core`/`time-macros`, `deranged`, `num-conv`, `powerfmt`, `num_threads`), all **pure Rust**, so
-the native-dep-free guarantee holds unchanged. Recorded because "surely it's already there" is exactly the
+the guarantee holds unchanged. Recorded because "surely it's already there" is exactly the
 class of claim this file exists to stop being made without checking.
+
+**What that guarantee actually says — corrected 2026-07-31, and it is the same class of error again.** Three
+documents, this one included, described the default build as **native-dependency-free**. That is true on
+Windows and false on Linux and macOS. `reqwest` is pinned to `native-tls` precisely to keep rustls'
+`aws-lc-rs` out — but `native-tls` *is* the platform's own TLS: schannel on Windows (pure-Rust declarations),
+**OpenSSL on Linux** (`openssl-sys` + `cc`, linking the system `libssl`), Security.framework on macOS
+(`core-foundation-sys`, `security-framework-sys`, `system-configuration-sys`). Both dependency guards asked
+`cargo tree` about **the machine running them**, so on the maintainer's Windows box they were green, and the
+first time CI ran them on Linux they were red — correctly, on their first honest run. `openssl-sys` was in
+`Cargo.lock` long before [M10](ROADMAP.md#m10); what was new was a guard finally able to see it.
+
+The rule in the form that is actually true, and the form the guards now check **per released target**: *the
+default build reaches no native dependency except the TLS its operating system already provides.* Each
+target's allowance names those crates and nothing else, so a genuinely new native dependency is still caught
+everywhere. There is no pure-Rust way out through `reqwest` — rustls' crypto providers (`aws-lc-rs`, `ring`)
+compile C as well — so this is a **reformulation of a claim, not a defect to fix**. The operational
+consequence, worth knowing before packaging: a Linux binary links the system OpenSSL, so it is self-contained
+on any ordinary distribution but not in a `scratch`/distroless image.
 
 ## Decisions & open points
 

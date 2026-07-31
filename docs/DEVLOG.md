@@ -3,6 +3,46 @@
 Newest first. One entry per meaningful change — note *what* and *why*, not just
 *what*. This is the running history so context is never lost between sessions.
 
+## 2026-07-31 — CI's first look at M10, and the guard that was green because of the OS it ran on
+
+**The 31 M10 commits reached CI for the first time today, and it went red immediately.** Both test
+legs, on the same test: `the_default_build_compiles_no_native_code` — **DEP-02, the guard M10-R9
+added** to replace a six-name denylist with the *property*. Not a regression from any of today's
+work; `openssl-sys` sits in `Cargo.lock` at `9e31f36` too, the last green run. What was new was a
+guard finally able to see it, running somewhere other than this laptop.
+
+**The mechanism, and it is this milestone's signature error one more time.** `reqwest` is pinned to
+`native-tls` on purpose — reqwest 0.13 flipped its default to rustls + `aws-lc-rs`, which compiles
+C. The `Cargo.toml` comment justifying the pin read *"keeps the default build native-dep-free"*. But
+`native-tls` **is** the platform's TLS: schannel on Windows (pure-Rust declarations), **OpenSSL on
+Linux** (`openssl-sys` + `cc`), Security.framework on macOS (three `*-sys`). Both DEP guards asked
+`cargo tree` about **the machine running them**, with `windows-sys` as the single allowance — so on
+Windows they were green and said nothing, and the claim they were cited as enforcing was a fact
+about one point of a grid. Twelfth instance in M10, and the first one in a *guard's own query*
+rather than in a measurement.
+
+**Fixed as the property, not as the symptom.** Both guards now iterate the five released targets
+(`release-build.yml`'s matrix), each with an explicit allowance naming that platform's TLS crates
+and the reason beside them; everything else stays forbidden everywhere, so a genuinely new native
+dependency is still caught on every target. **Verified by mutation**: deleting the Linux allowance
+reds the guard **on Windows**, naming `x86_64-unknown-linux-gnu` and its two offenders — which is
+exactly the property that was missing. `DEP_GUARD_HOST_ONLY=1` checks the host alone for offline
+work and says so in the output; CI never sets it. `--locked` (not `--offline`) is what keeps
+`Cargo.lock` untouched, confirmed after the run.
+
+**There is no way to make the strong claim true, so it was reformulated instead.** rustls' crypto
+providers — `aws-lc-rs`, `ring` — compile C as well, so no reqwest-reachable backend is pure Rust.
+The rule now reads: *the default build reaches no native dependency except the TLS its operating
+system already provides*, corrected in `Cargo.toml`, `ARCHITECTURE.md`, `TESTING.md` and `ci.yml`.
+The operational consequence is named where a packager will meet it: a Linux binary links the system
+`libssl`, which is fine on any ordinary distribution and not fine in a `scratch` image.
+
+**Worth stating plainly: the tag would have shipped with this.** The release pipeline builds ten
+targets but only at tag push, and `ci.yml` deliberately does not cross-compile — so a defect visible
+only on another platform had no earlier gate. It was caught because the release was pushed to `main`
+first and CI was allowed to run before the tag, which is now the reason to keep doing it in that
+order.
+
 ## 2026-07-31 — The CC battery, M10's subset: four scenarios × two postures, and the numerics nobody masked
 
 **The last box M10 owed, and the one no review round could produce.** CC-01 / CC-03 / CC-04 / CC-09,

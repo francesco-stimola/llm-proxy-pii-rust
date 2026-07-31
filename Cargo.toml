@@ -44,10 +44,21 @@ tower = "0.5"
 tower-http = { version = "0.7", features = ["trace"] }
 # TLS backend PINNED explicitly (default-features = false + native-tls) instead of inherited from
 # reqwest's `default-tls`. reqwest 0.13 silently flipped that default from native-tls to
-# rustls + aws-lc-rs — which would pull aws-lc-rs into the DEFAULT build and break the
-# native-dep-free guarantee (tests/dependency_footprint.rs, M2.5-R1). Pinning native-tls keeps the
-# default build native-dep-free AND makes the crypto backend a deliberate choice, not a
-# dependency's shifting default. `http2`/`charset`/`system-proxy` re-add what reqwest's own
+# rustls + aws-lc-rs — which would VENDOR AND COMPILE a crypto library into the DEFAULT build
+# (tests/dependency_footprint.rs, M2.5-R1). Pinning native-tls keeps the crypto backend a
+# deliberate choice rather than a dependency's shifting default, and keeps it the OS's own.
+#
+# READ THIS BEFORE REPEATING THE OLD CLAIM: this pin does NOT make the default build
+# "native-dep-free" — that sentence stood here until 2026-07-31 and was true only on the
+# platform it was written on. `native-tls` IS the platform's TLS: schannel on Windows (pure-Rust
+# declarations, no C), OPENSSL on Linux (openssl-sys + cc, linking the system libssl),
+# Security.framework on macOS. Both guards ran host-only, so a Windows machine reported green and
+# CI's first Linux run reported red — correctly. The honest form of the rule, and the one the
+# guards now check per target: the default build reaches NO native dependency except the TLS its
+# operating system already provides. There is no pure-Rust escape via reqwest — rustls' providers
+# (aws-lc-rs, ring) compile C too, which is why this is a reformulation and not a bug to fix.
+#
+# `http2`/`charset`/`system-proxy` re-add what reqwest's own
 # `default` set carries, so runtime behavior matches 0.12; `json`/`stream` are what this proxy uses.
 reqwest = { version = "0.13", default-features = false, features = ["native-tls", "json", "stream", "http2", "charset", "system-proxy"] }
 futures-util = "0.3"
@@ -60,8 +71,8 @@ regex = "1"
 # which is exactly what defuses the M4-R1 "national phone with no +CC is FP-prone"
 # objection a hand-written regex could never meet (measured: GB precision 1.000,
 # DE 0.909 on an adversarial corpus — docs/DEVLOG.md, M8.1). In the DEFAULT
-# build ON PURPOSE — it is PURE RUST (no *-sys, nothing on the native-dep-free
-# forbidden list, tests/dependency_footprint.rs stays green). Accepted cost: ~3 MB
+# build ON PURPOSE — it is PURE RUST (no *-sys, nothing tests/dependency_footprint.rs
+# forbids on any target, so that guard stays green). Accepted cost: ~3 MB
 # of embedded worldwide metadata + a few unmaintained transitive deps (oncemutex,
 # regex-cache) — see docs/ARCHITECTURE.md.
 phonenumber = "0.3"
@@ -76,19 +87,19 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "local-time"] 
 # (M10): it was in `Cargo.lock` only under `--features onnx`, via hf-hub → hf-xet →
 # tracing-appender — so "surely it's already there" was wrong, exactly as the plan warned.
 # The cost is real but small and PURE RUST (`time` + `time-core`/`time-macros`, `deranged`,
-# `num-conv`, `powerfmt`, `num_threads`) — nothing on tests/dependency_footprint.rs's
-# forbidden list, so the native-dep-free guarantee holds. `default-features = false` drops
+# `num-conv`, `powerfmt`, `num_threads`) — nothing tests/dependency_footprint.rs
+# forbids on any target, so the guarantee holds. `default-features = false` drops
 # `std`'s parsing/serde surface we don't use.
 time = { version = "0.3", default-features = false, features = ["std", "formatting", "local-offset", "macros"] }
 
 # ONNX inference deps (M2), behind the optional `onnx` feature so the default
-# build stays native-dep-free. `ort` 2.x is prerelease-only → pinned exactly.
+# build never reaches them. `ort` 2.x is prerelease-only → pinned exactly.
 # `tokenizers` uses default-features = false to avoid the C/C++ regex backends.
 ort = { version = "=2.0.0-rc.12", optional = true, features = ["download-binaries"] }
 tokenizers = { version = "0.23", optional = true, default-features = false, features = ["fancy-regex"] }
 # HuggingFace Hub client (M2.5): opt-in, revision-pinned model fetch into the
 # standard HF cache. Async API. Only pulled with the `onnx` feature — so the
-# DEFAULT build stays native-dep-free. NOTE (M2.5-R1): under `--features onnx`
+# DEFAULT build never carries it. NOTE (M2.5-R1): under `--features onnx`
 # hf-hub 1.x drags in a heavier transitive footprint than a bare HTTP client — a
 # second `reqwest 0.13` + `hf-xet` + `rustls`/`aws-lc-rs` (native crypto). Kept on
 # 1.x deliberately (the `onnx` feature is already native via `ort`; the 0.4.x

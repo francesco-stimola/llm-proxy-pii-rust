@@ -1,8 +1,16 @@
 # Changelog
 
 All notable changes to this project are documented here. The format follows
-[Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project adheres to
-[Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
+
+> **Versions track milestones, not the SemVer contract — stated plainly rather than claimed and
+> then broken.** A tag is cut from the milestone it completes ([`docs/ROADMAP.md`](docs/ROADMAP.md)
+> maps every one), and the number reflects how far that milestone moved the product, judged by the
+> maintainer. `1.2.1` is the honest example: under strict [SemVer](https://semver.org/) a
+> default-on capability would be a minor and a configuration variable that changed meaning would be
+> a major, while M10 is read here as broadening a tier that has shipped since M8.1. **So do not
+> infer risk from the number** — the `### Changed` section of each entry is where a change that can
+> surprise you is named, and it is the part to read before upgrading.
 
 > **This file is what the GitHub release page shows.** `release-build-publish.yml` extracts the
 > section matching the tag and publishes it as the release body, with GitHub's auto-generated
@@ -30,10 +38,12 @@ Milestone [M10](https://github.com/francesco-stimola/llm-proxy-pii-rust/blob/mai
 
 ### Changed
 
-- **`PII_LOCALES` now narrows rather than enables.** All nine regions are on out of the box;
-  setting the variable **replaces** the default set, and setting it *empty* switches the domestic
-  tier off — which is a different thing from leaving it unset. National IDs remain always-on
-  regardless.
+- **`PII_LOCALES` now narrows rather than enables — read this one if you set it.** All nine regions
+  are on out of the box, and the variable **replaces** that set rather than adding to it. So a
+  config carried over from 1.2.0 that reads `PII_LOCALES=it` now yields **less** domestic-phone
+  coverage than leaving the variable unset entirely. Setting it *empty* switches the tier off,
+  which is a different thing again from leaving it unset. National IDs remain always-on regardless
+  of what you set.
 - **Logs carry local time with an explicit offset**, and the default level is `info`, so a freshly
   downloaded binary reports what it is doing with no configuration.
 - **The project is dual-licensed** — AGPL-3.0-or-later, plus a separate commercial license for
@@ -59,6 +69,12 @@ grouped rendering, ~500,000 at the cheapest. Which byte size that lands on depen
 layout — the same 62,500 numbers are refused at 793 KB as a bare column, 2 MB as `name,phone`,
 4.4 MB as a six-column export. An ordinary 5,000-row export spends **8%**; a typical chat turn
 spends none.
+
+**Packaging, corrected rather than newly true:** the default build has always used the platform's own
+TLS, so a **Linux** binary links the system OpenSSL — self-contained on any ordinary distribution,
+but not in a `scratch`/distroless image. The project described that build as *native-dependency-free*,
+which held only on Windows; the dependency guard now checks every released target instead of the one
+it happens to run on, and the documents say what is true on all of them. No dependency changed.
 
 Verified before the tag rather than after: 61 review findings across nine independent rounds all
 closed, 221 default / 254 `onnx` tests green, and the manual [CC

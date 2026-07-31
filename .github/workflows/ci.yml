@@ -34,14 +34,14 @@ jobs:
           components: rustfmt
       - run: cargo fmt --check
 
-  # One leg for the default (structured-only, native-dependency-free) build, one for
+  # One leg for the default (structured-only) build, one for
   # --features onnx (ONNX NER). Model-dependent tests are #[ignore]d, so the onnx leg compiles
   # and runs everything except the live-model checks — no model file is needed (docs/TESTING.md).
   #
   # DO NOT DELETE THE `default` LEG AS REDUNDANT. The tempting argument is "DEP-01
-  # (tests/dependency_footprint.rs) guards the native-dep-free invariant, and it runs in the onnx
-  # leg too" — true (it shells `cargo tree` with no --features, so it asserts the same thing in
-  # both legs) and exactly why the leg looks droppable. What it actually guards is what NOTHING
+  # (tests/dependency_footprint.rs) guards the dependency-footprint invariant, and it runs in the
+  # onnx leg too" — true (it shells `cargo tree` with no --features, so it asserts the same thing
+  # in both legs) and exactly why the leg looks droppable. What it actually guards is what NOTHING
   # else in CI compiles:
   #   1. the default feature set links and passes its tests without the native stack at all, and
   #   2. `src/server.rs`'s `#[cfg(not(feature = "onnx"))]` block — the ONLY not-onnx path in the
