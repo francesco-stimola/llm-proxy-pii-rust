@@ -54,35 +54,39 @@ Point your existing OpenAI-compatible client at the proxy. Nothing else in your 
 
 ## What it masks
 
-**Ten kinds.** Each becomes a typed, numbered placeholder — the same value always gets the same
+**Ten kinds**, each becoming a typed, numbered placeholder. The same value always gets the same
 token within a request, so a masked conversation still makes sense to the model.
 
-**Structured — deterministic recognizers. No model, no language dependency, always on.**
-Every match is checksum- or rule-validated, which is what keeps the false-positive rate near zero.
+| kind | placeholder | engine | what makes it a match | coverage |
+|---|---|---|---|---|
+| **Email** | `[EMAIL_1]` | deterministic · always on | address shape, on ASCII word boundaries | universal |
+| **Credit card** | `[CARD_1]` | deterministic · always on | **Luhn** checksum | universal |
+| **IBAN** | `[IBAN_1]` | deterministic · always on | **mod-97** + that country's length | universal |
+| **Secret / API key** | `[SECRET_1]` | deterministic · always on | issuer prefix — `sk-…`, `sk-ant-…`, `AKIA…` | universal |
+| **Phone** | `[PHONE_1]` | deterministic · always on | the country's **real numbering plan** says the number is *assigned* | `+CC` and US always · **9 domestic plans** |
+| **US SSN** | `[SSN_1]` | deterministic · always on | area / group / serial rules | 🇺🇸 |
+| **National ID** | `[NATID_1]` | deterministic · always on | that scheme's own checksum — mod-23, mod-97, mod-11, ISO 7064, NINO rules | **10 countries** |
+| **Person** | `[PERSON_1]` | **ML — needs a model** | the model reads the sentence: a name has no verifiable form | 10 languages · recall **0.83** |
+| **Organization** | `[ORG_1]` | **ML — needs a model** | ″ | 10 languages |
+| **Location** | `[LOCATION_1]` | **ML — needs a model** | ″ | 10 languages |
 
-| kind | placeholder | what confirms a match |
-|---|---|---|
-| **Email** | `[EMAIL_1]` | address shape, on ASCII word boundaries |
-| **Phone** | `[PHONE_1]` | international `+CC`, US, and 9 domestic plans — each candidate checked against that country's **real numbering plan** |
-| **US SSN** | `[SSN_1]` | area / group / serial rules |
-| **National ID** | `[NATID_1]` | 10 national schemes, each with its own checksum — see below |
-| **Credit card** | `[CARD_1]` | Luhn |
-| **IBAN** | `[IBAN_1]` | mod-97 + per-country length |
-| **Secret / API key** | `[SECRET_1]` | issuer prefixes — `sk-…`, `sk-ant-…`, `AKIA…`, … |
+**The split is verifiability, not importance.** An IBAN is masked because mod-97 *returns*, not
+because it looks like one — so those seven are provable, language-independent, and cost ~20 ms.
+A name cannot be confirmed by any rule, so it takes a model, and the model is where the whole
+cost lives (~4.7 s, ~563 MB) — and where the guarantee weakens: **without a model those three
+travel upstream in clear**, which is what `NER_REQUIRED=1` turns into a startup failure.
 
-**Unstructured — local ONNX NER** (XLM-R int8, CPU). Needs a model; without one the proxy runs
-structured-only and these three go upstream **in clear**.
+**The two run side by side, not one after the other.** Both scan the full text and their spans
+are merged; where they disagree on the same characters the deterministic match wins. No kind has
+two engines — the NER emits only Person/Organization/Location and could not produce an email if
+it tried. Which layer does more depends entirely on the traffic: a SQL result or a CSV export is
+almost all deterministic, an ordinary chat turn is mostly NER.
 
-| kind | placeholder | languages |
-|---|---|---|
-| **Person** | `[PERSON_1]` | ar · de · en · es · fr · it · lv · nl · pt · zh |
-| **Organization** | `[ORG_1]` | ″ |
-| **Location** | `[LOCATION_1]` | ″ |
-
-**National IDs — 10 countries, always on:** 🇺🇸 SSN · 🇮🇹 Codice Fiscale · 🇬🇧 NINO · 🇪🇸 DNI/NIE ·
-🇫🇷 NIR · 🇩🇪 Steuer-ID · 🇳🇱 BSN · 🇵🇹 NIF · 🇱🇻 personal code · 🇨🇳 Resident ID. Masked
-**regardless of locale configuration** — an ID that reaches the proxy gets masked even if its
-country isn't the one you configured.
+**The 10 national ID schemes:** 🇺🇸 SSN · 🇮🇹 Codice Fiscale · 🇬🇧 NINO · 🇪🇸 DNI/NIE · 🇫🇷 NIR ·
+🇩🇪 Steuer-ID · 🇳🇱 BSN · 🇵🇹 NIF · 🇱🇻 personal code · 🇨🇳 Resident ID. Masked **regardless of
+locale configuration** — an ID that reaches the proxy gets masked even if its country isn't the
+one you configured. An eleventh country's ID is not recognised: coverage here is a list, not a
+rule, and *an unmeasured scheme is not one we ship*.
 
 **Domestic phone numbers — 9 regions, on by default:** 🇩🇪 🇪🇸 🇫🇷 🇬🇧 🇮🇹 🇱🇻 🇳🇱 🇵🇹 🇨🇳 numbers
 written with **no `+CC`** (`020 7946 0958`, `06 69821234`, `347 1234567`, `91 123 45 67`). This is

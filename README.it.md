@@ -54,37 +54,42 @@ Fai puntare il tuo client compatibile con OpenAI al proxy. Nient'altro nel tuo s
 
 ## Cosa maschera
 
-**Dieci categorie.** Ognuna diventa un segnaposto tipizzato e numerato — lo stesso valore riceve
+**Dieci categorie**, ognuna diventa un segnaposto tipizzato e numerato. Lo stesso valore riceve
 sempre lo stesso token all'interno di una richiesta, così una conversazione mascherata resta
 comprensibile per il modello.
 
-**Strutturate — riconoscitori deterministici. Nessun modello, nessuna dipendenza dalla lingua,
-sempre attivi.** Ogni match è validato da checksum o da regola: è questo che tiene i falsi
-positivi vicini a zero.
+| categoria | segnaposto | motore | cosa fa scattare il match | copertura |
+|---|---|---|---|---|
+| **Email** | `[EMAIL_1]` | deterministico · sempre attivo | forma dell'indirizzo, su confini di parola ASCII | universale |
+| **Carta di credito** | `[CARD_1]` | deterministico · sempre attivo | checksum di **Luhn** | universale |
+| **IBAN** | `[IBAN_1]` | deterministico · sempre attivo | **mod-97** + lunghezza del paese | universale |
+| **Secret / chiave API** | `[SECRET_1]` | deterministico · sempre attivo | prefisso dell'emittente — `sk-…`, `sk-ant-…`, `AKIA…` | universale |
+| **Telefono** | `[PHONE_1]` | deterministico · sempre attivo | il **piano di numerazione reale** del paese dice che il numero è *assegnato* | `+CC` e USA sempre · **9 piani nazionali** |
+| **SSN (USA)** | `[SSN_1]` | deterministico · sempre attivo | regole area / group / serial | 🇺🇸 |
+| **Documento nazionale** | `[NATID_1]` | deterministico · sempre attivo | il checksum proprio di quello schema — mod-23, mod-97, mod-11, ISO 7064, regole NINO | **10 paesi** |
+| **Persona** | `[PERSON_1]` | **ML — richiede un modello** | il modello legge la frase: un nome non ha forma verificabile | 10 lingue · recall **0,83** |
+| **Organizzazione** | `[ORG_1]` | **ML — richiede un modello** | ″ | 10 lingue |
+| **Luogo** | `[LOCATION_1]` | **ML — richiede un modello** | ″ | 10 lingue |
 
-| categoria | segnaposto | cosa conferma il match |
-|---|---|---|
-| **Email** | `[EMAIL_1]` | forma dell'indirizzo, su confini di parola ASCII |
-| **Telefono** | `[PHONE_1]` | internazionale `+CC`, USA e 9 piani nazionali — ogni candidato verificato sul **piano di numerazione reale** del paese |
-| **SSN (USA)** | `[SSN_1]` | regole area / group / serial |
-| **Documento nazionale** | `[NATID_1]` | 10 schemi nazionali, ciascuno col proprio checksum — vedi sotto |
-| **Carta di credito** | `[CARD_1]` | Luhn |
-| **IBAN** | `[IBAN_1]` | mod-97 + lunghezza per paese |
-| **Secret / chiave API** | `[SECRET_1]` | prefissi dell'emittente — `sk-…`, `sk-ant-…`, `AKIA…`, … |
+**La divisione è la verificabilità, non l'importanza.** Un IBAN è mascherato perché il mod-97
+*torna*, non perché somigli a un IBAN — quelle sette sono dimostrabili, indipendenti dalla lingua
+e costano ~20 ms. Un nome non lo conferma nessuna regola, quindi serve un modello, ed è lì che sta
+tutto il costo (~4,7 s, ~563 MB) — ed è lì che la garanzia si indebolisce: **senza modello quelle
+tre viaggiano in chiaro**, ed è ciò che `NER_REQUIRED=1` trasforma in un errore all'avvio.
 
-**Non strutturate — NER ONNX locale** (XLM-R int8, CPU). Richiede un modello; senza, il proxy gira
-in modalità solo-strutturata e queste tre categorie **escono in chiaro**.
+**I due girano affiancati, non uno dopo l'altro.** Entrambi scandiscono tutto il testo e le loro
+annotazioni vengono unite; dove si contendono gli stessi caratteri vince il deterministico.
+Nessuna categoria ha due motori — il NER emette solo Persona/Organizzazione/Luogo e non potrebbe
+produrre un'email nemmeno volendo. Quale livello faccia di più dipende interamente dal traffico:
+un risultato SQL o un export CSV è quasi tutto deterministico, un turno di chat ordinario è in
+gran parte NER.
 
-| categoria | segnaposto | lingue |
-|---|---|---|
-| **Persona** | `[PERSON_1]` | ar · de · en · es · fr · it · lv · nl · pt · zh |
-| **Organizzazione** | `[ORG_1]` | ″ |
-| **Luogo** | `[LOCATION_1]` | ″ |
-
-**Documenti nazionali — 10 paesi, sempre attivi:** 🇺🇸 SSN · 🇮🇹 Codice Fiscale · 🇬🇧 NINO ·
-🇪🇸 DNI/NIE · 🇫🇷 NIR · 🇩🇪 Steuer-ID · 🇳🇱 BSN · 🇵🇹 NIF · 🇱🇻 codice personale · 🇨🇳 Resident ID.
-Mascherati **indipendentemente dalla configurazione dei locale** — un documento che arriva al
-proxy viene mascherato anche se il suo paese non è quello che hai configurato.
+**I 10 schemi di documento nazionale:** 🇺🇸 SSN · 🇮🇹 Codice Fiscale · 🇬🇧 NINO · 🇪🇸 DNI/NIE ·
+🇫🇷 NIR · 🇩🇪 Steuer-ID · 🇳🇱 BSN · 🇵🇹 NIF · 🇱🇻 codice personale · 🇨🇳 Resident ID. Mascherati
+**indipendentemente dalla configurazione dei locale** — un documento che arriva al proxy viene
+mascherato anche se il suo paese non è quello che hai configurato. Il documento di un undicesimo
+paese non viene riconosciuto: qui la copertura è un elenco, non una regola, e *uno schema non
+misurato non è uno schema che spediamo*.
 
 **Telefoni nazionali — 9 regioni, attive di default:** 🇩🇪 🇪🇸 🇫🇷 🇬🇧 🇮🇹 🇱🇻 🇳🇱 🇵🇹 🇨🇳 numeri
 scritti **senza `+CC`** (`020 7946 0958`, `06 69821234`, `347 1234567`, `91 123 45 67`). È l'unico
