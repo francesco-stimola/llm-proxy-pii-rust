@@ -37,10 +37,30 @@ A privacy proxy in front of an OpenAI-compatible LLM: it masks PII locally
   only for **unstructured** entities. CPU-first. Placeholders `[KIND_N]`. Locales
   **IT + US** (M5 broadens). Detection engines sit behind the `PiiDetector` trait.
 
+## Decisions that are the human's
+Some choices are not the builder's to make. On any of these, **stop and ask** —
+present **numbered options** with what each one costs and gives up, say which you'd
+pick, and wait:
+- **Product-visible behavior** — a new refusal, reduced coverage, a changed meaning
+  for a config variable, a different error body or exit code.
+- **A threshold with functional consequences** — a budget, a limit, a confidence
+  cutoff. "It seemed a reasonable default" is not authority to pick one.
+- **Anything blocking for the tag** — if the answer decides whether a release ships.
+
+Everything else: **proceed**. That is the default, and asking permission for routine
+work is its own failure. Nor should one open question stall the whole task — do
+everything that doesn't depend on the answer first, *then* ask.
+
 ## Build & test
 - Toolchain is MSVC, no-admin — see `docs/SETUP.md`. Every shell needs the MSVC
   env (auto-applied in-project via `.claude/settings.local.json`, or by
   dot-sourcing the Build Tools `devcmd.ps1`).
+- **Only ever kill a process you started yourself, by the PID you got when you
+  started it.** The machine also runs a long-lived instance of *this same binary*
+  that isn't yours — so killing by name or by port (`Get-Process <name> |
+  Stop-Process`, `taskkill /IM`, "whatever is holding that port") is destructive and
+  leaves no trace in the test output. If the port you wanted is taken, bind a
+  different one; never free it.
 - `cargo test` must be **green with no warnings** before a change is "done".
   Add tests for every behavior change; add **adversarial** cases for detection
   changes (a miss = a leak). Catalog new tests in `docs/TESTING.md`.
