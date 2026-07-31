@@ -25,7 +25,7 @@ that way?"*
 | [M7.md](M7.md) | M7 / M7.1 — NER latency · system-prompt cache | 23, all closed |
 | [M8.md](M8.md) | M8 / M8.1 — GLiNER · national phone recognizer | 8, all closed |
 | [M9.md](M9.md) | M9 / M9.1 — GPU optimization · per-backend binaries | 29, all closed |
-| [M10.md](M10.md) | M10 — national phone coverage + release hygiene | 55, all closed (round 9 pending) |
+| [M10.md](M10.md) | M10 — national phone coverage + release hygiene | 61, 55 closed (round 9 open) |
 
 **The page to read here is [M10-R28](M10.md#m10-r28), the fourth turn of one wheel.** M10-R2 was a DoS
 on the domestic-phone validator. Its fix was undone by the input **repeating**
@@ -104,6 +104,21 @@ of this folder: **a measurement harness needs a declared scope the way a guard d
 non-vacuity assertion, which proves it measures *something*, and that is not the same as proving what
 it measures is representative. *An instrument with no declared scope has its narrowest reading quoted
 as its widest.*
+
+**Round 9 is the sharpest version of that, because it is the round where the fix was applied and the
+claim was wrong anyway.** R54 gave DOS-BUD the rendering axis; R53 replaced the unreachability claim
+with a measured band. The band is wrong by **3.3×** — a grouped one-column export is refused at
+**793 KB**, not 2.6 MB ([M10-R56](M10.md#m10-r56)) — and the per-candidate table it is reasoned from
+takes one sample per family, the French one being the *cheapest* of its family
+([M10-R57](M10.md#m10-r57)). The reason the axis did not help is
+[M10-R58](M10.md#m10-r58): R54's fix had three items and the one that was skipped is the row that
+*emits the band*, so the number is still typed in from a review rather than read off the harness — the
+sixth time in this milestone. **The rule that finally generalizes all of it: *every number a product
+document publishes must be a row a harness prints.*** A harness that varies the right axis but does
+not emit the claim leaves the claim exactly as unverifiable as it was; and *a per-candidate cost
+measured in isolation does not transfer to a column*, because the per-scan memo collapses each
+rendering by its own factor (FR 29 → 1, LV 28 → 3, IT grouped 12 → **8**) — the fourth axis this
+milestone has had to learn separately, after `size`, `periodicity` and `shape`: **`context`**.
 
 ---
 

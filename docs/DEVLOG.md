@@ -3,6 +3,71 @@
 Newest first. One entry per meaningful change — note *what* and *why*, not just
 *what*. This is the running history so context is never lost between sessions.
 
+## 2026-07-31 — M10 round 9: the axis was added, the claim was not emitted, and the number is wrong again
+
+All four closures checked hold as **edits**. R47's guard clause is load-bearing by mutation — deleting
+`Err(err) if err.is_budget_exhausted() => Err(err)` reds FAILOPEN-BUD *and* DOS-08 and nothing else.
+R54's odometer is genuinely distinct at 16 MiB in both renderings (219,096 of 219,096 phone strings
+distinct, counted rather than assumed), and its grouped REFUSED verdict is a real legal-body refusal,
+not an R49-style rejection cost: the same column masks 50,000 of 50,000 at a flat 8.00 units/row.
+R55's three sites are filled. Six new findings, **none needing a source change**.
+
+**M10-R56 — the replacement band is wrong by 3.3×, and it is the fifth version of these numbers.**
+Four documents say the reachable band starts *"around 2.6 MB (a dense grouped column)"*, and both
+READMEs name the rendering: `320 123 4567`-style grouping. Measured with DOS-BUD's **own** generator,
+that column costs 8.00 units per row, so a one-column export is refused at **62,500 rows / 793 KB** —
+exactly (499,992 units at 62,499 rows, 500,000 at 62,500) — and a `SELECT name, phone` export at
+**1.88 MB**. Confirmed through the real `.exe`: 799 KB → `400`, upstream never contacted; 761 KB →
+`200`, forwarded and restored. The published 2.6 MB came from an ad-hoc probe measuring **2.5**
+units/row, which is the per-scan memo being served by a generator whose candidates repeat: this
+milestone's oldest trap, seventh appearance, and the first to land directly in a published number
+rather than in a draft.
+
+**M10-R57 — *"1 to 29 units"* has R53's own defect inside R53's own fix.** The table takes one sample
+per shape family, and the French sample (`01 23 45 67 89`) is the cheapest number of its family. Six
+ordinary French renderings — `06 12 34 56 78`, `02 40 12 34 56`, `04 91 12 34 56`, `05 56 12 34 56`,
+`08 92 70 12 34`, `09 70 12 34 56` — cost **46** units and every one masks whole; the overall maximum
+found is **65**. *A conclusion drawn from one point of a grid is a fact about that point* — written
+into ARCHITECTURE by R53's closure, eleven lines above a table that is thirteen points of a grid.
+
+**M10-R58 is why neither was caught, and it is the tenth of its class.** R54's fix had three items;
+item 2 was *"the one-column density row, **which is where the 2.6 MB / 6.0 MB refusal line lives**"*.
+Items 1 and 3 landed; item 2 did not, and the closure note does not mention it. So the band is still
+an **off-harness number** that nothing re-runs — which is exactly the mechanism that produced the
+previous three wrong versions. Tenth *"a closure skipped a step its own finding named"*, in the commit
+that closed the ninth and named the mechanism (*the interesting half of a fix crowds out the checklist
+half*).
+
+**M10-R59 — the stopping rule's premise does not hold.** *"Both classes now have a mechanical guard
+(DOS-BUD's rendering axis; FAILOPEN-BUD and the catalogue entries), which is what makes them stop"* is
+false in both halves: FAILOPEN-BUD guards fail-open behaviour, not catalogue drift, and R55's own
+~15-line id-extraction guard was never written. DOS-BUD's axis, meanwhile, has the shape DOS-08's
+first version had — aimed at the instance (`MAX_BODY_BYTES`, refused yes/no) rather than the shape the
+claim takes (a refusal line in bytes, at any size), which is why R56 exists.
+
+**Nothing here is a live defect in `src/`.** Rounds 5–9 have now found zero. The refusals are the
+fail-closed path working: nothing forwarded, nothing leaked, an actionable message carrying no
+input-derived bytes, and the positive control masked upstream (`[PHONE_1]`, `[EMAIL_1]`) and restored
+to the client. The release workflow's two guards were **simulated** rather than assumed — `v1.2.1` is
+correctly blocked today by the Status table's `(planned)` and by the `1.2.0` manifest, and the
+table-only scoping holds.
+
+**One decision is owed.** R53's closure kept 500,000 on *"an ordinary 367 KB tool result spends ~1%"*
+and *"what gets refused is a multi-megabyte contact export — rare"*. Both are properties of the
+cheapest rendering: at the grouped one, a 354 KB tool result spends **8%**, DOS-BUD's own 3.6 MB row
+spends **80%** (the table publishes 10%), and the refused export is **793 KB**. Eight percent is
+comfortable and the threshold is still defensible; *rare* is the word that no longer fits.
+
+**And this round published no wall clock at all.** The box was never idle — a `copilot` process held
+~1.3 cores throughout and a `java` process later added ~3 more (19% → 35% of twelve cores), neither
+mine to stop. By M10-R50's own rule (*a published number is measured on an idle box or it is not
+measured*) every timing measured was discarded rather than filed. Every number in round 9's findings
+is a **unit count**, which is deterministic and load-independent — which is also why the refutation of
+the band is exact rather than arguable.
+
+**220 default / 253 onnx green**, `fmt`, `clippy -D warnings` on both feature sets and the 15-warning
+`cargo doc` baseline all clean.
+
 ## 2026-07-30 — M10 round 8: the availability claim was a property of one rendering
 
 All six of round 7's closures hold, verified by mutation and by recompiling the cases they describe.
