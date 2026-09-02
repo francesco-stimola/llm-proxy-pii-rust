@@ -52,6 +52,7 @@ it, which a first dry run proved was not a hypothetical.
 | [M9.1 — one release binary per backend](#m91) | ✅ complete · tag `v1.2.0` |
 | [M10 — national phone coverage + release hygiene](#m10) | ✅ complete · tag `v1.2.1` |
 | [M11 — deterministic coverage · NER thread base · model pin refresh](#m11) | 📋 planned · tag `v1.3.0` (planned) |
+| [M12 — one model for everything not provable](#m12) | 📋 planned |
 
 ---
 
@@ -2331,11 +2332,11 @@ nothing:
   That cost is the symptom, not the problem. **The problem is that a plate is not the kind of thing
   this tier recognizes.** The deterministic tier exists for identifiers arithmetic can confirm —
   mod-10, mod-97, Luhn — where a match is a *proof* and a miss is impossible. A plate offers no
-  proof, so it belongs with the things only a model can judge: it moves to the [backlog](#backlog)'s
-  single-model direction, alongside address.
-- **Free-form address, age, gender** — no rule can confirm them; they need a model. Deferred to the
-  [backlog](#backlog)'s *one model with more kinds* — **not** to Track C, which is a pin refresh of
-  the model we already run — rather than solved by switching on a second engine.
+  proof, so it belongs with the things only a model can judge: it moves to [M12](#m12), alongside
+  address.
+- **Free-form address, age, gender** — no rule can confirm them; they need a model. Deferred to
+  [M12](#m12) — **not** to Track C, which is a pin refresh of the model we already run — rather
+  than solved by switching on a second engine.
 - **Dates, times, amounts — excluded on purpose, permanently, as a default.** This is the sharp
   one. A document anonymizer can mask a date: an over-mask is visible to the human holding the
   document, and costs nothing. **This proxy sits on live agent traffic**, where `[DATE_1]` in place
@@ -2488,48 +2489,71 @@ That is the real cost of the track, and none of it is optional:
    first" means before the measurement, not before the candidate, so it is not something this
    milestone can write today without inventing a number for a model nobody has named.
 
-<a id="backlog"></a>
-## Backlog — documented, not scheduled
+<a id="m12"></a>
+## M12 — one model for everything not provable 📋
 
-### One model with more kinds — retire XLM-R *and* GLiNER together, don't stack a third
-**The maintainer's stated direction (2026-07-31, restated 2026-09-02), and the measurements agree
-with it.** The way to reach contextual PII — address above all — is a **better single model**, not
-XLM-R and GLiNER running side by side. The 2026-09-02 restatement makes the target explicit: **both**
-current engines retire in favour of one, which then carries every judgement call the deterministic
-tier cannot prove.
+**Scheduled 2026-09-02, out of the backlog.** The way to reach contextual PII — address above all —
+is a **better single model**, not XLM-R and GLiNER running side by side, and the target is explicit:
+**both** current engines retire in favour of one, which then carries every judgement call the
+deterministic tier cannot prove.
 
-Stacking is already known to be a bad trade here, from this project's own numbers: GLiNER int8's
+**The line this milestone draws, and it is the whole architecture in a sentence.** Not "one model
+instead of two", but a rule about *which* work is a model's at all: **what arithmetic can confirm
+stays deterministic — what it cannot goes to a single model.** A checksum is a proof (mod-10,
+mod-97, Luhn: a match cannot be wrong and a miss cannot happen), and no model should be asked to
+re-decide it. Everything else — names, organizations, free-form address, age, gender, vehicle
+plates — is a judgement, and judgements belong to one engine rather than two. That rule is why
+[M11](#m11)'s Track A keeps VAT numbers and dropped plates: the first are provable, the second are
+not.
+
+**Stacking is already known to be a bad trade here, from this project's own numbers.** GLiNER int8's
 Person recall is **0.58** against XLM-R's **0.83** ([M8](#m8)), so the second engine is *worse* at
 the job the first one exists for; it costs **~510 MB on top** (≈1.07 GB for the pair) and a second
 inference pass, on a path where [M7](#m7) measured the NER as **~100% of masking latency**. Two
-models is paying twice for a partial upgrade.
+models is paying twice for a partial upgrade — and the same numbers are the standing warning about
+the candidate: a model whose published figures looked strong measured 0.58 here. **Any published
+figure is somebody else's measurement on their own distribution until it is re-measured on this
+project's corpus.** The shape to aim at is known to exist — encoders under half a gigabyte cover
+several times this project's entity count on CPU — so *more coverage for less RAM than the current
+pair* is not speculative. Which model it is, is [open](#m12-open).
 
-**The line the swap would draw, sharpened 2026-09-02.** Not "one model instead of two", but a rule
-about *which* work is a model's at all: **what arithmetic can confirm stays deterministic — what it
-cannot goes to a single model.** A checksum is a proof (mod-10, mod-97, Luhn: a match cannot be
-wrong and a miss cannot happen), and no model should be asked to re-decide it. Everything else —
-names, organizations, free-form address, age, gender, **vehicle plates** — is a judgement, and
-judgements belong to one engine rather than two. That is the whole architecture in a sentence, and
-it is why [M11](#m11)'s Track A keeps VAT numbers and **dropped plates**: the first are provable,
-the second are not.
+**Scope.**
+- [ ] **Get the candidate into ONNX, or it cannot ship at all.** The runtime is `ort` and nothing
+  else, so an ONNX export is a **precondition, not a detail**. If upstream has not published one by
+  the time this opens, **we export and quantize it ourselves** (maintainer's call, 2026-09-02) — and
+  that decision carries a consequence worth naming up front: we then *own* the artifact, so
+  `NER_MODEL_REPO` + `NER_MODEL_REVISION` have no upstream revision to pin unless we publish our own
+  export, and the explicit-local-path route (`NER_MODEL_PATH`) becomes the only reproducible one.
+- [ ] **Map the classes this proxy refuses to nothing.** A candidate trained for document
+  anonymization will carry **dates, times and amounts** — which [M11](#m11) excludes permanently,
+  because `[DATE_1]` inside a `tool_use.input` corrupts an agent's call. The mechanism exists
+  (`DATE` already maps to `None`); the risk is a *new* class nobody mapped.
+- [ ] **Re-measure everything the swap invalidates**, before it is a default: the recall corpus, the
+  per-kind figures both READMEs publish, the RAM and latency numbers, and the chunking constants —
+  `MODEL_MAX_TOKENS`, `MAX_WINDOW_TOKENS` and the **measured** cut-edge drift are tuned to the
+  current export and are not portable to a different architecture or context window.
+- [ ] **Re-run the determinism guard.** `ARCHITECTURE.md` → *Execution providers* says outright that
+  a model swap must: intra-op thread-count inertness w.r.t. detection is **empirical** on the
+  current export, not promised by the runtime (M7-R3).
+- [ ] **Retire GLiNER** — its config surface (`GLINER_*`), its decode path and its guards — only
+  once the replacement measures at least as well on what GLiNER was added for. Removing it first
+  would be a coverage regression taken on faith.
+- [ ] Re-publish the coverage tables in both READMEs and `ARCHITECTURE.md`, and say plainly what
+  `[PERSON_n]`/`[ORG_n]`/`[LOCATION_n]` mean afterwards — **operators already depend on those in
+  live traffic**, which is what makes this a milestone of its own rather than an upgrade dropped
+  into a patch.
 
-The shape to aim at is known to exist: encoders under half a gigabyte cover several times this
-project's entity count on CPU, so *more coverage for less RAM than the current pair* is not
-speculative. Any such figure is somebody else's measurement on their own distribution until it is
-re-measured here — and [M8](#m8) is the standing warning about what that gap can hold: a model whose
-published numbers looked strong measured **0.58** Person recall against XLM-R's **0.83** on this
-project's corpus.
+<a id="m12-open"></a>
+**Open, and the maintainer's.** *Which* model. Its evaluation stays out of this repository by
+standing instruction — record here only the design consequences, never a name or a link.
 
-Not scheduled, and several things must be settled before it can be. **A model swap re-opens the
-determinism guard** (`ARCHITECTURE.md` → *Execution providers*) and every published recall figure,
-and it changes what `[PERSON_n]`/`[ORG_n]`/`[LOCATION_n]` mean in traffic operators already depend
-on. **A candidate must also fit the runtime this project actually has:** `ort` and nothing else, so
-an ONNX export is a precondition, not a detail — a checkpoint published only as PyTorch weights
-means exporting and quantizing it ourselves, and then *owning* that artifact, which leaves
-`NER_MODEL_REPO`/`NER_MODEL_REVISION` with no upstream revision to pin unless we publish our own.
-And a candidate trained to mask **dates, times and amounts** carries classes this proxy refuses on
-purpose ([M11](#m11)); they must map to nothing, the way `DATE` already does. It is a milestone of
-its own, not an upgrade to drop into a patch.
+<a id="backlog"></a>
+## Backlog — documented, not scheduled
+
+### One model with more kinds — *scheduled as [M12](#m12)*
+Moved out of the backlog on **2026-09-02**: the direction stopped being "documented, not
+scheduled" the moment a concrete route to it existed. Its reasoning, its preconditions and
+what it re-opens all live in [M12](#m12) — one home, so this section cannot drift from it.
 
 ### Option B — native provider adapters
 The heavy alternative to M3's Option A: support a provider's **native** API instead of its OpenAI-compat
