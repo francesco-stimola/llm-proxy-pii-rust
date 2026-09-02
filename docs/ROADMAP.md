@@ -2299,7 +2299,14 @@ form that we simply have not written a recognizer for.** That is this track, and
   objection started. Measure precision against an adversarial corpus of uppercase-alphanumeric
   tokens (git short SHAs, enum variants, ticket ids, `AWS`-style prefixes). **The floor it must
   clear is already set — 1.000, decision 3 below** — so the measurement decides whether it ships,
-  and nobody gets to choose the bar after seeing the number.
+  and nobody gets to choose the bar after seeing the number. It enters the **FP-prone tier on `it`**,
+  so `PII_LOCALES` is its switch and no new variable appears.
+- [ ] **Generalize the FP-prone tier's gate from phones to recognizers** — `PHONE_REGIONS` and
+  `phone_region_for_locale` name a region table that is about to hold something other than phone
+  shapes. This is an **internal** refactor with no configuration surface attached: `PII_LOCALES`
+  keeps meaning "which regions", and only its `--help` line widens from *"regions for the
+  domestic-phone recognizers"* to the FP-prone tier as a whole. Needed only if the plate clears its
+  floor; do it **after** the measurement, not in anticipation of it.
 - [ ] Corpora + adversarial negatives per recognizer, on the `PHONE-NAT` model: a positive set of
   real renderings and a negative set of things that merely look like one. **A category ships when
   it is measured** — the rule that produced the nine phone regions, applied unchanged.
@@ -2328,29 +2335,40 @@ nothing:
    Gating it would also have inherited `PII_LOCALES`'s **narrowing** semantics — the one M10 had to
    set in bold in the changelog, where setting the variable yields *less* coverage than leaving it
    unset — and a second tier carrying that subtlety doubles what the README has to explain.
-3. **The plate's precision floor is 1.000** on the adversarial corpus named in the scope above, and
-   it ships **opt-in, never on by default** — if it ships at all. **The floor is set here, before
-   the measurement exists, and that is the entire point:** a threshold chosen after seeing the
-   number is not a threshold, which is what M10 spent nine review rounds learning. 1.000 rather than
-   the phone tier's own precedent — M8.1 shipped 🇩🇪 domestic phones opt-in at **0.909** — because
-   that tier has a real numbering plan to verify against and `AA123BB` has nothing but its shape.
-   Where the only defence is a pattern, the pattern has to be exact.
+3. **The plate's precision floor is 1.000** on the adversarial corpus named in the scope above —
+   and if it clears it, **it joins the FP-prone tier gated by `PII_LOCALES`, on the `it` code, with
+   no new configuration variable at all.** **The floor is set here, before the measurement exists,
+   and that is the entire point:** a threshold chosen after seeing the number is not a threshold,
+   which is what M10 spent nine review rounds learning. 1.000 rather than the phone tier's own
+   precedent — M8.1 shipped 🇩🇪 domestic phones at **0.909** — because that tier has a real numbering
+   plan to verify against and `AA123BB` has nothing but its shape. Where the only defence is a
+   pattern, the pattern has to be exact.
 
-> **The plate's on/off *mechanism* is deliberately NOT decided, and that is not an omission.** Under
-> the floor above it only exists in one branch of two. Below 1.000 the recognizer does not ship and
-> no switch is ever needed. At exactly 1.000 on a corpus **built to break it**, the case for keeping
-> it off by default is weak enough that **default-on re-opens on the evidence** — and no switch is
-> needed there either. The switch is required only in a third world: 1.000, plus a founded suspicion
-> that the corpus does not represent live traffic. That is a judgement made *looking at* the
-> measurement, so it is made then.
+> **The plate rides the switch that already exists, and the tier it joins tells you what that
+> means.** The recognizers sit in three tiers, and the third is precisely the plate's shape:
+> *universal* (email, secret, card, IBAN, `+CC` phone — always on); *national identifiers* (SSN,
+> Codice Fiscale, NINO, DNI, NIR — **always on regardless of `PII_LOCALES`**, M4-R1, justified by
+> *"each is specific enough — checksums, prefix rules — to stay near-zero false-positive when always
+> on"*); and the **FP-prone tier** (domestic phones with no `+CC`), which `PII_LOCALES` gates. The
+> plate is a country-specific recognizer with **no verifier**, which is the FP-prone tier's
+> definition. So it enters on `it`: `PII_LOCALES=de,fr` turns it off, `PII_LOCALES=` turns the whole
+> tier off, and the operator's switch is the one they already know.
 >
-> What is already known, and is why this was not left vague: **`PII_LOCALES` cannot carry it as it
-> stands.** It selects **regions** for the domestic-phone tier and defaults to every vetted one, so
-> `it` is in the set before the operator does anything and the plate would be **on by default** —
-> the opposite of the decision. Switching it there would mean either a non-region token in a region
-> list (two axes in one variable, in the one variable whose semantics already needed a bold warning)
-> or a new variable in a `Detection` block that today has exactly two. Neither is worth committing to
-> for a recognizer that may not ship.
+> **Which means it is ON by default, and that is the honest reading of "gated by `PII_LOCALES`"
+> after M10.** Before M10 that tier was genuinely opt-in; M10 flipped it — every vetted region on by
+> default, and the variable **narrows** instead of enabling. An earlier draft of this decision said
+> the plate would ship *"opt-in via `PII_LOCALES`"*, which is two incompatible halves: the label
+> carried the pre-M10 semantics and the mechanism the post-M10 one. **The floor is what makes
+> default-on defensible** — precision 1.000 on a corpus built to break it is the same near-zero-FP
+> property that justifies the always-on tier, reached by measurement instead of by checksum. A
+> recognizer that cannot clear it does not ship at all, so there is no configuration in which a
+> shape-only guess is masking traffic unmeasured.
+>
+> **Genuinely off-by-default would have cost a new variable**, and that is why it was not chosen
+> casually: nothing in the current surface expresses *"off until switched on"* — after M10 every
+> tier is on and the existing variables narrow — so it would have meant either a non-region token in
+> a region list or a third entry in a `Detection` block that has two. The requirement, not a
+> preference, would have been what bought it.
 
 **What Track A deliberately excludes, and why it is not an omission.**
 - **Free-form address, age, gender** — no rule can confirm them; they need a model. Deferred to the
