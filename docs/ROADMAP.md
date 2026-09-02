@@ -51,7 +51,7 @@ it, which a first dry run proved was not a hypothetical.
 | [M9 — GPU optimization](#m9) | ✅ complete |
 | [M9.1 — one release binary per backend](#m91) | ✅ complete · tag `v1.2.0` |
 | [M10 — national phone coverage + release hygiene](#m10) | ✅ complete · tag `v1.2.1` |
-| [M11 — deterministic coverage: VAT numbers + plates](#m11) | 📋 planned |
+| [M11 — deterministic coverage · NER thread base · model pin refresh](#m11) | 📋 planned · tag `v1.3.0` (planned) |
 
 ---
 
@@ -2245,7 +2245,25 @@ client, refused bodies never forwarded, the refusal message carrying no input-de
 | [M10-R61](reviews/M10.md#m10-r61) | Two mechanical defects introduced by `e704ce6`: a duplicated sentence in ROADMAP's pre-tag list (already gone — that block was rewritten this round) and seven doubled apostrophes in the review record | low | [x] |
 
 <a id="m11"></a>
-## M11 — deterministic coverage: VAT numbers + plates 📋
+## M11 — deterministic coverage · NER thread base · model pin refresh 📋
+
+**Three tracks that share a milestone and nothing else.** [A](#m11-a) is the coverage gap the
+milestone opened on; [B](#m11-b) and [C](#m11-c) were added 2026-09-02 and both touch the ML
+layer — B changes *how many threads* one inference gets, C changes *which export* runs. They are
+listed apart because they fail apart: B is pure arithmetic with unit guards, C re-opens every
+measured claim about the model. **Do B before C** — B changes the machine the recall and latency
+numbers are measured *on*, so running it second would invalidate C's fresh measurements the day
+after they were taken.
+
+**M11 is heading for `v1.3.0`** (set 2026-09-02, written `(planned)` in the Status table until the
+tag exists). **Minor, not patch, and Track B alone decides that:** the default per-session thread
+count changes on every SMT machine with no config change — a behaviour change, not a fix — and the
+same would be true of Track A's new recognizers and of a moved model pin. A patch release that
+silently halves a thread count is the kind of version number [M10](#m10) spent a milestone
+learning not to publish.
+
+<a id="m11-a"></a>
+### Track A — deterministic coverage: VAT numbers + plates
 
 **Opened 2026-07-31, from a coverage comparison rather than a defect.** Set against a
 document-level anonymizer built on a fine-tuned multilingual encoder over **22** entity types,
@@ -2254,7 +2272,7 @@ measure different things: five of those 22 are one address split into
 street / number / postcode / city / province where this emits a single `[LOCATION_1]`, which is
 resolution rather than reach, and several more are categories this proxy must **not** mask
 (below). What the comparison did surface is a real, cheap gap: **identifiers with a verifiable
-form that we simply have not written a recognizer for.** That is this milestone, and nothing else.
+form that we simply have not written a recognizer for.** That is this track, and nothing else.
 
 **Scope — the deterministic tier only.**
 - [ ] **Italian Partita IVA** — 11 digits, mod-10 checksum with position doubling. Structurally the
@@ -2272,8 +2290,8 @@ form that we simply have not written a recognizer for.** That is this milestone,
 - [ ] Catalogue every new guard id in `TESTING.md` (`CAT-01` enforces this) and re-publish the
   coverage tables in both READMEs and `ARCHITECTURE.md`.
 
-**Three decisions that are the maintainer's, and are open.** Each changes product-visible behaviour,
-so none is the builder's to take:
+**Three decisions that are the maintainer's, and are open** (Track A's; B and C carry their own).
+Each changes product-visible behaviour, so none is the builder's to take:
 1. **Which `PiiKind` a VAT number gets.** `NationalId`/`[NATID_n]` reuses an existing token and
    ships without touching the vault, but a P.IVA is a *business* identifier that is personal data
    only when it identifies a sole trader. A new `TaxId`/`[TAXID_n]` is more honest and is a new
@@ -2283,9 +2301,10 @@ so none is the builder's to take:
 3. **The plate's precision floor.** What false-positive rate makes it shippable — and on which
    corpus. "It looked fine" is what M10 spent nine rounds unlearning.
 
-**What M11 deliberately excludes, and why it is not an omission.**
+**What Track A deliberately excludes, and why it is not an omission.**
 - **Free-form address, age, gender** — no rule can confirm them; they need a model. Deferred to the
-  model work below rather than solved by switching on a second engine.
+  [backlog](#backlog)'s *one model with more kinds* — **not** to Track C, which is a pin refresh of
+  the model we already run — rather than solved by switching on a second engine.
 - **Dates, times, amounts — excluded on purpose, permanently, as a default.** This is the sharp
   one. A document anonymizer can mask a date: an over-mask is visible to the human holding the
   document, and costs nothing. **This proxy sits on live agent traffic**, where `[DATE_1]` in place
@@ -2293,6 +2312,124 @@ so none is the builder's to take:
   thing quietly. That is precisely the harm [M10](#m10) spent nine review rounds bounding, and the
   reason the CC battery checks that `Read`'s line numbers and a SQL result's `id` survive intact.
   If these are ever wanted, they are opt-in, model-side, and measured for over-mask first.
+
+<a id="m11-b"></a>
+### Track B — the intra-op thread base: physical cores, not logical threads
+
+**Decided 2026-09-02 — recorded as a decision, not left open as a question.** Today
+`onnx::default_intra_threads` divides `available_parallelism()`, the **logical** count, so on the
+reference box (6 cores / 12 threads) the shipped default `NER_POOL_SIZE=1` yields `intra = 12`:
+both SMT siblings of every core running the same int8 GEMM, contending for one core's L1d/L2 and
+one set of vector units. The base becomes the **physical core count**, and it is one rule at every
+pool size:
+
+```
+base  = min(physical_cores, available_parallelism())
+intra = max(1, base / NER_POOL_SIZE)
+```
+
+M7's invariant is restated on the new base, keeping the **bounded** form [M7-R4](reviews/M7.md#m7-r4)
+insisted on: `pool × intra ≤ base` **while `pool ≤ base`**, and `intra == 1` beyond it, where the
+derivation is out of moves.
+
+**Why the same base above `pool = 1` and not only at the default** — the half of the question that
+was open, decided the same way. The reason to cap at physical cores is sibling contention for one
+core's cache and vector units, and that reason does not weaken when a second session appears: it
+applies to *both* sessions. Dividing the logical count from `pool = 2` up would put `2 × 6 = 12`
+ONNX threads back on 6 physical cores — reintroducing at `pool = 2` exactly what the change removes
+at `pool = 1`, and making the process's total NER thread count **double** between `pool = 1` and
+`pool = 2` under a formula whose entire purpose is that the product fits the box. One base, one
+rule, no discontinuity. The cost is named and accepted: at `pool = 2` on a 6/12 box the default
+falls from 6 to 3 threads per session, leaving the siblings to the runtime's own work (tokio, TLS,
+JSON) — which is latency-bound and *does* profit from SMT, unlike the GEMM.
+
+**`min(physical, available_parallelism())`, never `physical` alone — this is the trap.**
+`available_parallelism()` honours cgroup quota, CPU affinity masks and Windows job objects; a
+physical-core count does **not**, it reports the silicon. Take it bare and a proxy in a 2-CPU
+container on a 32-core host derives `intra = 32` — the oversubscription this derivation exists to
+prevent, arriving through the fix for it. The `min` also settles the case that raised the question,
+**CPUs whose thread count is no longer 2× the core count**: on a hybrid P+E part (say 14 cores /
+20 threads) it returns 14 — every core once, no sibling doubling — and with SMT disabled in firmware
+the two counts are equal and the `min` is a no-op.
+
+**This settles the rule by decision and mechanism, not by this box's timings — and the milestone
+must say so.** [M7-R2](reviews/M7.md#m7-r2) recorded the SMT question as **unresolved** after four
+runs whose sign flipped and whose same-configuration spread was ~40%. Track B does not claim to
+have resolved it. It adopts the conventional base — physical cores is the standard intra-op
+recommendation for GEMM-bound inference — and stops paying for a knob no measurement on this
+hardware can read. The sweep below *records* the change; it does not justify it.
+
+**Scope.**
+- [ ] A **pure** `derive_thread_base(logical, physical: Option<usize>) -> usize` beside
+  `derive_intra_threads` in `src/pii/onnx.rs`, so the runner's own box cannot decide whether it is
+  correct — THREAD-01's standing rule. `None` (the platform won't say) falls back to `logical`,
+  which is today's behaviour exactly: a platform that cannot answer loses nothing.
+- [ ] Physical detection behind the **`onnx` feature only** (where `available_cores` already lives),
+  so the default build's footprint is untouched. `num_cpus::get_physical()` is the candidate — it is
+  neither a `*-sys` crate nor a `cc`/`cmake` user, so `tests/dependency_footprint.rs` should stay
+  green. **Verify that per target rather than assert it here**, which is the whole lesson of that
+  file's 2026-07-31 rewrite.
+- [ ] `resolve_pool_and_intra` keeps its single home and its `0`-is-unset symmetry (M7-R1, M7-R5);
+  only the base it divides changes. **`GLINER_POOL_SIZE`/`GLINER_INTRA_THREADS` inherit it for
+  free** — same function, which is the point of it having one home.
+- [ ] **The startup log must stay reproducible from its own inputs.** It prints
+  `pool_size=… intra_threads=…`, and with a base that is no longer the core count the operator's
+  task manager shows, the arithmetic stops being redoable. Log the base, and whether it was the
+  physical count or the `min` cap. M7-R5 rejected `pool_size=0, intra_threads=12` for exactly this
+  reason: a derived value the logged inputs cannot explain.
+- [ ] **Extend THREAD-01** along the new axis, as a function of `(logical, physical)`: SMT box
+  (12, 6) → 6 · SMT off (6, 6) → 6 · hybrid P+E (20, 14) → 14 · container/affinity (2, 32) → **2**,
+  the `min` case · detection unavailable (12, `None`) → 12 · plus the invariant re-asserted in both
+  regimes on the new base, still split by regime and never hidden inside a `max`.
+- [ ] **NER-THREAD-01 must NOT be narrowed to the new base.** It sweeps
+  `intra ∈ {1, 2, 4, 6, available_cores()}` to prove thread count changes speed and never detection;
+  more partitions is strictly more coverage, so it keeps testing up to the **logical** count even
+  though nothing ships there any more.
+- [ ] Re-run the M7 latency sweep on the new default (PERF-M7-03/05 — **≥3 reps, min + median +
+  spread**, non-negotiable per M7-R2) and re-publish the figures the docs quote.
+- [ ] Docs: `ARCHITECTURE.md` → *NER threading* (formula, invariant, the `min` reason), the
+  `NER_INTRA_THREADS` rows in both READMEs (they read `max(1, cores / NER_POOL_SIZE)` today),
+  `--help` in `src/main.rs`, `TESTING.md` (THREAD-01), `DEVLOG.md`. **[M7](#m7)'s boxes in this file
+  and DEVLOG's S1 get a superseded-by-M11 pointer, not a rewrite** — they are the record of what M7
+  shipped and why.
+
+**Product-visible, and it belongs in the release notes:** on every SMT machine the default
+per-session thread count **halves** with no config change. The old shape stays one env var away —
+`NER_INTRA_THREADS` is an explicit override and already wins over the derivation.
+
+<a id="m11-c"></a>
+### Track C — refresh the pinned XLM-R export
+
+**Same model family, same label set — a pin bump, not a model swap.** `NER_MODEL_REVISION` defaults
+to `478a2a3` (`src/server.rs`), the int8 XLM-R export shipped since [M2.5](#m25); Track C moves that
+pin to a newer or better-quantized export of the same base checkpoint. The *replace-the-NER* work —
+a different model with more kinds — stays in the [backlog](#backlog) and is explicitly **not** this.
+
+**A pin bump re-opens every measured claim about the model, even when the weights are "the same".**
+That is the real cost of the track, and none of it is optional:
+- [ ] Name the candidate revision **and what changed in it** (re-export, different quantizer,
+  tokenizer fix). A pin bump with no stated diff is not reviewable, and a community export ships no
+  release notes to lean on.
+- [ ] `hf.rs::id2label_matches_the_xlmr_config` — the 9-label set is asserted against the export's
+  own `config.json`. A re-export that reorders `id2label` is a silent recall catastrophe, and this
+  is the guard that sees it.
+- [ ] **Re-run NER-THREAD-01 — `ARCHITECTURE.md` states outright that a model swap must.** Intra-op
+  determinism is *empirical* on this export, not promised by the runtime (M7-R3).
+- [ ] The chunking constants are tuned to **this** export: `MODEL_MAX_TOKENS`, `MAX_WINDOW_TOKENS`
+  and the **measured +1…+3 cut-edge drift** behind `MIN_DRIFT_HEADROOM_TOKENS`. Re-measure the
+  drift — the const-assert catches an inconsistent triple at compile time, but nothing catches a
+  headroom that is merely too small for the new export's tokenization.
+- [ ] Re-run the NER recall corpus (`ner_eval.rs`, at the `intra=1` every recall guard pins) and the
+  RAM figures both READMEs quote (**563 MB at `pool=1`**, ~270 MB per extra session) — a different
+  quantization moves both.
+- [ ] Re-publish whatever moved: the coverage/recall tables in both READMEs and `ARCHITECTURE.md`.
+
+**Two decisions that are the maintainer's, and are open.**
+1. **Which revision.** Needs the candidate in hand; nothing here picks it.
+2. **Does the *default* pin move, or only the documented recommendation?** Moving the default makes
+   every existing operator's next startup fetch a fresh export unattended, on the path documented as
+   *"the only outbound call in the whole tool"*. Keeping the default and documenting the new revision
+   costs a manual step and surprises nobody. Product-visible either way.
 
 <a id="backlog"></a>
 ## Backlog — documented, not scheduled
