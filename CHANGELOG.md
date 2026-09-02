@@ -31,6 +31,34 @@ All notable changes to this project are documented here. The format follows
 > prefix, so the guard would extract it and publish a section labelled unreleased as the release
 > body. The placeholder goes in the version slot, never beside it.
 
+## [Unreleased]
+
+Milestone [M11](https://github.com/francesco-stimola/llm-proxy-pii-rust/blob/main/docs/ROADMAP.md#m11) — in progress.
+
+### Changed
+
+- **The NER's default thread count halves on every SMT machine — no config change needed, and this
+  is the one to read before upgrading.** `NER_INTRA_THREADS` is derived, and the number it divides
+  moved from *logical threads* to **physical cores**: `max(1, base / NER_POOL_SIZE)` where
+  `base = min(physical cores, available parallelism)`. On a 6-core / 12-thread box the default goes
+  from 12 threads to 6, and a `NER_POOL_SIZE=2` deployment from 6 per session to 3. The reason is
+  that both SMT siblings of a core were running the same int8 GEMM, contending for one core's cache
+  and one set of vector units — work that does not benefit from SMT the way the runtime's own
+  latency-bound work (tokio, TLS, JSON) does.
+  - **Measured on the reference box:** single-request latency is a wash at the default (within the
+    harness's noise), and **throughput improved** — +16% at the default shape, +19% at
+    `NER_POOL_SIZE=2`, which became the fastest shape measured.
+  - **The old shape is one variable away.** `NER_INTRA_THREADS` is an explicit override and still
+    wins over the derivation; set it to your logical core count for pre-1.3.0 behaviour.
+  - **The startup log now prints the arithmetic**: `thread_base`, `thread_base_source`
+    (`physical` / `parallelism-cap` / `physical-unknown`), `logical_cores` and `physical_cores`
+    alongside `pool_size` and `intra_threads`, so the derived value can be reproduced from the line
+    that reports it.
+  - Containers and pinned processes are safe: the base is a `min`, so a proxy granted 2 CPUs on a
+    32-core host still derives from 2. Where a platform will not report physical cores, the base
+    stays the logical count — exactly the previous behaviour.
+  - `GLINER_INTRA_THREADS` derives from the same base, the same way.
+
 ## [1.2.1] — 2026-07-31
 
 Milestone [M10](https://github.com/francesco-stimola/llm-proxy-pii-rust/blob/main/docs/ROADMAP.md#m10) — national phone coverage + release hygiene.

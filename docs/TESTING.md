@@ -749,10 +749,28 @@ its shape is **asserted**, not assumed.
     the shape, not the content.
 - **PERF-M7-05** — `m7_s2_the_bar_holds_for_every_shipped_shape`. **M7's deliverable, guarded as a
   RATIO**: it measures the **pre-M7 shape (`2×1`) as an in-run calibration leg** and asserts every
-  shipped shape is **≥1.5×** it — the single-session default (`NER_POOL_SIZE` unset → 1 × 12, the
-  personal shape since the 2026-07-17 flip) *and* the pooled centralized shape (`NER_POOL_SIZE=2` →
-  2 × 6), min of 3 reps each. Plus a **loose 15 s** absolute ceiling for order-of-magnitude
+  shipped shape clears **its own floor** — the single-session default (`NER_POOL_SIZE` unset →
+  `1 × 6` since M11 Track B, `1 × 12` before it; the personal shape since the 2026-07-17 flip) at
+  **≥1.5×**, and the pooled centralized shape (`NER_POOL_SIZE=2` → `2 × 3`, was `2 × 6`) at
+  **≥1.3×** — min of 3 reps each. Plus a **loose 15 s** absolute ceiling for order-of-magnitude
   regressions only.
+  - **Why the floors are per-shape (M11 Track B), and why that is not a weakened bar.** One floor
+    described both shapes while both divided the same base — at `pool=2` the derivation gave `2×6`,
+    the same six threads per session the default got. M11 made the base *physical* cores, so the
+    default is `1×6` and the centralized shape `2×3`: **half** the per-session threads, and a shape
+    that differs 2× in thread count cannot honestly share a floor. Measured over four isolated runs
+    on the reference box: default **1.95 / 2.04 / 1.80 / 2.08×**, centralized **1.46 / 1.56 / 1.56 /
+    1.69×**. The old shared 1.5 floor sat *inside* the centralized band — a guard that fails
+    intermittently on correct code, which is the worst kind: it trains the reader to re-run until
+    green. Lowering *both* to 1.3 would have discarded the default shape's real ~1.9× headroom;
+    dropping the centralized shape from the assertion would have been **M7-R1's own failure class**,
+    a harness watching one shipped configuration while another ships unwatched. The floor now travels
+    *with* the shape in `bar_shapes()`, so a third shipped shape cannot silently inherit a floor
+    nobody measured for it.
+  - **Read the centralized row against PERF-M7-04 or it reads as a regression it is not.** The pool
+    exists for **concurrent throughput**, not single-request latency, and on that axis `2×3` measured
+    **0.664 turns/s vs `2×6`'s 0.558 (+19%)** — the fastest shape in that table. It got better at its
+    job and slower at the one it was never the right tool for.
   - **Run it isolated: `--test-threads=1` (M7-R12).** Cargo runs tests concurrently, so the old
     documented command had these benchmarks **measuring each other** — worth **1.50×** on the
     absolute at constant power (4,757 ms isolated → 7,142 ms contended). Three review rounds blamed
@@ -779,14 +797,18 @@ its shape is **asserted**, not assumed.
     the honest move is to state the limit rather than to imply it away. The **15 s** ceiling is
     order-of-magnitude only — it was 8 s, which fired on the harness's own documented command
     (median 10,391 ms) and blamed the power state for test concurrency.
-  - **Its domain (M7-R13 / M7.1).** The guard still **skips below 4 cores and says so**, but the
-    2026-07-17 default flip (`pool 2 → 1`) changed *why*. Under the old `pool=2` default `intra`
-    floored at 1 there, so the derived default *was* `PRE_M7_SHAPE` and the ratio was 1.0 by
-    construction. Under `pool=1` the derivation is `intra = cores`, so that identity holds **only at
-    1 core**; between 2 and 3 the derived shapes add threads but too few to clear the 1.5× floor
-    reliably, so 4 stays the conservative line. Pinned in
-    `onnx::thread_tests::the_default_gives_one_session_the_whole_box`: **the speedup scales with the
-    box, and this guard has nothing dependable to say below 4 cores.**
+  - **Its domain (M7-R13 / M7.1, restated by M11 Track B).** The guard still **skips below 4 and says
+    so**, but the 2026-07-17 default flip (`pool 2 → 1`) changed *why*. Under the old `pool=2` default
+    `intra` floored at 1 there, so the derived default *was* `PRE_M7_SHAPE` and the ratio was 1.0 by
+    construction. Under `pool=1` the derivation is `intra = base`, so that identity holds **only at a
+    base of 1**; between 2 and 3 the derived shapes add threads but too few to clear the floor
+    reliably, so 4 stays the conservative line. **What M11 changed is the quantity compared against
+    it:** the threshold now reads the *thread base*, not the logical core count, so on an SMT box it
+    is half what it was and a 6-thread / 3-core machine falls below the line where it used to clear
+    it. That is the honest reading — the guard's subject is the thread count the default actually
+    gets, and that halved. Pinned in
+    `onnx::thread_tests::the_default_gives_one_session_the_whole_base`: **the speedup scales with the
+    thread base, and this guard has nothing dependable to say below 4.**
   - **Why both shapes (M7-R1).** The first cut asserted `pool=1` only, while the *server* then
     defaulted to `pool=2` — ~28% headroom on a config nobody ran, none on the one they did. Both now
     resolve through `onnx::resolve_pool_and_intra`, the **server's own** function, so the harness
@@ -805,6 +827,13 @@ its shape is **asserted**, not assumed.
 - **PERF-M7-03** — `m7_s1_how_much_of_the_box_can_one_request_use`. Sweeps `pool × intra`, **3 reps
   per shape**, printing **min / median / spread**. Reports; does not assert, because the numbers are
   box-specific. Confirms scaling is **sublinear** (12 threads → ~2×).
+  - **M11 Track B's re-run, recorded here because the sweep RECORDS the change and never justified
+    it.** Reference box, isolated, min of 3: `2×1` 4,934 ms (1.00×) · `1×1` 3,685 (1.34×) · `1×2`
+    2,407 (2.05×) · `1×4` 2,048 (2.41×) · **`1×6` 1,992 (2.48×, the new default)** · **`1×12` 2,042
+    (2.42×, the old default)** · `2×6` 2,009 (2.46×) · `4×3` 2,500 (1.97×). The default's move from
+    `1×12` to `1×6` is **inside the noise** on single-request latency — which is precisely what
+    M7-R2 predicted this harness could and could not resolve, and why the base was decided on
+    mechanism rather than on these rows.
   - **Read the `spread` column, and know it understates the noise (M7-R2).** `spread` is
     within-run; the same configuration also drifts ~40% *between* runs on the reference box. **This
     harness resolves large effects, not small ones**, and its footer says which rows a *mechanism*
@@ -821,20 +850,42 @@ its shape is **asserted**, not assumed.
   exactly why the 2026-07-17 default flip to `pool=1` is scoped the way it is: the flip targets the
   **personal** proxy, which has no concurrency to lose that on, and a centralizing operator reclaims
   it with `NER_POOL_SIZE=N` — this test is the reason that stays an override, not the default.
+  - **M11 Track B's re-run — and the number that reframes Track B's whole latency story.** Reference
+    box, 4 concurrent turns: `2×1` 0.314 turns/s · `1×12` 0.419 (the old default) · **`1×6` 0.485
+    (the new default, +16%)** · `2×6` 0.558 (the old centralized shape) · `4×3` 0.645 · **`2×3` 0.664
+    (the new centralized shape, +19%, and the fastest row measured)**. So the physical-core base
+    **improved throughput on both shipped shapes**, and the centralized shape's single-request
+    latency drop that forced PERF-M7-05's per-shape floor is the *other* side of the same trade —
+    made on the axis the pool does not exist for.
 - **THREAD-01** — `src/pii/onnx.rs::thread_tests` (unit, **no model needed**, runs in plain
-  `cargo test --features onnx`). Pins the two pure functions the threading rests on, as functions of
-  `(pool, cores)` — so the CI runner's core count cannot decide whether they are correct.
+  `cargo test --features onnx`). Pins the pure functions the threading rests on, as functions of
+  `(pool, base)` and `(logical, physical)` — so the CI runner's own machine cannot decide whether
+  they are correct. **That purity is the whole design**, and it is why M11 Track B could pin a hybrid
+  P+E part, an SMT-disabled box and a cgroup-limited container without owning any of them.
   - `derive_intra_threads`: the oversubscription invariant **with its domain** — `pool × intra ≤
-    cores` while `pool ≤ cores`, and `intra == 1` beyond it, where the derivation is out of moves.
+    base` while `pool ≤ base`, and `intra == 1` beyond it, where the derivation is out of moves.
     **The regimes are split on purpose (M7-R4):** the first version asserted
     `pool * intra <= cores.max(pool)` across both, which passes for `pool > cores` by widening the
     bound to the pool itself — green-lighting 8 threads on a 2-core box under a name claiming the
-    opposite. A test may not hide its exception inside a `max`.
+    opposite. A test may not hide its exception inside a `max`. **M11 restated it on the new base
+    without unsplitting the regimes**, and the bases it sweeps are now *derived* from
+    `(logical, physical)` pairs rather than a list of plausible integers: the composition
+    `derive_thread_base → derive_intra_threads` is what actually runs, and a base of `0` or one above
+    the granted parallelism would have broken the bound exactly where nobody was looking.
+  - `derive_thread_base` / `thread_base_source` (M11 Track B): the `(logical, physical)` grid —
+    SMT box `(12, 6) → 6` · SMT off in firmware `(6, 6) → 6` · hybrid P+E `(20, 14) → 14` ·
+    container or affinity mask `(2, 32) → **2**`, the `min` case that keeps a physical-core count
+    from overriding a cgroup quota · detection unavailable `(12, None) → 12`, which is the pre-M11
+    behaviour exactly. Plus: the base never returns `0`, and **the base and the provenance string
+    logged beside it cannot disagree** — two pure functions feed one startup-log line (M7-R5), and a
+    line whose reason contradicts its number is worse than no line.
   - `resolve_pool_and_intra`: **both** knobs treat `0` and garbage as unset (M7-R5 — M7 shipped that
     guard on the new knob only, leaving `NER_POOL_SIZE=0` safe by two independent clamps while the
     startup log printed `pool_size=0, intra_threads=12`, which no arithmetic reconciles); an explicit
     value wins; and the default is `DEFAULT_POOL_SIZE`, the same constant `server.rs` uses — which is
-    what makes M7-R1's harness/server drift structurally impossible.
+    what makes M7-R1's harness/server drift structurally impossible. **M11 changed only the base it
+    divides**, so `GLINER_POOL_SIZE`/`GLINER_INTRA_THREADS` inherited the new base with no second
+    path to keep in step — the payoff of the single home M7-R1 bought.
 - **NER-THREAD-01** — `tests/ner_perf.rs::m7_r3_intra_threads_changes_speed_not_detection`
   (`--features onnx`, `#[ignore]`d, needs a model). **`NER_INTRA_THREADS` must change speed, never
   detection** — fingerprints `(kind, span.start, span.end)` over prose, **a field past the
@@ -842,6 +893,14 @@ its shape is **asserted**, not assumed.
   shape, at intra 1 / 2 / 4 / 6 / all-cores, and asserts every set is **identical**. Measured: **194
   entities**, identical at every count, with a non-vacuity floor so a guard that detects nothing cannot
   pass.
+  - **It sweeps to the LOGICAL core count, and M11 Track B deliberately did NOT narrow it to the new
+    thread base.** Since M11 nothing *ships* at `intra = available_cores()` on an SMT box — the
+    default derives from physical cores — and narrowing the sweep to match would still be wrong. This
+    is a **detection-inertness** guard, not a shape-of-the-default guard: its claim is that *however*
+    ONNX Runtime partitions the work the detections do not move, so **more partitions is strictly
+    more coverage**, and the logical count is the largest partitioning `NER_INTRA_THREADS` can
+    actually be set to on that box. A guard narrowed to the shipped default would stop covering the
+    override that is documented as supported.
   - **Its chunked input is asserted in *tokens*, through the real tokenizer (M7-R8).** The first cut
     asserted `long_field.len() > 2_000` — **bytes** — for a branch `infer_chunked` takes on **tokens**
     (`> MAX_WINDOW_TOKENS` = 480). The input was 2,360 bytes and cleared it by 18% while being **442

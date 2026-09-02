@@ -74,12 +74,16 @@ cargo run-onnx     # rebuilds, THEN runs target\onnx\debug\ — see the box belo
 Confirm **both** lines before trusting a single result:
 
 ```text
-INFO … ONNX NER detector loaded model="…model_quantized.onnx" pool_size=1 intra_threads=…
+INFO … ONNX NER detector loaded model="…model_quantized.onnx" pool_size=1 intra_threads=… thread_base=… thread_base_source=physical logical_cores=… physical_cores=…
 INFO … listening on http://127.0.0.1:8787
 ```
 
-(`pool_size=1` is the default since 2026-07-17 — one session, the whole box; `intra_threads` is the
-derived per-session count. A centralizing operator who set `NER_POOL_SIZE=2` would see that here.)
+(`pool_size=1` is the default since 2026-07-17 — one session, the whole thread base; `intra_threads`
+is the derived per-session count. A centralizing operator who set `NER_POOL_SIZE=2` would see that
+here. The last four fields are M11 Track B: the base is `min(physical cores, available
+parallelism)`, so on an SMT box `intra_threads` is **half** `logical_cores` at the default and the
+line carries everything needed to redo `intra = max(1, thread_base / pool_size)` — expect
+`thread_base_source=physical` on ordinary hardware, `parallelism-cap` in a CPU-limited container.)
 
 > **`NER_REQUIRED=1` is not optional here, and this is why.** By default a missing or
 > unloadable NER degrades to structured-only **silently** (the deliberate fail-*open* posture

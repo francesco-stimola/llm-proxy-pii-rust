@@ -624,6 +624,14 @@ DEVLOG 2026-07-16 → *M7 implementation plan*; start at S0.**
   (2.11×). The **shipped default is now `pool=1` since the 2026-07-17 flip** — a ~−23% throughput
   trade *vs that pooled shape*, taken for the personal case's half-RAM (a centralizing operator sets
   `NER_POOL_SIZE=N`); see DEVLOG 2026-07-17. Full tables: DEVLOG 2026-07-16.
+  > **⚠ SUPERSEDED BY [M11 Track B](#m11-b) (2026-09-02) — the divisor, not the derivation.** This
+  > box is left as written because it is the record of **what M7 shipped and why**. What changed:
+  > the base `intra` is divided out of moved from `available_parallelism()` (**logical** threads) to
+  > `min(physical_cores, available_parallelism())`, so on the reference box the default is `1×6`
+  > rather than `1×12` and `NER_POOL_SIZE=2` gives `2×3` rather than `2×6`. Everything else here —
+  > the formula's shape, the single home, the `0`-is-unset symmetry, the deployment argument, the
+  > −23% throughput trade behind the `pool=1` flip — is unchanged. Read
+  > [ARCHITECTURE → *NER threading*](ARCHITECTURE.md) for the current rule.
 
 > **What the measurement overturned.** Three claims in this milestone's own text did not survive
 > contact with a realistic fixture. Recording them because the *pattern* is the point — this is
@@ -645,6 +653,11 @@ DEVLOG 2026-07-16 → *M7 implementation plan*; start at S0.**
 >    by 8%, then `1×6` by 3%…), because the same configuration drifts ~40% *between* runs — the
 >    effect is smaller than the noise it was read off. The sweep now repeats each shape and prints
 >    min/median/spread, which is the guard that would have stopped the claim being made.
+>    **[M11 Track B](#m11-b) (2026-09-02) closed this — by decision, NOT by resolving it.** It
+>    remains unresolved *as a measurement* on this hardware, and M11 says so explicitly: it adopts
+>    physical cores as the conventional intra-op base for GEMM-bound inference and stops paying for
+>    a knob no timing here can read. M11's own re-run is consistent with that (`1×6` 2.48× vs `1×12`
+>    2.42× — still inside the noise, still not a result).
 >
 > **Confirmed, on the other hand:** scaling really is sublinear — 12 threads buy **~2×**, not 12×.
 > And a lone request really does occupy **one session**, so the pool is inert at concurrency 1 —
@@ -901,9 +914,10 @@ identical at intra 1…12). The findings trended 3→3→2→1→**0**. **The le
 
 **Round 7 ([2026-07-17](reviews/M7.md#review-7)) — the `NER_POOL_SIZE` default flip (2 → 1), a delta on
 the closed milestone.** Verified independently (104 onnx / 85 default lib green, `clippy-onnx` clean); the
-flip driven through the real model — an operator setting nothing now resolves to `pool=1 intra=12` (the
-whole box for a lone request, half the RAM), `NER_POOL_SIZE=2` gives the pooled `2×6`, both clearing the
-`≥1.5×` floor. No detection code changed; no leak, fail-open, over-mask or determinism impact — pool is a
+flip driven through the real model — an operator setting nothing resolved, *as of that round*, to
+`pool=1 intra=12` (the whole box for a lone request, half the RAM), `NER_POOL_SIZE=2` gave the pooled
+`2×6`, both clearing the then-shared `≥1.5×` floor. (Both shapes changed in
+[M11 Track B](#m11-b) — `1×6` and `2×3` on that box, against per-shape floors.) No detection code changed; no leak, fail-open, over-mask or determinism impact — pool is a
 concurrency/RAM knob only. The −23% throughput cost of `pool=1` is named honestly everywhere the trade is
 discussed (ARCHITECTURE / TESTING / DEVLOG / both READMEs). **One docs finding:** the delta updated every
 doc *except this file*, so the M7 body still advertises the retired `pool=2` default in two current-state
@@ -2314,7 +2328,7 @@ Each changes product-visible behaviour, so none is the builder's to take:
   If these are ever wanted, they are opt-in, model-side, and measured for over-mask first.
 
 <a id="m11-b"></a>
-### Track B — the intra-op thread base: physical cores, not logical threads
+### Track B — the intra-op thread base: physical cores, not logical threads ✅
 
 **Decided 2026-09-02 — recorded as a decision, not left open as a question.** Today
 `onnx::default_intra_threads` divides `available_parallelism()`, the **logical** count, so on the
@@ -2360,34 +2374,49 @@ recommendation for GEMM-bound inference — and stops paying for a knob no measu
 hardware can read. The sweep below *records* the change; it does not justify it.
 
 **Scope.**
-- [ ] A **pure** `derive_thread_base(logical, physical: Option<usize>) -> usize` beside
+- [x] A **pure** `derive_thread_base(logical, physical: Option<usize>) -> usize` beside
   `derive_intra_threads` in `src/pii/onnx.rs`, so the runner's own box cannot decide whether it is
   correct — THREAD-01's standing rule. `None` (the platform won't say) falls back to `logical`,
   which is today's behaviour exactly: a platform that cannot answer loses nothing.
-- [ ] Physical detection behind the **`onnx` feature only** (where `available_cores` already lives),
+- [x] Physical detection behind the **`onnx` feature only** (where `available_cores` already lives),
   so the default build's footprint is untouched. `num_cpus::get_physical()` is the candidate — it is
   neither a `*-sys` crate nor a `cc`/`cmake` user, so `tests/dependency_footprint.rs` should stay
   green. **Verify that per target rather than assert it here**, which is the whole lesson of that
-  file's 2026-07-31 rewrite.
-- [ ] `resolve_pool_and_intra` keeps its single home and its `0`-is-unset symmetry (M7-R1, M7-R5);
+  file's 2026-07-31 rewrite. **Verified before anything else was written** (`num_cpus` 1.17.0,
+  Windows/MSVC): it builds, reports **6** on the 6/12 reference box, DEP-01 and DEP-02 stay green
+  across the whole release matrix, and `cargo tree` finds it in the `onnx` tree only — 0 hits in the
+  default one.
+- [x] `resolve_pool_and_intra` keeps its single home and its `0`-is-unset symmetry (M7-R1, M7-R5);
   only the base it divides changes. **`GLINER_POOL_SIZE`/`GLINER_INTRA_THREADS` inherit it for
   free** — same function, which is the point of it having one home.
-- [ ] **The startup log must stay reproducible from its own inputs.** It prints
+- [x] **The startup log must stay reproducible from its own inputs.** It prints
   `pool_size=… intra_threads=…`, and with a base that is no longer the core count the operator's
   task manager shows, the arithmetic stops being redoable. Log the base, and whether it was the
   physical count or the `min` cap. M7-R5 rejected `pool_size=0, intra_threads=12` for exactly this
   reason: a derived value the logged inputs cannot explain.
-- [ ] **Extend THREAD-01** along the new axis, as a function of `(logical, physical)`: SMT box
+- [x] **Extend THREAD-01** along the new axis, as a function of `(logical, physical)`: SMT box
   (12, 6) → 6 · SMT off (6, 6) → 6 · hybrid P+E (20, 14) → 14 · container/affinity (2, 32) → **2**,
   the `min` case · detection unavailable (12, `None`) → 12 · plus the invariant re-asserted in both
   regimes on the new base, still split by regime and never hidden inside a `max`.
-- [ ] **NER-THREAD-01 must NOT be narrowed to the new base.** It sweeps
+- [x] **NER-THREAD-01 must NOT be narrowed to the new base.** It sweeps
   `intra ∈ {1, 2, 4, 6, available_cores()}` to prove thread count changes speed and never detection;
   more partitions is strictly more coverage, so it keeps testing up to the **logical** count even
   though nothing ships there any more.
-- [ ] Re-run the M7 latency sweep on the new default (PERF-M7-03/05 — **≥3 reps, min + median +
-  spread**, non-negotiable per M7-R2) and re-publish the figures the docs quote.
-- [ ] Docs: `ARCHITECTURE.md` → *NER threading* (formula, invariant, the `min` reason), the
+- [x] Re-run the M7 latency sweep on the new default (PERF-M7-03/05 — **≥3 reps, min + median +
+  spread**, non-negotiable per M7-R2) and re-publish the figures the docs quote. **Single-request
+  latency is a wash at the default** (`1×6` 2.48× vs `1×12` 2.42× over the pre-M7 shape — inside the
+  noise, exactly as M7-R2 predicted this harness could and could not resolve), and **throughput
+  improved on both shipped shapes**: `1×6` 0.485 turns/s vs `1×12` 0.419 (+16%), `2×3` 0.664 vs
+  `2×6` 0.558 (+19%), the new centralized shape being the fastest row measured. Tables: `TESTING.md`
+  → PERF-M7-03/04, DEVLOG 2026-09-02.
+- [x] **PERF-M7-05's floor is now per-shape — a consequence the plan did not foresee.** The
+  centralized shape lost half its per-session threads (`2×6` → `2×3`) and measured **1.46 / 1.56 /
+  1.56 / 1.69×** against the shared **1.5×** floor: a guard straddling its threshold on correct
+  code, i.e. intermittently red. Maintainer's call, taken 2026-09-02: **keep both shipped shapes
+  asserted, with their own floors** — default ≥1.5×, centralized ≥1.3×. Dropping the centralized
+  shape would have re-opened [M7-R1](reviews/M7.md#m7-r1)'s class (a shipped config unwatched);
+  lowering both would have thrown away the default's real ~1.9× headroom.
+- [x] Docs: `ARCHITECTURE.md` → *NER threading* (formula, invariant, the `min` reason), the
   `NER_INTRA_THREADS` rows in both READMEs (they read `max(1, cores / NER_POOL_SIZE)` today),
   `--help` in `src/main.rs`, `TESTING.md` (THREAD-01), `DEVLOG.md`. **[M7](#m7)'s boxes in this file
   and DEVLOG's S1 get a superseded-by-M11 pointer, not a rewrite** — they are the record of what M7

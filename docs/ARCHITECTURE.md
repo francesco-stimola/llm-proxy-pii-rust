@@ -946,17 +946,68 @@ airtight-privacy path). Decision + numbers: `docs/DEVLOG.md` 2026-07-19.
 
 **NER threading — the two knobs multiply (M7).** `NER_POOL_SIZE × NER_INTRA_THREADS` is the
 process's NER thread count under saturated load, and **the invariant is that the product fits the
-box**, not that either factor saturates it (`intra = 12` with `pool = 2` puts 24 threads on 12
+box**, not that either factor saturates it (`intra = 6` with `pool = 2` puts 12 ONNX threads on 6
 cores — oversubscription, plausibly slower than one). So `NER_INTRA_THREADS` **defaults to a
-derived value**, `max(1, available_parallelism() / NER_POOL_SIZE)` (`onnx::default_intra_threads`);
-a fixed constant is wrong on a 2-core VM and a 64-core server alike. An explicit env value wins; a
-`0` is treated as unset for **both** knobs, never as ONNX Runtime's "pick for me", which would
-reintroduce exactly the oversubscription the derivation prevents. Both resolve in one place
+derived value**, `max(1, base / NER_POOL_SIZE)` (`onnx::default_intra_threads`); a fixed constant is
+wrong on a 2-core VM and a 64-core server alike. An explicit env value wins; a `0` is treated as
+unset for **both** knobs, never as ONNX Runtime's "pick for me", which would reintroduce exactly the
+oversubscription the derivation prevents. Both resolve in one place
 (`onnx::resolve_pool_and_intra`), which the latency harness calls too — when the harness read its
-own default it silently measured a configuration the server does not ship (M7-R1).
+own default it silently measured a configuration the server does not ship (M7-R1). That single home
+is also why `GLINER_POOL_SIZE`/`GLINER_INTRA_THREADS` inherit every change here for free.
+
+**The base is PHYSICAL cores, capped by the parallelism the platform grants (M11 Track B, decided
+2026-09-02).**
+
+```
+base  = min(physical_cores, available_parallelism())
+intra = max(1, base / NER_POOL_SIZE)
+```
+
+Through M10 the base was `available_parallelism()` — the **logical** count — so on the reference box
+(6 cores / 12 threads) the shipped `NER_POOL_SIZE=1` derived `intra = 12`: both SMT siblings of every
+core running the same int8 GEMM, contending for one core's L1d/L2 and one set of vector units.
+Physical cores is the conventional intra-op base for GEMM-bound inference, and it is **one rule at
+every pool size** — the sibling contention that motivates the cap does not weaken when a second
+session appears, it applies to both of them. Dividing the logical count from `pool = 2` up would put
+`2 × 6 = 12` ONNX threads back on 6 physical cores, reintroducing at `pool = 2` exactly what the
+change removes at `pool = 1`, and making the process's total NER thread count *double* between
+`pool = 1` and `pool = 2` under a formula whose whole purpose is that the product fits the box. The
+cost is named and accepted: at `pool = 2` on a 6/12 box each session falls from 6 threads to 3,
+leaving the siblings to the runtime's own work (tokio, TLS, JSON), which is latency-bound and *does*
+profit from SMT unlike the GEMM.
+
+> **`min(physical, available_parallelism())`, never `physical` alone — this is the trap.**
+> `available_parallelism()` honours cgroup quota, CPU affinity masks and Windows job objects; a
+> physical-core count does **not**, it reports the silicon. Take it bare and a proxy in a 2-CPU
+> container on a 32-core host derives `intra = 32` — the oversubscription this derivation exists to
+> prevent, arriving through the fix for it. The `min` also settles CPUs whose thread count is no
+> longer 2× the core count: on a hybrid P+E part (14 cores / 20 threads) it returns 14, every core
+> once; with SMT disabled in firmware the two counts are equal and it is a no-op. If the platform
+> will not report a physical count at all, the base is the logical one — **exactly the pre-M11
+> behaviour**, so a platform that cannot answer loses nothing.
+
+> **This is settled by decision and mechanism, NOT by this box's timings — and saying so is the
+> point.** [M7-R2](reviews/M7.md#m7-r2) recorded the SMT question as **unresolved** after four runs
+> whose sign flipped under a ~40% same-configuration spread, and M11 does not claim to have resolved
+> it: it adopts the conventional base and stops paying for a knob no measurement on this hardware can
+> read. The M11 sweep *records* the change, it does not justify it. What that sweep did measure, and
+> what is worth knowing: single-request latency is a wash at the default (`1×6` 2.48× vs `1×12`
+> 2.42× over the pre-M7 shape, inside the noise), while **throughput improved on both shapes** —
+> `1×6` 0.485 turns/s vs `1×12` 0.419 (**+16%**) and `2×3` 0.664 vs `2×6` 0.558 (**+19%**), the new
+> centralized shape being the fastest row measured. `NER_INTRA_THREADS` remains an explicit override
+> and still wins, so the old shape is one env var away.
+
+> **The startup log prints the base and where it came from, and that is not decoration (M7-R5).**
+> The line carries `thread_base`, `thread_base_source` (`physical` / `parallelism-cap` /
+> `physical-unknown`), `logical_cores` and `physical_cores` beside `pool_size` and `intra_threads`.
+> M7-R5 rejected `pool_size=0, intra_threads=12` because no arithmetic reconciles it; since the base
+> stopped being the core count an operator's task manager shows, a bare `intra_threads` became just
+> as unreconcilable — on the reference box it now reads 6 where the machine advertises 12. With those
+> fields the operator can redo `intra = max(1, base / pool)` from the line itself.
 
 > **State the invariant with its domain, because it is false outside it (M7-R4).** The derivation
-> bounds `pool × intra` by the core count **while `pool ≤ cores`**. Beyond that it *cannot*: `intra`
+> bounds `pool × intra` by the **base** while `pool ≤ base`. Beyond that it *cannot*: `intra`
 > floors at 1 and nothing clamps `NER_POOL_SIZE`, so `NER_POOL_SIZE=8` on a 2-core box is 8 threads
 > on 2 cores and no choice of `intra` fixes it. **That is an operator error the proxy does not
 > defend against** — it hits the ~270 MB-per-session RAM wall long before the thread wall. An
@@ -971,7 +1022,8 @@ therefore reaches `intra`, never `pool × intra`, and the pool is **inert at con
 (measured: `2×1` ≈ `1×1`). The right shape is a **deployment** question the proxy cannot answer for
 itself — but it *can* default to the case almost everyone runs. **The shipped default is
 `NER_POOL_SIZE=1` (flipped from 2 on 2026-07-17):** a personal proxy in front of Claude Code
-(concurrency ≈ 1) gets all cores on its one request and ~270 MB less RAM, since each session holds
+(concurrency ≈ 1) gets every physical core on its one request (every *logical* one before M11
+Track B) and ~270 MB less RAM, since each session holds
 its own copy of the weights — **measured: 563 MB at `pool=1` vs 834 MB at `pool=2`** (a ~290 MB
 shared base plus ~270 MB per session, so `pool=N` ≈ 290 + N×270 MB — not a clean doubling). A
 **centralizing** operator serving concurrent clients sets `NER_POOL_SIZE=N` for the pooled shape. **The flip is not free, and the cost is named:** `pool=1`
