@@ -40,7 +40,7 @@ use std::time::Instant;
 use llm_proxy_pii_rust::pii::anonymizer::Vault;
 use llm_proxy_pii_rust::pii::composite::CompositeDetector;
 use llm_proxy_pii_rust::pii::onnx::{
-    available_cores, resolve_pool_and_intra, ExecutionProvider, OnnxNerDetector,
+    CoreCounts, ExecutionProvider, OnnxNerDetector, resolve_pool_and_intra,
 };
 use llm_proxy_pii_rust::pii::recognizers::StructuredRecognizers;
 use llm_proxy_pii_rust::pii::{Budget, DetectError, PiiDetector, PiiEntity};
@@ -153,7 +153,7 @@ fn build_hybrid() -> CompositeDetector {
     let (pool, intra) = resolve_pool_and_intra(
         std::env::var("NER_POOL_SIZE").ok().as_deref(),
         std::env::var("NER_INTRA_THREADS").ok().as_deref(),
-        available_cores(),
+        CoreCounts::detect().thread_base(),
     );
     build_hybrid_with(pool, intra)
 }
@@ -161,21 +161,35 @@ fn build_hybrid() -> CompositeDetector {
 /// The shapes M7's bar must hold for, resolved through the **server's own** policy.
 ///
 /// Both are shipped configurations — the single-session default an operator gets by setting nothing
-/// (the personal shape, since the 2026-07-17 flip; `pool=1` → the whole box), and the pooled
+/// (the personal shape, since the 2026-07-17 flip; `pool=1` → the whole **thread base**, which since
+/// M11 Track B is every physical core rather than every logical thread), and the pooled
 /// `NER_POOL_SIZE=2` shape a *centralizing* operator sets for concurrent clients. The bar is
 /// asserted on each, so the trade is documented in the one place that *fails* when it stops being
 /// true.
-fn bar_shapes() -> Vec<(&'static str, usize, usize)> {
-    let cores = available_cores();
-    let (default_pool, default_intra) = resolve_pool_and_intra(None, None, cores);
-    let (shared_pool, shared_intra) = resolve_pool_and_intra(Some("2"), None, cores);
+///
+/// **Each shape carries its own floor since M11 Track B** — see [`MIN_SPEEDUP_CENTRALIZED`]. The two
+/// shapes stopped having the same per-session thread count when the base became physical cores
+/// (`1×6` vs `2×3` on the reference box), and a single floor that describes both would either sit
+/// inside the centralized shape's run-to-run band or throw away the default shape's real headroom.
+/// The floor travels *with* the shape rather than living in the assertion loop, so adding a third
+/// shipped shape cannot silently inherit a floor nobody measured for it.
+fn bar_shapes() -> Vec<(&'static str, usize, usize, f64)> {
+    let base = CoreCounts::detect().thread_base();
+    let (default_pool, default_intra) = resolve_pool_and_intra(None, None, base);
+    let (shared_pool, shared_intra) = resolve_pool_and_intra(Some("2"), None, base);
     vec![
         (
             "default / personal (NER_POOL_SIZE unset)",
             default_pool,
             default_intra,
+            MIN_SPEEDUP_VS_PRE_M7,
         ),
-        ("centralized (NER_POOL_SIZE=2)", shared_pool, shared_intra),
+        (
+            "centralized (NER_POOL_SIZE=2)",
+            shared_pool,
+            shared_intra,
+            MIN_SPEEDUP_CENTRALIZED,
+        ),
     ]
 }
 
@@ -223,7 +237,37 @@ const REFERENCE_PRE_M7_MS: f64 = 10_100.0;
 /// durable claim is **this floor**, not any single observed band — the floor is what the guard
 /// enforces and what the docs should quote, precisely because the band keeps being undercut by the
 /// next clean run.
+///
+/// **This is the DEFAULT shape's floor. The centralized shape has its own — see
+/// [`MIN_SPEEDUP_CENTRALIZED`], and read that constant before touching this one.**
 const MIN_SPEEDUP_VS_PRE_M7: f64 = 1.5;
+
+/// **The centralized shape's floor, separate since M11 Track B — and the separation is the honest
+/// move, not a weakened bar.**
+///
+/// One floor described both shapes while both divided the same base: at `pool=2` on the reference
+/// box the derivation gave `2×6`, six threads per session, the same six the default got. **M11 Track
+/// B ended that.** The base became physical cores, so the default is `1×6` and the centralized shape
+/// is `2×3` — *half* the per-session threads. Intra-op scaling is sublinear, so half the threads is
+/// nowhere near half the speed, but it is decidedly less speedup, and one number can no longer
+/// describe two shapes that differ 2× in thread count. Measured over three isolated runs on the
+/// reference box: default **1.95 / 2.04 / 1.80×**, centralized **1.46 / 1.56 / 1.56×** — i.e. the old
+/// 1.5 floor sat *inside* the centralized shape's run-to-run band, which is a guard that fails
+/// intermittently on correct code. That is the worst kind: it trains the reader to re-run until
+/// green.
+///
+/// **1.3 rather than "drop the assertion".** Leaving the centralized shape measured-but-unasserted
+/// is [M7-R1](../docs/reviews/M7.md#m7-r1)'s failure class — a harness guarding one shipped
+/// configuration while another ships unwatched. Lowering *both* to 1.3 would instead throw away the
+/// default shape's real ~1.9× headroom, blinding the guard where it currently sees.
+///
+/// **Read this floor together with what the same change did to throughput, or it reads as a
+/// regression it is not.** The pool exists for *concurrent throughput*, not single-request latency,
+/// and on that axis `2×3` measured **0.664 turns/s against `2×6`'s 0.558 (+19%)** — the fastest shape
+/// in PERF-M7-04's table. The centralized shape got better at its job and slower at the job it was
+/// never the right tool for. That is the trade M11 Track B took deliberately; the number here records
+/// its latency half.
+const MIN_SPEEDUP_CENTRALIZED: f64 = 1.3;
 
 /// A **loose** absolute ceiling — deliberately far above the ~3 s product bar (M7-R9).
 ///
@@ -244,16 +288,21 @@ const ABSOLUTE_SANITY_CEILING_MS: f64 = 15_000.0;
 /// Below this many cores the S2 ratio guard is skipped. **The reason changed with the 2026-07-17
 /// default flip (M7.1), while the number did not.** Under the old `pool=2` default `intra` floored at
 /// 1 below 4 cores, so the derived default *was* [`PRE_M7_SHAPE`] and the ratio was 1.0 **by
-/// construction** — nothing to measure (M7-R13). Under `pool=1` the derivation is `intra = cores`, so
-/// the default equals the pre-M7 *thread count* (ratio 1.0 by construction) **only at 1 core**;
+/// construction** — nothing to measure (M7-R13). Under `pool=1` the derivation is `intra = base`, so
+/// the default equals the pre-M7 *thread count* (ratio 1.0 by construction) **only at a base of 1**;
 /// between 2 and 3 it does add threads, but too few to clear the [`MIN_SPEEDUP_VS_PRE_M7`] floor
-/// reliably. Measured only on the ≥12-core reference box, **4 is the conservative line** below which
-/// the few-thread shapes are untested against the floor and would false-fire. Either way the
-/// takeaway is unchanged: *M7's speedup scales with the core count, and this guard has nothing
-/// dependable to say below 4 cores.*
+/// reliably. Measured only on the reference box, **4 is the conservative line** below which the
+/// few-thread shapes are untested against the floor and would false-fire. Either way the takeaway is
+/// unchanged: *M7's speedup scales with the thread base, and this guard has nothing dependable to
+/// say below 4.*
+///
+/// **The threshold is compared against the BASE, not the logical core count (M11 Track B).** It was
+/// the same number until M11; on an SMT box it is now half of it, so a 6-thread / 3-core machine
+/// falls below the line where before it cleared it. That is the honest reading — the guard's subject
+/// is the thread count the default actually gets, and that halved.
 ///
 /// `resolve_pool_and_intra(None, None, 1)` → `(1, 1)` — intra = the pre-M7 shape's — pinned in
-/// `onnx::thread_tests::the_default_gives_one_session_the_whole_box`.
+/// `onnx::thread_tests::the_default_gives_one_session_the_whole_base`.
 const MIN_CORES_FOR_A_MEANINGFUL_RATIO: usize = 4;
 
 /// Measure one shape: warm the arenas, then the best of [`REPS`] turns.
@@ -444,14 +493,22 @@ fn m7_s0_a_realistic_claude_code_turn_measured_per_field() {
 ///
 /// **Both shapes, because both ship** (M7-R1): the single-session default an operator gets by
 /// setting nothing (the personal shape since the 2026-07-17 flip), and the pooled `NER_POOL_SIZE=2`
-/// shape a centralizing operator sets for concurrent clients.
+/// shape a centralizing operator sets for concurrent clients. **Each against its own floor since
+/// M11 Track B** ([`MIN_SPEEDUP_VS_PRE_M7`] / [`MIN_SPEEDUP_CENTRALIZED`]) — the base became
+/// physical cores, so the two shapes now run 6 and 3 threads per session on the reference box and a
+/// single number describes neither honestly. Dropping the centralized shape instead would have been
+/// M7-R1's own failure class: a harness guarding one shipped configuration while another ships
+/// unwatched.
 ///
 /// **What this guard does NOT see, stated because an honest guard states its blind spot (M7-R14).**
-/// The floor is 1.5 against a worst *observed* ~1.7, so it tolerates a **~13% regression** —
-/// materially the same blindness the wall-clock bar had. **The ratio buys regime-independence, not
-/// sensitivity**; it answers R9's false *positive* (a red bar because the box is slow) and not the
-/// false *negative*. The floor cannot simply be tightened: nearer 1.7 it would start false-firing on
-/// a fast box that legitimately compresses the ratio, which is the failure it was built to end.
+/// Each floor sits ~13-15% under its shape's worst *observed* ratio (1.5 against ~1.7 for the
+/// default; 1.3 against ~1.46 for the centralized shape), so it tolerates a regression of about that
+/// size — materially the same blindness the wall-clock bar had. **The ratio buys regime-independence,
+/// not sensitivity**; it answers R9's false *positive* (a red bar because the box is slow) and not
+/// the false *negative*. Neither floor can simply be tightened: nearer the worst observation it would
+/// start false-firing on a fast box that legitimately compresses the ratio, which is the failure it
+/// was built to end — and the centralized shape proved that concretely, having straddled the old
+/// shared 1.5 floor at 1.46 / 1.56 / 1.56 across three isolated runs on correct code.
 ///
 /// **Run it isolated — `--test-threads=1` (M7-R12).** The module doc's command lets cargo run all
 /// five perf tests concurrently; measured at **1.50×** on the absolute, at constant power. The
@@ -459,20 +516,27 @@ fn m7_s0_a_realistic_claude_code_turn_measured_per_field() {
 #[test]
 #[ignore]
 fn m7_s2_the_bar_holds_for_every_shipped_shape() {
-    let cores = available_cores();
-    // M7-R13 / M7.1. Below 4 cores the derived shapes are too thread-poor to clear the floor
-    // reliably (and at 1 core the default's intra=1 IS `PRE_M7_SHAPE`'s, ratio 1.0 by construction).
+    let counts = CoreCounts::detect();
+    let base = counts.thread_base();
+    // M7-R13 / M7.1. Below 4 the derived shapes are too thread-poor to clear the floor reliably
+    // (and at a base of 1 the default's intra=1 IS `PRE_M7_SHAPE`'s, ratio 1.0 by construction).
     // The old version asserted anyway and told the reader it had found "a real regression in the
     // thread work, not a slow box" — a conclusion it had not earned, on a box where M7 simply has
-    // nothing to deliver. Say that instead.
-    if cores < MIN_CORES_FOR_A_MEANINGFUL_RATIO {
+    // nothing to deliver. Say that instead. The subject is the BASE since M11 Track B: on an SMT
+    // box that is half the logical count, so the skip line is reached on machines that used to
+    // clear it — correctly, because the default's thread count is what halved.
+    if base < MIN_CORES_FOR_A_MEANINGFUL_RATIO {
         eprintln!(
-            "\nSKIPPED: {cores} cores. Under the pool=1 default the derived shapes here are too \
-             thread-poor to clear the {MIN_SPEEDUP_VS_PRE_M7}x floor reliably (and at 1 core the \
-             default intra=1 IS the pre-M7 shape {:?}'s thread count — ratio 1.0 by construction). \
-             M7's speedup scales with the box and this guard has nothing dependable to say below \
-             {MIN_CORES_FOR_A_MEANINGFUL_RATIO} cores — a real property of the derivation, not a \
+            "\nSKIPPED: thread base {base} ({} logical / {} physical, {}). Under the pool=1 \
+             default the derived shapes here are too thread-poor to clear the \
+             {MIN_SPEEDUP_VS_PRE_M7}x floor reliably (and at a base of 1 the default intra=1 IS \
+             the pre-M7 shape {:?}'s thread count — ratio 1.0 by construction). M7's speedup \
+             scales with the base and this guard has nothing dependable to say below \
+             {MIN_CORES_FOR_A_MEANINGFUL_RATIO} — a real property of the derivation, not a \
              failure (M7-R13 / M7.1).",
+            counts.logical,
+            counts.physical_for_log(),
+            counts.thread_base_source().as_str(),
             PRE_M7_SHAPE
         );
         return;
@@ -482,8 +546,11 @@ fn m7_s2_the_bar_holds_for_every_shipped_shape() {
     let bytes: usize = fields.iter().map(|f| f.text.len()).sum();
     eprintln!(
         "\n=== S2: the bar, as a ratio vs the pre-M7 shape. {REPS} reps each, {bytes} B turn \
-         ({:.1} KiB), {cores} cores ===",
-        bytes as f64 / 1024.0
+         ({:.1} KiB), thread base {base} ({} logical / {} physical, {}) ===",
+        bytes as f64 / 1024.0,
+        counts.logical,
+        counts.physical_for_log(),
+        counts.thread_base_source().as_str()
     );
 
     // The calibration leg first: everything below is read against it, and it is what makes the
@@ -511,16 +578,19 @@ fn m7_s2_the_bar_holds_for_every_shipped_shape() {
     // evidence you need to interpret it.
     let measured: Vec<_> = bar_shapes()
         .into_iter()
-        .map(|(label, pool, intra)| {
+        .map(|(label, pool, intra, floor)| {
             let (min, median) = measure_shape(pool, intra, &fields);
-            (label, pool, intra, min, median)
+            (label, pool, intra, floor, min, median)
         })
         .collect();
 
-    for (label, pool, intra, min, median) in &measured {
+    // The floor is printed per row, not just enforced — since M11 Track B the two shapes have
+    // different ones, and a reader comparing `1.56x` against a remembered `1.5` would draw the wrong
+    // conclusion about which shape is near its limit.
+    for (label, pool, intra, floor, min, median) in &measured {
         eprintln!(
             "{label:<32} pool={pool} intra={intra:<3} min {min:>7.0} ms   median {median:>7.0} ms   \
-             {:.2}x vs pre-M7",
+             {:.2}x vs pre-M7 (floor {floor:.1}x)",
             base_min / min
         );
     }
@@ -529,8 +599,16 @@ fn m7_s2_the_bar_holds_for_every_shipped_shape() {
          default has measured 2,462 / 3,943 / 4,724 / 4,757 / 4,841 / 4,933 / 7,142 ms here. The \
          `x vs pre-M7` column is FAR more stable — both legs ran in this run, so whatever the box is \
          doing (power state, background load) divides out. It has held ~1.7-2.3x across every one of \
-         those. The floor the guard enforces is >=1.5x; a faster box compresses the ratio toward it \
-         (M7-R18), so quote the floor, not the day's number.\n\
+         those FOR THE DEFAULT SHAPE. A faster box compresses the ratio toward the floor (M7-R18), so \
+         quote each shape's floor, not the day's number.\n\
+         \n\
+         **The two shapes have DIFFERENT floors since M11 Track B, and the `floor` column says \n\
+         which.** The base became physical cores, so the default is `1x6` where the centralized \n\
+         shape is `2x3` — half the per-session threads, hence less speedup over a shared `2x1` \n\
+         baseline (measured: default 1.95/2.04/1.80x, centralized 1.46/1.56/1.56x). Read the \n\
+         centralized row together with PERF-M7-04: on the throughput axis the pool actually exists \n\
+         for, `2x3` measured 0.664 turns/s against `2x6`'s 0.558 (+19%) — the fastest shape there. \n\
+         It got better at its job and slower at the one it was never the right tool for.\n\
          \n\
          **Do not reach for a power-state explanation first — this file has been wrong about that \
          twice (M7-R12/R17).** The runs once labelled 'battery' and 'AC' were the SAME \
@@ -540,16 +618,21 @@ fn m7_s2_the_bar_holds_for_every_shipped_shape() {
          quote *before* you go looking in the code.\n"
     );
 
-    for (label, pool, intra, min, _) in &measured {
+    // Each shape against ITS OWN floor (M11 Track B) — the two stopped sharing a per-session thread
+    // count when the base became physical cores, and one number can no longer describe both.
+    for (label, pool, intra, floor, min, _) in &measured {
         let speedup = base_min / min;
         assert!(
-            speedup > MIN_SPEEDUP_VS_PRE_M7,
+            speedup > *floor,
             "{label} (pool={pool}, intra={intra}) is only {speedup:.2}x the pre-M7 shape \
-             ({base_min:.0} ms -> {min:.0} ms), under the {MIN_SPEEDUP_VS_PRE_M7}x floor. Both legs \
+             ({base_min:.0} ms -> {min:.0} ms), under this shape's {floor:.1}x floor. Both legs \
              ran in THIS run, so how fast the box is running cancels out — a slow box cannot cause \
-             this. A SMALL box can: the speedup scales with the core count (this one reports \
-             {cores}), which is why the guard skips below {MIN_CORES_FOR_A_MEANINGFUL_RATIO} \
-             cores. Otherwise, suspect the thread work (M7-R13)."
+             this. A SMALL box can: the speedup scales with the thread base (this one derives \
+             {base}), which is why the guard skips below {MIN_CORES_FOR_A_MEANINGFUL_RATIO}. \
+             **Note the floors differ per shape**: the default is held to \
+             {MIN_SPEEDUP_VS_PRE_M7}x and the centralized shape to {MIN_SPEEDUP_CENTRALIZED}x, \
+             because since M11 Track B they run 6 and 3 threads per session on the reference box \
+             respectively. Otherwise, suspect the thread work (M7-R13)."
         );
         assert!(
             *min < ABSOLUTE_SANITY_CEILING_MS,
@@ -569,22 +652,31 @@ fn m7_s2_the_bar_holds_for_every_shipped_shape() {
 /// The plan says two things here are to be **measured, not reasoned about**, and this is where:
 ///
 /// 1. **SMT.** `available_parallelism()` reports *logical* cores (12 = 6 physical × HT). Dense
-///    math often prefers the physical count, so 6 may beat 12.
+///    math often prefers the physical count, so 6 may beat 12. **This sweep never resolved it —
+///    M7-R2 recorded four runs whose sign flipped under a ~40% same-configuration spread, and
+///    M11 Track B settled it by decision and mechanism instead** (physical cores is the
+///    conventional intra-op base for GEMM-bound inference). The rows below still *record* the
+///    change; they never justified it, and re-reading them as if they had is the M7-R2 mistake.
 /// 2. **Sublinear scaling.** Expect ~3x from 6 threads, not 6x — and less on an **int8** model
 ///    whose kernels are memory-bandwidth-bound rather than ALU-bound.
 ///
 /// It also measures the claim that reordered this milestone (S1a): a single request occupies **one
 /// session**, so growing the *pool* buys a lone request nothing, while growing *intra* does.
 /// `pool=2, intra=1` is the pre-M7 baseline every row reads against; the shipped default is now
-/// `pool=1` → `intra=cores` (the `1×12` row on this box), one session over the whole machine.
+/// `pool=1` → `intra=base` (since M11 Track B the `1×6` row on this box, not `1×12`), one session
+/// over every physical core.
 #[test]
 #[ignore]
 fn m7_s1_how_much_of_the_box_can_one_request_use() {
-    let cores = available_cores();
+    let counts = CoreCounts::detect();
+    let cores = counts.logical;
     let fields = realistic_turn();
     let bytes: usize = fields.iter().map(|f| f.text.len()).sum();
     eprintln!(
-        "\n=== S1 thread sweep: {cores} logical cores, {bytes} B turn, {REPS} reps per shape ==="
+        "\n=== S1 thread sweep: {cores} logical cores, thread base {} ({}), {bytes} B turn, \
+         {REPS} reps per shape ===",
+        counts.thread_base(),
+        counts.thread_base_source().as_str()
     );
     eprintln!(
         "{:>5} {:>6} {:>9} {:>9} {:>9} {:>8} {:>8}",
@@ -650,34 +742,48 @@ fn m7_s1_how_much_of_the_box_can_one_request_use() {
 ///
 /// The question that **decided** the default (flipped to `pool=1` on 2026-07-17): `pool=1,
 /// intra=all` serializes concurrent requests at the one session's mutex, but each of them then uses
-/// the whole box. `pool=N, intra=cores/N` runs them side by side, each on a slice. **The box is the
-/// box, but intra-op scaling is sublinear** — so N sessions × cores/N threads aggregate *more*
-/// turns/s than one × cores, and this is not free: `pool=1` measured **~−23%** turns/s under
+/// the whole base. `pool=N, intra=base/N` runs them side by side, each on a slice. **The box is the
+/// box, but intra-op scaling is sublinear** — so N sessions × base/N threads aggregate *more*
+/// turns/s than one × base, and this is not free: `pool=1` measured **~−23%** turns/s under
 /// concurrency (two independent measurements; DEVLOG 2026-07-16). So `pool=1` is **not** a
 /// throughput win — it wins on RAM (~270 MB less per removed session: measured 563 MB at `pool=1` vs
 /// 834 MB at `pool=2`, since each session holds its own copy of the weights) and gives the lone
-/// request the whole box (single-request latency a wash). The default targets the
+/// request the whole base (single-request latency a wash). The default targets the
 /// personal proxy, which has **no** concurrency to lose that −23% on; a *centralizing* operator
 /// serving concurrent clients sets `NER_POOL_SIZE=N` to reclaim it — which is why this is an
 /// override, not the default's job.
+///
+/// **M11 Track B re-measured this on the physical-core base and BOTH sides improved** (DEVLOG
+/// 2026-09-02): `1×6` **0.485** turns/s vs `1×12`'s 0.419 (+16%), and `2×3` **0.664** vs `2×6`'s
+/// 0.558 (+19%) — the new centralized shape being the fastest row this harness has produced. The
+/// pooled shape still leads, so the direction of the trade and the default both stand; the gap
+/// narrowed. That same halving of per-session threads is what forced PERF-M7-05's floor to split per
+/// shape — read the two together, or the centralized shape's latency row reads as a regression it is
+/// not.
 #[test]
 #[ignore]
 fn m7_s1_throughput_under_concurrent_load_must_not_regress() {
     const CONCURRENCY: usize = 4;
-    let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
+    let counts = CoreCounts::detect();
+    let cores = counts.logical;
     let fields = realistic_turn();
     let bytes: usize = fields.iter().map(|f| f.text.len()).sum();
 
     eprintln!(
-        "\n=== S1 throughput: {CONCURRENCY} concurrent turns, {cores} logical cores, \
-         {bytes} B each ==="
+        "\n=== S1 throughput: {CONCURRENCY} concurrent turns, {cores} logical cores, thread base \
+         {} ({}), {bytes} B each ===",
+        counts.thread_base(),
+        counts.thread_base_source().as_str()
     );
     eprintln!(
         "{:>5} {:>6} {:>10} {:>12} {:>12}",
         "pool", "intra", "total ms", "turns/s", "ms/turn"
     );
 
-    for (pool, intra) in [(2, 1), (2, 6), (1, 12), (4, 3)] {
+    // `1x6` and `2x3` are M11 Track B's shapes on the reference box — the new default and the new
+    // centralized shape; `1x12` and `2x6` are M7's, kept so the change is a comparison rather than
+    // a replacement. `2x1` is the pre-M7 baseline.
+    for (pool, intra) in [(2, 1), (2, 6), (1, 12), (4, 3), (1, 6), (2, 3)] {
         let detector = build_hybrid_with(pool, intra);
         let _ = mask_a_turn(&detector, &fields); // warm up the arenas
 

@@ -73,6 +73,11 @@ CONFIGURATION (environment variables — there is no config file):
                                                  request instead of degrading silently.
     NER_POOL_SIZE               [1]              Concurrent ONNX sessions.
     NER_INTRA_THREADS           [derived]        Threads per session (multiplies with the pool).
+                                                 max(1, base / NER_POOL_SIZE), where the base is
+                                                 min(physical cores, available parallelism) --
+                                                 PHYSICAL cores, so on an SMT box this is half the
+                                                 logical count. An explicit value wins. The startup
+                                                 log prints the base and which count decided it.
     NER_TOKEN_TYPE_IDS          [off]            Feed `token_type_ids` to models that need them.
     NER_EXECUTION_PROVIDER      [auto]           Force one execution provider by name.
     NER_BENCH_MODELS            [unset]          Extra model files for --bench-providers.
@@ -87,7 +92,8 @@ CONFIGURATION (environment variables — there is no config file):
     GLINER_LABELS               [person,organization,location,phone number,address]
     GLINER_THRESHOLD            [0.15]           Per-span probability threshold.
     GLINER_POOL_SIZE            [1]              Concurrent ONNX sessions.
-    GLINER_INTRA_THREADS        [derived]        Threads per session.
+    GLINER_INTRA_THREADS        [derived]        Threads per session. Same derivation, same base,
+                                                 same function as the NER's knob.
 
   Debug (off by default; neither weakens fail-closed)
     PII_DEBUG_SKIP_DEMASK       [off]            Skip the response de-mask so the client sees the

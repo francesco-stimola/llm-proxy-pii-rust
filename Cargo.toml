@@ -105,6 +105,19 @@ tokenizers = { version = "0.23", optional = true, default-features = false, feat
 # 1.x deliberately (the `onnx` feature is already native via `ort`; the 0.4.x
 # alternative is unmaintained) — see docs/reviews/M2.5.md#m25-r1.
 hf-hub = { version = "1", optional = true }
+# PHYSICAL core count (M11 Track B) — the base the intra-op derivation divides.
+# `std::thread::available_parallelism()` reports LOGICAL threads, so on an SMT box the
+# shipped `NER_POOL_SIZE=1` default put both siblings of every core on the same int8 GEMM,
+# contending for one core's L1d/L2 and one set of vector units. `num_cpus::get_physical()`
+# is the only thing here std cannot answer.
+#
+# Behind the `onnx` feature ONLY, beside `available_cores` — the default build's footprint
+# is untouched, and `tests/dependency_footprint.rs` (which asserts the DEFAULT tree) stays
+# green by construction. VERIFIED, not assumed (that file's 2026-07-31 rewrite is the whole
+# lesson): it is neither a `*-sys` crate nor a `cc`/`cmake` user — on Windows it declares
+# the kernel32 entry points itself, on Unix it reaches `libc`, which the `onnx` tree already
+# carries.
+num_cpus = { version = "1", optional = true }
 
 # ---------------------------------------------------------------------------
 # Per-platform accelerator (M9). `download-binaries` fetches ONE ONNX Runtime
@@ -164,7 +177,7 @@ ort = { version = "=2.0.0-rc.12", optional = true, features = ["coreml"] }
 
 [features]
 default = []
-onnx = ["dep:ort", "dep:tokenizers", "dep:hf-hub"]
+onnx = ["dep:ort", "dep:tokenizers", "dep:hf-hub", "dep:num_cpus"]
 
 # ESCAPE HATCHES, not the normal path (M9). Your platform's accelerator is
 # already wired per-target ABOVE, so `--features onnx` carries it and none of

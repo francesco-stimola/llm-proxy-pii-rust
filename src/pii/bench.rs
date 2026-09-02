@@ -22,7 +22,7 @@ use anyhow::{anyhow, Result};
 use ort::session::Session;
 use ort::value::Tensor;
 
-use super::onnx::{available_cores, build_session_reporting, ExecutionProvider, MAX_WINDOW_TOKENS};
+use super::onnx::{build_session_reporting, CoreCounts, ExecutionProvider, MAX_WINDOW_TOKENS};
 
 /// Sequence lengths measured, and **512 is the one that decides.** Fields are chunked to
 /// [`MAX_WINDOW_TOKENS`] (480), so a full window runs near 512, and long fields are what
@@ -324,17 +324,25 @@ pub fn format_report(
     results: &[ProviderResult],
     pool_size: usize,
     intra_threads: usize,
+    cores: CoreCounts,
 ) -> String {
     use std::fmt::Write as _;
     let mut out = String::new();
 
     let _ = writeln!(out, "Execution-provider benchmark (M9)");
     // The EFFECTIVE server shape, resolved through `resolve_pool_and_intra` — not the raw core
-    // count, which is only the same thing at the shipped default (M9-R3).
+    // count, which is only the same thing at the shipped default (M9-R3). The base is spelled out
+    // beside it for the same reason the startup log spells it out (M7-R5, M11 Track B): since the
+    // base became physical-cores-capped-by-granted-parallelism it is no longer the number the
+    // machine advertises, so a bare `intra_threads` cannot be reconciled against the box.
     let _ = writeln!(
         out,
-        "  threads: {intra_threads} intra-op per session, pool {pool_size} (of {} cores)",
-        available_cores()
+        "  threads: {intra_threads} intra-op per session, pool {pool_size} \
+         (base {} = {} logical / {} physical, {})",
+        cores.thread_base(),
+        cores.logical,
+        cores.physical_for_log(),
+        cores.thread_base_source().as_str()
     );
     let _ = writeln!(
         out,
@@ -512,7 +520,18 @@ mod report_tests {
             ms: vec![1.0; BENCH_SEQS.len()],
             error: None,
         }];
-        let report = format_report(&["model_quantized.onnx".to_string()], &results, 1, 4);
+        // A fixed `(logical, physical)` pair rather than this box's, so the header line is the same
+        // on every runner — the same reason `derive_thread_base` is pure.
+        let report = format_report(
+            &["model_quantized.onnx".to_string()],
+            &results,
+            1,
+            4,
+            CoreCounts {
+                logical: 12,
+                physical: Some(6),
+            },
+        );
 
         // Non-vacuity: this really is the branch under test.
         assert!(
@@ -610,13 +629,31 @@ mod report_tests {
         );
     }
 
-    /// The header must echo the **resolved** shape it measured with, not the core count (M9-R3).
+    /// The header must echo the **resolved** shape it measured with, not the core count (M9-R3) —
+    /// and since M11 Track B the **base** it was divided out of, with both counts and which of them
+    /// decided it. A bare `intra` can no longer be reconciled against the machine an operator sees:
+    /// on the reference box the base is 6 where the task manager says 12 (M7-R5's rule, applied to
+    /// the report the same way it is applied to the startup log).
     #[test]
-    fn the_header_reports_the_resolved_thread_shape() {
-        let report = format_report(&["m.onnx".to_string()], &[], 2, 6);
+    fn the_header_reports_the_resolved_thread_shape_and_the_base_it_came_from() {
+        let report = format_report(
+            &["m.onnx".to_string()],
+            &[],
+            2,
+            6,
+            CoreCounts {
+                logical: 12,
+                physical: Some(6),
+            },
+        );
         assert!(
             report.contains("6 intra-op per session, pool 2"),
             "header must state the resolved (pool, intra) the benchmark actually used; got:\n{report}"
+        );
+        assert!(
+            report.contains("base 6 = 12 logical / 6 physical, physical"),
+            "header must make the derivation redoable — the base, both counts, and which one \
+             decided it (M7-R5, M11 Track B); got:\n{report}"
         );
     }
 }

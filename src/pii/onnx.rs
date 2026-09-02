@@ -115,28 +115,35 @@ const _: () = assert!(
 );
 
 /// Derive the default intra-op thread count for **one** session, given the pool size — the
-/// `NER_INTRA_THREADS` default (M7).
+/// `NER_INTRA_THREADS` default (M7), divided out of the **thread base** (M11 Track B).
 ///
 /// **The two knobs multiply, and that is the trap.** `NER_POOL_SIZE × intra_threads` is the
 /// process's NER thread count under saturated load; the invariant is that the **product** fits the
-/// machine, not that either factor saturates it. A fixed `intra = 12` with `pool = 2` puts 24
-/// threads on a 12-core box — oversubscription, plausibly *slower* than one thread. So the default
+/// machine, not that either factor saturates it. A fixed `intra = 6` with `pool = 2` puts 12 ONNX
+/// threads on a 6-core box — oversubscription, plausibly *slower* than one thread. So the default
 /// is derived from the box rather than picked: a constant is wrong on a 2-core VM and on a 64-core
 /// server alike.
+///
+/// **The divisor is the base, not the logical core count (M11 Track B).** It was
+/// `available_parallelism()` through M10; it is now [`derive_thread_base`] — physical cores, capped
+/// by the parallelism the platform grants. On an SMT box that halves the derived `intra` at every
+/// pool size, which is the whole point: read that function for the reasoning, it is not repeated
+/// here.
 ///
 /// **What this does NOT buy, and the measurement that says so (M7/S1a).** The product is the
 /// *saturated-load* count. A **single** request is sequential at three nested levels — the field
 /// walk holds `&mut Vault`, [`infer_chunked`](OnnxNerDetector::infer_chunked) loops its windows,
 /// and only then does the session run — so one request can reach `intra`, never `pool × intra`; the
 /// pool only wakes for a *second* concurrent request. At the shipped default `pool = 1` this returns
-/// the whole box (12 on a 12-thread box), so a lone Claude Code request gets every core — the
-/// personal-proxy shape, which is why it is the default. An operator *centralizing* for concurrent
-/// clients sets `NER_POOL_SIZE=N`: at `pool = 2` this returns 6 and a lone request then leaves 6
-/// cores idle — the right trade when a *second* request is there to use them, the wrong one when it
-/// never comes.
-/// **The bound this derivation actually provides, and its domain (M7-R4).** While `pool ≤ cores` it
-/// holds unconditionally: `intra = floor(cores/pool)`, so `pool × intra ≤ cores`. **Beyond that it
-/// cannot.** `intra` floors at 1 and nothing clamps `NER_POOL_SIZE`, so `pool > cores` oversubscribes
+/// the whole base (6 on a 6-core / 12-thread box), so a lone Claude Code request gets every physical
+/// core — the personal-proxy shape, which is why it is the default. An operator *centralizing* for
+/// concurrent clients sets `NER_POOL_SIZE=N`: at `pool = 2` this returns 3 and a lone request then
+/// leaves 3 cores idle — the right trade when a *second* request is there to use them, the wrong one
+/// when it never comes.
+///
+/// **The bound this derivation actually provides, and its domain (M7-R4).** While `pool ≤ base` it
+/// holds unconditionally: `intra = floor(base/pool)`, so `pool × intra ≤ base`. **Beyond that it
+/// cannot.** `intra` floors at 1 and nothing clamps `NER_POOL_SIZE`, so `pool > base` oversubscribes
 /// by `pool` alone — `NER_POOL_SIZE=8` on a 2-core box is 8 threads on 2 cores, and no choice of
 /// `intra` fixes it. That is an operator error the proxy does not defend against (it hits the
 /// ~270 MB-per-session RAM wall long before the thread wall). The invariant is stated with its
@@ -148,29 +155,193 @@ const _: () = assert!(
 /// derivation — it takes `pool` as an argument, so it cannot reintroduce a second *default* (the
 /// M7-R1 failure); the default itself has exactly one home, [`DEFAULT_POOL_SIZE`].
 pub fn default_intra_threads(pool_size: usize) -> usize {
-    derive_intra_threads(pool_size, available_cores())
+    derive_intra_threads(pool_size, CoreCounts::detect().thread_base())
 }
 
-/// Logical cores, or 1 if the platform won't say.
+/// **LOGICAL threads**, or 1 if the platform won't say — SMT siblings included, and honouring
+/// whatever the platform actually grants this process (cgroup quota, CPU affinity mask, Windows
+/// job object).
+///
+/// **This is deliberately not the thread base any more (M11 Track B).** It was through M7–M10,
+/// which is how `pool = 1` came to put both siblings of every core on the same int8 GEMM. The base
+/// is now [`CoreCounts::thread_base`]; this stays the *logical* count because it is one of the two
+/// inputs that base is a `min` of — and because `tests/ner_perf.rs`'s NER-THREAD-01 still sweeps
+/// intra up to it on purpose (more partitions is strictly more coverage for a detection-inertness
+/// guard, whatever the shipped default happens to be).
 pub fn available_cores() -> usize {
     std::thread::available_parallelism().map_or(1, |n| n.get())
+}
+
+/// **PHYSICAL cores**, or `None` if the platform won't say.
+///
+/// The only count `std` cannot answer, which is the whole reason `num_cpus` is a dependency —
+/// behind the `onnx` feature only, beside this function, so the default build's footprint is
+/// untouched (`tests/dependency_footprint.rs` asserts the *default* tree).
+///
+/// **Honest about its own fallback:** `num_cpus::get_physical()` does *not* report "unknown" on a
+/// platform it cannot probe — it silently returns the logical count. So the `None` arm is not
+/// reachable through that path today (only a nonsensical `0` maps to it). It exists because the
+/// *contract* needs it: [`derive_thread_base`] must be able to answer "the platform won't say",
+/// and it answers with `logical` — which is byte-for-byte what num_cpus' own fallback would have
+/// produced anyway. A platform that cannot answer loses nothing and behaves exactly as before M11.
+pub fn physical_cores() -> Option<usize> {
+    // `filter(> 0)` rather than a bare `Some`: a zero base would divide down to `intra = 1` on a
+    // machine with cores to spare — the same class of silent nonsense `resolve_pool_and_intra`
+    // refuses from a `0` env var (M7-R5).
+    Some(num_cpus::get_physical()).filter(|n| *n > 0)
+}
+
+/// Which of the two counts decided the thread base — logged beside it, because a derived value the
+/// logged inputs cannot explain is what [M7-R5](../../docs/reviews/M7.md#m7-r5) rejected, and the
+/// base is no longer the core count an operator's task manager shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThreadBaseSource {
+    /// The physical core count, at or below what the platform grants — the normal case, and the
+    /// point of the change: one thread per core, no SMT sibling doubling.
+    PhysicalCores,
+    /// `available_parallelism()` was the *smaller* of the two, so it capped the silicon — a cgroup
+    /// quota, a CPU affinity mask, a Windows job object. This is the case the `min` exists for: a
+    /// physical-core count reports the hardware and knows nothing about any of them, so taking it
+    /// bare would derive `intra = 32` for a proxy pinned to 2 CPUs on a 32-core host.
+    ParallelismCap,
+    /// The platform would not report a physical count; the base is the logical one — exactly the
+    /// pre-M11 behaviour.
+    PhysicalUnknown,
+}
+
+impl ThreadBaseSource {
+    /// Short, stable token for the startup log.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ThreadBaseSource::PhysicalCores => "physical",
+            ThreadBaseSource::ParallelismCap => "parallelism-cap",
+            ThreadBaseSource::PhysicalUnknown => "physical-unknown",
+        }
+    }
+}
+
+/// The two core counts this machine reports, so the base and its provenance come from **one** pair
+/// of readings rather than from a re-detection per call site.
+///
+/// Deliberately holds just the two *inputs*: [`CoreCounts::thread_base`] and
+/// [`CoreCounts::thread_base_source`] delegate to the pure functions, so the number that is used
+/// and the number that is logged cannot drift apart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CoreCounts {
+    /// `available_parallelism()` — logical threads, and what the platform grants.
+    pub logical: usize,
+    /// Physical cores, or `None` if the platform won't say.
+    pub physical: Option<usize>,
+}
+
+impl CoreCounts {
+    /// Read both counts off this machine — the impure companion of [`derive_thread_base`].
+    pub fn detect() -> Self {
+        Self {
+            logical: available_cores(),
+            physical: physical_cores(),
+        }
+    }
+
+    /// The base [`resolve_pool_and_intra`] divides.
+    pub fn thread_base(self) -> usize {
+        derive_thread_base(self.logical, self.physical)
+    }
+
+    /// Where that base came from, for the log.
+    pub fn thread_base_source(self) -> ThreadBaseSource {
+        thread_base_source(self.logical, self.physical)
+    }
+
+    /// The physical count as a loggable number — `0` meaning "the platform would not say", the
+    /// same sentinel the env knobs use for "unset". `tracing` fields are typed, so an `Option`
+    /// cannot be recorded as one.
+    pub fn physical_for_log(self) -> usize {
+        self.physical.unwrap_or(0)
+    }
+}
+
+/// **The intra-op thread base: physical cores, capped by the parallelism the platform grants**
+/// (M11 Track B, decided 2026-09-02).
+///
+/// ```text
+/// base  = min(physical_cores, available_parallelism())
+/// intra = max(1, base / NER_POOL_SIZE)
+/// ```
+///
+/// **Why physical and not logical.** Through M10 the base was the logical count, so on the
+/// reference box (6 cores / 12 threads) the shipped `NER_POOL_SIZE=1` derived `intra = 12`: both
+/// SMT siblings of every core running the same int8 GEMM, contending for one core's L1d/L2 and one
+/// set of vector units. Physical cores is the conventional intra-op base for GEMM-bound inference,
+/// and it is **the same rule at every pool size** — the sibling contention that motivates the cap
+/// does not weaken when a second session appears, it applies to both of them. Dividing the logical
+/// count from `pool = 2` up would put `2 × 6 = 12` ONNX threads back on 6 physical cores,
+/// reintroducing at `pool = 2` exactly what this removes at `pool = 1`, and making the process's
+/// total NER thread count *double* between `pool = 1` and `pool = 2` under a formula whose whole
+/// purpose is that the product fits the box. The cost is named and accepted: at `pool = 2` on a
+/// 6/12 box the default falls from 6 threads per session to 3, leaving the siblings to the
+/// runtime's own work (tokio, TLS, JSON) — which is latency-bound and *does* profit from SMT,
+/// unlike the GEMM.
+///
+/// **`min`, never `physical` alone — this is the trap.** `available_parallelism()` honours cgroup
+/// quota, CPU affinity masks and Windows job objects; a physical-core count does not, it reports
+/// the silicon. Take it bare and a proxy in a 2-CPU container on a 32-core host derives
+/// `intra = 32` — the oversubscription this derivation exists to prevent, arriving through the fix
+/// for it. The `min` also settles CPUs whose thread count is no longer 2× the core count: on a
+/// hybrid P+E part (14 cores / 20 threads) it returns 14, every core once; with SMT off in firmware
+/// the two counts are equal and it is a no-op.
+///
+/// **`None` falls back to `logical`** — today's behaviour exactly, so a platform that cannot report
+/// physical cores loses nothing.
+///
+/// **Pure in both arguments on purpose** — the standing rule [`derive_intra_threads`] already
+/// follows: the runner's own box must not be able to decide whether this is correct. THREAD-01
+/// pins the whole `(logical, physical)` grid while owning none of that hardware.
+///
+/// **Settled by decision and mechanism, not by this box's timings.**
+/// [M7-R2](../../docs/reviews/M7.md#m7-r2) left the SMT question *unresolved* after four runs whose
+/// sign flipped under a ~40% same-configuration spread; M11 does not claim to have resolved it. It
+/// adopts the conventional base and stops paying for a knob no measurement on this hardware can
+/// read. `NER_INTRA_THREADS` remains the explicit override, and still wins.
+pub fn derive_thread_base(logical: usize, physical: Option<usize>) -> usize {
+    // `max(1)` for the same reason `derive_intra_threads` clamps: a base of 0 is not a shape any
+    // caller can use, and it must never reach ONNX Runtime as "pick for me".
+    logical.min(physical.unwrap_or(logical)).max(1)
+}
+
+/// Where [`derive_thread_base`] took its answer from — pure, so the log can name the provenance
+/// without recomputing the arithmetic itself.
+pub fn thread_base_source(logical: usize, physical: Option<usize>) -> ThreadBaseSource {
+    match physical {
+        None => ThreadBaseSource::PhysicalUnknown,
+        // Equal counts (SMT off in firmware) report `PhysicalCores`: the base *is* the physical
+        // count, and nothing capped it.
+        Some(p) if p <= logical => ThreadBaseSource::PhysicalCores,
+        Some(_) => ThreadBaseSource::ParallelismCap,
+    }
 }
 
 /// **The shipped session-pool default — one session (was 2 through M7; flipped 2026-07-17).** The
 /// dominant deployment is a *personal* proxy in front of a single client (Claude Code, concurrency
 /// ≈ 1), and a single request only ever occupies one session (S1a), so a second pooled session buys
 /// a lone request nothing while adding a second ~270 MB copy of the model. So the lean default is one
-/// session: the whole box for the one in-flight request, and less RAM — measured **563 MB at
+/// session: the whole base for the one in-flight request, and less RAM — measured **563 MB at
 /// `pool=1` vs 834 MB at `pool=2`** (a ~290 MB shared base + ~270 MB per session). This is the
 /// `low-RAM` bar in `CLAUDE.md` applied to the case almost everyone runs — and it is **not** a
-/// latency claim (`intra = cores` vs `cores/2` is inside this box's noise, M7-R2/S1). The trade it
+/// latency claim (`intra = base` vs `base/2` is inside this box's noise, M7-R2/S1). The trade it
 /// *does* make is throughput: under **concurrent** load `pool=1` measured **~−23%** turns/s versus
 /// the pooled shape (two independent measurements + a mechanism — intra-op scaling is sublinear, so
-/// N sessions × cores/N threads aggregate better than one × cores; DEVLOG 2026-07-16). The personal
+/// N sessions × base/N threads aggregate better than one × base; DEVLOG 2026-07-16). The personal
 /// case has no concurrency to lose, so it pays nothing for the RAM it saves; an operator
 /// *centralizing* the proxy for concurrent clients sets `NER_POOL_SIZE=N` to reclaim that
 /// throughput. The flip and its measurement live in `ARCHITECTURE.md` → *NER threading* and DEVLOG
 /// 2026-07-17.
+///
+/// **M11 Track B re-measured that −23% on the new base and it inverted** (DEVLOG 2026-09-02): with
+/// the base at physical cores, `1×6` reached **0.485** turns/s against `1×12`'s 0.419 and `2×3`
+/// reached **0.664** against `2×6`'s 0.558. The pooled shape still leads at concurrency 4, so the
+/// direction of the trade stands and this default is unchanged — but both sides of it got faster,
+/// and the gap narrowed.
 ///
 /// A `pub const` and not a literal because the M7 latency harness must measure *what the server
 /// runs*: when these were two independent `unwrap_or`s they silently disagreed, so M7's executable
@@ -181,7 +352,13 @@ pub const DEFAULT_POOL_SIZE: usize = 1;
 /// Resolve `(pool, intra)` from the two env vars' raw values — **the single home of that policy**,
 /// so the server and the latency harness cannot resolve them differently (M7-R1/M7-R5).
 ///
-/// Pure in `cores` so it is testable without the host's core count deciding the answer.
+/// Pure in `base` so it is testable without the host's core count deciding the answer.
+///
+/// **`base` is [`derive_thread_base`]'s output, not a raw core count (M11 Track B).** It was
+/// `available_parallelism()` through M10. This function did not otherwise change: it keeps its
+/// single home and its `0`-is-unset symmetry, and **only the base it divides moved** — which is
+/// also why `GLINER_POOL_SIZE`/`GLINER_INTRA_THREADS` inherit the new base for free, with no second
+/// path to keep in step (M7-R1 is the record of what a second path costs).
 ///
 /// **Both knobs treat `0` as unset, and that symmetry is the point (M7-R5).** M7 shipped the guard
 /// on `NER_INTRA_THREADS` only, leaving the older `NER_POOL_SIZE` to parse `0` into a pool of zero.
@@ -192,7 +369,7 @@ pub const DEFAULT_POOL_SIZE: usize = 1;
 pub fn resolve_pool_and_intra(
     pool_var: Option<&str>,
     intra_var: Option<&str>,
-    cores: usize,
+    base: usize,
 ) -> (usize, usize) {
     let pool = pool_var
         .and_then(|s| s.parse::<usize>().ok())
@@ -204,17 +381,20 @@ pub fn resolve_pool_and_intra(
     let intra = intra_var
         .and_then(|s| s.parse::<usize>().ok())
         .filter(|n| *n > 0)
-        .unwrap_or_else(|| derive_intra_threads(pool, cores));
+        .unwrap_or_else(|| derive_intra_threads(pool, base));
     (pool, intra)
 }
 
 /// The pure core of [`default_intra_threads`], split out so it is testable without depending on
 /// the host's core count (the CI runner's box must not decide whether this is correct).
-fn derive_intra_threads(pool_size: usize, cores: usize) -> usize {
+///
+/// `base` is [`derive_thread_base`]'s output — physical cores capped by the granted parallelism
+/// (M11 Track B) — where it used to be the logical thread count.
+fn derive_intra_threads(pool_size: usize, base: usize) -> usize {
     // `max(1)` on both sides: a zero pool is already clamped to 1 by `load`, and ONNX Runtime
     // treats intra_threads = 0 as "pick for me" — which would silently reintroduce the
     // oversubscription this function exists to prevent.
-    (cores / pool_size.max(1)).max(1)
+    (base / pool_size.max(1)).max(1)
 }
 
 /// The hardware backend an ONNX session runs on (M9).
@@ -810,7 +990,81 @@ pub fn chunk_char_ranges(
 
 #[cfg(test)]
 mod thread_tests {
-    use super::{derive_intra_threads, resolve_pool_and_intra, DEFAULT_POOL_SIZE};
+    use super::{
+        derive_intra_threads, derive_thread_base, resolve_pool_and_intra, thread_base_source,
+        ThreadBaseSource, DEFAULT_POOL_SIZE,
+    };
+
+    /// **The `(logical, physical)` grid — M11 Track B's half of THREAD-01.**
+    ///
+    /// Pure in both arguments precisely so this table can be written without owning a hybrid P+E
+    /// part, a cgroup-limited container or an SMT-disabled box. The runner's own machine decides
+    /// nothing here — the same standing rule that made `derive_intra_threads` take `base`.
+    #[test]
+    fn the_thread_base_is_physical_cores_capped_by_the_granted_parallelism() {
+        // The reference box: 6 cores / 12 threads. This is the change — both SMT siblings of every
+        // core no longer land on the same int8 GEMM.
+        assert_eq!(derive_thread_base(12, Some(6)), 6);
+        assert_eq!(thread_base_source(12, Some(6)), ThreadBaseSource::PhysicalCores);
+
+        // SMT off in firmware: the two counts are equal and the `min` is a no-op. Reported as
+        // `PhysicalCores` — the base *is* the physical count, and nothing capped it.
+        assert_eq!(derive_thread_base(6, Some(6)), 6);
+        assert_eq!(thread_base_source(6, Some(6)), ThreadBaseSource::PhysicalCores);
+
+        // Hybrid P+E (14 cores / 20 threads) — the case that raised the question. Thread count is
+        // no longer 2x the core count, and the rule still means "every core once".
+        assert_eq!(derive_thread_base(20, Some(14)), 14);
+        assert_eq!(thread_base_source(20, Some(14)), ThreadBaseSource::PhysicalCores);
+
+        // **The `min` case, and the trap the whole formula exists to avoid.** A proxy granted 2
+        // CPUs on a 32-core host: `available_parallelism()` honours the cgroup quota / affinity
+        // mask / job object, a physical-core count does not — it reports the silicon. Taking
+        // `physical` bare here would derive `intra = 32`, i.e. the oversubscription this
+        // derivation exists to prevent, arriving through the fix for it.
+        assert_eq!(derive_thread_base(2, Some(32)), 2);
+        assert_eq!(thread_base_source(2, Some(32)), ThreadBaseSource::ParallelismCap);
+
+        // Detection unavailable -> the logical count, which is today's behaviour *exactly*. A
+        // platform that cannot answer loses nothing.
+        assert_eq!(derive_thread_base(12, None), 12);
+        assert_eq!(thread_base_source(12, None), ThreadBaseSource::PhysicalUnknown);
+    }
+
+    #[test]
+    fn the_thread_base_never_returns_zero() {
+        // A base of 0 is not a shape any caller can use, and it must never reach ONNX Runtime as
+        // "pick for me" — the same clamp, for the same reason, as `derive_intra_threads`.
+        // `physical_cores()` already maps a nonsensical `0` to `None`; this is the second guard.
+        assert_eq!(derive_thread_base(0, None), 1);
+        assert_eq!(derive_thread_base(0, Some(8)), 1);
+        assert_eq!(derive_thread_base(8, Some(0)), 1);
+    }
+
+    #[test]
+    fn the_base_and_the_source_it_is_logged_with_cannot_disagree() {
+        // Two pure functions feed one log line (M7-R5): the base an operator reads and the reason
+        // beside it must describe the same arithmetic, or the line is worse than no line. Pinning
+        // the relation is cheaper than merging them into one return type the callers must destructure.
+        for logical in [1usize, 2, 6, 12, 20, 64] {
+            for physical in [None, Some(1usize), Some(2), Some(6), Some(14), Some(32)] {
+                let base = derive_thread_base(logical, physical);
+                match thread_base_source(logical, physical) {
+                    // The base came from the silicon: it must equal the physical count.
+                    ThreadBaseSource::PhysicalCores => assert_eq!(
+                        base,
+                        physical.expect("PhysicalCores implies a physical count"),
+                        "logical={logical} physical={physical:?}"
+                    ),
+                    // The platform capped the silicon, or would not report it: either way the base
+                    // is the logical count.
+                    ThreadBaseSource::ParallelismCap | ThreadBaseSource::PhysicalUnknown => {
+                        assert_eq!(base, logical, "logical={logical} physical={physical:?}")
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
     fn both_knobs_treat_zero_and_garbage_as_unset() {
@@ -819,8 +1073,10 @@ mod thread_tests {
         // startup log printed `pool_size=0, intra_threads=12`, which no arithmetic reconciles. A
         // derived value the operator cannot reproduce from the logged inputs defeats the reason it
         // is logged, so both knobs must resolve `0` identically to unset.
+        // The third argument is the *base* since M11 Track B, not the logical core count — pure in
+        // it either way, which is why this table did not have to move.
         let unset = resolve_pool_and_intra(None, None, 12);
-        // Default pool is 1, so an unset box derives intra = all cores (M7.1 flip).
+        // Default pool is 1, so an unset box derives intra = the whole base (M7.1 flip).
         assert_eq!(unset, (DEFAULT_POOL_SIZE, 12));
         assert_eq!(resolve_pool_and_intra(Some("0"), None, 12), unset);
         assert_eq!(resolve_pool_and_intra(None, Some("0"), 12), unset);
@@ -841,9 +1097,10 @@ mod thread_tests {
     }
 
     #[test]
-    fn the_default_gives_one_session_the_whole_box() {
+    fn the_default_gives_one_session_the_whole_base() {
         // M7-R13, after the 2026-07-17 default flip (pool 2 -> 1). The default is now `pool=1`, so
-        // the derivation is `intra = cores`: one session, the whole box. The pre-M7 shape is
+        // the derivation is `intra = base`: one session, every core the base counts — which since
+        // M11 Track B is every *physical* core, not every SMT sibling. The pre-M7 shape is
         // `(2, 1)` (intra=1), and a single request only ever reaches `intra` (the pool is inert at
         // concurrency 1), so the default matches the pre-M7 *thread count* — the case where M7
         // delivers nothing — **only on a single-core box**. From two cores up it already adds
@@ -884,25 +1141,54 @@ mod thread_tests {
     }
 
     #[test]
-    fn the_two_knobs_multiply_to_at_most_the_box_while_the_pool_fits_it() {
-        // The invariant M7 rests on, stated with the domain it actually holds in (M7-R4). The
-        // first version asserted `pool * intra <= cores.max(pool)` across both regimes — which
-        // passes for `pool > cores` by *widening the bound to the pool itself*: it reads
-        // `pool <= pool` and green-lights 8 threads on a 2-core box, under a name claiming the
-        // opposite. The regimes are split so the exception is documented, not hidden in a `max`.
-        for cores in [1usize, 2, 4, 6, 8, 12, 16, 64] {
+    fn the_two_knobs_multiply_to_at_most_the_base_while_the_pool_fits_it() {
+        // The invariant M7 rests on, stated with the domain it actually holds in (M7-R4) and
+        // restated on M11's base. The first version asserted `pool * intra <= cores.max(pool)`
+        // across both regimes — which passes for `pool > cores` by *widening the bound to the pool
+        // itself*: it reads `pool <= pool` and green-lights 8 threads on a 2-core box, under a name
+        // claiming the opposite. The regimes stay split so the exception is documented, never
+        // hidden in a `max` — that is the shape M7-R4 rejected and it must not come back through
+        // the rename.
+        //
+        // **The bases are DERIVED, not a list of plausible integers.** The composition is the new
+        // risk surface: `derive_thread_base` feeding `derive_intra_threads` is what actually runs,
+        // and a base of 0 or one above the granted parallelism would break the bound precisely
+        // where nobody was looking. So the grid is `(logical, physical)` pairs — SMT box, SMT off,
+        // hybrid P+E, the container cap, detection unavailable, single core.
+        let machines = [
+            (12usize, Some(6usize)), // the reference box: 6 cores / 12 threads
+            (6, Some(6)),            // SMT off in firmware
+            (20, Some(14)),          // hybrid P+E
+            (2, Some(32)),           // 2 CPUs granted on a 32-core host — the `min` case
+            (12, None),              // the platform won't say
+            (1, Some(1)),            // single core
+            (64, Some(32)),          // a big server
+        ];
+        for (logical, physical) in machines {
+            let base = derive_thread_base(logical, physical);
+            assert!(
+                base >= 1,
+                "logical={logical} physical={physical:?}: the base must never be 0"
+            );
+            assert!(
+                base <= logical,
+                "logical={logical} physical={physical:?}: base={base} exceeds the parallelism the \
+                 platform grants — the `min` is what keeps a container from deriving the host's \
+                 core count"
+            );
+
             for pool in [1usize, 2, 3, 4, 8] {
-                let intra = derive_intra_threads(pool, cores);
+                let intra = derive_intra_threads(pool, base);
                 assert!(
                     intra >= 1,
-                    "cores={cores} pool={pool}: intra must never be 0"
+                    "base={base} pool={pool}: intra must never be 0"
                 );
 
-                if pool <= cores {
+                if pool <= base {
                     // The real invariant, in the regime where the derivation can honour it.
                     assert!(
-                        pool * intra <= cores,
-                        "cores={cores} pool={pool}: derived intra={intra} → {} threads, over the \
+                        pool * intra <= base,
+                        "base={base} pool={pool}: derived intra={intra} → {} threads, over the \
                          box — the oversubscription this derivation exists to prevent",
                         pool * intra
                     );
@@ -912,7 +1198,7 @@ mod thread_tests {
                     // of `intra` fixes it. The best available is to add nothing — pin that.
                     assert_eq!(
                         intra, 1,
-                        "cores={cores} pool={pool}: an over-large pool already oversubscribes; \
+                        "base={base} pool={pool}: an over-large pool already oversubscribes; \
                          intra must not multiply it further"
                     );
                 }
@@ -922,13 +1208,24 @@ mod thread_tests {
 
     #[test]
     fn derives_the_documented_shapes() {
+        // The reference box END TO END, which is the number the docs quote: 6 cores / 12 threads
+        // -> base 6, not 12. Before M11 Track B the first of these was `(1, 12) -> 12`.
+        let base = derive_thread_base(12, Some(6));
+        assert_eq!(base, 6);
         // The shipped default (M7.1): the personal proxy (Claude Code, concurrency ~1) — one
-        // session, the whole box. This is the shape that matters for M7's latency bar.
+        // session, every PHYSICAL core. This is the shape that matters for M7's latency bar.
+        assert_eq!(derive_intra_threads(1, base), 6);
+        // The centralized shape an operator sets with `NER_POOL_SIZE=2` on this box: 3 each — the
+        // named, accepted cost of one rule at every pool size. Note what this means and why it is
+        // documented rather than hidden — a LONE request reaches 3, not 6, because one request only
+        // ever occupies one session (M7/S1a); the other 3 cores are there for a *second* concurrent
+        // request, and the SMT siblings are left to the runtime's own latency-bound work.
+        assert_eq!(derive_intra_threads(2, base), 3);
+        assert_eq!(derive_intra_threads(4, base), 1);
+
+        // The derivation itself is unchanged — same arithmetic, different divisor. Pinned on a bare
+        // base so a future change to `derive_thread_base` cannot quietly rewrite these too.
         assert_eq!(derive_intra_threads(1, 12), 12);
-        // The centralized shape an operator sets with `NER_POOL_SIZE=2` on this 12-thread box: 6
-        // each. Note what this means and why it is documented rather than hidden — a LONE request
-        // reaches 6, not 12, because one request only ever occupies one session (M7/S1a); the other
-        // 6 threads are there for a *second* concurrent request.
         assert_eq!(derive_intra_threads(2, 12), 6);
         assert_eq!(derive_intra_threads(4, 12), 3);
     }

@@ -277,13 +277,14 @@ pub async fn run_provider_benchmark() -> anyhow::Result<()> {
     }
 
     // Resolve the thread shape through the SAME function the server uses (M9-R3). Measuring the
-    // CPU with `available_cores()` when the operator set `NER_POOL_SIZE`/`NER_INTRA_THREADS`
+    // CPU with the raw core count when the operator set `NER_POOL_SIZE`/`NER_INTRA_THREADS`
     // benchmarks a configuration nobody runs — M7-R1's failure verbatim, and the reason
-    // `resolve_pool_and_intra` has one home.
+    // `resolve_pool_and_intra` has one home. Same base as the server too (M11 Track B).
+    let cores = crate::pii::onnx::CoreCounts::detect();
     let (pool_size, intra_threads) = crate::pii::onnx::resolve_pool_and_intra(
         std::env::var("NER_POOL_SIZE").ok().as_deref(),
         std::env::var("NER_INTRA_THREADS").ok().as_deref(),
-        crate::pii::onnx::available_cores(),
+        cores.thread_base(),
     );
     // The model's input contract has to travel with the model path (M9-R8): a BERT-family model
     // needs a third graph input, and omitting it makes every row fail with a raw ORT error.
@@ -292,7 +293,7 @@ pub async fn run_provider_benchmark() -> anyhow::Result<()> {
     let results = crate::pii::bench::benchmark_matrix(&models, intra_threads, needs_token_type_ids);
     println!(
         "{}",
-        crate::pii::bench::format_report(&models, &results, pool_size, intra_threads)
+        crate::pii::bench::format_report(&models, &results, pool_size, intra_threads, cores)
     );
     Ok(())
 }
@@ -342,11 +343,13 @@ async fn load_onnx_ner(
     // harness calls too — when each read its own default they silently disagreed (2 vs 1) and M7's
     // bar measured a config nobody ships (M7-R1). Explicit wins; otherwise `intra` is derived,
     // because the two knobs multiply and a fixed number is wrong on a 2-core VM and a 64-core
-    // server alike. `0` is unset for both, never ONNX Runtime's "pick for me" (M7-R5).
+    // server alike. `0` is unset for both, never ONNX Runtime's "pick for me" (M7-R5). The base it
+    // divides is physical cores capped by the granted parallelism, not the logical count (M11).
+    let cores = crate::pii::onnx::CoreCounts::detect();
     let (pool_size, intra_threads) = crate::pii::onnx::resolve_pool_and_intra(
         std::env::var("NER_POOL_SIZE").ok().as_deref(),
         std::env::var("NER_INTRA_THREADS").ok().as_deref(),
-        crate::pii::onnx::available_cores(),
+        cores.thread_base(),
     );
     let needs_token_type_ids = env_flag("NER_TOKEN_TYPE_IDS");
 
@@ -373,6 +376,7 @@ async fn load_onnx_ner(
         &model,
         pool_size,
         intra_threads,
+        cores,
         provider,
         detector.provider(),
     );
@@ -383,20 +387,41 @@ async fn load_onnx_ner(
 /// when it differs from what was obtained — so a fallback is legible on the one line that claims
 /// to describe the running config, instead of only in a `warn!` 300 lines earlier that is
 /// invisible at `RUST_LOG=error` (M9-R1).
+///
+/// **The derivation must stay redoable from this line's own fields (M7-R5), and M11 is what forced
+/// the extra three.** M7-R5 rejected `pool_size=0, intra_threads=12` because no arithmetic
+/// reconciles it. Since M11 Track B the base is *physical cores capped by the granted
+/// parallelism* — no longer the core count the operator's task manager shows — so `intra_threads`
+/// alone became just as unreconcilable: on the reference box it now reads 6 where the machine
+/// advertises 12. Logging `thread_base` with the two counts it came from and **which of them
+/// decided it** (`thread_base_source`) puts the whole derivation back on one line:
+/// `intra_threads == max(1, thread_base / pool_size)`, unless `NER_INTRA_THREADS` was set — which
+/// is the one case the operator already knows about, because they set it.
 #[cfg(feature = "onnx")]
 fn log_ml_detector_loaded(
     what: &str,
     model: &str,
     pool_size: usize,
     intra_threads: usize,
+    cores: crate::pii::onnx::CoreCounts,
     requested: crate::pii::onnx::ExecutionProvider,
     effective: crate::pii::onnx::ExecutionProvider,
 ) {
+    let thread_base = cores.thread_base();
+    let thread_base_source = cores.thread_base_source().as_str();
+    let logical_cores = cores.logical;
+    // `0` = "the platform would not say", the same sentinel the env knobs use for unset — `tracing`
+    // fields are typed, so an `Option` cannot go on the line as one.
+    let physical_cores = cores.physical_for_log();
     if requested == effective {
         tracing::info!(
             model,
             pool_size,
             intra_threads,
+            thread_base,
+            thread_base_source,
+            logical_cores,
+            physical_cores,
             provider = effective.as_str(),
             "{what} detector loaded"
         );
@@ -405,6 +430,10 @@ fn log_ml_detector_loaded(
             model,
             pool_size,
             intra_threads,
+            thread_base,
+            thread_base_source,
+            logical_cores,
+            physical_cores,
             provider = effective.as_str(),
             requested = requested.as_str(),
             "{what} detector loaded on a FALLBACK backend — the requested accelerator is not in use"
@@ -486,11 +515,14 @@ async fn load_gliner(
         Err(_) => DEFAULT_THRESHOLD,
     };
     // Same pool/intra derivation as the NER (its own env), so an operator running both
-    // models controls each independently (the two knobs multiply — M7).
+    // models controls each independently (the two knobs multiply — M7). It inherits M11 Track B's
+    // physical-core base **for free**, because it is the same function and not a second path —
+    // which is the entire point of `resolve_pool_and_intra` having one home (M7-R1).
+    let cores = crate::pii::onnx::CoreCounts::detect();
     let (pool_size, intra_threads) = crate::pii::onnx::resolve_pool_and_intra(
         std::env::var("GLINER_POOL_SIZE").ok().as_deref(),
         std::env::var("GLINER_INTRA_THREADS").ok().as_deref(),
-        crate::pii::onnx::available_cores(),
+        cores.thread_base(),
     );
 
     let detector = GLiNerDetector::load(
@@ -510,6 +542,7 @@ async fn load_gliner(
         &model,
         pool_size,
         intra_threads,
+        cores,
         provider,
         detector.provider(),
     );

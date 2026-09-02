@@ -365,6 +365,14 @@ fn m7_r3_intra_threads_changes_speed_not_detection() {
     );
     eprintln!("intra= 1 (the shape every recall guard pins): {total} entities");
 
+    // **Sweeps up to the LOGICAL count, and must keep doing so after M11 Track B.** The shipped
+    // default now derives from the *thread base* (physical cores capped by the granted
+    // parallelism), so nothing ships at `intra = available_cores()` on an SMT box any more —
+    // narrowing this sweep to the base would nonetheless be a mistake. This is a
+    // detection-inertness guard, not a shape-of-the-default guard: it exists to prove that
+    // *however* ONNX Runtime partitions the work, the detections do not move. More partitions is
+    // strictly more coverage, and the logical count is the largest partitioning a caller can
+    // actually request through `NER_INTRA_THREADS` on this box.
     for intra in [2usize, 4, 6, available_cores()] {
         let got = fingerprint(intra);
         let differing = baseline.iter().zip(&got).filter(|(a, b)| a != b).count();
