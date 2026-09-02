@@ -28,7 +28,7 @@ Two classes of PII, handled differently:
 
 | Class        | Examples                              | Engine |
 |--------------|---------------------------------------|--------|
-| Structured   | email, phone, SSN, credit card, IBAN, secret | deterministic regex + validation (Luhn, IBAN checksum) — high precision, no model |
+| Structured   | email, phone, SSN, national ID, VAT / tax ID, credit card, IBAN, secret | deterministic regex + validation (Luhn, IBAN checksum, per-scheme checksums) — high precision, no model |
 | Unstructured | names, organizations, locations       | ONNX NER model (M2) |
 
 The old proxy's ONNX `openai/privacy-filter` was unreliable on the ML part.
@@ -36,7 +36,7 @@ Keeping deterministic recognizers for structured PII removes most of the
 reliability risk *and* most of the compute cost — the ML model only carries the
 unstructured-entity load.
 
-**Locale coverage (M4) — three tiers.** The structured recognizers split into:
+**Locale coverage (M4, extended by M11 Track A) — four tiers.** The structured recognizers split into:
 - **Universal** — email, secret, credit card, IBAN (already any-country) and phone
   (US + `+CC`). Always on.
 - **National identifiers** — US SSN (keeps `PiiKind::Ssn` / `[SSN_N]`) plus, under
@@ -49,6 +49,38 @@ unstructured-entity load.
   small fraction of arbitrary numbers on checksum alone (~18% of 9-digit tokens); this is an
   **accepted over-mask tradeoff** (M4-R6) — privacy-first, never a leak — not context-gated
   (that would leak); the contextual precision path is GLiNER ([M8](ROADMAP.md#m8)).
+- **VAT / tax identifiers ([M11](ROADMAP.md#m11-a))** — `PiiKind::TaxId` / `[TAXID_N]`: the
+  Italian Partita IVA (11 digits, mod-10 with position doubling) in both its **bare** and VIES
+  forms, and VIES-form DE (ISO 7064 Mod 11,10), GB (mod-97 / mod-97-55), PT (mod-11) and NL
+  (format-anchored). **Always on regardless of `PII_LOCALES`**, like the national IDs it joins and
+  for the same reason — and with **no configuration variable of its own**, deliberately: gating it
+  would have inherited `PII_LOCALES`'s *narrowing* semantics, the subtlety M10 had to set in bold
+  in the changelog, and a second tier carrying it doubles what the README must explain.
+  - **A new kind rather than a reused `[NATID_N]`, and that is the decision the track turned on.**
+    A VAT number identifies a *business*, and is personal data only when that business is a sole
+    trader; a Codice Fiscale identifies a *person*, always. One token for both destroys that
+    distinction for every consumer downstream. Reusing `NATID` now and splitting later was
+    rejected because it converts a free choice today into a breaking change to the placeholder
+    vocabulary tomorrow.
+  - **Five countries, because five are measured.** ES, FR and LV VAT numbers are real and are
+    **not** recognized: their checksums are not verified here, and the `PHONE-NAT` rule applies
+    unchanged — an unmeasured recognizer does not ship. VAT-04 asserts the absence so the gap stays
+    a decision rather than a discovery.
+  - **NL is the one scheme with nothing to check**, so it is accepted on format (`NL` + 9 digits +
+    a literal `B` + 2 digits) and tagged `Confidence::Structural` unless its body passes the
+    11-proef — the 2020 sole-trader `btw-id` is randomized by design. Same honesty as an IBAN whose
+    mod-97 fails: masked, and flagged rather than claimed.
+  - **The bare Italian form has a measured over-mask cost: 0.100** — a mod-10 check accepts one
+    arbitrary 11-digit number in ten. Accepted on the same M4-R6 grounds as the numeric national
+    IDs (over-mask, never leak; the vault restores byte-identically). The prefixed forms carry no
+    such cost, since they need the literal country code as well.
+  - **Priority: below both `NationalId` and `Phone`** — see `PiiKind::priority`, which carries the
+    two reasons. The one that is easy to get wrong: a bare P.IVA is `\d{11}`, and so are the
+    compact domestic phone shapes M10 measured (`02079460958` is a real London number and it
+    satisfies the P.IVA checksum). Ranking `TaxId` above `Phone` silently relabels every compact GB
+    and DE number as `[TAXID_N]` — no leak, since the bytes are masked either way, but a fidelity
+    regression on a measured capability. A numbering-plan lookup that confirms an *assigned* number
+    is better evidence than a mod-10 check, so the plan lookup names the span. Pinned by VAT-14.
 - **Domestic phone** — numbers written with **no `+CC`** (GB `020 7946 0958`, IT `347 1234567`,
   ES `91 123 45 67`). Historically the "FP-prone, opt-in" tier ([M4-R1](reviews/M4.md#m4-r1),
   [M8.1](ROADMAP.md#m81)): a bare digit run looks like an order number or a national ID, so it
@@ -62,7 +94,8 @@ unstructured-entity load.
   what it costs, and the accepted dependency tradeoff under *Supply-chain*.
 
 So `PII_LOCALES` (`Config.pii_locales`, default = every vetted region) gates only the
-*domestic-phone* tier, not "which countries" — the national IDs are never gated off. The
+*domestic-phone* tier, not "which countries" — the national IDs and the VAT tier are never gated
+off. The
 **language** domain for the NER is the model's declared languages (XLM-R HRL:
 ar/de/en/es/fr/it/lv/nl/pt/zh — validated, see `docs/DEVLOG.md`); structured PII is
 language-independent.

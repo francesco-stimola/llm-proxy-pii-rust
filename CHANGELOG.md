@@ -35,6 +35,30 @@ All notable changes to this project are documented here. The format follows
 
 Milestone [M11](https://github.com/francesco-stimola/llm-proxy-pii-rust/blob/main/docs/ROADMAP.md#m11) — in progress.
 
+### Added
+
+- **VAT numbers are masked, with a new placeholder — `[TAXID_1]`.** The Italian **Partita IVA** in
+  both its bare 11-digit form (`P.IVA 00159560366`) and its VIES form, plus VIES-form 🇩🇪 🇬🇧 🇳🇱 🇵🇹
+  numbers (`DE136695976`, `GB220430231`, `NL111222333B01`, `PT524287244`). Each is accepted only
+  when that country's VAT checksum passes.
+  - **It is a new token, not a reused `[NATID_1]`, and that matters if you consume placeholders.**
+    A VAT number identifies a *business* and is personal data only when that business is a sole
+    trader; a Codice Fiscale identifies a person. Anything downstream that pattern-matches
+    placeholder labels will see `TAXID` for the first time.
+  - **Always on**, like the national IDs it joins — `PII_LOCALES` does not gate it, and there is
+    no new variable to set.
+  - **One cost, stated plainly: a bare 11-digit Partita IVA is a mod-10 check, so about 1 in 10
+    arbitrary 11-digit numbers is now masked** — a long order reference or id can come back as
+    `[TAXID_1]`. It is restored byte-identically on the response path, so the round trip is exact;
+    what changes is that the model sees a placeholder where it might have wanted the number. The
+    prefixed forms (`DE…`/`GB…`/`NL…`/`PT…`) have no such cost, since they need the literal country
+    code as well as the checksum. This is the same trade already accepted for the 9- and 11-digit
+    national IDs.
+  - 🇪🇸 🇫🇷 🇱🇻 VAT numbers are **not** recognised. Their checksums are not measured here, and an
+    unmeasured recogniser does not ship — the rule that decided the nine phone regions.
+  - Phone numbers are unaffected: a compact domestic number that also satisfies the VAT checksum
+    stays `[PHONE_1]`, because a numbering-plan lookup is better evidence than a mod-10 check.
+
 ### Changed
 
 - **The NER's default thread count halves on every SMT machine — no config change needed, and this

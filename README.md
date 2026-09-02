@@ -19,7 +19,7 @@ Local-first detection · reversible placeholders · fail-closed · streaming · 
 [![Latest release](https://img.shields.io/github/v/release/francesco-stimola/llm-proxy-pii-rust?sort=semver&label=release)](https://github.com/francesco-stimola/llm-proxy-pii-rust/releases/latest)
 [![License: AGPL v3](https://img.shields.io/badge/license-AGPL--3.0--or--later-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.89%2B-orange.svg)](https://www.rust-lang.org)
-[![PII kinds](https://img.shields.io/badge/PII%20kinds-10-green.svg)](#what-it-masks)
+[![PII kinds](https://img.shields.io/badge/PII%20kinds-11-green.svg)](#what-it-masks)
 
 [Quick start](#quick-start) · [What it masks](#what-it-masks) · [How it works](#how-it-works) · [Configuration](#configuration) · [Architecture](docs/ARCHITECTURE.md)
 
@@ -54,9 +54,9 @@ Point your existing OpenAI-compatible client at the proxy. Nothing else in your 
 
 ## What it masks
 
-**10 kinds · 10 national ID schemes · 9 domestic phone plans · 10 languages.** Each kind becomes a
-typed, numbered placeholder, and the same value always gets the same token within a request — so a
-masked conversation still makes sense to the model.
+**11 kinds · 10 national ID schemes · 5 VAT schemes · 9 domestic phone plans · 10 languages.** Each
+kind becomes a typed, numbered placeholder, and the same value always gets the same token within a
+request — so a masked conversation still makes sense to the model.
 
 | kind | placeholder | engine | what makes it a match | coverage |
 |---|---|---|---|---|
@@ -67,12 +67,13 @@ masked conversation still makes sense to the model.
 | **Phone** | `[PHONE_1]` | deterministic · always on | the country's **real numbering plan** says the number is *assigned* | `+CC` and US always · **9 domestic plans** |
 | **US SSN** | `[SSN_1]` | deterministic · always on | area / group / serial rules | 🇺🇸 |
 | **National ID** | `[NATID_1]` | deterministic · always on | that scheme's own checksum — mod-23, mod-97, mod-11, ISO 7064, NINO rules | **10 countries** |
+| **VAT / tax ID** | `[TAXID_1]` | deterministic · always on | that country's VAT checksum — mod-10, ISO 7064, mod-97, mod-11 (🇳🇱 by format: its scheme has none) | **5 countries** |
 | **Person** | `[PERSON_1]` | **ML — needs a model** | the model reads the sentence: a name has no verifiable form | 10 languages · recall **0.83** |
 | **Organization** | `[ORG_1]` | **ML — needs a model** | ″ | 10 languages |
 | **Location** | `[LOCATION_1]` | **ML — needs a model** | ″ | 10 languages |
 
 **The split is verifiability, not importance.** An IBAN is masked because mod-97 *returns*, not
-because it looks like one — so those seven are provable, language-independent, and cost ~20 ms.
+because it looks like one — so those eight are provable, language-independent, and cost ~20 ms.
 A name cannot be confirmed by any rule, so it takes a model, and the model is where the whole
 cost lives (~4.7 s, ~563 MB) — and where the guarantee weakens: **without a model those three
 travel upstream in clear**, which is what `NER_REQUIRED=1` turns into a startup failure.
@@ -94,17 +95,33 @@ reports five categories where this emits one `[LOCATION_1]`. That is resolution,
 | **dates · times · amounts** | No rule confirms them, and this proxy sits on **live agent traffic**: `[DATE_1]` where the model needed `2026-07-31` corrupts a tool call, and the agent then does the wrong thing quietly. A document anonymizer can afford that trade — an over-mask is visible to the human holding the document. A proxy cannot. **Excluded on purpose, not pending.** |
 | **free-form addresses** | Nothing verifies "12 Rue de la Paix". It needs a model — `address` is in the optional GLiNER engine's default labels, off until its over-mask cost is measured. Tracked in [ROADMAP → *One model with more kinds*](docs/ROADMAP.md#backlog) |
 | **age · gender** | Contextual attributes, same reason as above, and rarely the leak that matters in agent traffic |
-| **a country not in the tables above** | Coverage here is a **list, not a rule**: 10 ID schemes, 9 domestic phone plans. A Brazilian mobile written without `+55` is not masked — not because the pattern is hard, but because *an unmeasured plan is not one we ship* |
+| **a country not in the tables above** | Coverage here is a **list, not a rule**: 10 ID schemes, 5 VAT schemes, 9 domestic phone plans. A Brazilian mobile written without `+55` is not masked — not because the pattern is hard, but because *an unmeasured plan is not one we ship* |
 
 The line through all four: **this masks what it can confirm, and says so where it cannot.** A
 category is added when there is a corpus that measures it — which is how the nine phone regions
-got here, and what [M11](docs/ROADMAP.md#m11) applies to VAT numbers next.
+got here, and how the five VAT schemes below arrived.
 
 **The 10 national ID schemes:** 🇺🇸 SSN · 🇮🇹 Codice Fiscale · 🇬🇧 NINO · 🇪🇸 DNI/NIE · 🇫🇷 NIR ·
 🇩🇪 Steuer-ID · 🇳🇱 BSN · 🇵🇹 NIF · 🇱🇻 personal code · 🇨🇳 Resident ID. Masked **regardless of
 locale configuration** — an ID that reaches the proxy gets masked even if its country isn't the
 one you configured. An eleventh country's ID is not recognised: coverage here is a list, not a
 rule, and *an unmeasured scheme is not one we ship*.
+
+**VAT numbers — 5 schemes, always on:** the Italian **Partita IVA** in both its bare 11-digit form
+(`P.IVA 00159560366`) and its VIES form, plus VIES-form 🇩🇪 🇬🇧 🇳🇱 🇵🇹 numbers (`DE136695976`,
+`GB220430231`, `NL111222333B01`, `PT524287244`). They get their **own** token, `[TAXID_1]`, rather
+than reusing `[NATID_1]`: a VAT number identifies a *business* and is personal data only when that
+business is a sole trader, and a token that cannot tell it from a Codice Fiscale destroys the
+distinction for everything downstream. Like the national IDs, this tier is **not** gated by
+`PII_LOCALES`.
+
+> Two costs, published rather than rounded off. **A bare 11-digit Partita IVA is a mod-10 check, so
+> about 1 arbitrary 11-digit number in 10 is masked** — an order reference or a long id can become
+> `[TAXID_1]`. It is restored byte-identically on the way back, so the round trip is exact; the cost
+> is that the model sees a placeholder where it might have wanted the number. The *prefixed* forms
+> have no such cost — `DE…`/`GB…`/`NL…`/`PT…` need the literal country code as well as the checksum.
+> And 🇪🇸 🇫🇷 🇱🇻 VAT numbers are **not** recognised: their checksums are not measured here, and an
+> unmeasured recogniser is not one we ship — the same rule that decided the phone regions.
 
 **Domestic phone numbers — 9 regions, on by default:** 🇩🇪 🇪🇸 🇫🇷 🇬🇧 🇮🇹 🇱🇻 🇳🇱 🇵🇹 🇨🇳 numbers
 written with **no `+CC`** (`020 7946 0958`, `06 69821234`, `347 1234567`, `91 123 45 67`). This is

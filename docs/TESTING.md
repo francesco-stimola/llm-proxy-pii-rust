@@ -252,6 +252,102 @@ Default build, no model. A loose regex proposes candidates and `is_valid()` deci
 - **PHONE-EVAL *(`tests/phone_eval.rs`, `#[ignore]`d)* — the measurement that *is* M10's deliverable.** `phone_precision_per_region_and_for_the_union` scores recall and false positives per region and for the union, over 20 curated negatives plus ~433 generated digit-shaped non-phones. **FP is reported per category (dates · tables · ports · sizes · offsets · money · codes · refs), never blended** — one rate over a pool whose composition you chose is a number about the pool. `phone_latency_per_enabled_region` measures ms/turn for 0…9 enabled regions over the same 22 KiB turn. Run it `--release --test-threads=1` (M7-R12: precision is build-independent, milliseconds are not). Results and the decision they drove: DEVLOG 2026-07-29 and ARCHITECTURE → *Domestic phone coverage*.
   - **Two assertions inside the harness, both from M10 round 1.** (i) The pool must **reach every shape family** before the harness reports on one — the first version's non-date entries almost never began with a 2–3-digit token, so half of what M10 added was structurally untestable and its `0.000` meant *unmeasured*, not *clean*. (ii) `union_hits == ∪ singles` is asserted, not printed: under this dispatch it is a **structural identity** (the validator is `.any()` over a superset), so a number that can only be zero belongs in an assertion — it was being read as evidence that adding a region is marginally free, which it is not.
 
+
+### M11 Track A — VAT / tax identifiers (`src/pii/recognizers.rs`, default build, no model)
+Always-on, checksum-gated, and modelled on the `PHONE-NAT` corpus rule unchanged: **a category
+ships when it is measured**, so five countries ship (🇮🇹 🇩🇪 🇬🇧 🇳🇱 🇵🇹) and three that are real but
+unverified here (🇪🇸 🇫🇷 🇱🇻) do not. The new kind is `PiiKind::TaxId` → `[TAXID_n]`.
+
+**Read VAT-14 first.** The whole tier hangs on one collision: a bare Partita IVA is `\d{11}`, and
+two *other* always-on tiers already claim that shape.
+
+- **VAT-01 — `italian_piva_accepts_real_published_numbers`: the anchor for everything else.** Six
+  real published P.IVAs (ENI, Ferrari, TIM, Luxottica, Enel, Stellantis Italy) against the mod-10
+  position-doubling check. Six independent real check digits is what distinguishes *an
+  implementation of the scheme* from *a plausible transcription of it* — one hand-picked number
+  would prove neither, and a corpus generated from the validator would prove nothing at all.
+- **VAT-02 — `vat_check_digits_reject_a_moved_digit`: the negative half.** Every shipped country's
+  real number with its final digit moved by one, plus wrong lengths. Without it the recognizers
+  would be "accepts anything of the right length" — the shape M4-R1 named FP-prone, and the reason
+  this tier is checksum-gated at all.
+- **VAT-03 — `vat_numbers_are_detected_for_every_shipped_country`: end to end, not validator-only.**
+  Real VIES-form numbers through the whole recognizer set, so the regex, the ASCII word boundaries
+  and the overlap resolver are all in the path.
+- **VAT-04 — `unmeasured_vat_countries_are_absent_rather_than_guessed`: the gap is asserted.** ES,
+  FR and LV VAT numbers are real and well-formed and are **not** recognized, because their
+  checksums are not measured here. Asserting the absence keeps it a documented decision rather than
+  something a future reader finds and "fixes" by guessing an algorithm.
+- **VAT-05 — `lowercase_country_prefix_is_not_a_vat_number`: `it` is an English word.** The country
+  prefixes are uppercase-only on purpose. Lowercased, `"call it <11 digits>"` would produce a
+  14-character span swallowing an ordinary word. The bare recognizer still claims the *digits* —
+  what must never happen is the span growing to eat the word before them.
+- **VAT-06 — `vat_is_always_on_regardless_of_locales`: the posture, and the guard against a config
+  variable appearing.** The national-ID posture (M4-R1), not the FP-prone phone tier's. **There is
+  no `PII_LOCALES`-style gate for this tier and there is deliberately not going to be one**
+  (ROADMAP M11 Track A, decision 2 — gating it would also have inherited `PII_LOCALES`'s
+  *narrowing* semantics, the subtlety M10 had to set in bold in the changelog). This fails if one
+  is ever introduced by accident.
+- **VAT-07 — `vat_is_not_inert_in_cjk_prose` (M4-R13).** A VAT number glued to a Han character is
+  the natural rendering, not an evasion. Under Rust `regex`'s default Unicode `\b` a Han character
+  is a word character, so there is no boundary before the `I` and the entire tier would be
+  **silently inert** in CJK text — which is precisely how this repo once shipped inert card and ID
+  recognizers. `(?-u:\b)` is what keeps it alive, and this is what would notice if it were lost.
+- **VAT-08 — `vat_does_not_swallow_or_get_swallowed_by_an_adjacent_token`.** Two VAT numbers one
+  space apart stay two spans; a VAT number inside a longer ASCII run is not a match at all, so a
+  hash, a UUID or a base64 blob cannot contain one.
+- **VAT-09 (measured) — `vat_over_mask_rate_on_arbitrary_eleven_digit_numbers`: the published FP
+  cost.** A mod-10 check accepts about one arbitrary 11-digit number in ten, so the bare Italian
+  form masks a share of ordinary 11-digit tokens. **Measured: 10 000 / 100 000 = 0.100.** The cost
+  is accepted on purpose — over-mask, never leak, and the vault restores the value byte-identically
+  on the response path — the same trade M4-R6 took for the 9- and 11-digit national IDs. What is
+  *not* acceptable is quoting a rate nobody measured, so the number is produced by a deterministic
+  sweep and pinned to a band: moving the shipped FP cost should have to edit this test to land.
+- **VAT-10 (measured) — `vat_and_natid_collision_rate`: is the naming rule load-bearing or a
+  curiosity?** **Measured: 1 997 / 20 000 = 0.0998** of valid P.IVAs also satisfy a DE Steuer-ID or
+  LV personal-code check, so ~10% are named `[NATID_n]` and ~90% `[TAXID_n]`. Both are masked
+  either way — this is a *labelling* statistic, not a coverage one — but it is the number that says
+  the other 90% is real coverage this recognizer adds, not a relabelling of what the national-ID
+  tier already caught.
+- **VAT-11 — `nl_vat_confidence_splits_verified_from_format_only`: the one scheme with nothing to
+  check.** The 2020 Dutch sole-trader `btw-id` is randomized by design; a legal entity's 9-digit
+  body is an RSIN that satisfies the 11-proef. So NL is accepted on **format** (14 chars, mandatory
+  `NL`, a literal `B` pinned at position 11) and `Confidence` tells the truth about which one it
+  got — `Verified` on a mod-11 pass, `Structural` otherwise, exactly as an IBAN whose mod-97 fails
+  is masked and flagged (M4). Both are masked; only the claim differs.
+- **VAT-12 — `a_vat_inside_an_email_keeps_the_email_label`.** The resolver's naming rule
+  (M4-R10/R11): a union that is *exactly* an `Email` span is named by the email even though `TaxId`
+  outranks it. Every byte of both spans is masked regardless — priority names a union, it never
+  drops one.
+- **VAT-13 — `a_masked_vat_number_is_inert_and_restores_exactly`.** `[TAXID_1]` must not look like
+  PII to the next pass or `mask_all` would not converge (ARCHITECTURE → *mask to a fixpoint*), and
+  the round trip must be byte-exact — which is what makes an over-mask harmless downstream.
+- **VAT-14 — `a_bare_piva_never_outranks_a_phone_or_a_national_id`: the defect this track nearly
+  shipped, pinned from the side the change would come from.** A bare P.IVA is `\d{11}`, and so are
+  the **compact domestic phone** shapes M10 measured: `02079460958` is a real London number,
+  `03012345678` a real Berlin one, and *both satisfy the P.IVA mod-10*. With `TaxId` ranked above
+  `Phone` — the first thing that looks right — every compact GB and DE number M10 measured silently
+  became `[TAXID_n]`. No leak: the bytes are masked either way. But a **fidelity regression on a
+  shipped, measured capability**, telling the model a phone number is a tax identifier. PHONE-NAT-01
+  caught it; this pins it from the VAT side, where the change that would reintroduce it lives.
+  It also pins the national-ID half (Enel's real P.IVA is a valid Latvian personal code, and keeps
+  `[NATID_n]`). The ordering and its two justifications live on `PiiKind::priority`.
+
+### M11 Track A — the augmentation prompt and the detection cache (`src/pipeline/privacy.rs`)
+- **AUG-01 — `the_augmentation_prompt_names_every_placeholder_kind_it_should`.** Adding a `PiiKind`
+  without teaching the model to read its token is a **silent** degradation: the mask works, the
+  round trip works, and the model simply handles `[TAXID_1]` worse than the four kinds the prompt
+  names. Nothing fails, so nothing tells you. Also asserts every exemplified label is a real
+  `PiiKind` label, so the prompt cannot teach a vocabulary the de-masker does not speak.
+- **AUG-02 — `the_cache_cannot_serve_an_instruction_because_it_never_sees_one`.** The worry the
+  M7.1 content-keyed cache invites whenever the instruction changes: turn 1 caches something derived
+  from the old text, turn 2 is served it, and a fresh binary keeps emitting an instruction that
+  never mentions the new placeholder — a failure with no symptom. It cannot happen, and this pins
+  **why** rather than asserting the conclusion: a recording detector captures every text the stage
+  submits, and none contains the prompt, because the instruction is appended *after* masking has
+  already run. The cache keys on exactly those texts, so a text it never sees is a text it cannot
+  serve. **If the injection ever moved before masking this fails** — and that reordering is the only
+  way the stale-instruction bug could become real.
+
 ### M9 — execution providers & the provider benchmark (feature `onnx`, no model needed)
 `src/pii/onnx.rs::ep_tests` — unit, runs in plain `cargo test-onnx`. The runtime knob is parsed here, and the two *failure modes must stay distinct*: a **typo** fails startup, a real-but-absent accelerator **falls back to CPU**. Conflating them would silently run CPU while the operator believed a GPU was engaged.
 - EP-01 — `parses_known_providers_case_insensitively_and_trims`: every provider name plus the aliases (`dml`, `trt`, `vino`) and `""` → `Cpu`, case- and whitespace-insensitive.

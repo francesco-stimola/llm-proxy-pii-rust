@@ -3,6 +3,85 @@
 Newest first. One entry per meaningful change — note *what* and *why*, not just
 *what*. This is the running history so context is never lost between sessions.
 
+## 2026-09-02 — M11 Track A: VAT numbers, a new placeholder, and the collision that nearly shipped
+
+**`PiiKind::TaxId` → `[TAXID_n]`, five countries, always on.** The Italian Partita IVA (bare and
+VIES form) plus VIES-form DE, GB, NL and PT. Both maintainer decisions were already taken and
+recorded in the ROADMAP, so the work was the corpus and the wiring, exactly as the track predicted.
+
+**The corpus is the deliverable, and the anchor is six real published P.IVAs** — ENI, Ferrari, TIM,
+Luxottica, Enel, Stellantis Italy — plus the German tax administration's own documented vector
+`136695976`, a second real DE number, two GB numbers and two PT ones. Six independent real check
+digits is what separates *an implementation of a scheme* from *a plausible transcription of it*; a
+corpus generated from the validator would have proved nothing at all, and one hand-picked number
+barely more.
+
+**Three countries did not ship, and that is the milestone working rather than failing.** ES, FR and
+LV VAT numbers are real and well-formed. The ES legal-entity CIF control character, the FR key over
+the SIREN and the LV legal-entity checksum could not be confirmed against trustworthy real pairs
+here — and *an unmeasured recognizer does not ship* is the rule that produced nine phone regions
+instead of a table of guesses. VAT-04 asserts their absence so the gap stays a decision a reader can
+find, rather than a bug a reader discovers. GB **did** ship despite not being a VIES country since
+Brexit: it is in the national-ID tier this track takes its country list from, and its number is
+checksum-verifiable, which is the tier's actual criterion.
+
+**The defect this track nearly shipped, and the shape of it is worth more than the fix.** A bare
+Partita IVA is `\d{11}`. So is the compact domestic phone form M10 measured — and `02079460958`, a
+real London number, satisfies the P.IVA mod-10. With `TaxId` ranked above `Phone` (the placement
+that looks right if you only think about tax identifiers), **every compact GB and DE number M10
+measured silently became `[TAXID_n]`**. Not a leak: the bytes are masked either way, and the round
+trip is exact. But a fidelity regression on a shipped, *measured* capability — the proxy telling the
+model a phone number is a tax identifier. PHONE-NAT-01 caught it on the first run, which is the
+whole argument for keeping measured guards around after their milestone closes.
+
+The fix is one line of `PiiKind::priority`, and the reasoning is two principles that happen to
+agree:
+- **Under `NationalId`** — conservatism about personhood. Between a label implying *a person* and
+  one implying *a business*, the person-implying label is the conservative one: mislabelling a
+  person's ID as a company's under-states its sensitivity, and over-stating is the side this
+  project errs on everywhere else.
+- **Under `Phone`** — strength of evidence. The domestic-phone tier does not match a shape; it asks
+  `phonenumber` whether the candidate is a real **assigned** number in that region's plan. That
+  beats a mod-10 check one arbitrary number in ten satisfies.
+
+Both collisions are now pinned from the VAT side by VAT-14, which is where a change that
+reintroduces them would actually be written.
+
+**Two rates measured rather than asserted.** The bare P.IVA accepts **10 000 / 100 000 = 0.100** of
+arbitrary 11-digit numbers — the published over-mask cost, on the same M4-R6 grounds as the numeric
+national IDs. And **1 997 / 20 000 = 0.0998** of valid P.IVAs also satisfy a DE Steuer-ID or LV
+check, so ~10% are named `[NATID_n]` and ~90% `[TAXID_n]`. That second number is the one that says
+this recognizer adds real coverage rather than relabelling what the national-ID tier already caught.
+(Enel's real P.IVA is in the colliding 10% — which is why two of the first test expectations were
+wrong and had to be re-picked. A small real sample reproducing the measured rate is a good sign, not
+a nuisance.)
+
+**NL is the one shipped scheme with nothing to check**, and it says so through `Confidence` rather
+than quietly claiming a verification: the 2020 sole-trader `btw-id` is randomized by design, so the
+recognizer accepts on format (14 chars, mandatory `NL`, a literal `B` at position 11) and tags
+`Structural` unless the body passes the 11-proef. The same honesty an IBAN whose mod-97 fails gets.
+
+**Anti-false-positive decisions worth naming.** Country prefixes are **uppercase only** — lowercase
+would make `it` a matchable prefix, and `"call it <11 digits>"` would then produce a span swallowing
+one of the commonest words in English. And **no space** between prefix and digits: VIES does not use
+one, while allowing it would put `DE`, `IT` and `GB` — all live English abbreviations — one space
+away from a digit run.
+
+**Item 6 of the brief, the system-prompt cache, checked and found structurally safe.** The worry is
+real in shape: add a placeholder kind, and a cached instruction that never mentions it degrades the
+model's handling of exactly the token you just added, silently. It cannot happen here, and AUG-02
+pins *why* rather than asserting the conclusion — the instruction is appended **after** masking has
+run, so the detector is never asked about it and the cache (which keys on the texts the detector
+sees) has nothing to serve. A recording detector proves no submitted text contains the prompt. If
+the injection ever moved before masking, that test fails, and that reordering is the only way the
+bug becomes real.
+
+**CAT-01 passed vacuously at first, and that is its own finding.** The new guards declare `VAT-…`
+and `AUG-…` ids, neither of which was in `ID_PREFIXES` — so the guard that catalogues guards could
+not see them and reported green over sixteen uncatalogued ids. The array is CAT-01's own blind spot,
+one level up from the drift it was built to end. Adding the two prefixes made it fail with all
+sixteen listed, which is what it should have done from the start.
+
 ## 2026-09-02 — M11 Track B: the intra-op thread base moves to physical cores
 
 **Shipped the decision the ROADMAP recorded, and nothing more.** `NER_INTRA_THREADS` still derives

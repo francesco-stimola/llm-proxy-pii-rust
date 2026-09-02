@@ -19,7 +19,7 @@ Rilevamento local-first · segnaposto reversibili · fail-closed · streaming ·
 [![Ultima release](https://img.shields.io/github/v/release/francesco-stimola/llm-proxy-pii-rust?sort=semver&label=release)](https://github.com/francesco-stimola/llm-proxy-pii-rust/releases/latest)
 [![License: AGPL v3](https://img.shields.io/badge/license-AGPL--3.0--or--later-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.89%2B-orange.svg)](https://www.rust-lang.org)
-[![Categorie PII](https://img.shields.io/badge/categorie%20PII-10-green.svg)](#cosa-maschera)
+[![Categorie PII](https://img.shields.io/badge/categorie%20PII-11-green.svg)](#cosa-maschera)
 
 [Avvio rapido](#avvio-rapido) · [Cosa maschera](#cosa-maschera) · [Come funziona](#come-funziona) · [Configurazione](#configurazione) · [Architettura](docs/ARCHITECTURE.md)
 
@@ -54,7 +54,7 @@ Fai puntare il tuo client compatibile con OpenAI al proxy. Nient'altro nel tuo s
 
 ## Cosa maschera
 
-**10 categorie · 10 schemi di documento nazionale · 9 piani telefonici · 10 lingue.** Ogni categoria
+**11 categorie · 10 schemi di documento nazionale · 5 schemi IVA · 9 piani telefonici · 10 lingue.** Ogni categoria
 diventa un segnaposto tipizzato e numerato, e lo stesso valore riceve sempre lo stesso token
 all'interno di una richiesta — così una conversazione mascherata resta comprensibile per il modello.
 
@@ -67,12 +67,13 @@ all'interno di una richiesta — così una conversazione mascherata resta compre
 | **Telefono** | `[PHONE_1]` | deterministico · sempre attivo | il **piano di numerazione reale** del paese dice che il numero è *assegnato* | `+CC` e USA sempre · **9 piani nazionali** |
 | **SSN (USA)** | `[SSN_1]` | deterministico · sempre attivo | regole area / group / serial | 🇺🇸 |
 | **Documento nazionale** | `[NATID_1]` | deterministico · sempre attivo | il checksum proprio di quello schema — mod-23, mod-97, mod-11, ISO 7064, regole NINO | **10 paesi** |
+| **Partita IVA / codice fiscale d'impresa** | `[TAXID_1]` | deterministico · sempre attivo | il checksum IVA di quel paese — mod-10, ISO 7064, mod-97, mod-11 (🇳🇱 per forma: il suo schema non ne ha uno) | **5 paesi** |
 | **Persona** | `[PERSON_1]` | **ML — richiede un modello** | il modello legge la frase: un nome non ha forma verificabile | 10 lingue · recall **0,83** |
 | **Organizzazione** | `[ORG_1]` | **ML — richiede un modello** | ″ | 10 lingue |
 | **Luogo** | `[LOCATION_1]` | **ML — richiede un modello** | ″ | 10 lingue |
 
 **La divisione è la verificabilità, non l'importanza.** Un IBAN è mascherato perché il mod-97
-*torna*, non perché somigli a un IBAN — quelle sette sono dimostrabili, indipendenti dalla lingua
+*torna*, non perché somigli a un IBAN — quelle otto sono dimostrabili, indipendenti dalla lingua
 e costano ~20 ms. Un nome non lo conferma nessuna regola, quindi serve un modello, ed è lì che sta
 tutto il costo (~4,7 s, ~563 MB) — ed è lì che la garanzia si indebolisce: **senza modello quelle
 tre viaggiano in chiaro**, ed è ciò che `NER_REQUIRED=1` trasforma in un errore all'avvio.
@@ -96,12 +97,11 @@ via / numero / CAP / città / provincia dichiara cinque categorie dove qui ne es
 | **date · orari · importi** | Nessuna regola li conferma, e questo proxy sta sul **traffico vivo di un agent**: `[DATE_1]` dove al modello serviva `2026-07-31` corrompe una tool call, e l'agent poi fa la cosa sbagliata in silenzio. Un anonimizzatore di documenti può permetterselo — un over-mask è visibile alla persona che ha il documento in mano. Un proxy no. **Escluse apposta, non in attesa.** |
 | **indirizzi in forma libera** | Niente verifica "via Roma 12". Serve un modello — `address` è tra le etichette di default del motore opzionale GLiNER, spento finché il costo di over-mask non è misurato. Tracciato in [ROADMAP → *One model with more kinds*](docs/ROADMAP.md#backlog) |
 | **età · genere** | Attributi contestuali, stessa ragione, e raramente la fuga che conta nel traffico di un agent |
-| **un paese non nelle tabelle qui sopra** | Qui la copertura è un **elenco, non una regola**: 10 schemi di documento, 9 piani telefonici. Un cellulare brasiliano scritto senza `+55` non viene mascherato — non perché il pattern sia difficile, ma perché *un piano non misurato non è un piano che spediamo* |
+| **un paese non nelle tabelle qui sopra** | Qui la copertura è un **elenco, non una regola**: 10 schemi di documento, 5 schemi IVA, 9 piani telefonici. Un cellulare brasiliano scritto senza `+55` non viene mascherato — non perché il pattern sia difficile, ma perché *un piano non misurato non è un piano che spediamo* |
 
 Il filo che unisce le quattro righe: **si maschera ciò che si può confermare, e si dichiara dove
 non si può.** Una categoria si aggiunge quando esiste un corpus che la misura — è così che sono
-arrivate le nove regioni telefoniche, ed è ciò che [M11](docs/ROADMAP.md#m11) applica ora alle
-partite IVA.
+arrivate le nove regioni telefoniche, ed è come sono arrivati i cinque schemi IVA qui sotto.
 
 **I 10 schemi di documento nazionale:** 🇺🇸 SSN · 🇮🇹 Codice Fiscale · 🇬🇧 NINO · 🇪🇸 DNI/NIE ·
 🇫🇷 NIR · 🇩🇪 Steuer-ID · 🇳🇱 BSN · 🇵🇹 NIF · 🇱🇻 codice personale · 🇨🇳 Resident ID. Mascherati
@@ -109,6 +109,23 @@ partite IVA.
 mascherato anche se il suo paese non è quello che hai configurato. Il documento di un undicesimo
 paese non viene riconosciuto: qui la copertura è un elenco, non una regola, e *uno schema non
 misurato non è uno schema che spediamo*.
+
+**Partite IVA — 5 schemi, sempre attivi:** la **Partita IVA** italiana sia in forma nuda a 11 cifre
+(`P.IVA 00159560366`) sia in forma VIES, più i numeri VIES 🇩🇪 🇬🇧 🇳🇱 🇵🇹 (`DE136695976`,
+`GB220430231`, `NL111222333B01`, `PT524287244`). Ricevono un token **proprio**, `[TAXID_1]`, invece
+di riusare `[NATID_1]`: una partita IVA identifica un'**impresa** ed è dato personale solo quando
+quell'impresa è un lavoratore autonomo, e un token che non sa distinguerla da un Codice Fiscale
+distrugge quella distinzione per tutto ciò che sta a valle. Come i documenti nazionali, questo
+livello **non** è filtrato da `PII_LOCALES`.
+
+> Due costi, pubblicati invece che arrotondati. **Una Partita IVA nuda a 11 cifre è un mod-10,
+> quindi circa 1 numero di 11 cifre arbitrario su 10 viene mascherato** — un riferimento d'ordine o
+> un id lungo può diventare `[TAXID_1]`. Viene ripristinato identico byte per byte al ritorno,
+> quindi il round-trip è esatto; il costo è che il modello vede un segnaposto dove forse voleva il
+> numero. Le forme **con prefisso** non hanno questo costo: `DE…`/`GB…`/`NL…`/`PT…` richiedono anche
+> la sigla del paese oltre al checksum. E le partite IVA 🇪🇸 🇫🇷 🇱🇻 **non** sono riconosciute: i
+> loro checksum non sono misurati qui, e un riconoscitore non misurato non è uno che spediamo — la
+> stessa regola che ha deciso le regioni telefoniche.
 
 **Telefoni nazionali — 9 regioni, attive di default:** 🇩🇪 🇪🇸 🇫🇷 🇬🇧 🇮🇹 🇱🇻 🇳🇱 🇵🇹 🇨🇳 numeri
 scritti **senza `+CC`** (`020 7946 0958`, `06 69821234`, `347 1234567`, `91 123 45 67`). È l'unico

@@ -2276,7 +2276,7 @@ silently halves a thread count is the kind of version number [M10](#m10) spent a
 learning not to publish.
 
 <a id="m11-a"></a>
-### Track A — deterministic coverage: VAT numbers
+### Track A — deterministic coverage: VAT numbers ✅
 
 **Opened 2026-07-31, from a coverage comparison rather than a defect.** Set against a
 document-level anonymizer built on a fine-tuned multilingual encoder over **22** entity types,
@@ -2288,15 +2288,32 @@ resolution rather than reach, and several more are categories this proxy must **
 form that we simply have not written a recognizer for.** That is this track, and nothing else.
 
 **Scope — the deterministic tier only.**
-- [ ] **Italian Partita IVA** — 11 digits, mod-10 checksum with position doubling. Structurally the
+- [x] **Italian Partita IVA** — 11 digits, mod-10 checksum with position doubling. Structurally the
   twin of the Codice Fiscale recognizer that already ships; the work is the corpus, not the code.
   Emits the **new `[TAXID_n]`**, always-on (decision 1 and 2 below).
-- [ ] **EU VAT numbers (VIES)** — per-country format + checksum, for the countries already covered
+- [x] **EU VAT numbers (VIES)** — per-country format + checksum, for the countries already covered
   by the national-ID tier. Same family, same always-on posture, one recognizer per country.
-- [ ] Corpora + adversarial negatives per recognizer, on the `PHONE-NAT` model: a positive set of
+  **Five shipped — 🇮🇹 🇩🇪 🇬🇧 🇳🇱 🇵🇹; three did not, and are named rather than silently missing:**
+  🇪🇸 (the legal-entity CIF control character), 🇫🇷 (the key over the SIREN) and 🇱🇻 (the
+  legal-entity checksum, a different algorithm from the personal code already shipped) could not be
+  confirmed against trustworthy real pairs, and an unmeasured recognizer does not ship. `VAT-04`
+  asserts their absence so the gap stays a decision rather than a discovery. GB ships despite not
+  being VIES since Brexit: it is in the national-ID tier this track takes its country list from, and
+  its number is checksum-verifiable — the tier's actual criterion.
+- [x] Corpora + adversarial negatives per recognizer, on the `PHONE-NAT` model: a positive set of
   real renderings and a negative set of things that merely look like one. **A category ships when
-  it is measured** — the rule that produced the nine phone regions, applied unchanged.
-- [ ] Catalogue every new guard id in `TESTING.md` (`CAT-01` enforces this) and re-publish the
+  it is measured** — the rule that produced the nine phone regions, applied unchanged. Anchored on
+  **six real published P.IVAs** plus the German administration's own documented vector; two rates
+  measured rather than asserted — the bare-form over-mask cost **0.100** (`VAT-09`) and the
+  P.IVA/national-ID naming collision **0.0998** (`VAT-10`).
+- [x] **The collision the plan did not foresee, found by a guard from a closed milestone.** A bare
+  P.IVA is `\d{11}` — and so is the compact domestic phone shape M10 measured, where
+  `02079460958` (a real London number) satisfies the P.IVA mod-10. Ranking `TaxId` above `Phone`
+  relabelled **every compact GB and DE number** as `[TAXID_n]`: no leak, but a fidelity regression
+  on a measured capability, caught by PHONE-NAT-01. `TaxId` now sits below both `NationalId`
+  (conservatism about personhood) and `Phone` (a numbering-plan lookup beats a mod-10 check), and
+  `VAT-14` pins it from the side a reintroducing change would be written.
+- [x] Catalogue every new guard id in `TESTING.md` (`CAT-01` enforces this) and re-publish the
   coverage tables in both READMEs and `ARCHITECTURE.md`.
 
 **Two decisions, taken by the maintainer 2026-09-02** (Track A's; B and C carry their own). Each
