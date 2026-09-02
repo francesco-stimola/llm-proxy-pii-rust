@@ -22,6 +22,15 @@ All notable changes to this project are documented here. The format follows
 > lives in [`docs/DEVLOG.md`](docs/DEVLOG.md), and the milestone it came from in
 > [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
+> **While a version is still being built, entries accumulate under `## [Unreleased]`, renamed to
+> `## [<version>] — <date>` when the tag is cut.** Writing the section at release time from memory
+> is how the detail that mattered gets lost; this file is meant to be written as the work lands.
+> Forgetting the rename is **safe**: the guard matches the heading `## [<version>]` by *literal
+> prefix*, so an `Unreleased` section satisfies no tag and the release is **refused** — never
+> published wrong. **What is not safe is `## [1.3.0] — unreleased`**: that heading *does* match the
+> prefix, so the guard would extract it and publish a section labelled unreleased as the release
+> body. The placeholder goes in the version slot, never beside it.
+
 ## [1.2.1] — 2026-07-31
 
 Milestone [M10](https://github.com/francesco-stimola/llm-proxy-pii-rust/blob/main/docs/ROADMAP.md#m10) — national phone coverage + release hygiene.
