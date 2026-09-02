@@ -2291,29 +2291,66 @@ form that we simply have not written a recognizer for.** That is this track, and
 **Scope — the deterministic tier only.**
 - [ ] **Italian Partita IVA** — 11 digits, mod-10 checksum with position doubling. Structurally the
   twin of the Codice Fiscale recognizer that already ships; the work is the corpus, not the code.
+  Emits the **new `[TAXID_n]`**, always-on (decision 1 and 2 below).
 - [ ] **EU VAT numbers (VIES)** — per-country format + checksum, for the countries already covered
   by the national-ID tier. Same family, same always-on posture, one recognizer per country.
 - [ ] **Italian vehicle plate (`AA123BB`)** — **the one that has to earn its place.** No checksum
   exists, so the only defence is the shape, and a shape with no verifier is how M4-R1's "FP-prone"
   objection started. Measure precision against an adversarial corpus of uppercase-alphanumeric
-  tokens (git short SHAs, enum variants, ticket ids, `AWS`-style prefixes) **before** deciding
-  whether it ships at all, let alone on by default.
+  tokens (git short SHAs, enum variants, ticket ids, `AWS`-style prefixes). **The floor it must
+  clear is already set — 1.000, decision 3 below** — so the measurement decides whether it ships,
+  and nobody gets to choose the bar after seeing the number.
 - [ ] Corpora + adversarial negatives per recognizer, on the `PHONE-NAT` model: a positive set of
   real renderings and a negative set of things that merely look like one. **A category ships when
   it is measured** — the rule that produced the nine phone regions, applied unchanged.
 - [ ] Catalogue every new guard id in `TESTING.md` (`CAT-01` enforces this) and re-publish the
   coverage tables in both READMEs and `ARCHITECTURE.md`.
 
-**Three decisions that are the maintainer's, and are open** (Track A's; B and C carry their own).
-Each changes product-visible behaviour, so none is the builder's to take:
-1. **Which `PiiKind` a VAT number gets.** `NationalId`/`[NATID_n]` reuses an existing token and
-   ships without touching the vault, but a P.IVA is a *business* identifier that is personal data
-   only when it identifies a sole trader. A new `TaxId`/`[TAXID_n]` is more honest and is a new
-   public token.
-2. **Always-on, or gated?** National IDs are always on regardless of `PII_LOCALES` (privacy-first).
-   VAT numbers most likely inherit that. The plate, if it ships, probably should not.
-3. **The plate's precision floor.** What false-positive rate makes it shippable — and on which
-   corpus. "It looked fine" is what M10 spent nine rounds unlearning.
+**Three decisions, taken by the maintainer 2026-09-02** (Track A's; B and C carry their own). Each
+changes product-visible behaviour, so none was the builder's. They are recorded with their cost and
+with what was rejected, because that is what a future reader needs — the verdict alone explains
+nothing:
+
+1. **A VAT number gets a new `PiiKind::TaxId` → `[TAXID_n]`**, not a reused `[NATID_n]`. A P.IVA is a
+   *business* identifier that is personal data only when it identifies a sole trader, and a token
+   unable to distinguish it from a Codice Fiscale destroys that distinction for every consumer
+   downstream, permanently. The cost is paid once and in full: a new enum variant (the matches are
+   exhaustive), a new slot in the overlap priority order, an eleventh row in the coverage tables of
+   both READMEs and `ARCHITECTURE.md`, the prompt-augmentation text — **which is cached (M7.1), so
+   its key moves with it** — and every client that pattern-matches placeholders. **Reusing `NATID`
+   now and adding `TaxId` later was rejected on purpose:** it converts a free choice today into a
+   breaking change to the placeholder vocabulary tomorrow, where the same input silently starts
+   emitting a different token.
+2. **The VAT tier is always-on**, like the national IDs it joins — not gated by `PII_LOCALES`. It is
+   checksum-verified, so a false positive is about as likely as one on an IBAN, and the residual
+   cost is an over-mask on a company VAT that is not personal data at all: the **right** side to err
+   on, since the vault restores it on the response path and nothing leaves in clear either way.
+   Gating it would also have inherited `PII_LOCALES`'s **narrowing** semantics — the one M10 had to
+   set in bold in the changelog, where setting the variable yields *less* coverage than leaving it
+   unset — and a second tier carrying that subtlety doubles what the README has to explain.
+3. **The plate's precision floor is 1.000** on the adversarial corpus named in the scope above, and
+   it ships **opt-in, never on by default** — if it ships at all. **The floor is set here, before
+   the measurement exists, and that is the entire point:** a threshold chosen after seeing the
+   number is not a threshold, which is what M10 spent nine review rounds learning. 1.000 rather than
+   the phone tier's own precedent — M8.1 shipped 🇩🇪 domestic phones opt-in at **0.909** — because
+   that tier has a real numbering plan to verify against and `AA123BB` has nothing but its shape.
+   Where the only defence is a pattern, the pattern has to be exact.
+
+> **The plate's on/off *mechanism* is deliberately NOT decided, and that is not an omission.** Under
+> the floor above it only exists in one branch of two. Below 1.000 the recognizer does not ship and
+> no switch is ever needed. At exactly 1.000 on a corpus **built to break it**, the case for keeping
+> it off by default is weak enough that **default-on re-opens on the evidence** — and no switch is
+> needed there either. The switch is required only in a third world: 1.000, plus a founded suspicion
+> that the corpus does not represent live traffic. That is a judgement made *looking at* the
+> measurement, so it is made then.
+>
+> What is already known, and is why this was not left vague: **`PII_LOCALES` cannot carry it as it
+> stands.** It selects **regions** for the domestic-phone tier and defaults to every vetted one, so
+> `it` is in the set before the operator does anything and the plate would be **on by default** —
+> the opposite of the decision. Switching it there would mean either a non-region token in a region
+> list (two axes in one variable, in the one variable whose semantics already needed a bold warning)
+> or a new variable in a `Detection` block that today has exactly two. Neither is worth committing to
+> for a recognizer that may not ship.
 
 **What Track A deliberately excludes, and why it is not an omission.**
 - **Free-form address, age, gender** — no rule can confirm them; they need a model. Deferred to the
@@ -2330,11 +2367,11 @@ Each changes product-visible behaviour, so none is the builder's to take:
 <a id="m11-b"></a>
 ### Track B — the intra-op thread base: physical cores, not logical threads ✅
 
-**Decided 2026-09-02 — recorded as a decision, not left open as a question.** Today
-`onnx::default_intra_threads` divides `available_parallelism()`, the **logical** count, so on the
-reference box (6 cores / 12 threads) the shipped default `NER_POOL_SIZE=1` yields `intra = 12`:
+**Decided 2026-09-02 — recorded as a decision, not left open as a question.** Until this track,
+`onnx::default_intra_threads` divided `available_parallelism()`, the **logical** count, so on the
+reference box (6 cores / 12 threads) the shipped default `NER_POOL_SIZE=1` yielded `intra = 12`:
 both SMT siblings of every core running the same int8 GEMM, contending for one core's L1d/L2 and
-one set of vector units. The base becomes the **physical core count**, and it is one rule at every
+one set of vector units. The base is now the **physical core count**, and it is one rule at every
 pool size:
 
 ```
@@ -2453,12 +2490,23 @@ That is the real cost of the track, and none of it is optional:
   quantization moves both.
 - [ ] Re-publish whatever moved: the coverage/recall tables in both READMEs and `ARCHITECTURE.md`.
 
-**Two decisions that are the maintainer's, and are open.**
-1. **Which revision.** Needs the candidate in hand; nothing here picks it.
-2. **Does the *default* pin move, or only the documented recommendation?** Moving the default makes
-   every existing operator's next startup fetch a fresh export unattended, on the path documented as
-   *"the only outbound call in the whole tool"*. Keeping the default and documenting the new revision
-   costs a manual step and surprises nobody. Product-visible either way.
+**One decision taken, one still open.**
+
+1. **Taken 2026-09-02 — the default pin moves *only if the measurement earns it*.** Not because the
+   export is newer: the default moves only when the re-measure shows a recall improvement clearing a
+   threshold **declared before the numbers are looked at**, and otherwise `478a2a3` stays and the new
+   revision is documented as an option. Both halves matter. Moving it on novelty alone makes every
+   operator's next startup fetch a fresh export unattended, on the path documented as *"the only
+   outbound call in the whole tool"* — less alarming than it sounds, since the auto-download is
+   already opt-in (`NER_MODEL_REPO` must be set) and an operator who pins `NER_MODEL_REVISION` by
+   hand is untouched, but still a change that belongs in `### Changed` with its download size.
+   Never moving it is the other failure: two documented exports of which only one is measured in
+   depth, and nobody on the better one.
+2. **Still open: which revision, and the threshold that would move the pin.** The first needs the
+   candidate in hand — nothing here picks it, and a shortlist is the next piece of work on this
+   track. The second is set **once the candidate is known and before the sweep runs**: "declared
+   first" means before the measurement, not before the candidate, so it is not something this
+   milestone can write today without inventing a number for a model nobody has named.
 
 <a id="backlog"></a>
 ## Backlog — documented, not scheduled
