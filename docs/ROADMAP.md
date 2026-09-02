@@ -51,7 +51,7 @@ it, which a first dry run proved was not a hypothetical.
 | [M9 — GPU optimization](#m9) | ✅ complete |
 | [M9.1 — one release binary per backend](#m91) | ✅ complete · tag `v1.2.0` |
 | [M10 — national phone coverage + release hygiene](#m10) | ✅ complete · tag `v1.2.1` |
-| [M11 — deterministic coverage · NER thread base · model pin refresh](#m11) | 📋 planned · tag `v1.3.0` (planned) |
+| [M11 — deterministic coverage · NER thread base](#m11) | 📋 planned · tag `v1.3.0` (planned) |
 | [M12 — one model for everything not provable](#m12) | 📋 planned |
 
 ---
@@ -2260,20 +2260,18 @@ client, refused bodies never forwarded, the refusal message carrying no input-de
 | [M10-R61](reviews/M10.md#m10-r61) | Two mechanical defects introduced by `e704ce6`: a duplicated sentence in ROADMAP's pre-tag list (already gone — that block was rewritten this round) and seven doubled apostrophes in the review record | low | [x] |
 
 <a id="m11"></a>
-## M11 — deterministic coverage · NER thread base · model pin refresh 📋
+## M11 — deterministic coverage · NER thread base 📋
 
 **Three tracks that share a milestone and nothing else.** [A](#m11-a) is the coverage gap the
 milestone opened on; [B](#m11-b) and [C](#m11-c) were added 2026-09-02 and both touch the ML
-layer — B changes *how many threads* one inference gets, C changes *which export* runs. They are
-listed apart because they fail apart: B is pure arithmetic with unit guards, C re-opens every
-measured claim about the model. **Do B before C** — B changes the machine the recall and latency
-numbers are measured *on*, so running it second would invalidate C's fresh measurements the day
-after they were taken.
+layer — B changed *how many threads* one inference gets, C was to change *which export* runs. They
+were listed apart because they fail apart, and they did: **B shipped, and C closed without work**
+once the search showed there is no newer export to move to. **What remains of M11 is Track A.**
 
 **M11 is heading for `v1.3.0`** (set 2026-09-02, written `(planned)` in the Status table until the
 tag exists). **Minor, not patch, and Track B alone decides that:** the default per-session thread
 count changes on every SMT machine with no config change — a behaviour change, not a fix — and the
-same would be true of Track A's new recognizers and of a moved model pin. A patch release that
+same is true of Track A's new recognizers. A patch release that
 silently halves a thread count is the kind of version number [M10](#m10) spent a milestone
 learning not to publish.
 
@@ -2335,8 +2333,7 @@ nothing:
   proof, so it belongs with the things only a model can judge: it moves to [M12](#m12), alongside
   address.
 - **Free-form address, age, gender** — no rule can confirm them; they need a model. Deferred to
-  [M12](#m12) — **not** to Track C, which is a pin refresh of the model we already run — rather
-  than solved by switching on a second engine.
+  [M12](#m12) — the model swap — rather than solved by switching on a second engine.
 - **Dates, times, amounts — excluded on purpose, permanently, as a default.** This is the sharp
   one. A document anonymizer can mask a date: an over-mask is visible to the human holding the
   document, and costs nothing. **This proxy sits on live agent traffic**, where `[DATE_1]` in place
@@ -2445,49 +2442,61 @@ per-session thread count **halves** with no config change. The old shape stays o
 `NER_INTRA_THREADS` is an explicit override and already wins over the derivation.
 
 <a id="m11-c"></a>
-### Track C — refresh the pinned XLM-R export
+### Track C — refresh the pinned XLM-R export ✅ *closed 2026-09-02: there is nothing to refresh*
 
-**Same model family, same label set — a pin bump, not a model swap.** `NER_MODEL_REVISION` defaults
-to `478a2a3` (`src/server.rs`), the int8 XLM-R export shipped since [M2.5](#m25); Track C moves that
-pin to a newer or better-quantized export of the same base checkpoint. The *replace-the-NER* work —
-a different model with more kinds — stays in the [backlog](#backlog) and is explicitly **not** this.
+**Closed by the answer, not by the work — and recorded rather than deleted**, because the next
+person to ask *"shouldn't we be updating the model?"* deserves the answer without repeating the
+search.
 
-**A pin bump re-opens every measured claim about the model, even when the weights are "the same".**
-That is the real cost of the track, and none of it is optional:
-- [ ] Name the candidate revision **and what changed in it** (re-export, different quantizer,
-  tokenizer fix). A pin bump with no stated diff is not reviewable, and a community export ships no
-  release notes to lean on.
-- [ ] `hf.rs::id2label_matches_the_xlmr_config` — the 9-label set is asserted against the export's
-  own `config.json`. A re-export that reorders `id2label` is a silent recall catastrophe, and this
-  is the guard that sees it.
-- [ ] **Re-run NER-THREAD-01 — `ARCHITECTURE.md` states outright that a model swap must.** Intra-op
-  determinism is *empirical* on this export, not promised by the runtime (M7-R3).
-- [ ] The chunking constants are tuned to **this** export: `MODEL_MAX_TOKENS`, `MAX_WINDOW_TOKENS`
-  and the **measured +1…+3 cut-edge drift** behind `MIN_DRIFT_HEADROOM_TOKENS`. Re-measure the
-  drift — the const-assert catches an inconsistent triple at compile time, but nothing catches a
-  headroom that is merely too small for the new export's tokenization.
-- [ ] Re-run the NER recall corpus (`ner_eval.rs`, at the `intra=1` every recall guard pins) and the
-  RAM figures both READMEs quote (**563 MB at `pool=1`**, ~270 MB per extra session) — a different
-  quantization moves both.
-- [ ] Re-publish whatever moved: the coverage/recall tables in both READMEs and `ARCHITECTURE.md`.
+**The premise was false.** Track C was written to bump `NER_MODEL_REVISION` off `478a2a3`
+(`src/server.rs`) to a newer export of the same base checkpoint. Measured 2026-09-02:
 
-**One decision taken, one still open.**
+- **`478a2a3` is the head** of `jiting/xlm-roberta-base-ner-hrl_onnx`, unchanged since **2024-10-09**.
+- The base checkpoint it exports, `Davlan/xlm-roberta-base-ner-hrl`, has not moved since
+  **2023-08-14** (nor has its `large` sibling).
 
-1. **Taken 2026-09-02 — the default pin moves *only if the measurement earns it*.** Not because the
-   export is newer: the default moves only when the re-measure shows a recall improvement clearing a
-   threshold **declared before the numbers are looked at**, and otherwise `478a2a3` stays and the new
-   revision is documented as an option. Both halves matter. Moving it on novelty alone makes every
-   operator's next startup fetch a fresh export unattended, on the path documented as *"the only
-   outbound call in the whole tool"* — less alarming than it sounds, since the auto-download is
-   already opt-in (`NER_MODEL_REPO` must be set) and an operator who pins `NER_MODEL_REVISION` by
-   hand is untouched, but still a change that belongs in `### Changed` with its download size.
-   Never moving it is the other failure: two documented exports of which only one is measured in
-   depth, and nobody on the better one.
-2. **Still open: which revision, and the threshold that would move the pin.** The first needs the
-   candidate in hand — nothing here picks it, and a shortlist is the next piece of work on this
-   track. The second is set **once the candidate is known and before the sweep runs**: "declared
-   first" means before the measurement, not before the candidate, so it is not something this
-   milestone can write today without inventing a number for a model nobody has named.
+So the pin is already at the head of the export of the model's **final** version. The scope item
+*"identify the candidate revision and record what changed in it"* has no possible answer, and the
+track closes on that.
+
+**The consequence worth keeping: maintaining this pin is not recurring work.** This model will not
+be updated. When something does change it will be a **different model**, which is [M12](#m12) — not
+a revision bump wearing its clothes.
+
+> **Where we download the same weights from — a real choice, deliberately left open and not
+> urgent.** One other ONNX export of the same base checkpoint exists —
+> `tjruesch/xlm-roberta-base-ner-hrl-onnx` — and it matches on everything the guards check:
+> identical `id2label` **and order**, same `XLMRobertaForTokenClassification` /
+> `max_position_embeddings` 514, same tokenizer, same default file name. It would be a pin change,
+> not a model change.
+>
+> **It is not a newer model.** Same 2023 weights, re-exported, with a slightly different int8
+> quantization (278.3 MB vs 278.7 MB, from a byte-identical 1110.1 MB fp32). A recall *improvement*
+> is therefore unavailable **by construction** — parity is the best case, and even that must be
+> measured, because a different quantization moves the logits.
+>
+> **The argument to move is supply chain, not accuracy.** Today's source is a personal repo with
+> **21 downloads**, untouched for two years, one deletion away from breaking `NER_MODEL_REPO` for
+> every operator; the alternative has an organisation behind it and ~100× the traction. **The
+> arguments against are concrete too:** it ships no `quantize_config.json` and no `ort_config.json`,
+> so *how* it was quantized would stop being recorded — a real loss for a project that pins
+> revisions in order to be reproducible — and it declares **MIT** while the base checkpoint is
+> **afl-3.0**, which a re-export cannot change.
+>
+> **Not urgent, because the exposure is already bounded:** `NER_MODEL_PATH` is the
+> explicit-local-files route and depends on no repository at all. **If this is ever taken, the bar
+> is non-inferiority** — recall must not regress, threshold declared before the numbers are read —
+> because the reason to move is provenance, so accuracy only has to hold. The original
+> "moves only on a measured improvement" rule cannot apply here: it demands something this family
+> cannot produce.
+
+> **Known, and deliberately not this track:** an ONNX export of the **`large`** sibling exists with
+> the same nine labels in the same order and the same 514 window, at roughly **2× the int8 size**.
+> That is the cheapest real recall upgrade available — no chunking constant to re-derive, no new
+> class to map, no export to produce ourselves — but it is a **different checkpoint**, so it is a
+> model change sized between here and [M12](#m12). Recorded so it is not re-discovered; not
+> scheduled.
+
 
 <a id="m12"></a>
 ## M12 — one model for everything not provable 📋
