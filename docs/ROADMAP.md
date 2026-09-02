@@ -2294,19 +2294,35 @@ form that we simply have not written a recognizer for.** That is this track, and
   Emits the **new `[TAXID_n]`**, always-on (decision 1 and 2 below).
 - [ ] **EU VAT numbers (VIES)** — per-country format + checksum, for the countries already covered
   by the national-ID tier. Same family, same always-on posture, one recognizer per country.
-- [ ] **Italian vehicle plate (`AA123BB`)** — **the one that has to earn its place.** No checksum
-  exists, so the only defence is the shape, and a shape with no verifier is how M4-R1's "FP-prone"
-  objection started. Measure precision against an adversarial corpus of uppercase-alphanumeric
-  tokens (git short SHAs, enum variants, ticket ids, `AWS`-style prefixes). **The floor it must
-  clear is already set — 1.000, decision 3 below** — so the measurement decides whether it ships,
-  and nobody gets to choose the bar after seeing the number. It enters the **FP-prone tier on `it`**,
-  so `PII_LOCALES` is its switch and no new variable appears.
+- [ ] **Vehicle plates — a per-country family, not one Italian recognizer.** Plate layouts differ by
+  country (`AA123BB` in IT, `AB12 CDE` in GB, `AB-123-CD` in FR, `M-AB 1234` in DE), so this is
+  shaped like the **nine phone regions**: one recognizer per region, its own corpus, its own
+  measured precision, its own `PII_LOCALES` code, each shipping *independently* of the others.
+  **IT is the first, not the only one** — and it is the one that has to earn the family's place.
+  - **A single "universal plate" recognizer is rejected, and the reason is arithmetic rather than
+    taste.** What makes a recognizer universal here is a **verifier that holds across countries** —
+    IBAN has mod-97, a card has Luhn, an email has syntax. A plate has *nothing*: the only defence
+    is the layout. So a universal matcher is the **union** of every national layout, and a union of
+    shapes strictly *adds* false-positive surface while adding no evidence — precision can only
+    **fall** as countries are added. A universal plate recognizer therefore cannot clear the 1.000
+    floor that each national one might clear on its own, which is exactly M4-R1's objection at its
+    maximum.
+  - No checksum exists in any country, so the only defence is the shape. Measure precision per
+    country against an adversarial corpus of uppercase-alphanumeric tokens (git short SHAs, enum
+    variants, ticket ids, `AWS`-style prefixes) **plus the other countries' plate layouts**, which
+    are each other's sharpest negatives. **The floor is already set — 1.000, decision 3 below** — so
+    the measurement decides which countries ship, and nobody chooses the bar after seeing the number.
+  - Each enters the **FP-prone tier on its own locale code**, so `PII_LOCALES` is the switch and no
+    new variable appears. A country whose corpus is not measured is simply not in the table — the
+    same rule that keeps an unmeasured phone region out.
 - [ ] **Generalize the FP-prone tier's gate from phones to recognizers** — `PHONE_REGIONS` and
   `phone_region_for_locale` name a region table that is about to hold something other than phone
   shapes. This is an **internal** refactor with no configuration surface attached: `PII_LOCALES`
   keeps meaning "which regions", and only its `--help` line widens from *"regions for the
-  domestic-phone recognizers"* to the FP-prone tier as a whole. Needed only if the plate clears its
-  floor; do it **after** the measurement, not in anticipation of it.
+  domestic-phone recognizers"* to the FP-prone tier as a whole. **A region entry gains a second kind
+  of shape**, which is what makes the plate family cheap to extend country by country. Needed only
+  if at least one country clears its floor; do it **after** the first measurement, not in
+  anticipation of it.
 - [ ] Corpora + adversarial negatives per recognizer, on the `PHONE-NAT` model: a positive set of
   real renderings and a negative set of things that merely look like one. **A category ships when
   it is measured** — the rule that produced the nine phone regions, applied unchanged.
@@ -2335,24 +2351,30 @@ nothing:
    Gating it would also have inherited `PII_LOCALES`'s **narrowing** semantics — the one M10 had to
    set in bold in the changelog, where setting the variable yields *less* coverage than leaving it
    unset — and a second tier carrying that subtlety doubles what the README has to explain.
-3. **The plate's precision floor is 1.000** on the adversarial corpus named in the scope above —
-   and if it clears it, **it joins the FP-prone tier gated by `PII_LOCALES`, on the `it` code, with
-   no new configuration variable at all.** **The floor is set here, before the measurement exists,
-   and that is the entire point:** a threshold chosen after seeing the number is not a threshold,
-   which is what M10 spent nine review rounds learning. 1.000 rather than the phone tier's own
-   precedent — M8.1 shipped 🇩🇪 domestic phones at **0.909** — because that tier has a real numbering
-   plan to verify against and `AA123BB` has nothing but its shape. Where the only defence is a
-   pattern, the pattern has to be exact.
+3. **A plate recognizer's precision floor is 1.000, per country**, on the adversarial corpus named
+   in the scope above — and each country that clears it **joins the FP-prone tier gated by
+   `PII_LOCALES`, on its own locale code, with no new configuration variable at all.** **The floor
+   is set here, before any measurement exists, and that is the entire point:** a threshold chosen
+   after seeing the number is not a threshold, which is what M10 spent nine review rounds learning.
+   **Per country, and not once for the family**, because the layouts have different collision
+   surfaces — a bare 7-character alphanumeric run collides with far more ordinary text than a layout
+   with mandatory separators — so one shared verdict would let a safe country carry an unsafe one,
+   or an unsafe one veto a safe one. 1.000 rather than the phone tier's own precedent — M8.1 shipped
+   🇩🇪 domestic phones at **0.909** — because that tier has a real numbering plan to verify against
+   and a plate layout has nothing but its shape. Where the only defence is a pattern, the pattern
+   has to be exact.
 
-> **The plate rides the switch that already exists, and the tier it joins tells you what that
+> **Plates ride the switch that already exists, and the tier they join tells you what that
 > means.** The recognizers sit in three tiers, and the third is precisely the plate's shape:
 > *universal* (email, secret, card, IBAN, `+CC` phone — always on); *national identifiers* (SSN,
 > Codice Fiscale, NINO, DNI, NIR — **always on regardless of `PII_LOCALES`**, M4-R1, justified by
 > *"each is specific enough — checksums, prefix rules — to stay near-zero false-positive when always
 > on"*); and the **FP-prone tier** (domestic phones with no `+CC`), which `PII_LOCALES` gates. The
 > plate is a country-specific recognizer with **no verifier**, which is the FP-prone tier's
-> definition. So it enters on `it`: `PII_LOCALES=de,fr` turns it off, `PII_LOCALES=` turns the whole
-> tier off, and the operator's switch is the one they already know.
+> definition — and the tier is *already* a per-country family, so a plate per country is the shape
+> it was built for rather than something bolted onto it. Each enters on its own code: with the IT
+> plate shipped, `PII_LOCALES=de,fr` turns it off, `PII_LOCALES=` turns the whole tier off, and the
+> operator's switch is the one they already know.
 >
 > **Which means it is ON by default, and that is the honest reading of "gated by `PII_LOCALES`"
 > after M10.** Before M10 that tier was genuinely opt-in; M10 flipped it — every vetted region on by
