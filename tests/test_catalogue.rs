@@ -31,6 +31,12 @@ const ID_PREFIXES: &[&str] = &[
     "PHONE-BUD",
     "PHONE-OM",
     "PERF-M7",
+    // M11 Track A. Added *with* the guards they name — a new guard family that is not in this
+    // list is invisible to CAT-01, so the catalogue check passes while cataloguing nothing about
+    // it. That is the same silent drift CAT-01 was built to end, one level up: the guard over the
+    // guards has its own blind spot, and it is this array.
+    "VAT",
+    "AUG",
     "SMOKE-GLINER",
     "BENCH",
     "PROP",

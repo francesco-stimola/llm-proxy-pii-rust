@@ -204,6 +204,9 @@ impl StructuredRecognizers {
     pub fn with_shapes(regions: &[(Id, &[PhoneShape])]) -> Self {
         let mut recognizers = universal_recognizers();
         recognizers.extend(national_id_recognizers());
+        // Always on, beside the national IDs and for the same reason — never gated by
+        // `locales` (M11 Track A, decision 2).
+        recognizers.extend(vat_recognizers());
         recognizers.extend(national_phone_recognizers(regions));
         Self { recognizers }
     }
@@ -379,6 +382,125 @@ fn national_id_recognizers() -> Vec<Recognizer> {
             kind: PiiKind::NationalId,
             regex: Regex::new(r"(?-u:\b)\d{17}[0-9Xx](?-u:\b)").unwrap(),
             validate: Some(free(zh_resident_id_valid)),
+            scan: Scan::Overlapping,
+            shrink_on_reject: false,
+        },
+    ]
+}
+
+/// Business **tax identifiers** — Italian Partita IVA and EU VAT numbers (M11 Track A).
+/// **Always on**, like the national IDs they join and for the same reason (M4-R1): a VAT
+/// number that reaches the proxy is masked whether or not its country is in `PII_LOCALES`.
+/// No configuration variable gates this tier, deliberately — see ROADMAP → M11 Track A,
+/// decision 2.
+///
+/// **Every pattern is checksum-backed and ≤ 14 chars**, so they all take the bounded
+/// [`Scan::Overlapping`] rescan (M4-R19) and none of them sets `shrink_on_reject` — a shorter
+/// prefix of a rejected digit run can satisfy a checksum by coincidence, which would trade a
+/// measured false-positive rate for an unmeasured one.
+///
+/// ## Two shapes, and why only Italy gets the bare one
+///
+/// A **prefixed** form (`IT00905811006`, `DE136695976`) is the VIES canonical rendering and is
+/// what every country here is recognized by. A **bare** form — the digits alone — ships for
+/// **Italy only**, because a P.IVA is genuinely written that way in Italian text (`P.IVA
+/// 00905811006`) and because that is the form the ROADMAP scoped. For the other countries the
+/// bare digits are already claimed by the always-on national-ID tier and adding a second,
+/// unprefixed claim on them would buy coverage nobody measured.
+///
+/// ## The country prefix must be UPPERCASE, and that is an anti-false-positive decision
+///
+/// Lowercase would make `it` a matchable prefix — and `it` is one of the commonest words in
+/// English prose. `"call it 12345678901"` with a mod-10-valid tail would then produce a
+/// **14-character** span swallowing an ordinary English word. VAT numbers are written
+/// uppercase by convention and VIES requires it, so nothing real is lost. Pinned by
+/// `lowercase_country_prefix_is_not_a_vat_number`.
+///
+/// ## No space between prefix and digits
+///
+/// `IT 00905811006` is not matched *as a prefixed VAT*; for Italy the bare recognizer catches
+/// the digits anyway, and for the rest the always-on national-ID tier already covers most bare
+/// forms. Allowing an optional space would put `DE`/`IT`/`GB` — all live English abbreviations —
+/// one space away from a digit run, and buys a rendering that VIES itself does not use.
+///
+/// ## Which countries ship, and which deliberately do not
+///
+/// The `PHONE-NAT` rule applies unchanged: **a category ships when it is measured.** Five do —
+/// 🇮🇹 🇩🇪 🇬🇧 🇳🇱 🇵🇹. Three do not, and are named rather than silently missing:
+/// - **🇪🇸 ES** — the person forms reuse a check this repo already measures, but a Spanish
+///   *company's* VAT is the CIF form, whose control character follows a different rule that is
+///   not measured here. Shipping the person half alone would be a VAT recognizer that misses
+///   the case it exists for.
+/// - **🇫🇷 FR** — the two-character key over the SIREN could not be confirmed against a
+///   trustworthy real pair, and an unverified checksum is exactly what this tier must not carry.
+/// - **🇱🇻 LV** — the legal-entity VAT checksum is a different algorithm from the personal code
+///   in [`lv_code_valid`], and it is not measured here.
+fn vat_recognizers() -> Vec<Recognizer> {
+    vec![
+        // 🇮🇹 Partita IVA, bare — 11 digits, mod-10 with position doubling. THE one shape that
+        // collides with an existing recognizer: `\d{11}` is also the DE Steuer-ID / LV personal
+        // code pattern. Both fire, the spans are identical, the resolver merges them and
+        // `PiiKind::priority` names the union `[NATID_n]` — see that function. The collision
+        // costs no coverage; what this recognizer *adds* is every P.IVA that is not also a valid
+        // Steuer-ID or LV code, which until now went upstream in clear.
+        Recognizer {
+            kind: PiiKind::TaxId,
+            regex: Regex::new(r"(?-u:\b)\d{11}(?-u:\b)").unwrap(),
+            validate: Some(free(it_piva_valid)),
+            scan: Scan::Overlapping,
+            shrink_on_reject: false,
+        },
+        // 🇮🇹 Partita IVA, VIES form.
+        Recognizer {
+            kind: PiiKind::TaxId,
+            regex: Regex::new(r"(?-u:\b)IT\d{11}(?-u:\b)").unwrap(),
+            validate: Some(free(|s| it_piva_valid(vat_body(s)))),
+            scan: Scan::Overlapping,
+            shrink_on_reject: false,
+        },
+        // 🇩🇪 USt-IdNr — `DE` + 9 digits, ISO 7064 Mod 11,10. Same arithmetic this file already
+        // trusts for the Steuer-ID, minus that scheme's own "exactly one repeated digit" rule,
+        // which is specific to the Steuer-ID and not part of the VAT spec.
+        Recognizer {
+            kind: PiiKind::TaxId,
+            regex: Regex::new(r"(?-u:\b)DE\d{9}(?-u:\b)").unwrap(),
+            validate: Some(free(|s| de_vat_valid(vat_body(s)))),
+            scan: Scan::Overlapping,
+            shrink_on_reject: false,
+        },
+        // 🇬🇧 VAT — `GB` + 9 digits, mod-97 or mod-97-55 (the two eras of the scheme; a number
+        // issued under either is live, so both are accepted). **Not a VIES number since Brexit**,
+        // but GB is in the national-ID tier this track takes its country list from, and the
+        // identifier is checksum-verifiable — which is the tier's actual criterion. The 12-digit
+        // branch-trader form and the `GBGD`/`GBHA` government forms are documented gaps.
+        Recognizer {
+            kind: PiiKind::TaxId,
+            regex: Regex::new(r"(?-u:\b)GB\d{9}(?-u:\b)").unwrap(),
+            validate: Some(free(|s| gb_vat_valid(vat_body(s)))),
+            scan: Scan::Overlapping,
+            shrink_on_reject: false,
+        },
+        // 🇵🇹 NIF/VAT — `PT` + 9 digits, the same mod-11 the national-ID tier already measures.
+        // A Portuguese company's VAT number *is* its NIF, so this is one identifier under two
+        // names, not two schemes.
+        Recognizer {
+            kind: PiiKind::TaxId,
+            regex: Regex::new(r"(?-u:\b)PT\d{9}(?-u:\b)").unwrap(),
+            validate: Some(free(|s| pt_nif_valid(vat_body(s)))),
+            scan: Scan::Overlapping,
+            shrink_on_reject: false,
+        },
+        // 🇳🇱 btw-id — `NL` + 9 digits + a literal `B` + 2 digits. **The one recognizer here whose
+        // acceptance is format-only**, and it says so through [`Confidence`]: the 9 digits are an
+        // RSIN (11-proef checkable) for a legal entity, but the 2020 sole-trader btw-id is
+        // deliberately randomized and carries no checksum at all. So a mod-11 pass is `Verified`
+        // and a fail is `Structural` — masked either way, exactly as an IBAN whose mod-97 fails
+        // (M4). The format itself is the defence: 14 chars, a mandatory `NL`, and a literal `B`
+        // pinned at position 11 is not a shape ordinary text produces.
+        Recognizer {
+            kind: PiiKind::TaxId,
+            regex: Regex::new(r"(?-u:\b)NL\d{9}B\d{2}(?-u:\b)").unwrap(),
+            validate: None,
             scan: Scan::Overlapping,
             shrink_on_reject: false,
         },
@@ -1110,13 +1232,29 @@ impl StructuredRecognizers {
 }
 
 /// Confidence for a raw match. Everything structured is `Verified` (format- or
-/// checksum-backed) except an IBAN that fails **either** its mod-97 checksum **or**
-/// its country's expected length (M4): still masked (privacy-first), but tagged
-/// `Structural` so downstream code knows it wasn't fully verified.
+/// checksum-backed) except two cases that are masked anyway but tagged `Structural` so
+/// downstream code knows the arithmetic did not confirm them:
+///
+/// - an **IBAN** failing **either** its mod-97 checksum **or** its country's expected
+///   length (M4);
+/// - a **Dutch VAT number** whose 9-digit body fails the 11-proef (M11 Track A). The
+///   2020 sole-trader `btw-id` is randomized by design and has no checksum to pass, so
+///   this is the honest tag for it rather than a `Verified` that would be a claim the
+///   scheme cannot support. Every other VAT country here is checksum-gated at the
+///   recognizer, so reaching this function at all means it already passed.
 fn confidence_of(kind: PiiKind, text: &str) -> Confidence {
     match kind {
         PiiKind::Iban => {
             if iban_mod97(text) && iban_length_ok(text) {
+                Confidence::Verified
+            } else {
+                Confidence::Structural
+            }
+        }
+        // Only the NL pattern reaches here unchecked — it is the one VAT recognizer with
+        // `validate: None`, because its scheme has nothing to validate.
+        PiiKind::TaxId if text.len() == 14 && text.starts_with("NL") => {
+            if nl_bsn_valid(text.get(2..11).unwrap_or("")) {
                 Confidence::Verified
             } else {
                 Confidence::Structural
@@ -1360,6 +1498,108 @@ fn lv_code_valid(matched: &str) -> bool {
     let sum: i64 = (0..10).map(|i| d[i] * w[i]).sum();
     let check = (1 - sum).rem_euclid(11).rem_euclid(10);
     check == d[10]
+}
+
+/// The body of a VIES-form VAT number — everything after the two-letter country prefix.
+///
+/// `get(2..)` rather than `[2..]`: the patterns in [`vat_recognizers`] all begin with two
+/// ASCII letters so the index is always a char boundary today, but a panic here would reach
+/// the masking path, where it is caught as a **blocked request** (M4-R19's fail-closed
+/// posture). A recognizer must not be one regex edit away from refusing traffic, and an
+/// empty body simply fails every checksum below.
+fn vat_body(matched: &str) -> &str {
+    matched.get(2..).unwrap_or("")
+}
+
+/// Italian **Partita IVA** check digit (M11 Track A) — 11 digits, mod-10 with position
+/// doubling (the Luhn family, but indexed from the left over a fixed length rather than
+/// from the right over a variable one, so [`luhn_valid`] cannot be reused).
+///
+/// Odd 1-indexed positions contribute their digit; even ones contribute the digit doubled,
+/// less 9 when that exceeds 9. The eleventh digit must be the amount that rounds the sum up
+/// to a multiple of ten.
+///
+/// **Measured against four real published P.IVAs** — ENI `00905811006`, Ferrari
+/// `00159560366`, TIM `00488410010`, Luxottica `00891030272` — pinned in
+/// `italian_piva_accepts_real_published_numbers`. Four independent agreements is what makes
+/// this an implementation of the scheme rather than a plausible transcription of it.
+///
+/// **Accepted false-positive cost, measured not asserted:** ~1 in 10 arbitrary 11-digit
+/// numbers satisfies a mod-10 check, so an ordinary 11-digit token can be masked. That is
+/// the same tradeoff M4-R6 took for the 9- and 11-digit national-ID recognizers, on the same
+/// grounds (over-mask, never leak — and the vault restores it on the response path).
+/// `vat_over_mask_rate_on_arbitrary_eleven_digit_numbers` measures it rather than guessing.
+fn it_piva_valid(matched: &str) -> bool {
+    let d: Vec<u32> = matched
+        .bytes()
+        .filter(u8::is_ascii_digit)
+        .map(|b| (b - b'0') as u32)
+        .collect();
+    if d.len() != 11 {
+        return false;
+    }
+    let mut sum = 0;
+    for (i, &x) in d[..10].iter().enumerate() {
+        // 1-indexed odd positions are the even indices here.
+        sum += if i % 2 == 0 {
+            x
+        } else if x * 2 > 9 {
+            x * 2 - 9
+        } else {
+            x * 2
+        };
+    }
+    (10 - sum % 10) % 10 == d[10]
+}
+
+/// German **USt-IdNr** check digit — ISO 7064 Mod 11,10 over the first 8 of 9 digits.
+///
+/// The identical loop already runs in [`de_steuerid_valid`]; what is *not* carried over is
+/// that scheme's "exactly one digit repeated among the first ten" structural rule, which
+/// belongs to the Steuer-ID and is no part of the VAT specification. Verified against the
+/// German tax administration's own documented test vector `136695976`.
+fn de_vat_valid(matched: &str) -> bool {
+    let d: Vec<u32> = matched
+        .bytes()
+        .filter(u8::is_ascii_digit)
+        .map(|b| (b - b'0') as u32)
+        .collect();
+    if d.len() != 9 {
+        return false;
+    }
+    let mut product = 10;
+    for &x in &d[..8] {
+        let mut sum = (x + product) % 10;
+        if sum == 0 {
+            sum = 10;
+        }
+        product = (sum * 2) % 11;
+    }
+    (11 - product) % 10 == d[8]
+}
+
+/// UK **VAT** check digits — the last 2 of 9, weights 8..2 over the first 7.
+///
+/// Two eras of the same scheme are live simultaneously: the original **mod-97** and the
+/// post-2010 **mod-97-55** (the same sum offset by 55). A number issued under either is
+/// valid, so both are accepted — which doubles the incidental acceptance rate to ~2/97 and
+/// is why the mandatory `GB` prefix is what actually keeps this safe, not the checksum alone.
+///
+/// Verified against `123456782` (the documented worked example) and Tesco's `220430231`.
+fn gb_vat_valid(matched: &str) -> bool {
+    let d: Vec<i32> = matched
+        .bytes()
+        .filter(u8::is_ascii_digit)
+        .map(|b| (b - b'0') as i32)
+        .collect();
+    if d.len() != 9 {
+        return false;
+    }
+    let weights = [8, 7, 6, 5, 4, 3, 2];
+    let sum: i32 = (0..7).map(|i| d[i] * weights[i]).sum();
+    let stated = d[7] * 10 + d[8];
+    let expect = |offset: i32| (97 - (sum + offset).rem_euclid(97)).rem_euclid(97);
+    stated == expect(0) || stated == expect(55)
 }
 
 /// China Resident Identity Card, ISO 7064 MOD 11-2: 17 weighted digits → a check
@@ -2740,4 +2980,353 @@ mod tests {
             );
         }
     }
+
+    // -----------------------------------------------------------------------
+    // VAT / tax identifiers (M11 Track A)
+    //
+    // The corpus model is PHONE-NAT's, unchanged: a positive set of REAL published
+    // renderings and an adversarial negative set of things that merely look like one.
+    // A category ships when it is measured.
+    // -----------------------------------------------------------------------
+
+    /// **VAT-01 — the Italian Partita IVA check digit, against real published numbers.**
+    ///
+    /// Six P.IVAs taken from Italian company registrations. They are the anchor for the whole
+    /// recognizer: an algorithm that reproduces six independent real check digits is an
+    /// implementation of the scheme, where one that reproduces a single hand-picked number is
+    /// a plausible transcription of it. (These identify *companies*, are printed on every
+    /// invoice those companies issue, and are public registry data.)
+    #[test]
+    fn italian_piva_accepts_real_published_numbers() {
+        for piva in [
+            "00905811006", // ENI
+            "00159560366", // Ferrari
+            "00488410010", // TIM
+            "00891030272", // Luxottica
+            "00811720580", // Enel
+            "07973780013", // Stellantis Italy
+        ] {
+            assert!(
+                it_piva_valid(piva),
+                "{piva} is a real P.IVA and must validate"
+            );
+        }
+    }
+
+    /// **VAT-02 — a wrong check digit is rejected, for every shipped country.**
+    ///
+    /// The negative half of VAT-01: each of these is a real number with its final digit moved
+    /// by one. Without this the recognizers would be "accepts everything of the right length",
+    /// which is the shape M4-R1 named FP-prone and the reason this tier is checksum-gated.
+    #[test]
+    fn vat_check_digits_reject_a_moved_digit() {
+        assert!(!it_piva_valid("00905811007"));
+        assert!(!it_piva_valid("00159560367"));
+        assert!(!de_vat_valid("136695975"));
+        assert!(!de_vat_valid("115235682"));
+        assert!(!gb_vat_valid("220430232"));
+        assert!(!gb_vat_valid("123456783"));
+        assert!(!pt_nif_valid("524287245"));
+        // Wrong length is rejected before any arithmetic runs.
+        assert!(!it_piva_valid("0090581100"));
+        assert!(!it_piva_valid("009058110066"));
+        assert!(!de_vat_valid("13669597"));
+        assert!(!gb_vat_valid("2204302311"));
+    }
+
+    /// **VAT-03 — every shipped country's VIES form is detected end to end.**
+    ///
+    /// Real published VAT numbers, run through the whole recognizer set rather than the
+    /// validators alone, so the regex, the word boundaries and the overlap resolver are all in
+    /// the path. Five countries ship because five are measured; ES, FR and LV are deliberately
+    /// absent and VAT-04 pins that they stay absent rather than half-working.
+    #[test]
+    fn vat_numbers_are_detected_for_every_shipped_country() {
+        for (text, want) in [
+            ("fattura a IT00905811006 grazie", "IT00905811006"), // IT — ENI
+            ("Rechnung an DE136695976 bitte", "DE136695976"),    // DE — documented vector
+            ("Rechnung an DE115235681 bitte", "DE115235681"),    // DE — Volkswagen
+            ("invoice GB220430231 please", "GB220430231"),       // GB — Tesco
+            ("invoice GB123456782 please", "GB123456782"),       // GB — worked example
+            ("factura PT524287244 obrigado", "PT524287244"),     // PT
+            ("factura PT504499777 obrigado", "PT504499777"),     // PT — Galp
+            ("factuur NL111222333B01 dank", "NL111222333B01"),   // NL — 11-proef body
+        ] {
+            assert_eq!(
+                kinds(text),
+                vec![(PiiKind::TaxId, want.to_string())],
+                "{text} must yield exactly one TaxId span"
+            );
+        }
+    }
+
+    /// **VAT-04 — the countries that did NOT ship are not half-shipped.**
+    ///
+    /// ES, FR and LV VAT numbers are real and well-formed; this repo does not recognize them
+    /// because their checksums are not measured here, and an unmeasured recognizer does not go
+    /// in — the rule that produced nine phone regions rather than a table of guesses. Asserting
+    /// it keeps the gap **documented and deliberate** instead of something a future reader
+    /// discovers as a bug. (An ES/FR/LV number whose digits happen to satisfy a national-ID
+    /// checksum may still be masked by that tier; these are chosen not to be.)
+    #[test]
+    fn unmeasured_vat_countries_are_absent_rather_than_guessed() {
+        for text in ["ES B12345678", "FR40404833048", "LV40003032949"] {
+            let got = kinds(text);
+            assert!(
+                !got.iter().any(|(k, _)| *k == PiiKind::TaxId),
+                "{text} must not be recognized as a TaxId — {got:?} — its country's checksum \
+                 is not measured here (ROADMAP M11 Track A)"
+            );
+        }
+    }
+
+    /// **VAT-05 — a lowercase country prefix is not a VAT number, and `it` is why.**
+    ///
+    /// The prefix patterns are uppercase-only on purpose. Lowercased, `it` is one of the
+    /// commonest words in English, so `"call it <11 digits>"` would produce a 14-character span
+    /// swallowing an ordinary word. The bare Italian recognizer still claims the **digits**
+    /// (that is the accepted over-mask, VAT-09) — what must never happen is the span growing to
+    /// eat the word before them.
+    #[test]
+    fn lowercase_country_prefix_is_not_a_vat_number() {
+        assert_eq!(
+            kinds("call it 00905811006 back"),
+            vec![(PiiKind::TaxId, "00905811006".to_string())],
+            "the span must be the digits alone — never `it 00905811006`"
+        );
+        // Glued to a lowercase prefix there is no ASCII word boundary at all, so nothing fires.
+        assert!(kinds("it00905811006").is_empty());
+        // And an uppercase prefix glued to a preceding letter is still inside a longer token.
+        assert!(kinds("XIT00905811006").is_empty());
+    }
+
+    /// **VAT-06 — the tier is always on, regardless of `PII_LOCALES`.**
+    ///
+    /// The national-ID posture (M4-R1), not the FP-prone phone tier's. A VAT number that
+    /// reaches the proxy is masked even when its country is not configured — and setting the
+    /// variable to something else, or to a country that is not this one, cannot switch it off.
+    /// **There is no configuration variable for this tier**, deliberately (ROADMAP M11 Track A,
+    /// decision 2); this is the guard that fails if one is ever introduced by accident.
+    #[test]
+    fn vat_is_always_on_regardless_of_locales() {
+        for locales in [vec!["us"], vec!["zz"], vec![], vec!["cn", "de"]] {
+            assert_eq!(
+                kinds_with(&locales, "fattura IT00905811006"),
+                vec![(PiiKind::TaxId, "IT00905811006".to_string())],
+                "locales {locales:?} must not gate the VAT tier"
+            );
+            // Ferrari's P.IVA — chosen because it is NOT also a valid Latvian personal code
+            // or German Steuer-ID, so this asserts the VAT tier rather than the collision
+            // (which VAT-10 measures and VAT-14 pins).
+            assert_eq!(
+                kinds_with(&locales, "P.IVA 00159560366"),
+                vec![(PiiKind::TaxId, "00159560366".to_string())],
+                "locales {locales:?} must not gate the bare P.IVA form"
+            );
+        }
+    }
+
+    /// **VAT-07 — the recognizers fire in CJK prose (M4-R13).**
+    ///
+    /// Chinese and Japanese have no inter-word spaces, so a VAT number glued to a Han character
+    /// is the *natural* rendering, not an evasion. With Rust `regex`'s default Unicode `\b` a
+    /// Han character is a word character, so there would be **no boundary** before the `I` and
+    /// the whole tier would be silently inert in CJK text — which is exactly how this repo once
+    /// shipped inert card and ID recognizers. `(?-u:\b)` is what keeps it alive.
+    #[test]
+    fn vat_is_not_inert_in_cjk_prose() {
+        assert_eq!(
+            kinds("我的增值税号是IT00905811006"),
+            vec![(PiiKind::TaxId, "IT00905811006".to_string())]
+        );
+        assert_eq!(
+            kinds("增值税号00905811006是这个"),
+            vec![(PiiKind::TaxId, "00905811006".to_string())]
+        );
+    }
+
+    /// **VAT-08 — a VAT number must not swallow an adjacent number, and must not be swallowed.**
+    ///
+    /// The word-boundary half of the contract. Two VAT numbers separated by a single space stay
+    /// two spans; a VAT number inside a longer ASCII token is not a match at all (the
+    /// anti-false-positive guarantee `(?-u:\b)` preserves exactly — a hash, a UUID or a base64
+    /// blob cannot contain one).
+    #[test]
+    fn vat_does_not_swallow_or_get_swallowed_by_an_adjacent_token() {
+        assert_eq!(
+            kinds("IT00905811006 IT00159560366"),
+            vec![
+                (PiiKind::TaxId, "IT00905811006".to_string()),
+                (PiiKind::TaxId, "IT00159560366".to_string()),
+            ]
+        );
+        // Inside a longer ASCII run: no boundary, no match.
+        assert!(kinds("refIT00905811006x").is_empty());
+        assert!(kinds("a00905811006b").is_empty());
+        // A 12-digit run contains no 11-digit token with boundaries on both sides.
+        assert!(kinds("009058110066").is_empty());
+    }
+
+    /// **VAT-09 (measured, not asserted-by-intuition) — the bare P.IVA over-mask rate.**
+    ///
+    /// A mod-10 check accepts about one arbitrary 11-digit number in ten, so the bare Italian
+    /// form masks a fraction of ordinary 11-digit tokens. That cost is **accepted on purpose**
+    /// (over-mask, never leak — and the vault restores the value on the response path), the
+    /// same trade M4-R6 took for the 9- and 11-digit national-ID recognizers. What is *not*
+    /// acceptable is quoting a rate nobody measured, so this measures it over a deterministic
+    /// sweep and pins it to a band. A change that moved it would be a change to the shipped
+    /// false-positive cost, and it should have to edit this number to land.
+    #[test]
+    fn vat_over_mask_rate_on_arbitrary_eleven_digit_numbers() {
+        let total = 100_000u32;
+        let hits = (0..total)
+            .filter(|i| it_piva_valid(&format!("{:011}", 10_000_000_000u64 + u64::from(*i))))
+            .count();
+        let rate = f64::from(u32::try_from(hits).unwrap()) / f64::from(total);
+        eprintln!("bare P.IVA accepts {hits}/{total} arbitrary 11-digit numbers ({rate:.3})");
+        assert!(
+            (0.08..=0.12).contains(&rate),
+            "mod-10 should accept ~1 in 10; measured {rate:.3} over {total} — if this moved, \
+             the shipped over-mask cost moved with it"
+        );
+    }
+
+    /// **VAT-10 (measured) — how often a valid P.IVA is ALSO a valid 11-digit national ID.**
+    ///
+    /// This is the input that makes `PiiKind::priority`'s placement observable: the bare P.IVA
+    /// pattern is byte-identical to the always-on `\d{11}` national-ID pattern, so a token
+    /// satisfying both produces two identical spans and priority decides only which one *names*
+    /// the union. Both are masked either way (M4-R10/R11), so the rate is a **labelling**
+    /// statistic, not a coverage one — but it is the number a reader needs in order to know
+    /// whether the naming rule matters in practice or is a curiosity.
+    #[test]
+    fn vat_and_natid_collision_rate() {
+        let mut piva = 0u32;
+        let mut both = 0u32;
+        for i in 0..200_000u64 {
+            let s = format!("{:011}", 10_000_000_000u64 + i);
+            if it_piva_valid(&s) {
+                piva += 1;
+                if eleven_digit_id_valid(&s) {
+                    both += 1;
+                }
+            }
+        }
+        let share = f64::from(both) / f64::from(piva);
+        eprintln!(
+            "{both}/{piva} valid P.IVAs are also a valid DE Steuer-ID or LV code ({share:.4}) \
+             — those are named [NATID_n], the rest [TAXID_n]"
+        );
+        // The point of the guard is that the two sets genuinely differ: most valid P.IVAs are
+        // NOT national IDs, which is the coverage this recognizer adds.
+        assert!(
+            share < 0.5,
+            "if most P.IVAs were already national IDs this recognizer would be adding almost \
+             nothing; measured {share:.4}"
+        );
+        assert!(
+            piva > 1_000,
+            "the sweep must actually find P.IVAs, found {piva}"
+        );
+    }
+
+    /// **VAT-11 — the Dutch btw-id splits `Verified` from `Structural`, and both are masked.**
+    ///
+    /// NL is the one shipped country whose scheme has nothing to check: the 2020 sole-trader
+    /// btw-id is randomized by design, while a legal entity's 9-digit body is an RSIN that
+    /// satisfies the 11-proef. Rather than claim a verification the scheme cannot support, the
+    /// recognizer accepts on **format** and [`confidence_of`] tells the truth about which one
+    /// it got — exactly as an IBAN whose mod-97 fails is masked and tagged `Structural` (M4).
+    #[test]
+    fn nl_vat_confidence_splits_verified_from_format_only() {
+        let entities = StructuredRecognizers::new().detect("btw NL111222333B01 en NL123456789B01");
+        assert_eq!(entities.len(), 2, "both forms must be masked: {entities:?}");
+        assert_eq!(entities[0].kind, PiiKind::TaxId);
+        assert_eq!(entities[0].confidence, Confidence::Verified);
+        assert_eq!(entities[1].kind, PiiKind::TaxId);
+        assert_eq!(entities[1].confidence, Confidence::Structural);
+        // The literal `B` is load-bearing: without it the format is not the format.
+        assert!(kinds("NL111222333X01").is_empty());
+        assert!(kinds("NL111222333B0").is_empty());
+    }
+
+    /// **VAT-14 — the bare P.IVA pattern must not relabel a phone number or a national ID.**
+    ///
+    /// **This is the guard for the defect this track nearly shipped.** A bare Partita IVA is
+    /// `\d{11}`, and two always-on tiers already claim that shape: compact domestic phone
+    /// numbers (a real London number `02079460958` and a real Berlin one `03012345678` both
+    /// satisfy the P.IVA mod-10) and the 11-digit national IDs. With `TaxId` ranked above
+    /// them, every compact GB and DE number M10 measured silently became `[TAXID_n]` — no
+    /// leak, since the bytes are masked either way, but a **fidelity regression on a shipped,
+    /// measured capability**, telling the model a phone number is a tax identifier.
+    ///
+    /// PHONE-NAT-01 caught it from the phone side. This pins it from the VAT side, where the
+    /// change that would reintroduce it actually lives, and states the two principles that
+    /// order the tiers: a numbering-plan lookup confirming an **assigned** number beats a
+    /// mod-10 check, and a *person*-implying label beats a *business*-implying one.
+    #[test]
+    fn a_bare_piva_never_outranks_a_phone_or_a_national_id() {
+        // Real domestic numbers that are ALSO mod-10-valid — the collision, not a contrivance.
+        for (locale, number) in [("gb", "02079460958"), ("de", "03012345678")] {
+            assert!(
+                it_piva_valid(number),
+                "{number} must satisfy the P.IVA checksum, or this guard is vacuous"
+            );
+            assert_eq!(
+                kinds_with(&[locale], &format!("call {number} now")),
+                vec![(PiiKind::Phone, number.to_string())],
+                "a real assigned {locale} number must stay a Phone, not become a TaxId"
+            );
+        }
+        // Enel's real P.IVA is also a valid Latvian personal code, so the person-implying
+        // label wins. Masked either way — priority names the union, it never drops bytes.
+        assert!(it_piva_valid("00811720580"));
+        assert!(eleven_digit_id_valid("00811720580"));
+        assert_eq!(
+            kinds("P.IVA 00811720580"),
+            vec![(PiiKind::NationalId, "00811720580".to_string())]
+        );
+    }
+
+    /// **VAT-12 — a VAT number inside an email keeps the email's label, and nothing is dropped.**
+    ///
+    /// The overlap resolver's naming rule (M4-R10/R11): a union that is *exactly* an `Email`
+    /// span is named by the email even though `TaxId` outranks it, because the email is the
+    /// span that actually describes those bytes. What matters for privacy is the other half —
+    /// every byte of both spans is masked, which the single returned span demonstrates.
+    #[test]
+    fn a_vat_inside_an_email_keeps_the_email_label() {
+        assert_eq!(
+            kinds("IT00905811006@example.com"),
+            vec![(PiiKind::Email, "IT00905811006@example.com".to_string())]
+        );
+    }
+
+    /// **VAT-13 — masking a VAT number reaches a fixpoint and the placeholder stays inert.**
+    ///
+    /// `[TAXID_1]` must not itself look like PII to the next pass, or `mask_all` would not
+    /// converge (ARCHITECTURE → mask-to-a-fixpoint). Also pins the round trip: the value comes
+    /// back byte-identical, which is what makes an over-mask harmless on the response path.
+    #[test]
+    fn a_masked_vat_number_is_inert_and_restores_exactly() {
+        let detector = StructuredRecognizers::new();
+        let mut vault = crate::pii::anonymizer::Vault::new();
+        let masked = vault
+            .mask_all(
+                "fattura IT00905811006 e P.IVA 00159560366",
+                &detector,
+                &Budget::per_call(),
+            )
+            .expect("masking must converge");
+        assert_eq!(masked, "fattura [TAXID_1] e P.IVA [TAXID_2]");
+        assert!(
+            detector.detect(&masked).is_empty(),
+            "the placeholders must be inert: {masked}"
+        );
+        assert_eq!(
+            vault.demask(&masked),
+            "fattura IT00905811006 e P.IVA 00159560366"
+        );
+    }
+
 }

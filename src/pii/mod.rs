@@ -40,6 +40,17 @@ pub enum PiiKind {
     /// A non-US national identifier (M4) — e.g. Italian Codice Fiscale, UK NINO.
     /// US SSN keeps its own [`Ssn`](Self::Ssn) variant for continuity.
     NationalId,
+    /// A **business tax identifier** (M11 Track A) — an Italian Partita IVA, an EU VAT
+    /// number. Deliberately *not* folded into [`NationalId`](Self::NationalId).
+    ///
+    /// **Why its own kind, decided by the maintainer 2026-09-02.** A P.IVA identifies a
+    /// *business*, and is personal data only when that business is a sole trader; a
+    /// Codice Fiscale identifies a *person*, always. A single token unable to tell them
+    /// apart destroys that distinction for every consumer downstream, permanently — and
+    /// reusing `NATID` now would convert a free choice today into a breaking change to
+    /// the placeholder vocabulary tomorrow, where the same input silently starts emitting
+    /// a different token. See ROADMAP → M11 Track A, decision 1.
+    TaxId,
     CreditCard,
     Iban,
     /// API keys / tokens (e.g. `sk-…`, `sk-ant-…`, `AKIA…`). Deterministic —
@@ -60,6 +71,7 @@ impl PiiKind {
             PiiKind::Phone => "PHONE",
             PiiKind::Ssn => "SSN",
             PiiKind::NationalId => "NATID",
+            PiiKind::TaxId => "TAXID",
             PiiKind::CreditCard => "CARD",
             PiiKind::Iban => "IBAN",
             PiiKind::Secret => "SECRET",
@@ -70,7 +82,7 @@ impl PiiKind {
     }
 
     /// Overlap-resolution priority (see [`overlap::resolve_overlaps`]). Order:
-    /// Secret > Iban > CreditCard > Ssn ≈ NationalId > Phone > Email > NER.
+    /// Secret > Iban > CreditCard > Ssn ≈ NationalId > Phone > TaxId > Email > NER.
     ///
     /// **This ranks *labels*, not survivors.** Two overlapping **structured** spans are
     /// merged into their union rather than one being dropped (the resolver's invariant:
@@ -88,15 +100,47 @@ impl PiiKind {
     /// handled by a **naming rule**, not by priority: when a union is *exactly* an `Email`
     /// span the email keeps the label (see [`overlap::name_of`]). Both spans are masked
     /// either way — nothing structured is ever dropped.
+    ///
+    /// **`TaxId` sits below BOTH `NationalId` and `Phone`, and the input that decides it is
+    /// a bare 11-digit number (M11 Track A).** An Italian Partita IVA is written as 11 bare
+    /// digits, and two always-on tiers already claim `\d{11}`: the national IDs (German
+    /// Steuer-ID, Latvian personal code) and the **compact domestic phone** shapes M10
+    /// measured (`02079460958` is a real London number; `03012345678` a real Berlin one, and
+    /// both satisfy the P.IVA mod-10). A token matching two tiers produces two identical
+    /// spans, and priority decides only which of them *names* the union — never whether it
+    /// is masked (M4-R10/R11). Two different principles put `TaxId` under each neighbour,
+    /// and they happen to agree:
+    ///
+    /// - **Under `NationalId`: conservatism about personhood.** Between a reading that says
+    ///   *a person* and one that says *a business*, the conservative label is the one
+    ///   implying a natural person. Mislabelling a person's ID as a company's under-states
+    ///   its sensitivity for every consumer downstream; the reverse over-states it, and
+    ///   over-stating is the side this project errs on everywhere else.
+    /// - **Under `Phone`: strength of evidence.** The domestic-phone tier does not match a
+    ///   shape — it asks `phonenumber` whether the candidate is a real **assigned** number
+    ///   in that region's plan (M10). That is strictly better evidence than a mod-10 check
+    ///   one arbitrary 11-digit number in ten satisfies, so where they disagree the plan
+    ///   lookup should name the span. Ranking `TaxId` above `Phone` silently relabelled
+    ///   every compact GB and DE number M10 measured as `[TAXID_n]` — caught by
+    ///   PHONE-NAT-01, and pinned from this side by VAT-14.
+    ///
+    /// The national-ID collision is measured rather than assumed —
+    /// `vat_and_natid_collision_rate` in `recognizers.rs` reports what fraction of valid
+    /// P.IVAs also satisfy an 11-digit national-ID check. Every *prefixed* VAT form (`IT…`,
+    /// `DE…`, `GB…`, `NL…`, `PT…`) is collision-free by construction: the letters break the
+    /// `(?-u:\b)` the digit-only recognizers need.
     pub fn priority(self) -> u8 {
         match self {
-            PiiKind::Secret => 6,
-            PiiKind::Iban => 5,
-            PiiKind::CreditCard => 4,
+            PiiKind::Secret => 7,
+            PiiKind::Iban => 6,
+            PiiKind::CreditCard => 5,
             // National identifiers (US SSN + other locales) share a tier; ties fall
             // through to span length, then to the incumbent — always deterministic.
-            PiiKind::Ssn | PiiKind::NationalId => 3,
-            PiiKind::Phone => 2,
+            PiiKind::Ssn | PiiKind::NationalId => 4,
+            PiiKind::Phone => 3,
+            // Business tax identifiers (M11) — below both tiers it collides with on a bare
+            // 11-digit token; see the two principles above.
+            PiiKind::TaxId => 2,
             // Names a union only when it doesn't contain the other span — see above.
             PiiKind::Email => 1,
             // NER entities (M2) sit below all structured PII.
@@ -124,6 +168,7 @@ impl PiiKind {
             "PHONE" => PiiKind::Phone,
             "SSN" => PiiKind::Ssn,
             "NATID" => PiiKind::NationalId,
+            "TAXID" => PiiKind::TaxId,
             "CARD" => PiiKind::CreditCard,
             "IBAN" => PiiKind::Iban,
             "SECRET" => PiiKind::Secret,

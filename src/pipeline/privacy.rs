@@ -46,9 +46,19 @@ use crate::proxy::{ProxyRequest, ProxyResponse};
 
 /// System instruction injected when the request contained PII, so the model
 /// treats placeholders as real typed values and uses them verbatim.
+///
+/// **This text is injected AFTER masking, never before — which is what makes it immune to
+/// the system-prompt cache (M7.1, checked again for M11 Track A).** The cache is keyed on
+/// the exact bytes of a field as they arrive and stores the *detected entities* of that
+/// field; this constant is appended to the outgoing body once masking has already run, so
+/// it is never scanned, never cached, and never a cache key. Adding a new placeholder kind
+/// here therefore cannot leave a stale instruction in circulation: the cache is in-process
+/// and starts empty at every launch, and a changed field is a changed key anyway. Pinned by
+/// `the_augmentation_prompt_names_every_placeholder_kind_it_should` and
+/// `the_cache_cannot_serve_an_instruction_because_it_never_sees_one`.
 const AUGMENTATION_PROMPT: &str = "\
 Some real values in this conversation have been replaced with typed placeholders \
-of the form [KIND_N] — for example [EMAIL_1], [PHONE_2], [PERSON_1], [IBAN_1]. \
+of the form [KIND_N] — for example [EMAIL_1], [PHONE_2], [PERSON_1], [IBAN_1], [TAXID_1]. \
 Each placeholder stands for a real value of the named kind. Treat every \
 placeholder as if it were the real value it represents: use it verbatim wherever \
 you would use that value, including inside tool/function-call arguments, and \
@@ -936,6 +946,102 @@ mod tests {
         // an unrecognized sub-shape is never skipped open.
         let mut system_no_text = json!({ "system": [ { "type": "mystery" } ], "messages": [] });
         assert!(mask_anthropic_request(&mut system_no_text, &mut f).is_err());
+    }
+
+    /// **AUG-01 (M11 Track A) — the instruction names every placeholder kind it exemplifies,
+    /// and `TAXID` is now one of them.**
+    ///
+    /// Adding a `PiiKind` without teaching the model to read its token is a **silent**
+    /// degradation: the mask still works, the round trip still works, and the model simply
+    /// handles `[TAXID_1]` worse than the four kinds the prompt names. Nothing fails, so
+    /// nothing tells you. This is the cheap guard against that.
+    #[test]
+    fn the_augmentation_prompt_names_every_placeholder_kind_it_should() {
+        for token in ["[EMAIL_1]", "[PHONE_2]", "[PERSON_1]", "[IBAN_1]", "[TAXID_1]"] {
+            assert!(
+                AUGMENTATION_PROMPT.contains(token),
+                "the augmentation prompt must exemplify {token}"
+            );
+        }
+        // The examples must be real labels, or they teach the model a vocabulary the
+        // de-masker does not speak.
+        for label in ["EMAIL", "PHONE", "PERSON", "IBAN", "TAXID"] {
+            assert!(
+                PiiKind::from_label(label).is_some(),
+                "{label} is exemplified in the prompt but is not a real PiiKind label"
+            );
+        }
+    }
+
+    /// **AUG-02 (M11 Track A) — the detection cache cannot serve a stale instruction,
+    /// because it never sees one.**
+    ///
+    /// The worry the M7.1 cache invites whenever [`AUGMENTATION_PROMPT`] changes: turn 1
+    /// caches something derived from the old text and turn 2 is served it, so a fresh binary
+    /// keeps emitting an instruction that never mentions the new placeholder — a failure with
+    /// no symptom.
+    ///
+    /// It cannot happen, and this pins **why** rather than asserting the conclusion: the
+    /// instruction is appended *after* masking has already run, so the detector is never
+    /// asked about it. A recording detector captures every text the stage submits and none of
+    /// them contains the prompt. (The cache keys on exactly those texts and stores their
+    /// entities, so a text it never sees is a text it cannot serve.) If the injection ever
+    /// moved before masking, this fails — and that reordering is the only way the stale-
+    /// instruction bug could become real.
+    #[test]
+    fn the_cache_cannot_serve_an_instruction_because_it_never_sees_one() {
+        use std::sync::{Arc, Mutex};
+
+        /// Wraps the real recognizers and records every text it is asked about. The log is
+        /// an `Arc` the test keeps a clone of, so it stays readable after the stage takes
+        /// ownership of the detector.
+        struct Recording {
+            inner: StructuredRecognizers,
+            seen: Arc<Mutex<Vec<String>>>,
+        }
+        impl crate::pii::PiiDetector for Recording {
+            fn try_detect(
+                &self,
+                text: &str,
+                budget: &Budget,
+            ) -> Result<Vec<PiiEntity>, crate::pii::DetectError> {
+                self.seen.lock().expect("log mutex").push(text.to_string());
+                self.inner.try_detect(text, budget)
+            }
+        }
+
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let stage = PrivacyStage::new(Box::new(Recording {
+            inner: StructuredRecognizers::new(),
+            seen: Arc::clone(&seen),
+        }));
+
+        let mut req = ProxyRequest {
+            body: json!({
+                "model": "gpt-4o",
+                "messages": [ { "role": "user", "content": "fattura IT00905811006 grazie" } ]
+            }),
+        };
+        let mut ctx = RequestContext::new();
+        stage.on_request(&mut req, &mut ctx);
+
+        // Non-vacuity: the request really did mask something and really was augmented.
+        let dump = req.body.to_string();
+        assert!(dump.contains("[TAXID_1]"), "nothing was masked: {dump}");
+        assert!(
+            dump.contains("typed placeholders"),
+            "no augmentation injected: {dump}"
+        );
+
+        let seen = seen.lock().expect("log mutex");
+        assert!(!seen.is_empty(), "the detector was never called");
+        for text in seen.iter() {
+            assert!(
+                !text.contains("typed placeholders"),
+                "the augmentation reached the detector — and therefore the cache — which is \
+                 the one ordering that would let a stale instruction circulate: {text}"
+            );
+        }
     }
 
     #[test]
