@@ -974,3 +974,142 @@ async fn e2e05_budget_refusal_reaches_the_client_intact_and_carries_no_input_byt
         "a blocked request must not be forwarded — the upstream saw it"
     );
 }
+
+/// The last `user` message as the upstream actually received it.
+///
+/// **Why this and not `body.to_string()` (the vacuity trap).** The augmentation instruction the
+/// proxy injects *exemplifies* `[TAXID_1]` by design — that is `AUG-01`'s whole subject. So a
+/// guard asserting `[TAXID_1]` appears somewhere in the upstream body is satisfied by the
+/// injected boilerplate alone, and would stay green with the user's VAT number forwarded in
+/// clear. The claim has to be made about the field the PII was in.
+fn upstream_last_user(seen: &Value) -> String {
+    seen["messages"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .rfind(|m| m["role"] == "user")
+        .and_then(|m| m["content"].as_str())
+        .unwrap_or_default()
+        .to_string()
+}
+
+/// **VAT-18 (M11 Track A) — the new `TaxId` kind over real HTTP, in every shipped rendering.**
+///
+/// M11's headline feature had **no end-to-end coverage at all**: every VAT guard tested the
+/// detector, and review round 1 confirmed the HTTP round trip *by hand*. A capability verified by
+/// hand is a capability nothing will notice losing — and the `[TAXID_n]` token is new vocabulary
+/// on the wire, which is precisely the kind of thing a serde or restore-path change breaks
+/// silently. So this pins what `E2E-01` pins for email/phone/IBAN, for the kind M11 added.
+///
+/// One value per rendering family, because the resolver and the vault see them differently: the
+/// bare Italian form (11 digits, no context — the one that carries the over-mask cost), the VIES
+/// prefixed form, a second country's prefixed form, and the format-only NL form whose
+/// `Confidence` is `Structural` rather than `Verified`. `00…`-leading P.IVAs are used on purpose:
+/// they are the sub-shape the phone tier cannot claim (`VAT-17`), so this guard measures the VAT
+/// path rather than the collision.
+#[tokio::test]
+async fn vat_numbers_round_trip_over_http_in_every_rendering() {
+    let proxy = spawn_proxy(spawn_mock_upstream().await).await;
+
+    // (value, why this rendering is here)
+    const RENDERINGS: &[&str] = &[
+        "00905811006",    // IT bare — ENI, and `00…` so the phone tier cannot claim it
+        "IT00159560366",  // IT VIES form — Ferrari
+        "DE136695976",    // DE — the German administration's documented vector
+        "NL111222333B01", // NL — format-anchored, `Confidence::Structural`
+    ];
+    let sent = format!(
+        "Fattura a {}, P.IVA {}, USt {} e btw {} — grazie.",
+        RENDERINGS[1], RENDERINGS[0], RENDERINGS[2], RENDERINGS[3]
+    );
+
+    let reply = chat(
+        proxy,
+        json!({ "model": "gpt-x", "messages": [{ "role": "user", "content": sent }] }),
+    )
+    .await;
+
+    let seen = &reply["upstream_received"];
+    let masked_user = upstream_last_user(seen);
+
+    // Nothing left in clear — asserted on the field the values were in, not on the whole body.
+    for value in RENDERINGS {
+        assert!(
+            !masked_user.contains(value),
+            "{value} reached the upstream in clear: {masked_user}"
+        );
+    }
+    // ...and the masked field really does carry placeholders, one per value.
+    let placeholders = masked_user.matches("[TAXID_").count();
+    assert_eq!(
+        placeholders,
+        RENDERINGS.len(),
+        "expected one [TAXID_n] per rendering in the masked user message, got {placeholders}: \
+         {masked_user}"
+    );
+    // The augmentation instruction is injected, and it is a *separate* field from the one above.
+    assert_eq!(seen["messages"][0]["role"], "system");
+
+    // The client gets every value back byte-identically, and no placeholder escapes.
+    let content = reply["choices"][0]["message"]["content"].as_str().unwrap();
+    for value in RENDERINGS {
+        assert!(
+            content.contains(value),
+            "{value} was not restored on the response path: {content}"
+        );
+    }
+    assert!(
+        !content.contains("[TAXID_"),
+        "a placeholder leaked to the client: {content}"
+    );
+}
+
+/// **VAT-19 (M11 Track A) — a `[TAXID_n]` split across SSE chunk boundaries is still restored.**
+///
+/// The streaming de-masker buffers across events because a placeholder can straddle them
+/// (`E2E`'s split-placeholder guard proves it for `[EMAIL_1]`). `[TAXID_1]` is a **different
+/// length**, and the buffering logic is length-sensitive by nature — it has to decide how much to
+/// hold back — so "email works" does not imply "taxid works". The mock fragments the reply into
+/// 4-character pieces, which splits a 9-character token three ways.
+#[tokio::test]
+async fn a_split_taxid_placeholder_is_restored_in_a_stream() {
+    let (upstream, seen) = spawn_sse_mock().await;
+    let proxy = spawn_proxy(upstream).await;
+
+    let sent = "la partita IVA e' 00905811006 grazie";
+    let raw = reqwest::Client::new()
+        .post(format!("http://{proxy}/v1/chat/completions"))
+        .json(&json!({
+            "model": "gpt-x",
+            "stream": true,
+            "messages": [{ "role": "user", "content": sent }]
+        }))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+
+    let body: Value = serde_json::from_str(&seen.lock().unwrap().clone()).unwrap();
+    let masked_user = upstream_last_user(&body);
+    assert!(
+        !masked_user.contains("00905811006"),
+        "the P.IVA reached the upstream in clear: {masked_user}"
+    );
+    assert!(
+        masked_user.contains("[TAXID_1]"),
+        "expected the placeholder in the masked user message: {masked_user}"
+    );
+
+    let content = sse_content(&raw);
+    assert_eq!(
+        content, sent,
+        "the reassembled stream must carry the real P.IVA back, byte-identically"
+    );
+    assert!(
+        !raw.contains("[TAXID_"),
+        "a placeholder leaked to the client mid-stream: {raw}"
+    );
+    assert!(raw.contains("[DONE]"), "terminator preserved");
+}
