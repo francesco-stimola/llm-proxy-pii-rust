@@ -437,12 +437,29 @@ fn national_id_recognizers() -> Vec<Recognizer> {
 ///   in [`lv_code_valid`], and it is not measured here.
 fn vat_recognizers() -> Vec<Recognizer> {
     vec![
-        // 🇮🇹 Partita IVA, bare — 11 digits, mod-10 with position doubling. THE one shape that
-        // collides with an existing recognizer: `\d{11}` is also the DE Steuer-ID / LV personal
-        // code pattern. Both fire, the spans are identical, the resolver merges them and
-        // `PiiKind::priority` names the union `[NATID_n]` — see that function. The collision
-        // costs no coverage; what this recognizer *adds* is every P.IVA that is not also a valid
-        // Steuer-ID or LV code, which until now went upstream in clear.
+        // 🇮🇹 Partita IVA, bare — 11 digits, mod-10 with position doubling. The shape that
+        // collides with **two** other always-on tiers, and the second one is the larger:
+        //
+        //   * `\d{11}` is the DE Steuer-ID / LV personal-code pattern. Measured overlap with
+        //     valid P.IVAs: 0.0998 (VAT-10).
+        //   * `\b0\d{6,11}\b` is the domestic-phone `Trunk` family's separator-free arm, so
+        //     every **0-leading** P.IVA — which is to say every issuable one — is also a phone
+        //     candidate in all nine vetted regions. Measured against the shipped default:
+        //     **most of them are named `[PHONE_n]`** (VAT-17).
+        //
+        // In both cases both recognizers fire, the spans are identical, the resolver merges
+        // them, and `PiiKind::priority` decides only which kind *names* the union — every byte
+        // is masked either way (M4-R10/R11).
+        //
+        // **What this recognizer adds, stated correctly (M11-R2).** The line here used to read
+        // "the collision costs no coverage", naming only the national-ID overlap. That is true
+        // of *masking* and false of *labelling*: what reaches the model as `[TAXID_n]` is every
+        // P.IVA that is not also a valid Steuer-ID, an LV code, **or an assigned domestic number
+        // in one of the nine vetted regions** — and that last clause takes most of the issuable
+        // 0-leading space with it. The five real published P.IVAs in this repo's corpus are all
+        // `00…`-leading, which libphonenumber reads as an international access code and
+        // rejects, so every existing guard sits inside the immune sub-shape. VAT-17 measures the
+        // rest; the ordering itself is deliberate and argued on `PiiKind::priority`.
         Recognizer {
             kind: PiiKind::TaxId,
             regex: Regex::new(r"(?-u:\b)\d{11}(?-u:\b)").unwrap(),
@@ -3081,9 +3098,43 @@ mod tests {
     /// it keeps the gap **documented and deliberate** instead of something a future reader
     /// discovers as a bug. (An ES/FR/LV number whose digits happen to satisfy a national-ID
     /// checksum may still be masked by that tier; these are chosen not to be.)
+    ///
+    /// **An absence assertion is only worth its reachability, and the ES arm had none
+    /// (M11-R1).** It read `"ES B12345678"` — with a space. The tier documents and enforces
+    /// that there is *no* space between prefix and body, so that input was absent for a reason
+    /// having nothing to do with ES not shipping: a live, checksum-less ES recognizer — exactly
+    /// the half-shipped outcome this guard exists to forbid — left it green. FR and LV were
+    /// fine; ES was the one broken arm, and it was the one whose failure mode the recognizer's
+    /// own doc describes in detail.
+    ///
+    /// **So the negatives are now checked for reachability first**, in the loop, against the
+    /// tier's actual grammar: a two-letter uppercase prefix followed by an unbroken run of
+    /// alphanumerics. A negative the grammar could never match is red on the spot rather than
+    /// quietly true — the same "prove the corpus can express the thing" move PROP-04 made for
+    /// M4-R17. Writing a negative with a space in it is now a failure, not a silent pass.
     #[test]
     fn unmeasured_vat_countries_are_absent_rather_than_guessed() {
-        for text in ["ES B12345678", "FR40404833048", "LV40003032949"] {
+        for text in [
+            "ESB12345678", // ES — the legal-entity CIF form, the case the comment names
+            "ES12345678Z", // ES — the person form (DNI + control letter)
+            "ESX1234567L", // ES — the foreigner form (NIE)
+            "FR40404833048",
+            "LV40003032949",
+        ] {
+            // Reachability: could the tier's grammar match this token at all? Every VAT pattern
+            // is `[A-Z]{2}` immediately followed by alphanumerics, with ASCII word boundaries
+            // at both ends. If a negative cannot satisfy that shape, its absence proves nothing
+            // about the country and everything about the punctuation (M11-R1).
+            let mut chars = text.chars();
+            let prefix_ok = chars.by_ref().take(2).all(|c| c.is_ascii_uppercase());
+            let body_ok = chars.clone().count() >= 7 && chars.all(|c| c.is_ascii_alphanumeric());
+            assert!(
+                prefix_ok && body_ok,
+                "{text} is not a token the VAT grammar could ever match — two uppercase ASCII \
+                 letters then an unbroken alphanumeric run, no space. Its absence would prove \
+                 nothing about whether the country ships (M11-R1)."
+            );
+
             let got = kinds(text);
             assert!(
                 !got.iter().any(|(k, _)| *k == PiiKind::TaxId),
@@ -3186,12 +3237,32 @@ mod tests {
     /// form masks a fraction of ordinary 11-digit tokens. That cost is **accepted on purpose**
     /// (over-mask, never leak — and the vault restores the value on the response path), the
     /// same trade M4-R6 took for the 9- and 11-digit national-ID recognizers. What is *not*
-    /// acceptable is quoting a rate nobody measured, so this measures it over a deterministic
-    /// sweep and pins it to a band. A change that moved it would be a change to the shipped
-    /// false-positive cost, and it should have to edit this number to land.
+    /// acceptable is quoting a rate nobody measured, so this measures it over deterministic
+    /// sweeps and pins it to a band.
+    ///
+    /// **What the contiguous sweep does and does not pin (M11-R5).** This guard used to run one
+    /// sweep, over 100 000 *consecutive* 11-digit numbers, and claim that "a change that moved
+    /// the rate would have to edit this number to land". It could not: for **any** scheme whose
+    /// eleventh digit is a function of the first ten, exactly one value per block of ten passes,
+    /// so the rate is `0.100` *by construction* whatever the arithmetic does. Replacing the
+    /// final comparison with `d[10] == 7` still printed `0.100` and still passed. What sweep 1
+    /// really pins is the **shape** — eleven digits, the last a check digit, no context required
+    /// — which is load-bearing but is not the checksum.
+    ///
+    /// **Sweep 2 is the negative control that separates them**, and it is why this guard can now
+    /// go red. Hold the check digit *constant* and vary the first ten digits: a correct mod-10
+    /// accepts ~1 in 10 of that space too, while a stub comparing against a fixed digit accepts
+    /// either **all** of it or **none** — 0.0 or 1.0, nowhere near the band. Two sweeps whose
+    /// rates agree is evidence about the arithmetic; one sweep is evidence about the format.
+    ///
+    /// **And the number survives contact with real text.** M11-R1's round measured the shipped
+    /// recognizer over 104 uncurated `\d{11}` tokens found in ~304 MB of third-party source:
+    /// **9 accepted, 0.0865** — see `TESTING.md` → VAT-09/VAT-15.
     #[test]
     fn vat_over_mask_rate_on_arbitrary_eleven_digit_numbers() {
         let total = 100_000u32;
+
+        // Sweep 1 — contiguous. Pins the SHAPE: one accept per block of ten.
         let hits = (0..total)
             .filter(|i| it_piva_valid(&format!("{:011}", 10_000_000_000u64 + u64::from(*i))))
             .count();
@@ -3202,6 +3273,32 @@ mod tests {
             "mod-10 should accept ~1 in 10; measured {rate:.3} over {total} — if this moved, \
              the shipped over-mask cost moved with it"
         );
+
+        // Sweep 2 — the check digit HELD CONSTANT while the first ten digits vary. This is the
+        // one a wrong checksum cannot survive (M11-R5): `d[10] == <const>` accepts 0.0 or 1.0
+        // here, and only arithmetic that actually depends on the first ten digits lands in the
+        // band. The two rates agreeing is what makes the claim about the *checksum* rather than
+        // about the format.
+        for fixed in [0u64, 7] {
+            let hits = (0..total)
+                .filter(|i| {
+                    let body = 1_000_000_000u64 + u64::from(*i);
+                    it_piva_valid(&format!("{body:010}{fixed}"))
+                })
+                .count();
+            let held = f64::from(u32::try_from(hits).unwrap()) / f64::from(total);
+            eprintln!(
+                "bare P.IVA accepts {hits}/{total} 11-digit numbers whose check digit is fixed \
+                 at {fixed} ({held:.3})"
+            );
+            assert!(
+                (0.08..=0.12).contains(&held),
+                "with the check digit held at {fixed}, a correct mod-10 still accepts ~1 in 10 \
+                 of the first-ten-digit space; measured {held:.3}. A rate of ~0.0 or ~1.0 here \
+                 means the eleventh digit is being compared against a constant rather than \
+                 computed — which sweep 1 cannot see (M11-R5)."
+            );
+        }
     }
 
     /// **VAT-10 (measured) — how often a valid P.IVA is ALSO a valid 11-digit national ID.**
@@ -3212,6 +3309,13 @@ mod tests {
     /// the union. Both are masked either way (M4-R10/R11), so the rate is a **labelling**
     /// statistic, not a coverage one — but it is the number a reader needs in order to know
     /// whether the naming rule matters in practice or is a curiosity.
+    ///
+    /// **This measures the SMALLER of the two collisions, and used to be quoted as if it were
+    /// the only one (M11-R2).** Its sweep runs `10_000_000_000 + i`, so every value it looks at
+    /// starts with `1` — while the only phone family that can claim a bare digit run needs a
+    /// leading `0`. The phone collision is therefore outside this guard's range *by
+    /// construction*, and it is much the larger. `VAT-17` measures that one; the two together
+    /// are the labelling picture, and neither alone is.
     #[test]
     fn vat_and_natid_collision_rate() {
         let mut piva = 0u32;
@@ -3240,6 +3344,101 @@ mod tests {
         assert!(
             piva > 1_000,
             "the sweep must actually find P.IVAs, found {piva}"
+        );
+    }
+
+    /// **VAT-17 (measured, M11-R2) — how often a bare P.IVA is named `[PHONE_n]` under the
+    /// configuration that actually ships.**
+    ///
+    /// **The collision the milestone fixed the direction of without ever measuring the size of.**
+    /// `VAT-14` established that `TaxId` must rank below `Phone` — a numbering-plan lookup
+    /// confirming an *assigned* number is better evidence than a mod-10 check one arbitrary
+    /// 11-digit number in ten satisfies — and that ordering stands. What nobody had was the
+    /// magnitude, so nobody chose it: the two instances `VAT-14` pins are the ones a review round
+    /// happened to find, and `VAT-10`, the guard ROADMAP presents as *the* collision number,
+    /// cannot see this collision at all (its sweep is `1`-leading; the phone `Trunk` family's
+    /// separator-free arm `\b0\d{6,11}\b` needs a `0`).
+    ///
+    /// **And every other VAT guard sits inside the immune sub-shape, which is why they are all
+    /// green.** A leading `00` reads to libphonenumber as the international access code and is
+    /// rejected — and all five real published P.IVAs this repo's corpus is built on
+    /// (`00905811006`, `00159560366`, `00488410010`, `00891030272`, `00811720580`) are
+    /// `00…`-leading. *A corpus has a shape, and that shape is a blind spot* — M4's lesson 2,
+    /// landing again in the milestone that quotes it. So this sweeps the **issuable** space
+    /// deliberately: a 0-leading serial and a plausible province code, both leading pairs
+    /// reported separately, because the split is the whole explanation.
+    ///
+    /// This is a **labelling** statistic like `VAT-10`, not a coverage one — every byte is masked
+    /// under either name. What it costs is decision 1's entire purpose: a token that tells a
+    /// consumer *business identifier* rather than *person*. Whether the ordering should change
+    /// for the separator-free arm specifically is the maintainer's call, not this guard's; what
+    /// the guard ends is the number being unknown.
+    #[test]
+    fn bare_piva_phone_collision_rate_under_the_shipped_default() {
+        let detector = StructuredRecognizers::new();
+        assert_eq!(
+            vetted_phone_regions().len(),
+            9,
+            "this rate is a property of the shipped region set"
+        );
+
+        // The issuable bare form: `{serial:07}{province:03}{check}`, serial < 1_000_000 so the
+        // token is 0-leading, province in the assigned 001..=110 band. Striding the serial keeps
+        // the sample spread across both leading pairs rather than clustered at the bottom.
+        let mut piva = 0u32;
+        let (mut phoned, mut zero_zero, mut zero_zero_phoned) = (0u32, 0u32, 0u32);
+        for i in 0..1_500u64 {
+            let serial = (i * 661) % 1_000_000;
+            let province = 1 + (i % 110);
+            for check in 0..10u64 {
+                let s = format!("{serial:07}{province:03}{check}");
+                if !it_piva_valid(&s) {
+                    continue;
+                }
+                piva += 1;
+                let is_00 = s.starts_with("00");
+                if is_00 {
+                    zero_zero += 1;
+                }
+                if detector.detect(&s).iter().any(|e| e.kind == PiiKind::Phone) {
+                    phoned += 1;
+                    if is_00 {
+                        zero_zero_phoned += 1;
+                    }
+                }
+            }
+        }
+
+        let share = f64::from(phoned) / f64::from(piva);
+        let other = piva - zero_zero;
+        eprintln!(
+            "{phoned}/{piva} issuable bare P.IVAs are named [PHONE_n] under the shipped default \
+             ({share:.3}) — 00xx: {zero_zero_phoned}/{zero_zero}, 0[1-9]xx: {}/{other}",
+            phoned - zero_zero_phoned
+        );
+
+        assert!(
+            piva > 1_000,
+            "the sweep must actually find P.IVAs, found {piva}"
+        );
+        // A band, not a point: this number is a property of libphonenumber's metadata as much as
+        // of this code, and a dependency bump moving it is exactly what should be noticed.
+        assert!(
+            (0.55..=0.90).contains(&share),
+            "most issuable bare P.IVAs are named [PHONE_n], not [TAXID_n]; measured {share:.3}. \
+             If this moved a lot, either the priority order changed (that is VAT-14's subject and \
+             a product-visible decision) or the phone tier's region set or metadata did — both \
+             need explaining before this number is edited."
+        );
+        // The split is the explanation, and it must stay visible: a leading `00` is read as an
+        // international access code and rejected, which is precisely why every other VAT guard —
+        // all of them built on `00…`-leading real numbers — is green.
+        let zero_zero_share = f64::from(zero_zero_phoned) / f64::from(zero_zero);
+        assert!(
+            zero_zero > 100 && zero_zero_share < 0.15,
+            "the `00…` sub-shape is supposed to be nearly immune ({zero_zero_phoned}/{zero_zero} \
+             = {zero_zero_share:.3}) — if it stopped being, the corpus every other VAT guard is \
+             built on has moved out of the blind spot and those guards mean something different"
         );
     }
 

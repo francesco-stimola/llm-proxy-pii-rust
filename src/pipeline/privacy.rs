@@ -949,34 +949,81 @@ mod tests {
     }
 
     /// **AUG-01 (M11 Track A) — the instruction names every placeholder kind it exemplifies,
-    /// and `TAXID` is now one of them.**
+    /// and every kind has been *decided about*.**
     ///
     /// Adding a `PiiKind` without teaching the model to read its token is a **silent**
     /// degradation: the mask still works, the round trip still works, and the model simply
     /// handles `[TAXID_1]` worse than the four kinds the prompt names. Nothing fails, so
-    /// nothing tells you. This is the cheap guard against that.
+    /// nothing tells you.
+    ///
+    /// **The first version of this guard had that defect itself (M11-R3).** It iterated five
+    /// string literals, so it watched the five kinds somebody had typed rather than the enum —
+    /// and a twelfth `PiiKind` could be added with the whole suite green, which is exactly
+    /// what its own doc comment said must not be possible. The list is now driven from
+    /// [`PiiKind::ALL`] through an **exhaustive `match`**: a new variant is a *compile error*
+    /// right here, and its author has to answer the question — is this kind exemplified in the
+    /// prompt, or deliberately not? Either answer is fine; not being asked is not.
     #[test]
     fn the_augmentation_prompt_names_every_placeholder_kind_it_should() {
-        for token in [
-            "[EMAIL_1]",
-            "[PHONE_2]",
-            "[PERSON_1]",
-            "[IBAN_1]",
-            "[TAXID_1]",
-        ] {
-            assert!(
-                AUGMENTATION_PROMPT.contains(token),
-                "the augmentation prompt must exemplify {token}"
-            );
+        /// Is this kind's token **exemplified** in the instruction?
+        ///
+        /// Exhaustive on purpose (M11-R3). The prompt teaches a *pattern* — `[KIND_N]` — from a
+        /// few concrete examples rather than listing all eleven, because a longer list costs
+        /// tokens on every request without teaching more. What matters is that the choice is
+        /// made per kind rather than inherited from whoever wrote the prompt first.
+        fn exemplified(kind: PiiKind) -> bool {
+            match kind {
+                // The examples the instruction carries: one structured contact detail, one
+                // identifier-shaped value, one NER kind, and TAXID (M11 Track A), whose token
+                // is new vocabulary and therefore the one most worth spending an example on.
+                PiiKind::Email | PiiKind::Phone | PiiKind::Iban | PiiKind::Person => true,
+                PiiKind::TaxId => true,
+                // Not exemplified, and that is a decision, not an oversight: their tokens
+                // follow the same `[KIND_N]` shape the examples above already teach, and each
+                // extra example is paid for on every single request.
+                PiiKind::Ssn
+                | PiiKind::NationalId
+                | PiiKind::CreditCard
+                | PiiKind::Secret
+                | PiiKind::Organization
+                | PiiKind::Location => false,
+            }
         }
-        // The examples must be real labels, or they teach the model a vocabulary the
-        // de-masker does not speak.
-        for label in ["EMAIL", "PHONE", "PERSON", "IBAN", "TAXID"] {
-            assert!(
-                PiiKind::from_label(label).is_some(),
-                "{label} is exemplified in the prompt but is not a real PiiKind label"
+
+        let mut exemplified_count = 0;
+        for &kind in PiiKind::ALL {
+            // Whatever the prompt says about a kind, it must use that kind's REAL label, or it
+            // teaches the model a vocabulary the de-masker does not speak.
+            assert_eq!(
+                PiiKind::from_label(kind.label()),
+                Some(kind),
+                "{kind:?}'s label does not round-trip — see KIND-02"
             );
+            if exemplified(kind) {
+                exemplified_count += 1;
+                let label = kind.label();
+                assert!(
+                    AUGMENTATION_PROMPT.contains(&format!("[{label}_")),
+                    "{kind:?} is marked as exemplified in the augmentation prompt, but no \
+                     `[{label}_N]` token appears in it"
+                );
+            }
         }
+        assert_eq!(
+            exemplified_count, 5,
+            "the instruction is supposed to carry five worked examples; if this moved, the \
+             per-request token cost of the injected prompt moved with it"
+        );
+
+        // Non-vacuity: the walk must have actually inspected the enum (M4-R13). If `ALL` ever
+        // came back short, every assertion above would pass by never running.
+        assert_eq!(
+            PiiKind::ALL.len(),
+            11,
+            "PiiKind::ALL has {} entries — KIND-01 pins it against the enum, and this guard is \
+             meaningless if it shrank",
+            PiiKind::ALL.len()
+        );
     }
 
     /// **AUG-02 (M11 Track A) — the detection cache cannot serve a stale instruction,

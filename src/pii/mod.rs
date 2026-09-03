@@ -63,6 +63,37 @@ pub enum PiiKind {
 }
 
 impl PiiKind {
+    /// Every variant, in declaration order.
+    ///
+    /// **Hand-written, but not hand-trusted (M11-R3).** Rust cannot enumerate an enum's
+    /// variants without a derive, so this list is typed out — and a typed-out per-variant list
+    /// is exactly what M11 found wrong twice: a twelfth `PiiKind` could be added and the whole
+    /// suite stayed green, because the guards that are *about* the enum
+    /// ([`AUGMENTATION_PROMPT`](crate::pipeline::privacy::AUGMENTATION_PROMPT)'s examples and
+    /// [`from_label`](Self::from_label)) each watched five or eleven literals somebody typed
+    /// rather than the enum itself.
+    ///
+    /// So `KIND-01` rebuilds this list by walking a successor chain whose `match` **the
+    /// compiler checks for exhaustiveness**: a new variant is a compile error there, its author
+    /// has to say where in the chain it goes, and once it is in the chain it appears here
+    /// automatically. That makes `ALL` the chokepoint every per-variant guard can be driven
+    /// from, instead of each of them keeping its own list — the same move
+    /// [`shipped_tax_recognizer_count`](crate::pii::recognizers::shipped_tax_recognizer_count)
+    /// makes for the VAT recognizer set.
+    pub const ALL: &'static [PiiKind] = &[
+        PiiKind::Email,
+        PiiKind::Phone,
+        PiiKind::Ssn,
+        PiiKind::NationalId,
+        PiiKind::TaxId,
+        PiiKind::CreditCard,
+        PiiKind::Iban,
+        PiiKind::Secret,
+        PiiKind::Person,
+        PiiKind::Organization,
+        PiiKind::Location,
+    ];
+
     /// The uppercase label used inside placeholders, e.g. `Email` → `"EMAIL"`
     /// yields the `[EMAIL_1]` token. ASCII and tokenizer-friendly.
     pub fn label(self) -> &'static str {
@@ -453,5 +484,96 @@ pub trait PiiDetector: Send + Sync {
     /// each starting full. A detector that overrides only `try_detect` is now correct here for free.
     fn redetect(&self, input: &str, budget: &Budget) -> Result<Vec<PiiEntity>, DetectError> {
         self.try_detect(input, budget)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// **KIND-01 (M11-R3) — `PiiKind::ALL` cannot fall behind the enum.**
+    ///
+    /// M11 added an eleventh kind and found that a *twelfth* could be added with the whole
+    /// suite green: every per-variant guard in the codebase watched a hand-typed list, so
+    /// nothing forced a new variant to be considered anywhere. `ALL` is the fix — one list the
+    /// others are driven from — but a hand-typed `ALL` would have the same defect one level up.
+    ///
+    /// So this rebuilds the list **without reading it**, by walking a successor chain. The
+    /// `match` below is exhaustive over `PiiKind`, so adding a variant is a **compile error
+    /// here** and its author has to place it in the chain; walking the chain then reproduces
+    /// `ALL` independently, and the comparison is what fails if `ALL` was not updated too.
+    /// A variant wired to itself or to an earlier one is caught by the visited check rather
+    /// than hanging the test.
+    #[test]
+    fn all_lists_every_variant_in_order() {
+        fn next(kind: PiiKind) -> Option<PiiKind> {
+            Some(match kind {
+                PiiKind::Email => PiiKind::Phone,
+                PiiKind::Phone => PiiKind::Ssn,
+                PiiKind::Ssn => PiiKind::NationalId,
+                PiiKind::NationalId => PiiKind::TaxId,
+                PiiKind::TaxId => PiiKind::CreditCard,
+                PiiKind::CreditCard => PiiKind::Iban,
+                PiiKind::Iban => PiiKind::Secret,
+                PiiKind::Secret => PiiKind::Person,
+                PiiKind::Person => PiiKind::Organization,
+                PiiKind::Organization => PiiKind::Location,
+                PiiKind::Location => return None,
+            })
+        }
+
+        let mut walked = vec![PiiKind::Email];
+        while let Some(kind) = next(*walked.last().expect("the walk starts non-empty")) {
+            assert!(
+                !walked.contains(&kind),
+                "the successor chain revisits {kind:?} — a new variant was wired into the \
+                 middle of the chain instead of onto the end of it"
+            );
+            walked.push(kind);
+        }
+
+        assert_eq!(
+            walked,
+            PiiKind::ALL,
+            "`PiiKind::ALL` has fallen behind the enum. The successor chain above is checked \
+             for exhaustiveness by the compiler, so it is the list that is right — add the \
+             missing variant to `ALL`, then make sure every guard driven from `ALL` still \
+             says something true about it (KIND-02, AUG-01)."
+        );
+    }
+
+    /// **KIND-02 (M11-R3) — every kind's placeholder label survives the round trip.**
+    ///
+    /// [`PiiKind::label`] names a variant; [`PiiKind::from_label`] is its inverse and ends in
+    /// `_ => return None`, so before this guard a kind could be added to one and not the other
+    /// and nothing would fail. That is not cosmetic: `from_label` gates
+    /// `anonymizer::is_placeholder_token`, which is what makes a placeholder **inert** to the
+    /// next detection pass — the mechanism `Vault::mask_all`'s fixpoint rests on (M5-R4) — and
+    /// it also gates the M1.5 warning that an unresolved known-kind placeholder is logged
+    /// rather than silently shipped. A kind in `label` but not `from_label` degrades
+    /// convergence and observability with no failing test.
+    ///
+    /// Labels must also be **distinct**: two kinds sharing one label would make the inverse
+    /// ambiguous and silently collapse them in the vault.
+    #[test]
+    fn every_kind_round_trips_through_its_label() {
+        let mut seen: Vec<&'static str> = Vec::new();
+        for &kind in PiiKind::ALL {
+            let label = kind.label();
+            assert_eq!(
+                PiiKind::from_label(label),
+                Some(kind),
+                "{kind:?} labels itself {label} but from_label does not map it back — the \
+                 placeholder would not be inert to the next masking pass (M5-R4)"
+            );
+            // Case-insensitivity is part of the contract: the model may echo a token back in
+            // any case, and the de-masker has to recognise it to warn about it.
+            assert_eq!(PiiKind::from_label(&label.to_ascii_lowercase()), Some(kind));
+            assert!(
+                !seen.contains(&label),
+                "{label} is used by two kinds — from_label cannot be an inverse of label"
+            );
+            seen.push(label);
+        }
     }
 }
