@@ -331,6 +331,38 @@ two *other* always-on tiers already claim that shape.
   caught it; this pins it from the VAT side, where the change that would reintroduce it lives.
   It also pins the national-ID half (Enel's real P.IVA is a valid Latvian personal code, and keeps
   `[NATID_n]`). The ordering and its two justifications live on `PiiKind::priority`.
+- **VAT-15 (measured) — `the_realistic_turn_yields_exactly_the_expected_taxid_spans`
+  (`tests/vat_overmask.rs`): the real-traffic half of VAT-09.** VAT-09 measures what the bare
+  P.IVA does to a *uniform stream* of 11-digit numbers; it says nothing about how many 11-digit
+  numbers real agent traffic contains. M10 shipped the domestic phone tier with **both** halves —
+  a synthetic rate and a proof of zero hits over a real turn (PHONE-OM) — and the maintainer's
+  decision of 2026-09-03 (ROADMAP → M11 Track A) held the VAT tier to the same bar, declared
+  before the number existed: **zero** bare-form `TaxId` spans over the same ~22 KiB Claude Code
+  turn in `tests/common/m7_turn.rs`. **Measured: 0 `TaxId` spans in 22 823 bytes** — the bar is
+  clear and `0.100` stands as a published *synthetic worst case*.
+  Two assertions, because the first can be satisfied for the wrong reason: no `TaxId` span (the
+  bar verbatim), **and** no masked span of any kind that is exactly 11 ASCII digits. `TaxId` ranks
+  *below* `NationalId` and `Phone` (VAT-14), so an 11-digit run the bare recognizer claims can be
+  **named** by another tier and vanish from the first assertion while still being masked;
+  filtering on the label would measure the naming rule, filtering on the shape cannot be fooled.
+  > **The residue, and it is the honest limit of this guard.** The denominator is **zero**: the
+  > turn contains **no 11-digit token at all** — 11 all-digit tokens, longest run **5 digits** —
+  > so mod-10 was never actually invoked on this traffic. The zero therefore says *this traffic
+  > offers the bare P.IVA nothing to bite*, which is a real and reassuring fact about agent
+  > turns, but it is **not** a precision result: it is weaker than PHONE-OM's zero, whose
+  > candidate set is every plausible digit group. What stays uncovered is traffic that *does*
+  > carry 11-digit database ids or order numbers, where VAT-09's 0.100 is the number that
+  > applies and no fixture in this repo measures it. The guard prints the denominator on every
+  > run so this cannot quietly turn into a precision claim.
+- **VAT-16 — `the_guard_would_notice_a_vat_number_that_really_is_there`: the positive control,
+  one per shipped scheme.** "No VAT spans" and "no detection at all" produce the same empty
+  vector (M9-R28, BENCH-01), so VAT-15 needs a control — and M10-R7 is why it is one control **per
+  scheme**: PHONE-OM's first version covered one shape family of three, and deleting the other two
+  left every assertion green while the guard's whole subject was switched off. The count is read
+  from `shipped_tax_recognizer_count()` rather than kept as a literal here, so a seventh
+  recognizer landing without a seventh control is **red** instead of a silent narrowing. Each
+  control is a real published number spliced into the real turn, so it also proves the scheme is
+  reachable in context and not only in a two-word test string.
 
 ### M11 Track A — the augmentation prompt and the detection cache (`src/pipeline/privacy.rs`)
 - **AUG-01 — `the_augmentation_prompt_names_every_placeholder_kind_it_should`.** Adding a `PiiKind`

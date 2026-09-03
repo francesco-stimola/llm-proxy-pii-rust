@@ -51,7 +51,7 @@ it, which a first dry run proved was not a hypothetical.
 | [M9 — GPU optimization](#m9) | ✅ complete |
 | [M9.1 — one release binary per backend](#m91) | ✅ complete · tag `v1.2.0` |
 | [M10 — national phone coverage + release hygiene](#m10) | ✅ complete · tag `v1.2.1` |
-| [M11 — deterministic coverage · NER thread base](#m11) | 📋 planned · tag `v1.3.0` (planned) |
+| [M11 — deterministic coverage · NER thread base](#m11) | 🔨 code-complete · tag `v1.3.0` (planned) |
 | [M12 — one model for everything not provable](#m12) | 📋 planned |
 
 ---
@@ -2260,7 +2260,7 @@ client, refused bodies never forwarded, the refusal message carrying no input-de
 | [M10-R61](reviews/M10.md#m10-r61) | Two mechanical defects introduced by `e704ce6`: a duplicated sentence in ROADMAP's pre-tag list (already gone — that block was rewritten this round) and seven doubled apostrophes in the review record | low | [x] |
 
 <a id="m11"></a>
-## M11 — deterministic coverage · NER thread base 📋
+## M11 — deterministic coverage · NER thread base 🔨
 
 **Three tracks that share a milestone and nothing else.** [A](#m11-a) is the coverage gap the
 milestone opened on; [B](#m11-b) and [C](#m11-c) were added 2026-09-02 and both touch the ML
@@ -2329,10 +2329,18 @@ phone tier *and then proved zero hits on real traffic*** (`tests/phone_overmask.
   digits, which excludes both common timestamp widths (10 = Unix seconds, 13 = milliseconds) — so
   what is left exposed is **database ids and order numbers of exactly eleven digits**, and the CC
   battery already guards that a SQL result's `id` survives a round trip intact.
-- **The bar, declared before the run:** **zero** bare-form `TaxId` spans over that same 22 KiB turn.
-  Clear it and `0.100` stands as a published *synthetic worst case* and the tag proceeds. Miss it
-  and this is the **same class as the phone collision** — a fidelity regression on a measured
+- [x] **The bar, declared before the run:** **zero** bare-form `TaxId` spans over that same 22 KiB
+  turn. Clear it and `0.100` stands as a published *synthetic worst case* and the tag proceeds. Miss
+  it and this is the **same class as the phone collision** — a fidelity regression on a measured
   capability — and it is fixed before `v1.3.0`, not documented around.
+  **Cleared 2026-09-03: 0 `TaxId` spans over 22 823 bytes** (`VAT-15`/`VAT-16`,
+  `tests/vat_overmask.rs`), so `0.100` stands as the published synthetic worst case. Two numbers
+  qualify it, and both live in [`TESTING.md`](TESTING.md) → `VAT-15` where they get read: the guard
+  also asserts **no masked span of any kind is exactly 11 digits** — `TaxId` ranks below
+  `NationalId` and `Phone`, so a label filter would have measured the naming rule rather than the
+  over-mask — and the **denominator is zero**: the turn holds no 11-digit token at all (longest
+  all-digit run: 5). The bar is met, and what it proves is that *this* traffic offers the bare
+  P.IVA nothing to bite, not that the recognizer is precise on traffic that does.
 - Rejected: requiring a keyword anchor (it would lose the P.IVA sitting alone in a `partita_iva`
   column, which is the primary case, and adds a context-window heuristic this codebase has nowhere
   else) and dropping the bare form (a P.IVA written the way Italians write it would go upstream in
@@ -2380,6 +2388,16 @@ nothing:
   thing quietly. That is precisely the harm [M10](#m10) spent nine review rounds bounding, and the
   reason the CC battery checks that `Read`'s line numbers and a SQL result's `id` survive intact.
   If these are ever wanted, they are opt-in, model-side, and measured for over-mask first.
+
+### Review ledger — M11 → [`reviews/M11.md`](reviews/M11.md)
+
+**This milestone reached code-complete with zero review rounds** — the code landed 2026-09-02, the
+builder→reviewer loop rules landed 2026-09-03 (`01fbadd`). The loop opened after the fact, and R0 is the
+builder's own pass rather than a round.
+
+| ID | Title | Sev | Status |
+|---|---|---|---|
+| [M11-R0](reviews/M11.md#m11-r0) | `cargo fmt --check` red on `main` across four files the M11 commits touched — CI gates on it, so M11 as committed would fail on push | build | [x] |
 
 <a id="m11-b"></a>
 ### Track B — the intra-op thread base: physical cores, not logical threads ✅

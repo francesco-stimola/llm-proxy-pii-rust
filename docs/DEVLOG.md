@@ -3,6 +3,50 @@
 Newest first. One entry per meaningful change — note *what* and *why*, not just
 *what*. This is the running history so context is never lost between sessions.
 
+## 2026-09-03 — M11 Track A: the over-mask bar cleared, and CI's fmt gate found red
+
+**The real-traffic half of VAT-09, which the tier shipped without.** `VAT-09` measures the bare
+Partita IVA against a uniform stream of 11-digit numbers and gets **0.100** — one in ten. That is
+what a mod-10 does to arbitrary digits; it says nothing about how many 11-digit numbers real agent
+traffic contains. M10 shipped the domestic phone tier with *both* halves and the VAT tier with
+only the synthetic one, so the maintainer set the missing bar on 2026-09-03 **before the number
+existed**: zero bare-form `TaxId` spans over the same real ~22 KiB Claude Code turn.
+
+**Measured: 0 `TaxId` spans in 22 823 bytes. The bar is clear**, and `0.100` stands as a published
+*synthetic worst case*. `tests/vat_overmask.rs` is the guard (`VAT-15`/`VAT-16`), modelled on
+`tests/phone_overmask.rs` and running over the same shared fixture rather than a copy.
+
+**Two assertions, because the obvious one can pass for the wrong reason.** `TaxId` ranks *below*
+`NationalId` and `Phone` (that is `VAT-14`, the collision this track nearly shipped), so an
+11-digit run the bare recognizer claims can be **named** by another tier and disappear from a
+`kind == TaxId` filter while still being masked. Filtering on the label would measure the naming
+rule; the second assertion filters on the **shape** — no masked span of exactly 11 ASCII digits —
+and cannot be fooled that way. The mutation that proves it is worth keeping: splice Enel's P.IVA
+`00811720580` (also a valid Latvian personal code) into the turn and only the second assertion
+goes red.
+
+**The residue, recorded because the guard cannot state it itself.** The denominator is **zero** —
+the turn holds 11 all-digit tokens, longest run **5 digits**, and *no* 11-digit token at all. So
+mod-10 was never invoked on this traffic. The zero means *this traffic offers the bare P.IVA
+nothing to bite*, which is a real fact about agent turns and weaker than PHONE-OM's zero, whose
+candidate set is every plausible digit group. What stays uncovered is traffic carrying 11-digit
+database ids or order numbers, where `0.100` is the number that applies and nothing here measures
+it. The guard **prints the denominator on every run** so it cannot quietly become a precision
+claim, and `TESTING.md` → `VAT-15` says the same thing where it gets read.
+
+**`shipped_tax_recognizer_count()` — a four-line addition, and the point is the chokepoint.**
+`VAT-16` holds one live control per shipped scheme, and a hand-kept list of six stays six when a
+seventh recognizer lands. That is M10-R7 verbatim one tier over, where a control set covering one
+shape family of three passed with the other two deleted. The count is now read from the recognizer
+set, so deleting the NL recognizer turns `VAT-16` red.
+
+**Found while verifying: `cargo fmt --check` was red on `main`, and CI gates on it.** Four files
+the M11 feature commits touched — `src/pii/onnx.rs`, `src/pii/recognizers.rs`,
+`src/pipeline/privacy.rs`, `tests/m7_latency.rs` — were left unformatted by `c830784`/`d2fc694`.
+Confirmed pre-existing by running `rustfmt --check` against the `HEAD` blobs, not by inference.
+`ci.yml`'s `fmt` job runs `cargo fmt --check`, so M11 as committed would have failed CI on push:
+the milestone had had **zero review rounds**, and this is the first thing a round finds.
+
 ## 2026-09-02 — M11 Track A: VAT numbers, a new placeholder, and the collision that nearly shipped
 
 **`PiiKind::TaxId` → `[TAXID_n]`, five countries, always on.** The Italian Partita IVA (bare and
