@@ -115,6 +115,24 @@ rounds of the first one.
   The half left inline inside the hook, the wrapper or the branch is the half the defect
   lands in. The matrix proves the decision is **right**; a real run proves it is
   **reached** — you need both, and the second is the one people skip.
+- **A guard on a guard is worth one level, not four.** The two rules above apply also —
+  and especially — when what you are fixing is the *test net* rather than the product:
+  that is where they are easiest to forget, because every fix looks small and justified.
+  The sibling repo `python-message-broker-mcp-server` closed a milestone at 39 findings
+  of which **22 were on the guard machinery**, and inside those 22 there was **a single
+  family** — "an option that silently shrinks what runs" — closed fifteen times, one
+  variant at a time: `-m`, `-k`, `--deselect`, `--lf`, `--ignore`, `--ignore-glob`,
+  `--collect-only`, `PYTEST_ADDOPTS`, `python_functions`, `testpaths`. Enumerating the
+  instances instead of finding the chokepoint, which is exactly what the first rule
+  forbids. This project's own version of the same mistake is
+  [`docs/reviews/M4.md#retrospective`](docs/reviews/M4.md#retrospective): six rounds in
+  which five fixes each *relocated* a leak.
+  So, from here on: if a round finds **another variant of the same family**, do not
+  chase it — record it as a **decided limit** in `docs/TESTING.md` and move on. If a
+  **chokepoint** exists, close it **once**, and then stop. A milestone's scope is the
+  product; the test infrastructure serves it. And at the end of a milestone, count the
+  findings **on the guards** and those **on the product**, and report both numbers: it
+  is the ratio that says whether the loop is working or feeding itself.
 
 ### Findings lifecycle — ledger vs record
 A finding has **one home for its whole life**. It is never copied, and never moved.
