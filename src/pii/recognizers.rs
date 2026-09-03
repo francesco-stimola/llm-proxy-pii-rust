@@ -236,10 +236,10 @@ fn universal_recognizers() -> Vec<Recognizer> {
         Recognizer {
             kind: PiiKind::Iban,
             regex: Regex::new(
-                r"(?-u:\b)[A-Z]{2}\d{2}(?:[A-Z0-9]{11,30}|(?: [A-Z0-9]{4}){2,7}(?: [A-Z0-9]{1,4})?)(?-u:\b)",
+                r"(?-u:\b)[A-Za-z]{2}\d{2}(?:[A-Za-z0-9]{11,30}|(?: [A-Za-z0-9]{4}){2,7}(?: [A-Za-z0-9]{1,4})?)(?-u:\b)",
             )
             .unwrap(),
-            validate: None,
+            validate: Some(free(iban_case_gate)),
             scan: Scan::Overlapping, // bounded: ≤ 44 chars
             shrink_on_reject: false,
         },
@@ -470,7 +470,7 @@ fn vat_recognizers() -> Vec<Recognizer> {
         // 🇮🇹 Partita IVA, VIES form.
         Recognizer {
             kind: PiiKind::TaxId,
-            regex: Regex::new(r"(?-u:\b)IT\d{11}(?-u:\b)").unwrap(),
+            regex: Regex::new(r"(?-u:\b)[Ii][Tt]\d{11}(?-u:\b)").unwrap(),
             validate: Some(free(|s| it_piva_valid(vat_body(s)))),
             scan: Scan::Overlapping,
             shrink_on_reject: false,
@@ -480,7 +480,7 @@ fn vat_recognizers() -> Vec<Recognizer> {
         // which is specific to the Steuer-ID and not part of the VAT spec.
         Recognizer {
             kind: PiiKind::TaxId,
-            regex: Regex::new(r"(?-u:\b)DE\d{9}(?-u:\b)").unwrap(),
+            regex: Regex::new(r"(?-u:\b)[Dd][Ee]\d{9}(?-u:\b)").unwrap(),
             validate: Some(free(|s| de_vat_valid(vat_body(s)))),
             scan: Scan::Overlapping,
             shrink_on_reject: false,
@@ -492,7 +492,7 @@ fn vat_recognizers() -> Vec<Recognizer> {
         // branch-trader form and the `GBGD`/`GBHA` government forms are documented gaps.
         Recognizer {
             kind: PiiKind::TaxId,
-            regex: Regex::new(r"(?-u:\b)GB\d{9}(?-u:\b)").unwrap(),
+            regex: Regex::new(r"(?-u:\b)[Gg][Bb]\d{9}(?-u:\b)").unwrap(),
             validate: Some(free(|s| gb_vat_valid(vat_body(s)))),
             scan: Scan::Overlapping,
             shrink_on_reject: false,
@@ -502,7 +502,7 @@ fn vat_recognizers() -> Vec<Recognizer> {
         // names, not two schemes.
         Recognizer {
             kind: PiiKind::TaxId,
-            regex: Regex::new(r"(?-u:\b)PT\d{9}(?-u:\b)").unwrap(),
+            regex: Regex::new(r"(?-u:\b)[Pp][Tt]\d{9}(?-u:\b)").unwrap(),
             validate: Some(free(|s| pt_nif_valid(vat_body(s)))),
             scan: Scan::Overlapping,
             shrink_on_reject: false,
@@ -516,7 +516,7 @@ fn vat_recognizers() -> Vec<Recognizer> {
         // pinned at position 11 is not a shape ordinary text produces.
         Recognizer {
             kind: PiiKind::TaxId,
-            regex: Regex::new(r"(?-u:\b)NL\d{9}B\d{2}(?-u:\b)").unwrap(),
+            regex: Regex::new(r"(?-u:\b)[Nn][Ll]\d{9}[Bb]\d{2}(?-u:\b)").unwrap(),
             validate: None,
             scan: Scan::Overlapping,
             shrink_on_reject: false,
@@ -1283,7 +1283,7 @@ fn confidence_of(kind: PiiKind, text: &str) -> Confidence {
         }
         // Only the NL pattern reaches here unchecked — it is the one VAT recognizer with
         // `validate: None`, because its scheme has nothing to validate.
-        PiiKind::TaxId if text.len() == 14 && text.starts_with("NL") => {
+        PiiKind::TaxId if text.len() == 14 && text[..2].eq_ignore_ascii_case("NL") => {
             if nl_bsn_valid(text.get(2..11).unwrap_or("")) {
                 Confidence::Verified
             } else {
@@ -1710,6 +1710,37 @@ pub fn luhn_valid(input: &str) -> bool {
 /// ISO 13616 IBAN mod-97 checksum. Whitespace is ignored and letters are folded
 /// to uppercase. Used as a *confidence signal* for IBAN detection, not a hard
 /// gate — see [`StructuredRecognizers::new`].
+/// Is this IBAN rendering acceptable, given its **letter case** (M11-R10)?
+///
+/// **The leak this closes.** The pattern used to spell its letters `[A-Z]`, so
+/// `it60x0542811101000000123456` — and, worse, `IT60x0542811101000000123456`, an otherwise
+/// canonical IBAN with **one** lowercase letter — matched nothing at all and was forwarded to the
+/// provider in clear. The letters are ASCII word characters, so there was no `(?-u:\b)` for a
+/// shorter recognizer to fall back on: the span did not shrink, it disappeared. The `iban_mod97`
+/// doc comment has said "letters are folded to uppercase" since M1 — the *validator* was written
+/// for input the *regex* could never deliver, which is how long this went unnoticed.
+///
+/// **Why folding case needs a gate at all, with the number.** Measured over 341.1 MB / 16 380
+/// files of uncurated third-party source: the uppercase pattern matches **1** string, the
+/// case-folded one **150**. Those extra 149 are hex digests, base64 blobs and type names — and an
+/// IBAN has *no hard checksum gate* (M4 masks a structurally valid IBAN even when mod-97 fails, on
+/// purpose), so without a gate every one of them would be masked. Masking a hex digest inside a
+/// `tool_use.input` is exactly the functional harm M10 spent nine rounds bounding.
+///
+/// **So the rule is split by rendering, and it costs nothing.** A **canonical** (all-uppercase)
+/// rendering keeps M4's rule untouched: structurally valid is masked, mod-97 only sets
+/// [`Confidence`]. A rendering carrying **any** lowercase letter is accepted only if it is fully
+/// verifiable — mod-97 *and* the ISO 13616 length. Measured residue of that gate on the same
+/// corpus: **0 of the 149**. (Note `iban_length_ok` returns `true` for a country code it does not
+/// know, so for 145 of those the gate is mod-97 alone — the zero survives that weaker reading,
+/// which is the one the code actually implements.)
+fn iban_case_gate(matched: &str) -> bool {
+    if !matched.bytes().any(|b| b.is_ascii_lowercase()) {
+        return true;
+    }
+    iban_mod97(matched) && iban_length_ok(matched)
+}
+
 pub fn iban_mod97(iban: &str) -> bool {
     let compact: String = iban
         .chars()
@@ -3208,24 +3239,174 @@ mod tests {
         }
     }
 
-    /// **VAT-05 — a lowercase country prefix is not a VAT number, and `it` is why.**
+    /// **VAT-05 — the span never eats the word before the digits.** (Rewritten for M11-R10;
+    /// it used to assert the opposite of what ships.)
     ///
-    /// The prefix patterns are uppercase-only on purpose. Lowercased, `it` is one of the
-    /// commonest words in English, so `"call it <11 digits>"` would produce a 14-character span
-    /// swallowing an ordinary word. The bare Italian recognizer still claims the **digits**
-    /// (that is the accepted over-mask, VAT-09) — what must never happen is the span growing to
-    /// eat the word before them.
+    /// **The rationale this guard carried was refuted by the tier's own grammar.** It read: the
+    /// prefixes are uppercase-only because lowercased, `it` is one of the commonest words in
+    /// English, so `"call it <11 digits>"` would produce a 14-character span swallowing a word.
+    /// But the recognizer table forbids **any space between prefix and digits**, so `it 12345678901`
+    /// cannot match under *any* case rule — the danger the argument described was already
+    /// impossible, and what the rule actually bought was a **leak**: `it00905811006` and
+    /// `IT60x0542811101000000123456` matched nothing and went upstream in clear (M11-R10).
+    ///
+    /// The prefixes now fold case. What survives, and what this guard is really for, is the
+    /// **span boundary**: a VAT number written after an English word must still yield the digits
+    /// alone. That property is independent of the case rule, and it is the only one the original
+    /// test's first assertion ever exercised.
     #[test]
-    fn lowercase_country_prefix_is_not_a_vat_number() {
+    fn a_vat_span_never_swallows_the_word_before_it() {
+        // The case the old rationale was written about — still correct, and now for a reason that
+        // holds: no space is allowed between prefix and digits, so the span is the digits.
         assert_eq!(
             kinds("call it 00905811006 back"),
             vec![(PiiKind::TaxId, "00905811006".to_string())],
             "the span must be the digits alone — never `it 00905811006`"
         );
-        // Glued to a lowercase prefix there is no ASCII word boundary at all, so nothing fires.
-        assert!(kinds("it00905811006").is_empty());
-        // And an uppercase prefix glued to a preceding letter is still inside a longer token.
+        // Same for an uppercase prefix: a space breaks the prefixed form in both cases.
+        assert_eq!(
+            kinds("VAT IT 00905811006 please"),
+            vec![(PiiKind::TaxId, "00905811006".to_string())],
+            "a space after the prefix must not be bridged"
+        );
+        // Glued to a preceding letter there is no ASCII word boundary at all, so nothing fires —
+        // in either case. This is what stops a VAT number being found inside a longer token.
         assert!(kinds("XIT00905811006").is_empty());
+        assert!(kinds("xit00905811006").is_empty());
+        // And the leak M11-R10 found is closed in both directions.
+        assert_eq!(
+            kinds("fattura it00905811006"),
+            vec![(PiiKind::TaxId, "it00905811006".to_string())],
+            "a lowercase VIES prefix must be masked, not forwarded in clear (M11-R10)"
+        );
+    }
+
+    /// **CASE-01 (M11-R10) — every letter-bearing recognizer has a recorded answer on the case
+    /// axis, and the answer is asserted rather than assumed.**
+    ///
+    /// **This is the chokepoint the leak asked for.** M11-R10 was not one bug: seven of thirteen
+    /// renderings of the same values went upstream **in clear** because the VAT prefixes and the
+    /// IBAN pattern spelled their letters `[A-Z]`, while the Codice Fiscale, the ES DNI/NIE and
+    /// the CN resident id folded case. Nobody had ever decided the axis — `iban_mod97`'s doc
+    /// comment has promised to fold letters since M1, for input the regex could not deliver. The
+    /// instance-shaped fix (add `it00905811006` to a corpus) would have closed IT and left DE, GB,
+    /// PT, NL and IBAN open, which is the move [M4's retrospective] is six rounds of warning
+    /// against.
+    ///
+    /// So the question is asked **once per pattern**: given a known positive, does the lowercase
+    /// rendering behave like the uppercase one? A new letter-bearing recognizer cannot ship
+    /// without an entry here, and an entry cannot be added without stating the answer — the same
+    /// move `shipped_tax_recognizer_count` makes for the count and `pii_kinds!` for the enum.
+    ///
+    /// **`MUST_MATCH` is not decoration: `Some(kind)` means the lowercase form must be detected
+    /// *as that kind*.** A recognizer that silently stopped folding case would go red here even
+    /// though its uppercase corpus tests all stay green — which is exactly the state the tier was
+    /// in before this guard existed.
+    #[test]
+    fn every_letter_bearing_recognizer_answers_the_case_axis() {
+        // (a known positive, the kind its UPPERCASE form yields, why it is here)
+        const MATRIX: &[(&str, PiiKind)] = &[
+            // —— the two families M11-R10 found leaking ——
+            ("IT00905811006", PiiKind::TaxId),
+            ("DE136695976", PiiKind::TaxId),
+            ("GB220430231", PiiKind::TaxId),
+            ("PT524287244", PiiKind::TaxId),
+            ("NL111222333B01", PiiKind::TaxId),
+            ("IT60X0542811101000000123456", PiiKind::Iban),
+            ("DE89370400440532013000", PiiKind::Iban),
+            // —— the families that already folded case, kept so a regression is visible ——
+            ("RSSMRA85T10A562S", PiiKind::NationalId), // Codice Fiscale
+            ("X1234567L", PiiKind::NationalId),        // ES NIE
+        ];
+
+        for (upper, kind) in MATRIX {
+            let lower = upper.to_lowercase();
+            assert_ne!(
+                &lower, upper,
+                "{upper} carries no letter — it does not belong in a case matrix"
+            );
+
+            assert_eq!(
+                kinds(upper),
+                vec![(*kind, (*upper).to_string())],
+                "{upper} must be detected in its canonical uppercase rendering"
+            );
+            assert_eq!(
+                kinds(&lower),
+                vec![(*kind, lower.clone())],
+                "{lower} is the same value in lowercase and must be masked the same way. \
+                 Before M11-R10 this reached the provider IN CLEAR: the letters are ASCII word \
+                 characters, so there is no ASCII word boundary for a shorter recognizer to fall back on \
+                 — the span does not shrink, it disappears."
+            );
+
+            // The sharpest case, and the one a corpus of lowercase strings would miss entirely:
+            // an otherwise canonical value with exactly ONE letter flipped.
+            let flipped: String = {
+                let mut out = String::with_capacity(upper.len());
+                let mut done = false;
+                for c in upper.chars() {
+                    if !done && c.is_ascii_uppercase() && !out.is_empty() {
+                        out.extend(c.to_lowercase());
+                        done = true;
+                    } else {
+                        out.push(c);
+                    }
+                }
+                out
+            };
+            if flipped != *upper {
+                assert_eq!(
+                    kinds(&flipped),
+                    vec![(*kind, flipped.clone())],
+                    "{flipped} differs from {upper} by a single letter's case and must still be \
+                     masked (M11-R10: `IT60x0542811101000000123456` was forwarded in clear)"
+                );
+            }
+        }
+    }
+
+    /// **CASE-02 (M11-R10) — folding case on IBAN does not open the false-positive door it was
+    /// keeping shut.**
+    ///
+    /// The IBAN half of the axis could not simply be folded. An IBAN has **no hard checksum gate**
+    /// — M4 decided on purpose that a structurally valid one is masked even when mod-97 fails —
+    /// so widening `[A-Z]` to `[A-Za-z]` would have swept in every hex digest and base64 blob in
+    /// reach. Measured over 341.1 MB / 16 380 files of third-party source: **1 match uppercase,
+    /// 150 case-folded**. Masking a hex digest inside a `tool_use.input` is the functional harm
+    /// M10 spent nine rounds bounding.
+    ///
+    /// So [`iban_case_gate`] splits the rule by rendering: canonical uppercase keeps M4's
+    /// behaviour untouched, while a rendering carrying **any** lowercase letter must be fully
+    /// verifiable — mod-97 *and* the ISO 13616 length. Measured residue: **0 of the 149 added**.
+    /// This pins both halves of that split, because getting either wrong is silent.
+    #[test]
+    fn a_lowercase_iban_is_masked_only_when_it_verifies() {
+        // Canonical uppercase: M4's rule, unchanged. Structurally valid, mod-97 fails, masked
+        // anyway and flagged `Structural`.
+        let bad_checksum = "DE89370400440532013001";
+        assert!(!iban_mod97(bad_checksum), "this fixture must fail mod-97");
+        assert_eq!(
+            kinds(bad_checksum),
+            vec![(PiiKind::Iban, bad_checksum.to_string())],
+            "an uppercase IBAN whose mod-97 fails is still masked — that is M4's decision and              folding case must not disturb it"
+        );
+
+        // The same string in lowercase is NOT masked: it is the shape a hex digest also has, and
+        // nothing verifies it. This is the false-positive door staying shut.
+        assert!(
+            kinds(&bad_checksum.to_lowercase()).is_empty(),
+            "a lowercase IBAN-shaped string that fails mod-97 must not be masked — 341 MB of              real source yields 149 such strings, and masking them is the M10 harm"
+        );
+
+        // But a lowercase IBAN that really verifies IS masked — the leak M11-R10 found.
+        let good = "de89370400440532013000";
+        assert!(iban_mod97(good) && iban_length_ok(good));
+        assert_eq!(
+            kinds(good),
+            vec![(PiiKind::Iban, good.to_string())],
+            "a verifiable lowercase IBAN must be masked, not forwarded in clear (M11-R10)"
+        );
     }
 
     /// **VAT-06 — the tier is always on, regardless of `PII_LOCALES`.**

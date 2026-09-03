@@ -2461,7 +2461,7 @@ to decide on are in the record.
 | [M11-R7](reviews/M11.md#m11-r7) | `CAT-01`'s floor was justified by a count that was never measured (73 vs 90), and the `//!` mutation its closure cites as proof is green at HEAD | guard | [x] |
 | [M11-R8](reviews/M11.md#m11-r8) | Decision 4 is still written as an open question in `TESTING.md` — VAT-17 and in `recognizers.rs`'s VAT-17 doc comment | docs | [x] |
 | [M11-R9](reviews/M11.md#m11-r9) | `TESTING.md` states `CAT-02`'s matrix as 18 against 15; the matrix holds 18 against 17 | docs | [x] |
-| [M11-R10](reviews/M11.md#m11-r10) | A lower- or mixed-case IBAN or VAT number is forwarded **in clear** — the structured tier's case axis was never decided | **leak** | [ ] |
+| [M11-R10](reviews/M11.md#m11-r10) | A lower- or mixed-case IBAN or VAT number is forwarded **in clear** — the structured tier's case axis was never decided | **leak** | [x] |
 
 <a id="m11-b"></a>
 ### Track B — the intra-op thread base: physical cores, not logical threads ✅
