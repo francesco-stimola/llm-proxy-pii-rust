@@ -38,9 +38,8 @@ A privacy proxy in front of an OpenAI-compatible LLM: it masks PII locally
   **IT + US** (M5 broadens). Detection engines sit behind the `PiiDetector` trait.
 
 ## Decisions that are the human's
-Some choices are not the builder's to make. On any of these, **stop and ask** —
-present **numbered options** with what each one costs and gives up, say which you'd
-pick, and wait:
+Some choices are not the builder's to make. On any of these, present **numbered
+options** with what each one costs and gives up, and say which you'd pick:
 - **Product-visible behavior** — a new refusal, reduced coverage, a changed meaning
   for a config variable, a different error body or exit code.
 - **A threshold with functional consequences** — a budget, a limit, a confidence
@@ -48,8 +47,14 @@ pick, and wait:
 - **Anything blocking for the tag** — if the answer decides whether a release ships.
 
 Everything else: **proceed**. That is the default, and asking permission for routine
-work is its own failure. Nor should one open question stall the whole task — do
-everything that doesn't depend on the answer first, *then* ask.
+work is its own failure.
+
+**And a question does not stall the work.** Do everything that doesn't depend on the
+answer first, then **batch the open questions at the end** and hand them over with the
+rest. You genuinely stop in only two cases: proceeding would be unsafe, or a different
+answer would throw away the work done in the meantime. Stopping halfway for a question
+that could have waited costs the human a full round trip, and it is the most common way
+this loop bogs down.
 
 ## Build & test
 - Toolchain is MSVC, no-admin — see `docs/SETUP.md`. Every shell needs the MSVC
@@ -81,12 +86,35 @@ English is canonical. Only **root-level** docs get an Italian `<name>.it.md`
 mirror; everything under `docs/` stays English-only.
 
 ## Workflow — build → review → formalize
-Development runs as a two-role loop:
-- **Builder** implements the current ROADMAP milestone + tests, appends to
-  DEVLOG, and commits the feature work.
-- **Reviewer** (`.claude/agents/reviewer.md`) verifies independently, reviews
-  source + docs, and records findings — which the builder then closes. The reviewer
-  edits docs, **not** source, and keeps the working tree clean.
+Development runs as a two-role loop, and **the builder closes it alone**: implement,
+launch the `reviewer` subagent to try to break what you just wrote, close the findings
+it raises, and launch it again. Keep going until a round comes back **empty** — no
+finding in `src/`, and no guard that can be mutated without turning red. Only then move
+on to the next item.
+- **Builder** implements the current ROADMAP item + tests, appends to DEVLOG, commits
+  the feature work, and **runs the review rounds itself**.
+- **Reviewer** (`.claude/agents/reviewer.md`) verifies independently and records
+  findings. It edits docs, **not** source, and keeps the working tree clean. *How* to
+  try to break something lives in its brief, not here.
+
+**The human enters at the milestone boundary, not between one finding and the next.** A
+review round that finds a defect is not a reason to go back to them: it is the loop
+working. What they get handed is a report they can spot-check (see *What you hand
+over*), not a narrative.
+
+### The shape of a fix
+Two rules that apply **while** you write the fix, not after — and this codebase has paid
+for both. [`docs/reviews/M4.md#retrospective`](docs/reviews/M4.md#retrospective) is six
+rounds of the first one.
+- **Look for the chokepoint, not the list.** A fix that enumerates the cases you thought
+  of closes the instances and leaves the class open: it comes back through a name you
+  didn't list. Close the question where **every** instance has to pass. And when the
+  chokepoint doesn't cover everything, **measure the residue and write it where it gets
+  read** — `docs/TESTING.md`, next to what it governs — not in a comment beside the code.
+- **Pull the decision out into a pure function, and prove it with a matrix of cases.**
+  The half left inline inside the hook, the wrapper or the branch is the half the defect
+  lands in. The matrix proves the decision is **right**; a real run proves it is
+  **reached** — you need both, and the second is the one people skip.
 
 ### Findings lifecycle — ledger vs record
 A finding has **one home for its whole life**. It is never copied, and never moved.
@@ -110,3 +138,19 @@ the next builder will re-learn the hard way.
 
 A milestone is done when: its ROADMAP items are checked, tests are green, and DEVLOG +
 the affected docs (ARCHITECTURE / TESTING) reflect reality.
+
+### What you hand over
+A report the human can **spot-check in five minutes** instead of redoing the
+verification. Four things, none of them optional:
+1. **The numbers, with the expected value next to the observed one**, and how many times
+   you re-ran. A count read off a run and reported as-is is not a verification, it is a
+   transcription. Ignored and skipped tests are numbers too.
+2. **The mutations you tried, one line each, with the outcome.** This is what makes the
+   report falsifiable: a reader repeats one at random in thirty seconds.
+3. **The legitimate paths you verified were not broken.** A guard that refuses good work
+   is a defect, and it only shows up if someone runs the ordinary command.
+4. **How many review rounds per item, what each one found, and what stays uncovered** —
+   saying where you wrote it down.
+
+If one of these four is missing, the report isn't shorter: that verification wasn't
+done, and that needs saying.

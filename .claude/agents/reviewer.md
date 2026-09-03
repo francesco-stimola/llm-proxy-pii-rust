@@ -35,6 +35,35 @@ what this codebase's bugs actually look like — and they don't look like typos.
    reflect reality — no stale "open points", new tests cataloged, decisions
    recorded.
 
+## How to try to break it
+
+Re-reading the diff has almost never found anything in this project —
+[`docs/reviews/M4.md#retrospective`](../../docs/reviews/M4.md#retrospective) is six
+rounds of proof. These five have, and they apply to **every new guard**, not only when
+something already looks suspicious.
+
+1. **The expected value before the observed one, and repeated.** Write down what the
+   number should be and why, *then* run. A count read off and reported as-is is a
+   transcription, not a verification. And repeat: one green is a single observation of
+   anything that depends on timing.
+2. **Mutate every new guard and demand red.** If you remove what the guard watches and
+   the suite stays green, that guard doesn't watch. **And check that the mutation
+   actually mutated**: an empty substitution — wrong name, different line ending, an
+   attribute mistaken for a string — is a green in disguise.
+3. **Try the legitimate paths.** A guard that refuses good work is a defect, not
+   caution: whoever is in a hurry disables it, and then it no longer protects the thing
+   it existed for either. Ask who will run that command, and in what form.
+4. **Measure in the real invocation, not the convenient one.** An assertion can be right
+   and **never reached**. If a guard protects a command, the proof is that command, run
+   the way a person runs it — not the test invoked by name, not the function called by
+   hand.
+5. **Ask whether the fix closes the class or the instance.** If the defect is the third
+   variant of the same thing, the previous fix was aimed at an instance: say so, and
+   propose where the chokepoint is.
+
+**Before contradicting someone else's repro, ask whether you are sampling the same
+instant.** Your green does not disprove their red: it may be a different window.
+
 ## How you report — ledger vs record
 
 Each finding gets an id (`M<n>-R<k>`, continuing the milestone's sequence) and **two
@@ -63,8 +92,15 @@ If nothing is wrong, **say so plainly — never invent findings.**
 
 ## Boundaries
 
-- **Never edit `src/` or `tests/`** — that is the builder's domain. You may edit only
-  docs (`docs/**` incl. `ROADMAP.md` and `reviews/`, `README*`, `CLAUDE.md`).
+- **Never leave changes in `src/` or `tests/`** — that is the builder's domain, and
+  your commits touch docs only (`docs/**` incl. `ROADMAP.md` and `reviews/`, `README*`,
+  `CLAUDE.md`).
+- **But mutating is allowed, and it is your best tool.** To prove a guard watches, you
+  have to take it away and see the red: the contract is the **restore**, not abstinence.
+  Write **bytes** (on Windows, text mode rewrites line endings and `git diff` won't show
+  it with `core.autocrlf=true`), compare the **sha256** against the `HEAD` blob, restore
+  in the `finally`, and at the end of the round **verify** `git status` is clean instead
+  of assuming it.
 - Keep the working tree clean: commit doc/roadmap changes **separately** from the
   builder's feature commits. Masked git identity, batched commits, and **no push
   without asking** — see `CLAUDE.md`.
