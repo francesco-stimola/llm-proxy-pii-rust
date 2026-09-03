@@ -2399,11 +2399,11 @@ no fail-open, no over-mask regression — five findings, all about guards that c
 | ID | Title | Sev | Status |
 |---|---|---|---|
 | [M11-R0](reviews/M11.md#m11-r0) | `cargo fmt --check` red on `main` across four files the M11 commits touched — CI gates on it, so M11 as committed would fail on push | build | [x] |
-| [M11-R1](reviews/M11.md#m11-r1) | `VAT-04` asserts the absence of an ES VAT number in a form no ES recognizer could match — a live ES stub keeps the suite green | guard | [ ] |
-| [M11-R2](reviews/M11.md#m11-r2) | The priority fix created the mirror collision and nothing measures it: 73% of issuable 0-leading P.IVAs are named `[PHONE_n]` under the shipped default, while `VAT-10`'s sweep excludes that shape | fidelity | [ ] |
-| [M11-R3](reviews/M11.md#m11-r3) | A twelfth `PiiKind` ships with the suite green — `AUG-01` and `from_label` are hand-kept lists the enum does not force you to revisit | guard | [ ] |
-| [M11-R4](reviews/M11.md#m11-r4) | `CAT-01`'s non-vacuity floor is 20 against 54 declared ids, so a whole guard family can go invisible — and `VAT-OM` is already uncatalogued | guard | [ ] |
-| [M11-R5](reviews/M11.md#m11-r5) | `VAT-09`'s band cannot go red: `0.100` is structural over a contiguous sweep, not a measurement of the checksum | guard | [ ] |
+| [M11-R1](reviews/M11.md#m11-r1) | `VAT-04` asserts the absence of an ES VAT number in a form no ES recognizer could match — a live ES stub keeps the suite green | guard | [x] |
+| [M11-R2](reviews/M11.md#m11-r2) | The priority fix created the mirror collision and nothing measures it: 73% of issuable 0-leading P.IVAs are named `[PHONE_n]` under the shipped default, while `VAT-10`'s sweep excludes that shape | fidelity | [x] |
+| [M11-R3](reviews/M11.md#m11-r3) | A twelfth `PiiKind` ships with the suite green — `AUG-01` and `from_label` are hand-kept lists the enum does not force you to revisit | guard | [x] |
+| [M11-R4](reviews/M11.md#m11-r4) | `CAT-01`'s non-vacuity floor is 20 against 54 declared ids, so a whole guard family can go invisible — and `VAT-OM` is already uncatalogued | guard | [x] |
+| [M11-R5](reviews/M11.md#m11-r5) | `VAT-09`'s band cannot go red: `0.100` is structural over a contiguous sweep, not a measurement of the checksum | guard | [x] |
 
 <a id="m11-b"></a>
 ### Track B — the intra-op thread base: physical cores, not logical threads ✅

@@ -3,6 +3,65 @@
 Newest first. One entry per meaningful change — note *what* and *why*, not just
 *what*. This is the running history so context is never lost between sessions.
 
+## 2026-09-03 — M11 review round 1: five guards that could not go red
+
+**The first independent round this milestone has ever had**, and what it found is one species, not
+five defects: *guards that cannot fail* and *numbers quoted for something they do not measure*. No
+leak, no fail-open, no over-mask regression. That the round found nothing in the masking path and
+five things in the net around it is worth recording as a shape, because the net is what the next
+milestone will inherit.
+
+**The one with a product consequence — M11-R2, the mirror collision.** M11 found that ranking
+`TaxId` above `Phone` relabelled compact GB/DE numbers, fixed the direction, and pinned two
+instances. What nobody measured was the other direction, and it is much the larger: every
+*issuable* P.IVA is 0-leading, which is precisely what the phone tier's separator-free `Trunk` arm
+claims. Measured against the shipped default — `VAT-17` — **0.775 of issuable bare P.IVAs are named
+`[PHONE_n]`, not `[TAXID_n]`**. The split by leading pair is the whole explanation: `00xx` **0.033**,
+`0[1-9]xx` **0.859**, because libphonenumber reads a leading `00` as the international access code
+and rejects it — **and all five real published P.IVAs this repo's corpus is built on are
+`00…`-leading.** Every VAT guard sits inside the immune sub-shape. *A corpus has a shape, and that
+shape is a blind spot* — M4's lesson 2, landing again in the milestone that quotes it. `VAT-10`'s
+published 0.0998 cannot see this collision at all: its sweep is `1`-leading. Nothing leaks either
+way; what the price buys is decision 1's whole purpose, a token that says *business* rather than
+*person*, and for most of the bare form's issuable space it is not delivered. **Whether the ordering
+should change for the separator-free arm is the maintainer's call and is left open** — the number it
+needs now exists, which is what the closure was for.
+
+**Two guards were structurally incapable of failing, and both had said otherwise in their own doc
+comments.** `VAT-09` claimed a change to the over-mask cost "should have to edit this number to
+land"; over a *contiguous* sweep any function of the first ten digits accepts exactly one value in
+ten, so replacing the checksum with `d[10] == 7` printed `0.100` and passed. It now runs a second
+sweep with the check digit **held constant**, where a correct mod-10 still accepts ~1/10 and a fixed
+comparison accepts all or nothing. `VAT-04`'s ES arm asserted the absence of `"ES B12345678"` — with
+a space, which the tier's grammar can never match — so a live checksum-less ES recognizer left it
+green, and adding the one control needed to satisfy `VAT-16` left the whole suite at 239/239 with an
+unmeasured Spanish scheme shipping. Its negatives are now canonical, and each is checked for
+**reachability** against the grammar first.
+
+**The two that were about lists, and both were closed at the chokepoint rather than the instance.**
+A twelfth `PiiKind` shipped with the suite green, because `AUG-01` watched five string literals
+instead of the enum — the exact failure its own doc comment describes. `PiiKind::ALL` is now the one
+list, and `KIND-01` rebuilds it by walking a **compiler-checked exhaustive successor chain**, so a
+new variant is a compile error and cannot reach `ALL` without being placed. The proof that matters is
+the mutation that wires a new variant past *every* compiler demand and still leaves `ALL` short: red.
+And `CAT-01` — the guard over the guards — recognised a declaration only if its family was in a
+hand-kept `ID_PREFIXES` array, with a non-vacuity floor of **20 against 54**. The array is deleted
+rather than extended: ids are recognised by **shape**, two structural exclusions replacing the
+enumeration (a first segment under two characters drops all eight NER BIO tags; a mixed last segment
+drops every `M<n>-R<k>` review reference). Measured on the way in, that brought **nine real guard
+families under the check that had never been in it** — `CC`, `DBG`, `NER-EP`, `PERF`, `PHONE-COV`,
+`REG`, `THREAD` and two more, all catalogued, none ever verified.
+
+**A note on the loop's own arithmetic, per `CLAUDE.md`.** Round 1: **five findings, five on the test
+net, zero on the product** — one of the five (R2) carries a product-visible *question*, but its
+defect was a missing measurement and a false comment. Round 0 added one on the build (fmt). The ratio
+says the product held and the net did not, which is the healthier direction; it also says the net is
+where the next round should keep aiming.
+
+**Numbers.** `cargo test` 243/0/5 (from 239), `cargo test-onnx` 279/0/22 (from 275), `cargo fmt
+--check` and both clippy legs clean. Nine closure mutations, all red as predicted, each hitting a
+distinct assertion. Record: `docs/reviews/M11.md` → Round 1.
+
 ## 2026-09-03 — M11 Track A: the over-mask bar cleared, and CI's fmt gate found red
 
 **The real-traffic half of VAT-09, which the tier shipped without.** `VAT-09` measures the bare

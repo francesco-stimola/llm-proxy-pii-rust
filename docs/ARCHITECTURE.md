@@ -81,6 +81,20 @@ unstructured-entity load.
     and DE number as `[TAXID_N]` — no leak, since the bytes are masked either way, but a fidelity
     regression on a measured capability. A numbering-plan lookup that confirms an *assigned* number
     is better evidence than a mod-10 check, so the plan lookup names the span. Pinned by VAT-14.
+  - **The ordering is right and its price is large — both halves belong here (M11-R2).** The
+    collision is not two unlucky numbers: the phone tier's separator-free `Trunk` arm is
+    `\b0\d{6,11}\b`, and *every issuable P.IVA is 0-leading*, so the whole bare form is a phone
+    candidate in all nine vetted regions. **Measured against the shipped default: 0.775 of issuable
+    bare P.IVAs are named `[PHONE_n]`, not `[TAXID_n]`** (`VAT-17`). The split by leading pair is
+    the explanation and it is why nothing caught this for a milestone: `00xx` is **0.033**,
+    `0[1-9]xx` is **0.859** — a leading `00` reads to libphonenumber as the international access
+    code and is rejected, and *every* real published P.IVA in this repo's corpus is `00…`-leading,
+    i.e. inside the immune sub-shape. `VAT-10`'s 0.0998 is the **national-ID** collision only; its
+    sweep is `1`-leading, so it cannot see this one at all. Nothing leaks either way — what the
+    price buys is the decision that a *business* identifier and a *person's* must not share a
+    token, and for the majority of the bare form's issuable space that distinction is not
+    delivered. Whether the separator-free arm alone — the weakest evidence the phone tier has, no
+    grouping and no context — should yield to `TaxId` is open, and product-visible.
 - **Domestic phone** — numbers written with **no `+CC`** (GB `020 7946 0958`, IT `347 1234567`,
   ES `91 123 45 67`). Historically the "FP-prone, opt-in" tier ([M4-R1](reviews/M4.md#m4-r1),
   [M8.1](ROADMAP.md#m81)): a bare digit run looks like an order number or a national ID, so it
