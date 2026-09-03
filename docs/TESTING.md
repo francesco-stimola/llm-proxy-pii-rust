@@ -302,6 +302,14 @@ two *other* always-on tiers already claim that shape.
   checksums are not measured here. Asserting the absence keeps it a documented decision rather than
   something a future reader finds and "fixes" by guessing an algorithm.
   **The ES arm could not fail, and a review round proved it (M11-R1).** It read `"ES B12345678"` — *with a space* — and the tier documents and enforces that there is no space between prefix and body, so that input was absent for a reason having nothing to do with ES not shipping. A live, checksum-less ES recognizer — exactly the half-shipped outcome this guard forbids — left it green, and adding the one control needed to satisfy `VAT-16` left the **whole suite at 239/239** with an unmeasured Spanish scheme shipping. FR and LV were fine (stubs for both turned it red). The negatives are now the canonical forms `ESB12345678` / `ES12345678Z` / `ESX1234567L`, and — the durable half — each input is first checked for **reachability** against the tier's grammar: two uppercase ASCII letters then an unbroken alphanumeric run. A negative the grammar could never match is now red on the spot rather than quietly true, which is the same "prove the corpus can express the thing" move PROP-04 made for M4-R17.
+  > **Decided limit, measured in review round 2 and accepted rather than chased.** The reachability
+  > helper's length floor is **9**, but the shortest token any shipped pattern can match is **11**
+  > (`DE` + 9 digits). A negative written 9 or 10 characters long would therefore be judged *reachable*
+  > and its absence believed — M11-R1's failure mode again, two characters out of reach. It is latent:
+  > every VAT-04 negative today is at least 11 characters. Same family as M11-R1, so it is recorded
+  > here rather than filed — a guard on a guard is worth one level, not four. If the floor is ever
+  > touched, 11 is the number, and the doc comment's stated reason (*"the shortest shipped form is
+  > `DE` + 9 digits"*) is what makes 9 look right.
 - **VAT-05 — `lowercase_country_prefix_is_not_a_vat_number`: `it` is an English word.** The country
   prefixes are uppercase-only on purpose. Lowercased, `"call it <11 digits>"` would produce a
   14-character span swallowing an ordinary word. The bare recognizer still claims the *digits* —
@@ -328,6 +336,16 @@ two *other* always-on tiers already claim that shape.
   *not* acceptable is quoting a rate nobody measured, so the number is produced by a deterministic
   sweep and pinned to a band: moving the shipped FP cost should have to edit this test to land.
   **What the 0.100 does and does not pin (M11-R5).** The sweep is over 100 000 *consecutive* 11-digit numbers, and for **any** scheme whose eleventh digit is a function of the first ten, exactly one value per block of ten passes — so `0.100` is structural, not a measurement of the arithmetic. Replacing `it_piva_valid`'s final comparison with `d[10] == 7` still printed `0.100` and still **passed**. What sweep 1 really pins is the *shape*: eleven digits, the last a check digit, no context required. So a **second sweep** now holds the check digit constant while the first ten digits vary — there a correct mod-10 still accepts ~1 in 10, while a comparison against a fixed digit accepts **all or nothing** (0.0 or 1.0). Two sweeps agreeing is evidence about the checksum; one was evidence about the format. (Seven other VAT guards did go red on that mutation, so this was a claim-accuracy defect rather than a coverage hole — the algorithm is pinned by VAT-01/02/03.) **And the rate survives contact with real text:** measured over 104 uncurated `\d{11}` tokens found in ~304 MB of third-party source, the shipped recognizer accepts **9 — 0.0865**, about **one over-mask per 34 MB** of code-shaped traffic, and the four values it masks are memory and byte-size constants: exactly the "database id or order number inside `tool_use.input`" harm the ROADMAP names.
+  > **Decided limit, measured in review round 2: two sweeps agreeing is evidence that the check
+  > digit *depends on the body*, not that the arithmetic is right.** Sweep 2's rate is **also** 0.100
+  > by construction — over a contiguous run of the first ten digits the last of them contributes a
+  > bijection mod 10, so exactly one value in ten yields any given check digit. Measured: swapping
+  > `it_piva_valid`'s doubling **parity** — wrong arithmetic, still body-dependent — turns **9 tests red**
+  > and leaves VAT-09 **green at 0.100 on both sweeps**. What sweep 2 does close is the M11-R5
+  > stub (`d[10] == <const>` gives 0.0 or 1.0), and that is worth having. **The arithmetic itself is
+  > pinned by the eight real-published-number guards that went red** — VAT-01, VAT-03, VAT-05,
+  > VAT-06, VAT-07, VAT-08, VAT-13 and VAT-14 — so this is claim reach, not a coverage hole. Same
+  > family as M11-R5; recorded, not chased.
 - **VAT-10 (measured) — `vat_and_natid_collision_rate`: is the naming rule load-bearing or a
   curiosity?** **Measured: 1 997 / 20 000 = 0.0998** of valid P.IVAs also satisfy a DE Steuer-ID or
   LV personal-code check, so ~10% are named `[NATID_n]` and ~90% `[TAXID_n]`. Both are masked
