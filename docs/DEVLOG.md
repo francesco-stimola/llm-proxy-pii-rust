@@ -3,6 +3,65 @@
 Newest first. One entry per meaningful change — note *what* and *why*, not just
 *what*. This is the running history so context is never lost between sessions.
 
+## 2026-09-03 — M11 rounds 2 and 3: a guard that could not work, and a leak ten milestones old
+
+**Round 2 broke a fix from round 1, and was right to.** `KIND-01` proved `PiiKind::ALL` complete by
+walking a successor chain whose `match` the compiler checks. The compiler demands an **arm**, not a
+place in the walk — so `Vin => return None` compiles, the walk never reaches it, `ALL` and the walk
+still agree, and a twelfth kind ships green. My own closure mutation had wired the variant in
+*properly*, which is the conscientious author's move, not the lazy one. Rust cannot enumerate an
+enum's variants, so **no test could close this**: a guard was the wrong shape of answer. The chain
+is deleted and a `pii_kinds!` macro generates the enum, `ALL`, `label` and `from_label` from one
+list. `priority` and `is_structured` stay hand-written exhaustive matches on purpose — those are
+*judgements* about a new kind, and the compiler already stops you there.
+
+**And it caught an arithmetic error of mine that had a consequence.** `CAT-01`'s floor read `>= 70`
+against a stated "measured 73" — but the extractor counts **(id, file) pairs** while my 73 counted
+**distinct ids** from a probe. Two quantities, compared against each other. Re-read: **96 pairs, 79
+distinct**. The consequence was exact: deleting the `//!` walk leaves **70**, so the mutation meant
+to prove that walk alive passed by one. A bigger literal was not the fix — one total cannot notice
+one of two mechanisms dying while the other grows — so each walk now asserts its own liveness.
+
+**Round 3 found a leak, and it is the milestone's most serious finding.** A lower- or mixed-case
+IBAN or VAT number was **forwarded to the provider in clear**: seven of thirteen renderings of
+values already in this repo's own corpus, including `IT60x0542811101000000123456` — a canonical
+IBAN with **one** lowercase letter. Reproduced before touching anything.
+
+**Why it hid.** The patterns spelled their letters `[A-Z]`, and letters are ASCII word characters,
+so there was no `(?-u:\b)` for a shorter recognizer to fall back on: the span did not shrink, it
+**disappeared**. Every uppercase corpus test stayed green. Meanwhile `iban_mod97`'s doc comment has
+promised to fold letters to uppercase since **M1** — the validator was written for input the regex
+could never deliver, which is the clearest evidence available that nobody chose this. The IBAN half
+predates M11 by ten milestones and survived every review this repo has run.
+
+**The class is what to carry: an axis nobody decided.** The tier was inconsistent along it — Codice
+Fiscale, ES DNI/NIE and the CN resident id all fold case; VAT and IBAN did not — and no test asked
+the question, so the inconsistency was invisible. Worse, the docs asserted a *reason the code
+refutes*: `VAT-05` argued that lowercase would let `"call it 12345678901"` swallow an English word,
+while the next paragraph of the same comment forbids any space between prefix and digits, making
+that case impossible under **any** rule. Making `IT` case-insensitive turned exactly one assertion
+red in 149 — the one pinning the miss — and the assertion the rationale is attached to stayed green.
+
+**Both halves closed, on the maintainer's decision, with both costs measured twice** (independently
+of the review, over the same 341.1 MB / 16 380 files of third-party source). **VAT: folding case
+adds 0 matches** for all five schemes, and each is checksum-gated besides. **IBAN needed a gate** —
+an IBAN has no hard checksum (M4 masks a structurally valid one even when mod-97 fails), and folding
+case takes it from 1 match to 150, sweeping in hex digests and base64. So `iban_case_gate` splits
+the rule by rendering: canonical uppercase keeps M4's behaviour, any lowercase letter must be fully
+verifiable. **Residue: 0 of the 149.** One correction to the round's arithmetic, in the safe
+direction: `iban_length_ok` returns `true` for an unknown country code, so for 145 of them the gate
+is mod-97 *alone* — the zero survives that weaker reading, which is the one the code implements.
+
+**`CASE-01` is the chokepoint**, and the instance-shaped alternative is why it had to be: adding
+`it00905811006` to a corpus would have closed IT and left DE, GB, PT, NL and IBAN open. It asks
+every letter-bearing recognizer the same question, including the **single-letter-flipped**
+rendering a lowercase corpus would miss.
+
+**The loop's arithmetic so far:** ten findings closed — **eight on the test net or the docs, two in
+the product** (R2's unmeasured labelling collision, R10's leak). The net is where the rounds keep
+landing, which is the ratio `CLAUDE.md` asks to watch; but round 3 is also the one that went looking
+at the product and found the only leak of the milestone.
+
 ## 2026-09-03 — M11 review round 1: five guards that could not go red
 
 **The first independent round this milestone has ever had**, and what it found is one species, not
