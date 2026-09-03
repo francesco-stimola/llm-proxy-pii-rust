@@ -352,8 +352,31 @@ two *other* always-on tiers already claim that shape.
   > turns, but it is **not** a precision result: it is weaker than PHONE-OM's zero, whose
   > candidate set is every plausible digit group. What stays uncovered is traffic that *does*
   > carry 11-digit database ids or order numbers, where VAT-09's 0.100 is the number that
-  > applies and no fixture in this repo measures it. The guard prints the denominator on every
-  > run so this cannot quietly turn into a precision claim.
+  > applies. The guard prints the denominator on every run so this cannot quietly turn into a
+  > precision claim.
+  >
+  > **That residue now has a number, measured off-repo (M11 Round 1).** No fixture here can
+  > supply one, so it was taken over text nobody in this project wrote: **303 772 514 bytes
+  > across 12 859 `.rs`/`.md`/`.toml`/`.json`/`.txt` files** of the crates.io registry source
+  > cache — code-shaped text, the closest available stand-in for a tool result. It holds **104**
+  > eleven-digit tokens (**0.34 per MB**), of which **9 satisfy the mod-10 → 0.0865** — the
+  > synthetic 0.100 survives contact with uncurated text. The four distinct values are
+  > `00024414062`, `17179873280`, `34366720000`, `41789270000`: memory and byte-size constants,
+  > i.e. exactly the harm named above. **Expect roughly one bare-P.IVA over-mask per 34 MB of
+  > code-shaped traffic.** The measurement is not a test — it needs a corpus this repo cannot
+  > vendor — so it is recorded here rather than guarded; re-derive it before quoting a different
+  > number.
+  >
+  > **The prefixed schemes measured zero on the same corpus, and that is the answer to
+  > “why does format-only NL belong in a checksum tier?”** Against a denominator of
+  > **1 075 001** uppercase-alnum tokens of length 6–16: `NL\d{9}B\d{2}` → **0**, the
+  > relaxed `NL\d{9}[A-Z]\d{2}` (dropping the literal `B` anchor) → **0**, and
+  > `[A-Z]{2}\d{9}` — the whole prefixed family's shape, country code ignored — → **0**.
+  > The plate families M11 **refused** for having no verifier fire **204** times in that same
+  > corpus (`[A-Z]{2}\d{2,4}[A-Z]{1,2}` → 24, `[A-Z]{1,3}-[A-Z]{1,2}\d{1,4}` → 180). So the
+  > tier did not accept what it had just turned away: NL pins 14 positions with three literals,
+  > and unlike a plate its body *is* checked — the 11-proef result is reported as
+  > `Verified` vs `Structural` (VAT-11) rather than claimed.
 - **VAT-16 — `the_guard_would_notice_a_vat_number_that_really_is_there`: the positive control,
   one per shipped scheme.** "No VAT spans" and "no detection at all" produce the same empty
   vector (M9-R28, BENCH-01), so VAT-15 needs a control — and M10-R7 is why it is one control **per
