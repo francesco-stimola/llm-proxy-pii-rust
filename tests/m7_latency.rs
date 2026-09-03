@@ -40,7 +40,7 @@ use std::time::Instant;
 use llm_proxy_pii_rust::pii::anonymizer::Vault;
 use llm_proxy_pii_rust::pii::composite::CompositeDetector;
 use llm_proxy_pii_rust::pii::onnx::{
-    CoreCounts, ExecutionProvider, OnnxNerDetector, resolve_pool_and_intra,
+    resolve_pool_and_intra, CoreCounts, ExecutionProvider, OnnxNerDetector,
 };
 use llm_proxy_pii_rust::pii::recognizers::StructuredRecognizers;
 use llm_proxy_pii_rust::pii::{Budget, DetectError, PiiDetector, PiiEntity};

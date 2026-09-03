@@ -1005,17 +1005,26 @@ mod thread_tests {
         // The reference box: 6 cores / 12 threads. This is the change — both SMT siblings of every
         // core no longer land on the same int8 GEMM.
         assert_eq!(derive_thread_base(12, Some(6)), 6);
-        assert_eq!(thread_base_source(12, Some(6)), ThreadBaseSource::PhysicalCores);
+        assert_eq!(
+            thread_base_source(12, Some(6)),
+            ThreadBaseSource::PhysicalCores
+        );
 
         // SMT off in firmware: the two counts are equal and the `min` is a no-op. Reported as
         // `PhysicalCores` — the base *is* the physical count, and nothing capped it.
         assert_eq!(derive_thread_base(6, Some(6)), 6);
-        assert_eq!(thread_base_source(6, Some(6)), ThreadBaseSource::PhysicalCores);
+        assert_eq!(
+            thread_base_source(6, Some(6)),
+            ThreadBaseSource::PhysicalCores
+        );
 
         // Hybrid P+E (14 cores / 20 threads) — the case that raised the question. Thread count is
         // no longer 2x the core count, and the rule still means "every core once".
         assert_eq!(derive_thread_base(20, Some(14)), 14);
-        assert_eq!(thread_base_source(20, Some(14)), ThreadBaseSource::PhysicalCores);
+        assert_eq!(
+            thread_base_source(20, Some(14)),
+            ThreadBaseSource::PhysicalCores
+        );
 
         // **The `min` case, and the trap the whole formula exists to avoid.** A proxy granted 2
         // CPUs on a 32-core host: `available_parallelism()` honours the cgroup quota / affinity
@@ -1023,12 +1032,18 @@ mod thread_tests {
         // `physical` bare here would derive `intra = 32`, i.e. the oversubscription this
         // derivation exists to prevent, arriving through the fix for it.
         assert_eq!(derive_thread_base(2, Some(32)), 2);
-        assert_eq!(thread_base_source(2, Some(32)), ThreadBaseSource::ParallelismCap);
+        assert_eq!(
+            thread_base_source(2, Some(32)),
+            ThreadBaseSource::ParallelismCap
+        );
 
         // Detection unavailable -> the logical count, which is today's behaviour *exactly*. A
         // platform that cannot answer loses nothing.
         assert_eq!(derive_thread_base(12, None), 12);
-        assert_eq!(thread_base_source(12, None), ThreadBaseSource::PhysicalUnknown);
+        assert_eq!(
+            thread_base_source(12, None),
+            ThreadBaseSource::PhysicalUnknown
+        );
     }
 
     #[test]
@@ -1179,10 +1194,7 @@ mod thread_tests {
 
             for pool in [1usize, 2, 3, 4, 8] {
                 let intra = derive_intra_threads(pool, base);
-                assert!(
-                    intra >= 1,
-                    "base={base} pool={pool}: intra must never be 0"
-                );
+                assert!(intra >= 1, "base={base} pool={pool}: intra must never be 0");
 
                 if pool <= base {
                     // The real invariant, in the regime where the derivation can honour it.

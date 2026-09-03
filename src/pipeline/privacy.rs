@@ -957,7 +957,13 @@ mod tests {
     /// nothing tells you. This is the cheap guard against that.
     #[test]
     fn the_augmentation_prompt_names_every_placeholder_kind_it_should() {
-        for token in ["[EMAIL_1]", "[PHONE_2]", "[PERSON_1]", "[IBAN_1]", "[TAXID_1]"] {
+        for token in [
+            "[EMAIL_1]",
+            "[PHONE_2]",
+            "[PERSON_1]",
+            "[IBAN_1]",
+            "[TAXID_1]",
+        ] {
             assert!(
                 AUGMENTATION_PROMPT.contains(token),
                 "the augmentation prompt must exemplify {token}"
