@@ -60,6 +60,24 @@ cargo build      # links successfully now
 cargo test       # runs the suite — see docs/TESTING.md
 ```
 
+> **If the link step fails with "Access is denied" / `LNK1104` on
+> `target\debug\llm-proxy-pii-rust.exe`, a running copy of the proxy is holding it.** On
+> Windows a running image is locked, so cargo cannot overwrite the bin target while any
+> instance of it is alive — including the long-lived one this machine keeps for real use,
+> which [`CLAUDE.md`](../CLAUDE.md) forbids you to kill. **The way through is a second build
+> directory, not a `taskkill`:**
+>
+> ```powershell
+> cargo build --target-dir target/mine
+> cargo test  --target-dir target/mine
+> ```
+>
+> It costs one extra build cache and nothing else; the lock is on the *file*, not the
+> directory. Do **not** free the port or kill by image name either — the rule is the same one
+> the `-onnx` aliases follow one section down: when two things want the same path, give the
+> new one its own path. (Found in M11 review round 3, where the instruction "never kill it"
+> had no companion sentence saying what to do instead.)
+
 ## 4. The NER model (M2 / M2.5, feature `onnx`)
 
 The default build is native-dep-free and structured-PII only. The unstructured-entity

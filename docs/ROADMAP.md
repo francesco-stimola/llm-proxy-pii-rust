@@ -2442,6 +2442,13 @@ rewriter, `MAX_BODY_BYTES`, a VAT-dense DoS body and both wire schemas through t
 The masking path came back clean — no leak, no fail-open, no over-mask regression, no raw value
 in a log. Four findings, all on the net, and two of them are Round 1's own closures failing to hold.**
 
+**Round 3 (2026-09-03) went after the one axis no earlier round varies — letter case — and found
+the leak. One finding, in the product.** The `pii_kinds!` macro checks out against the pre-macro
+source; every published rate reproduces; two further net variants were recorded as decided limits
+in [`TESTING.md`](TESTING.md) rather than filed. **[M11-R10](reviews/M11.md#m11-r10) needs a
+maintainer decision before `v1.3.0`** — it is a product-visible coverage change, and the numbers
+to decide on are in the record.
+
 | ID | Title | Sev | Status |
 |---|---|---|---|
 | [M11-R0](reviews/M11.md#m11-r0) | `cargo fmt --check` red on `main` across four files the M11 commits touched — CI gates on it, so M11 as committed would fail on push | build | [x] |
@@ -2454,6 +2461,7 @@ in a log. Four findings, all on the net, and two of them are Round 1's own closu
 | [M11-R7](reviews/M11.md#m11-r7) | `CAT-01`'s floor was justified by a count that was never measured (73 vs 90), and the `//!` mutation its closure cites as proof is green at HEAD | guard | [x] |
 | [M11-R8](reviews/M11.md#m11-r8) | Decision 4 is still written as an open question in `TESTING.md` — VAT-17 and in `recognizers.rs`'s VAT-17 doc comment | docs | [x] |
 | [M11-R9](reviews/M11.md#m11-r9) | `TESTING.md` states `CAT-02`'s matrix as 18 against 15; the matrix holds 18 against 17 | docs | [x] |
+| [M11-R10](reviews/M11.md#m11-r10) | A lower- or mixed-case IBAN or VAT number is forwarded **in clear** — the structured tier's case axis was never decided | **leak** | [ ] |
 
 <a id="m11-b"></a>
 ### Track B — the intra-op thread base: physical cores, not logical threads ✅

@@ -224,6 +224,25 @@ false positive): `email`, `phone`, `ssn`, `credit_card`, `iban`, `secret`,
 - ADV-01 — evasion recall: broadened phone shapes + IBAN-before-word are caught; obfuscated emails are a **documented gap** (`tests/adversarial.rs`).
 - IBAN-04 — the IBAN span never absorbs a trailing ALL-CAPS word (code-review guard).
 
+> **The IBAN pattern is uppercase-only, and nothing here says so or checks it (M11-R10, open).**
+> `[A-Z]{2}\d{2}[A-Z0-9]{11,30}` means **one** lowercase letter anywhere drops the whole span:
+> driven through the real binary, `it60x0542811101000000123456`, the space-grouped lowercase
+> form, **and** `IT60x0542811101000000123456` — an otherwise-uppercase IBAN with a single
+> lowercase BBAN letter — all reach the upstream **in clear**, while
+> `IT60X0542811101000000123456` is masked. `iban_mod97`'s own doc says it folds letters to
+> uppercase, i.e. the *validator* was written for input the *regex* can never deliver.
+> **Unlike the VAT tier's version of this, the rule here is load-bearing and worth keeping:**
+> case-folding the continuous arm costs **+931 masked spans** over 341.1 MB of third-party
+> source (2 → 933 hits — hex digests, base64, `Ed25519PublicKey`), and IBAN has no hard
+> checksum gate, so every one of those is masked. The cheap way to buy the coverage without the
+> cost is measured too: require a **non-canonical-case** rendering to be `Verified` (mod-97 +
+> the ISO 13616 length) rather than `Structural`, and **0 of the 931** survive — leaving the
+> uppercase path's deliberate "a structurally-valid IBAN is masked even if mod-97 fails" rule
+> (M4) untouched. Recorded here rather than fixed, because it changes product-visible coverage.
+> The tier is **inconsistent** on this axis, which is the part that makes it an accident rather
+> than a policy: the national-ID recognizers (Codice Fiscale, ES DNI/NIE, CN resident id) all
+> fold case and mask either way; IBAN and the six VAT patterns do not.
+
 ### M2 — hybrid detection (unstructured entities)
 - OVL-01 — shared overlap resolution: structured PII wins a span an ML entity overlaps; non-overlapping spans all survive in reading order (`src/pii/overlap.rs`).
 - CMP-01 — `CompositeDetector` merges structured + (fake) NER entities; the deterministic layer wins overlaps (`src/pii/composite.rs`).
@@ -310,10 +329,29 @@ two *other* always-on tiers already claim that shape.
   > here rather than filed — a guard on a guard is worth one level, not four. If the floor is ever
   > touched, 11 is the number, and the doc comment's stated reason (*"the shortest shipped form is
   > `DE` + 9 digits"*) is what makes 9 look right.
-- **VAT-05 — `lowercase_country_prefix_is_not_a_vat_number`: `it` is an English word.** The country
-  prefixes are uppercase-only on purpose. Lowercased, `"call it <11 digits>"` would produce a
-  14-character span swallowing an ordinary word. The bare recognizer still claims the *digits* —
-  what must never happen is the span growing to eat the word before them.
+- **VAT-05 — `lowercase_country_prefix_is_not_a_vat_number`: the country prefixes are
+  uppercase-only.** The recognizers match `IT`/`DE`/`GB`/`PT`/`NL` in uppercase only, so a
+  lower- or mixed-case rendering matches **nothing at all** — the letters are ASCII word
+  characters, so there is no `(?-u:\b)` between them and the digits for the bare recognizer to
+  use either.
+  > **The stated reason for that does not survive the tier's own grammar, and the measured cost
+  > of the rule is not what the reason claims (M11-R10, open).** The rationale in
+  > `recognizers.rs` and in this entry's first version was *"lowercased, `call it <11 digits>`
+  > would produce a 14-character span swallowing an ordinary word"* — but the tier also forbids
+  > **any space between prefix and digits**, so `it 00905811006` cannot match whatever the case
+  > rule says. Mutation: making the `IT` pattern case-insensitive turned exactly **one**
+  > assertion red in 149 lib tests — `kinds("it00905811006").is_empty()`, the one that pins the
+  > miss itself. The `"call it …"` assertion, which carries the rationale, stayed **green under
+  > the very change it is quoted as forbidding**. Measured cost of folding case on all five
+  > prefixed schemes, over 341.1 MB / 16 380 files of uncurated third-party source: **0
+  > additional matches** (0 uppercase, 0 case-insensitive, for every scheme). Measured cost of
+  > *keeping* it, driven through the real binary: **7 of 13 renderings of real published VAT
+  > numbers reach the upstream in clear**, including `NL111222333b01` — an uppercase prefix with
+  > a lowercase internal `B` separator, which no stated decision covers at all, and whose case
+  > **no test pins in either direction** (changing `B` to `[Bb]` leaves the suite at 246/0/5).
+  > The rule may well be right; it has never been *decided*. Tracked as
+  > [M11-R10](reviews/M11.md#m11-r10) — a product-visible labelling/coverage change, so the
+  > maintainer's call.
 - **VAT-06 — `vat_is_always_on_regardless_of_locales`: the posture, and the guard against a config
   variable appearing.** The national-ID posture (M4-R1), not the FP-prone phone tier's. **There is
   no `PII_LOCALES`-style gate for this tier and there is deliberately not going to be one**
@@ -595,7 +633,20 @@ two *other* always-on tiers already claim that shape.
   > **Both DEP guards query the release matrix, not the host — and that is why (2026-07-31).** They used to ask `cargo tree` about the machine running them, with `windows-sys` as the single allowance. On Windows: green. On CI's first Linux run: **red**, naming `openssl-sys` and `cc` — because `native-tls` is the *platform's* TLS (schannel / OpenSSL / Security.framework), so "the default build is native-dep-free" was a claim about one point of a grid. The fix is the M10 shape: iterate the five released targets, each with an explicit allowance and the reason beside it. Verified by mutation — deleting the Linux allowance reds the guard **on Windows**, naming the target, which is the property that was missing. `DEP_GUARD_HOST_ONLY=1` checks the host alone for offline work, and says so; CI never sets it.
 
 **The catalogue's own guard (`tests/test_catalogue.rs`).**
-- **CAT-01 (M10-R55 / M10-R59) — `every_declared_guard_id_appears_in_the_test_catalogue`.** Extracts every guard id declared in a `#[test]`'s own doc comment **or in a file's `//!` module doc**, and asserts each is **named in this file**. Deliberately the same shape as **CLI-05**: extract the claims from the *source*, assert each appears in the *document*. **This document is hand-maintained, and it drifted five times in M10** (R51 twice, R55 three times) — each time a guard was added, catalogued nowhere, and remembered only by the round that asked for it. M10-R55 prescribed this test; M10-R59 pointed out it had not been built, which was itself the tenth instance of that class. **M11-R4 then found the guard had its own defect, and it was the same one.** Declarations were recognised only if the family appeared in a hand-kept `ID_PREFIXES` array, so a *new* family was invisible: removing `"VAT"` and `"AUG"` and scrubbing all 24 of their ids from this file left it green, and the non-vacuity floor meant to prevent that was **20 against 54 declared ids**. There is no prefix list any more — an id is recognised by its **shape** (`CAT-02`), so a family is in scope the moment somebody writes one. **The non-vacuity floor then had to be rebuilt too (M11-R7), and the way it was wrong is the interesting part:** it read `>= 70` against a stated "measured 73" that was never a reading of this extractor at all — the extractor counts **(id, file) pairs**, not distinct ids, and the real figure was 90 at the commit that wrote 73 and is **96** now (79 distinct). The consequence was exact: deleting the `//!` walk left **70** pairs against `>= 70`, so the mutation meant to prove that walk alive passed by one. A single total cannot notice one of two independent mechanisms dying while the other grows, so each walk now asserts **its own** liveness (`>= 4` module-doc declarations, `>= 60` test-doc ones) and the aggregate (`>= 90`) is left to catch the shape rule narrowing outright. Three assertions, three distinct mutations, three different lines. Adopting the shape rule brought **nine real families under the check that never were**: `CC`, `DBG`, `NER-EP`, `PERF`, `PHONE-COV`, `REG`, `THREAD` and two more, all catalogued here and none of them previously verified. **Scope limits:** it proves each declared id is *named*, not that its description is accurate and not that every test has an id — accuracy is review's job; "named" means named *anywhere*, so a cross-reference from a sibling entry satisfies it even when the id's own entry is gone (M11 round 0, mutation M7); and nothing here can catch an id deleted from *both* source and document in one change, which is a deliberate act rather than the drift this guard is for. *It found four on its first run* — `LOG-03` and `PROP-01a/b/c`, catalogued only inside the compressed forms `LOG-01/02/03` and `PROP-01` — and four more the day the shape rule landed: `VAT-OM`, `KIND-01`, `KIND-02` and `CAT-02` itself.
+- **CAT-01 (M10-R55 / M10-R59) — `every_declared_guard_id_appears_in_the_test_catalogue`.** Extracts every guard id declared in a `#[test]`'s own doc comment **or in a file's `//!` module doc**, and asserts each is **named in this file**. Deliberately the same shape as **CLI-05**: extract the claims from the *source*, assert each appears in the *document*. **This document is hand-maintained, and it drifted five times in M10** (R51 twice, R55 three times) — each time a guard was added, catalogued nowhere, and remembered only by the round that asked for it. M10-R55 prescribed this test; M10-R59 pointed out it had not been built, which was itself the tenth instance of that class. **M11-R4 then found the guard had its own defect, and it was the same one.** Declarations were recognised only if the family appeared in a hand-kept `ID_PREFIXES` array, so a *new* family was invisible: removing `"VAT"` and `"AUG"` and scrubbing all 24 of their ids from this file left it green, and the non-vacuity floor meant to prevent that was **20 against 54 declared ids**. There is no prefix list any more — an id is recognised by its **shape** (`CAT-02`), so a family is in scope the moment somebody writes one. **The non-vacuity floor then had to be rebuilt too (M11-R7), and the way it was wrong is the interesting part:** it read `>= 70` against a stated "measured 73" that was never a reading of this extractor at all — the extractor counted **(id, file) pairs**, not distinct ids, and the real figure was 90 at the commit that wrote 73. The consequence was exact: deleting the `//!` walk left **70** pairs against `>= 70`, so the mutation meant to prove that walk alive passed by one. A single total cannot notice one of two independent mechanisms dying while the other grows, so each walk now asserts **its own** liveness (`>= 4` module-doc declarations, `>= 60` test-doc ones) and the aggregate (`>= 90`) is left to catch the shape rule narrowing outright. Three assertions, three distinct mutations, three different lines.
+  > **What the three floors are measured against, read from this extractor at this commit
+  > (M11 review round 3) — and the reason a number in prose is the wrong place for it.** The set
+  > gained an `Origin` component in the same fix, so `declared.len()` no longer counts (id, file)
+  > pairs: it counts **(id, file, origin) triples**, and six pairs are declared in both a `//!`
+  > and a `///` block of the same file. Live values: **module-doc 32 · test-doc 70 · total 102**
+  > (distinct (id, file) pairs **96**, distinct ids **79**). So the aggregate floor's real slack
+  > is 12, not the 6 its own comment implies — it notices *less* than the number beside it
+  > claims. **Decided limit, not chased:** this is the third statement of the same shape inside
+  > one milestone (M11-R4's "20 against 54", M11-R7's "70 against a measured 73", this one), and
+  > the class is closed — the rule that comes out of it is *a guard's non-vacuity number belongs
+  > in its **failure message**, computed, never in prose beside the literal*, because every prose
+  > copy is a number that has to be re-read on a commit nobody remembers to re-read it on. The
+  > per-mechanism assertions here already print theirs; the aggregate's does not. Adopting the shape rule brought **nine real families under the check that never were**: `CC`, `DBG`, `NER-EP`, `PERF`, `PHONE-COV`, `REG`, `THREAD` and two more, all catalogued here and none of them previously verified. **Scope limits:** it proves each declared id is *named*, not that its description is accurate and not that every test has an id — accuracy is review's job; "named" means named *anywhere*, so a cross-reference from a sibling entry satisfies it even when the id's own entry is gone (M11 round 0, mutation M7); and nothing here can catch an id deleted from *both* source and document in one change, which is a deliberate act rather than the drift this guard is for. *It found four on its first run* — `LOG-03` and `PROP-01a/b/c`, catalogued only inside the compressed forms `LOG-01/02/03` and `PROP-01` — and four more the day the shape rule landed: `VAT-OM`, `KIND-01`, `KIND-02` and `CAT-02` itself.
 - **CAT-02 (M11-R4) — `the_guard_id_shape_rule_separates_ids_from_prose`.** Replacing a hand-kept list with a rule moves the risk into the rule: one that quietly narrowed would take CAT-01 down with it and leave it green, since the floor catches a collapse but not a narrowing. So the rule is pinned directly, by a matrix of the cases it must separate — 18 real ids accepted (`VAT-15`, `PERF-M7-03`, `DOS-BUD`, `FAILOPEN-BUD`, `PHONE-NAT-01`, `VAT-OM`, …) against **17** things that look like them and are not. The two exclusions that carry the precision are structural rather than enumerated: **a first segment shorter than two characters** rules out the NER's eight BIO tag names (`B-PER`, `I-ORG`, `B-DATE`, …) quoted in the eval tests' module docs, and **a last segment that is neither all digits nor all letters** rules out every review reference (`M4-R13`, `M10-R55`) — which matters because those appear in nearly every doc comment in this repo, and mistaking one for a guard id would demand a catalogue entry for every finding ever filed. Residue, measured and accepted: acronym-plus-number tokens such as `UTF-8` or `AGPL-3` would be accepted; none occurs in any scanned doc comment today, and if one ever does the symptom is a failure naming it.
 
 **Fail-open boundary (`src/pii/composite.rs`, unit).**
