@@ -507,6 +507,19 @@ fn vat_recognizers() -> Vec<Recognizer> {
     ]
 }
 
+/// How many tax/VAT recognizers this build ships — the length of [`vat_recognizers`].
+///
+/// Public for one reason: the over-mask guard's positive control (`VAT-16`) has to hold one
+/// live control **per shipped scheme**, and a hand-kept list of six would silently stay six
+/// when a seventh recognizer lands — leaving the new scheme unwatched by the guard whose whole
+/// job is to prove the tier is switched on. That is M10-R7's defect verbatim, one tier over:
+/// there, a control set covering one shape family out of three passed with the other two
+/// deleted. Counting the set the recognizers are actually built from is the chokepoint; a list
+/// somebody remembers to extend is not.
+pub fn shipped_tax_recognizer_count() -> usize {
+    vat_recognizers().len()
+}
+
 /// One region whose **domestic phone numbers** (written with no `+CC`) this build detects.
 pub struct PhoneRegion {
     /// The `PII_LOCALES` code that selects it — ISO 3166-1 alpha-2.
