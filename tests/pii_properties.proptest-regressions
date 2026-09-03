@@ -5,3 +5,4 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc 926f45c729b6fed7b7bcc21ff9044b7a5b4e98bfb3e2b8aa310c8d714f5f2a70 # shrinks to email = "gj000000a@aa.aa"
+cc 64b9dc76eee9338b41e3ad74f861b2add09355709e701b7904b678ef015e7686 # shrinks to known = "00905811006", before = "a", neighbour = "IT00000000", after = ""
