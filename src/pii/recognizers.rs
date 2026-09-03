@@ -1541,6 +1541,36 @@ fn vat_body(matched: &str) -> &str {
     matched.get(2..).unwrap_or("")
 }
 
+/// Could **any** pattern in [`vat_recognizers`] match `token` — ignoring every checksum?
+///
+/// Not used on the request path. This is the grammar the VIES-form patterns share, stated once
+/// so that `VAT-04`'s *absence* assertions can be checked for **reachability** before they are
+/// believed (M11-R1): every prefixed pattern is `[A-Z]{2}` immediately followed by an unbroken
+/// run of ASCII alphanumerics, with ASCII word boundaries at both ends. A negative written in a
+/// shape this returns `false` for is absent because of its punctuation, not because its country
+/// does not ship — and asserting *that* absence proves nothing at all.
+///
+/// It lives here, beside the patterns, rather than in the test module, because it is a statement
+/// about the grammar: a pattern that stops being `[A-Z]{2}`-prefixed makes this function wrong,
+/// and this is where somebody making that change will be looking.
+///
+/// **Byte-indexed on purpose.** The length floor runs first, so `bytes[..2]` and `bytes[2..]`
+/// cannot panic, and comparing bytes rather than `char`s means a multi-byte character can never
+/// land mid-index. The floor is 9 — the shortest shipped form is `DE` + 9 digits — which is also
+/// what rules out the degenerate inputs (`""`, `"ES"`) where a `chars().take(2)` reads as
+/// vacuously true.
+/// `#[cfg(test)]`: this is a statement *about* the patterns, not a step in matching them.
+/// Gating it keeps the shipped build's footprint honest and the suite warning-free.
+#[cfg(test)]
+fn vat_grammar_could_match(token: &str) -> bool {
+    let bytes = token.as_bytes();
+    if bytes.len() < 9 {
+        return false;
+    }
+    bytes[..2].iter().all(u8::is_ascii_uppercase)
+        && bytes[2..].iter().all(u8::is_ascii_alphanumeric)
+}
+
 /// Italian **Partita IVA** check digit (M11 Track A) — 11 digits, mod-10 with position
 /// doubling (the Luhn family, but indexed from the left over a fixed length rather than
 /// from the right over a variable one, so [`luhn_valid`] cannot be reused).
@@ -3107,13 +3137,51 @@ mod tests {
     /// fine; ES was the one broken arm, and it was the one whose failure mode the recognizer's
     /// own doc describes in detail.
     ///
-    /// **So the negatives are now checked for reachability first**, in the loop, against the
-    /// tier's actual grammar: a two-letter uppercase prefix followed by an unbroken run of
-    /// alphanumerics. A negative the grammar could never match is red on the spot rather than
-    /// quietly true — the same "prove the corpus can express the thing" move PROP-04 made for
-    /// M4-R17. Writing a negative with a space in it is now a failure, not a silent pass.
+    /// **So the negatives are now checked for reachability first**, against the tier's actual
+    /// grammar: a two-letter uppercase prefix followed by an unbroken run of alphanumerics. A
+    /// negative the grammar could never match is red on the spot rather than quietly true — the
+    /// same "prove the corpus can express the thing" move PROP-04 made for M4-R17. Writing a
+    /// negative with a space in it is now a failure, not a silent pass.
+    ///
+    /// The reachability decision is a **pure function** ([`vat_grammar_could_match`]) with its
+    /// matrix below, kept inside this test rather than promoted to a guard of its own — a guard
+    /// on a guard is worth one level, not two. The first version was written inline and was
+    /// subtly wrong in a way the `&&` hid: `chars.by_ref().take(2).all(…)` short-circuits on a
+    /// failing first character, so the "body" it then examined started one character too early.
+    /// The outcome was still correct, which is exactly why it needed extracting rather than
+    /// re-reading.
     #[test]
     fn unmeasured_vat_countries_are_absent_rather_than_guessed() {
+        // The matrix. The last four rows are the ones that matter: the M11-R1 defect itself, and
+        // the degenerate inputs where an inline `take(2)` reads as vacuously true.
+        for reachable in [
+            "ESB12345678",
+            "ES12345678Z",
+            "FR40404833048",
+            "NL123456789B01",
+        ] {
+            assert!(
+                vat_grammar_could_match(reachable),
+                "{reachable} is reachable"
+            );
+        }
+        for unreachable in [
+            "ES B12345678", // a space — the M11-R1 defect itself
+            "es12345678z",  // lowercase prefix: the patterns are uppercase-only (VAT-05)
+            "E12345678Z",   // one prefix letter, not two
+            "ESB1234567-8", // punctuation inside the body
+            "ES1234",       // body too short for any shipped scheme
+            "ES",           // prefix only
+            "E",            // shorter than the prefix
+            "",             // empty
+        ] {
+            assert!(
+                !vat_grammar_could_match(unreachable),
+                "{unreachable:?} must NOT count as reachable — treating it as reachable is how \
+                 an absence assertion becomes vacuous (M11-R1)"
+            );
+        }
+
         for text in [
             "ESB12345678", // ES — the legal-entity CIF form, the case the comment names
             "ES12345678Z", // ES — the person form (DNI + control letter)
@@ -3121,15 +3189,11 @@ mod tests {
             "FR40404833048",
             "LV40003032949",
         ] {
-            // Reachability: could the tier's grammar match this token at all? Every VAT pattern
-            // is `[A-Z]{2}` immediately followed by alphanumerics, with ASCII word boundaries
-            // at both ends. If a negative cannot satisfy that shape, its absence proves nothing
-            // about the country and everything about the punctuation (M11-R1).
-            let mut chars = text.chars();
-            let prefix_ok = chars.by_ref().take(2).all(|c| c.is_ascii_uppercase());
-            let body_ok = chars.clone().count() >= 7 && chars.all(|c| c.is_ascii_alphanumeric());
+            // Reachability: could the tier's grammar match this token at all? If a negative
+            // cannot satisfy that shape, its absence proves nothing about the country and
+            // everything about the punctuation (M11-R1).
             assert!(
-                prefix_ok && body_ok,
+                vat_grammar_could_match(text),
                 "{text} is not a token the VAT grammar could ever match — two uppercase ASCII \
                  letters then an unbroken alphanumeric run, no space. Its absence would prove \
                  nothing about whether the country ships (M11-R1)."

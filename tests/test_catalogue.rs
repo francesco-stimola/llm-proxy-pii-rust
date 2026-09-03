@@ -267,6 +267,11 @@ fn the_guard_id_shape_rule_separates_ids_from_prose() {
         "",
         "-",
         "VAT-",
+        // Non-ASCII. `first[1..]` slices at byte 1, which is a char boundary only because the
+        // length and first-character checks above guarantee the first char is one ASCII byte.
+        // Dropping either of those re-admits the eight BIO tags as well, which is what P4 showed.
+        "VÄT-15",
+        "É-01",
     ] {
         assert!(
             !looks_like_guard_id(not_an_id),
