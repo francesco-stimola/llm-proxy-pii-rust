@@ -2346,6 +2346,47 @@ phone tier *and then proved zero hits on real traffic*** (`tests/phone_overmask.
   else) and dropping the bare form (a P.IVA written the way Italians write it would go upstream in
   clear — precision bought by gutting the feature for its primary locale).
 
+**A fourth decision, taken 2026-09-03 — the bare-11-digit collision keeps `Phone` on top, and
+this is the one place the milestone knowingly does not deliver decision 1.** Raised by
+[M11-R2](reviews/M11.md#m11-r2), which measured what nobody had: **0.775** of *issuable* bare
+Partita IVAs reach the model as `[PHONE_n]` rather than `[TAXID_n]` under the shipped default
+(`VAT-17`; `00xx` 0.033, `0[1-9]xx` 0.859).
+
+**Why it is a decision and not a defect.** `02079460958` is simultaneously a really-assigned London
+number and a mod-10-valid P.IVA. **No rule can separate them** — the same eleven bytes satisfy both
+tiers — so one of the two labels is wrong for that string whichever way the order runs, and the
+choice is which population eats the error. Nothing leaks under either: both are masked, and the
+vault restores byte-identically.
+
+**The order stands, on two grounds.**
+1. **Strength of evidence.** `phonenumber::is_valid()` confirms an *assigned* number in a real
+   numbering plan. A mod-10 check accepts about one arbitrary 11-digit number in ten (`VAT-09`).
+   Where two claims collide, the stronger one names the span.
+2. **Direction of regression.** M10's domestic-phone fidelity is *shipped and measured*; the VAT
+   tier is new. Trading a measured capability for a new one is the worse direction, and it is the
+   precise trade M11 already refused once when `VAT-14` was written.
+
+**What it costs, stated plainly rather than softened:** for roughly three quarters of the bare
+form's issuable space, [decision 1](#m11-a)'s entire purpose — a token that tells a consumer
+*business* rather than *person* — is **not delivered**. The prefixed forms (`IT…`, `DE…`, `GB…`,
+`PT…`, `NL…`) are unaffected, and so is the `00…`-leading bare space, which is where every real
+P.IVA in this repo's corpus lives.
+
+**Rejected, and why:**
+- **Yield the separator-free arm to `TaxId`** (keep `Phone` ahead on separated renderings). This
+  reads like a refinement and is not one: **the two strings `VAT-14` pins — `02079460958` and
+  `03012345678` — are themselves separator-free**, so the rule would relabel exactly the numbers
+  the guard exists to protect. It undoes `VAT-14` rather than narrowing it, and would require
+  re-measuring M10's phone fidelity before the tag.
+- **A config variable choosing the winner.** Nobody loses, but it is a third setting with subtle
+  semantics in both READMEs and a second shipped configuration whose guards must stay green —
+  [M10](#m10) spent a milestone learning what a coverage-changing variable costs forever, and
+  `PERF-M7-05` is the standing example of what two shipped shapes cost in guard maintenance.
+
+`VAT-17` pins the number so that a change to this trade has to edit it to land, and
+[`ARCHITECTURE.md`](ARCHITECTURE.md)'s priority bullet carries the same figures where the ordering
+is explained.
+
 **Two decisions, taken by the maintainer 2026-09-02** (Track A's; B and C carry their own). Each
 changes product-visible behaviour, so none was the builder's. They are recorded with their cost and
 with what was rejected, because that is what a future reader needs — the verdict alone explains

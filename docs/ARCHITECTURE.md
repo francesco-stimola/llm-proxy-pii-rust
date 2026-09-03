@@ -93,8 +93,10 @@ unstructured-entity load.
     sweep is `1`-leading, so it cannot see this one at all. Nothing leaks either way — what the
     price buys is the decision that a *business* identifier and a *person's* must not share a
     token, and for the majority of the bare form's issuable space that distinction is not
-    delivered. Whether the separator-free arm alone — the weakest evidence the phone tier has, no
-    grouping and no context — should yield to `TaxId` is open, and product-visible.
+    delivered. **The maintainer's answer, 2026-09-03: the order stands** — ROADMAP → M11 Track A,
+    decision 4, which records what it costs and what it rejected. The short form: the two strings
+    VAT-14 pins are *themselves* separator-free, so yielding that arm to `TaxId` would not refine
+    the rule, it would undo it.
 - **Domestic phone** — numbers written with **no `+CC`** (GB `020 7946 0958`, IT `347 1234567`,
   ES `91 123 45 67`). Historically the "FP-prone, opt-in" tier ([M4-R1](reviews/M4.md#m4-r1),
   [M8.1](ROADMAP.md#m81)): a bare digit run looks like an order number or a national ID, so it
