@@ -137,6 +137,30 @@ false positive): `email`, `phone`, `ssn`, `credit_card`, `iban`, `secret`,
   > (greedy groups, un-anchored starts) needs that third check; the ones whose matches are pinned to where
   > a value begins do not.
 
+- **PROP-05 (M11 Track A) — `a_vat_number_round_trips_exactly_whatever_surrounds_it`: is there an
+  input where a VAT number is detected but **not restored, or restored wrong**?** `VAT-13` pins the
+  round trip for two hand-written strings and `VAT-18`/`VAT-19` pin it over HTTP; this quantifies
+  over **arbitrary neighbours**, which is where truncation and adjacency defects actually live — a
+  masked span that eats one byte too many, or a placeholder a neighbouring digit run makes
+  ambiguous to the de-masker. Every case carries one of five **real published** VAT numbers, so the
+  property can never be satisfied by "nothing was detected": the assertion that the known value is
+  *gone from the masked text* is the non-vacuity check and the privacy claim at once. The random
+  neighbour is a mix of valid and invalid, prefixed and bare.
+  > **It failed on its second case, and the defect was in the generator — worth recording because
+  > the distinction is the whole point.** With `before = "a"` the text began `a00905811006`, and
+  > `(?-u:\b)` then correctly refuses to match: that is `VAT-08`'s subject, and *not detecting* is
+  > the right answer. The property was asserting the known value is always detectable, which tests
+  > the generator rather than the product. The known value is now separated by punctuation;
+  > arbitrary adjacency is still exercised around the **neighbour**, where it is interesting.
+  > The failing seed is checked in to `pii_properties.proptest-regressions`, so that case replays
+  > on every run and the separator cannot be quietly removed.
+  >
+  > **What it does not claim.** The PROP-03/PROP-04 note above describes a third property — *no
+  > byte of a real value remains, including one the validator declined* — needed by any recognizer
+  > whose regex can match a **superset** of the real value. Every VAT pattern is pinned at both
+  > ends with `(?-u:\b)` and none sets `shrink_on_reject`, so by that note's own criterion they are
+  > in the group that does not need it. This is the exact-restore property, not that one.
+
 ### Integration — pipeline over OpenAI-shaped payloads
 - INT-01 — user message with multiple PII → outgoing request carries placeholders; vault populated.
 - INT-02 — PII inside a `tool` result message is masked.
