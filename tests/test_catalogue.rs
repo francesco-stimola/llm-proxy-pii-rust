@@ -94,13 +94,24 @@ fn looks_like_guard_id(token: &str) -> bool {
 ///
 /// Splits on anything that cannot appear inside an id, so `**DOS-07 (M10-R28) — …**` yields
 /// `DOS-07` and not `M10-R28`.
-fn ids_in(line: &str, file: &str, out: &mut BTreeSet<(String, String)>) {
+/// Where a declaration was found. The two walks are independent mechanisms, and M11-R7 is
+/// what happens when one aggregate count is asked to guard both: the `//!` walk could be
+/// deleted and the total still cleared the floor, by one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Origin {
+    /// A `//!` module doc — a file whose whole subject is one guard family.
+    ModuleDoc,
+    /// A `///` block immediately above a `#[test]`.
+    TestDoc,
+}
+
+fn ids_in(line: &str, file: &str, origin: Origin, out: &mut BTreeSet<(String, String, Origin)>) {
     for token in line.split(|c: char| !(c.is_ascii_alphanumeric() || c == '-')) {
         // Trim hyphens the prose put there — an em-dash-free `—` is already a split point, but
         // `DOS-07-` or `-VAT-15` can survive tokenisation.
         let token = token.trim_matches('-');
         if looks_like_guard_id(token) {
-            out.insert((token.to_string(), file.to_string()));
+            out.insert((token.to_string(), file.to_string(), origin));
         }
     }
 }
@@ -117,7 +128,7 @@ fn ids_in(line: &str, file: &str, out: &mut BTreeSet<(String, String)>) {
 /// `CAT-01` (this file), `DOS-01`, `PHONE-OM` and `VAT-OM` — because a file whose *whole subject*
 /// is one guard family names it at the top. `VAT-OM` was declared there, catalogued nowhere, and
 /// invisible to this check on both counts at once.
-fn declared_ids(root: &Path, out: &mut BTreeSet<(String, String)>) {
+fn declared_ids(root: &Path, out: &mut BTreeSet<(String, String, Origin)>) {
     for entry in fs::read_dir(root).expect("readable directory") {
         let path = entry.expect("readable entry").path();
         if path.is_dir() {
@@ -138,7 +149,7 @@ fn declared_ids(root: &Path, out: &mut BTreeSet<(String, String)>) {
         for (i, line) in lines.iter().enumerate() {
             // Module-level docs: the file's own subject.
             if line.trim_start().starts_with("//!") {
-                ids_in(line, &name, out);
+                ids_in(line, &name, Origin::ModuleDoc, out);
             }
             if line.trim() != "#[test]" {
                 continue;
@@ -159,7 +170,7 @@ fn declared_ids(root: &Path, out: &mut BTreeSet<(String, String)>) {
             }
             for doc in &lines[j..i] {
                 if doc.trim_start().starts_with("///") {
-                    ids_in(doc, &name, out);
+                    ids_in(doc, &name, Origin::TestDoc, out);
                 }
             }
         }
@@ -176,19 +187,44 @@ fn every_declared_guard_id_appears_in_the_test_catalogue() {
     declared_ids(&manifest.join("tests"), &mut declared);
     declared_ids(&manifest.join("src"), &mut declared);
 
-    // Non-vacuity: if the extractor stops matching — a doc-comment convention changes, the shape
-    // rule is narrowed — this must fail loudly rather than pass by finding nothing. Same discipline
-    // as CLI-05, and the same reason: a guard that can quietly observe zero things is not a guard
-    // (M4-R13).
+    // **Non-vacuity, and M11-R7 is why it is three assertions rather than one.** A guard that
+    // can quietly observe nothing is not a guard (M4-R13) — but the previous version asked a
+    // single total to stand in for two independent walks, and stated a floor of 70 against a
+    // "measured 73" that was never a reading of this extractor at all. It counts **(id, file)
+    // pairs**, not distinct ids; the real figure was 90 at the commit that wrote 73, and 96 now.
+    // The consequence was exact: deleting the `//!` walk left **70** pairs against `>= 70`, so
+    // the mutation that is supposed to prove that walk alive passed by one.
     //
-    // **The floor is close to the real count on purpose (M11-R4).** It used to be 20 against 54,
-    // which let 63% of the ids disappear unnoticed — a floor that loose is a floor in name only.
-    // With the prefix list gone, its job is no longer "notice a missing family" (that cannot happen
-    // any more) but "notice the extractor breaking", and for that it should sit just under reality.
-    // Measured 73 when written; raise this deliberately when guards are added.
+    // The fix is not a bigger number. A total cannot notice one of two mechanisms dying while
+    // the other grows, so each walk now asserts its own liveness, and the total is only asked to
+    // notice the extractor breaking outright.
+    let module_declared = declared
+        .iter()
+        .filter(|(_, _, o)| *o == Origin::ModuleDoc)
+        .count();
+    let test_declared = declared
+        .iter()
+        .filter(|(_, _, o)| *o == Origin::TestDoc)
+        .count();
+
     assert!(
-        declared.len() >= 70,
-        "the extractor found only {} declared guard ids, and there were 73 when this floor was \
+        module_declared >= 4,
+        "only {module_declared} guard ids were found in `//!` module docs. Several files name \
+         their whole guard family at the top — `CAT-01` here, `DOS-01`, `PHONE-OM`, `VAT-OM` — \
+         and if that walk stops working those declarations become invisible while the total \
+         stays healthy. That is exactly how this assertion came to exist (M11-R7)."
+    );
+    assert!(
+        test_declared >= 60,
+        "only {test_declared} guard ids were found in `///` blocks above a `#[test]`, which is \
+         the main declaration site — the extractor has stopped matching the convention"
+    );
+    // The aggregate, kept for the case both walks survive but the *shape rule* narrows.
+    // **Measured: 96 (id, file) pairs, 79 distinct ids** — read from this extractor, on this
+    // tree, at the commit that writes the number. Raise it deliberately when guards are added.
+    assert!(
+        declared.len() >= 90,
+        "the extractor found only {} declared guard ids and there were 96 when this floor was \
          set — it has stopped matching the source's doc-comment convention, and a check that \
          observes almost nothing passes almost always",
         declared.len()
@@ -196,8 +232,8 @@ fn every_declared_guard_id_appears_in_the_test_catalogue() {
 
     let missing: Vec<String> = declared
         .iter()
-        .filter(|(id, _)| !catalogue.contains(id.as_str()))
-        .map(|(id, file)| format!("{id} (declared in {file})"))
+        .filter(|(id, _, _)| !catalogue.contains(id.as_str()))
+        .map(|(id, file, origin)| format!("{id} (declared in {file}, {origin:?})"))
         .collect();
 
     assert!(

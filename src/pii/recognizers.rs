@@ -3434,9 +3434,13 @@ mod tests {
     ///
     /// This is a **labelling** statistic like `VAT-10`, not a coverage one — every byte is masked
     /// under either name. What it costs is decision 1's entire purpose: a token that tells a
-    /// consumer *business identifier* rather than *person*. Whether the ordering should change
-    /// for the separator-free arm specifically is the maintainer's call, not this guard's; what
-    /// the guard ends is the number being unknown.
+    /// consumer *business identifier* rather than *person*. **The maintainer settled the
+    /// ordering on 2026-09-03 (M11-R8): it stands** — ROADMAP → M11 Track A, decision 4, with
+    /// the accepted cost and both rejected alternatives. The reason the obvious refinement was
+    /// rejected is worth carrying here, because this is where somebody would try it: yielding
+    /// the separator-free arm to `TaxId` would relabel `02079460958` and `03012345678`, which
+    /// **are themselves separator-free** — it undoes `VAT-14` rather than narrowing it. What
+    /// this guard now does is hold the accepted number still.
     #[test]
     fn bare_piva_phone_collision_rate_under_the_shipped_default() {
         let detector = StructuredRecognizers::new();

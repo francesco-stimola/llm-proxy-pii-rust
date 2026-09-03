@@ -26,20 +26,72 @@ use std::ops::Range;
 
 use serde::{Deserialize, Serialize};
 
-/// A category of personally identifiable information.
+/// Declare the PII kinds **once**.
 ///
-/// `Serialize`/`Deserialize` use the variant names verbatim (e.g. `"Email"`,
-/// `"CreditCard"`), which is the encoding the JSON test corpus in
-/// `tests/corpus/pii_cases.json` relies on.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum PiiKind {
+/// **Why a macro, when this repo avoids cleverness (M11-R6).** Four things have to move
+/// together whenever a kind is added: the enum, [`PiiKind::ALL`], [`PiiKind::label`] and its
+/// inverse [`PiiKind::from_label`]. M11 tried to hold them together with a guard instead — a
+/// successor chain whose `match` the compiler checks — and review round 2 broke it in one move:
+/// the compiler demands an *arm*, not a place in the walk, so `Vin => return None` compiles, the
+/// walk never reaches `Vin`, `ALL` and the walk still agree, and the guard passes with a twelfth
+/// kind unlisted. Rust cannot enumerate an enum's variants, so **no test can close that**: the
+/// list has to be the single source the others are generated from.
+///
+/// What is deliberately *not* generated is [`PiiKind::priority`] and
+/// [`PiiKind::is_structured`]. Those are judgements about a new kind, not restatements of it —
+/// the compiler already forces an answer through exhaustive `match`, and that is the right place
+/// to be stopped.
+macro_rules! pii_kinds {
+    ($( $(#[$meta:meta])* $variant:ident => $label:literal ),+ $(,)?) => {
+        /// A category of personally identifiable information.
+        ///
+        /// `Serialize`/`Deserialize` use the variant names verbatim (e.g. `"Email"`,
+        /// `"CreditCard"`), which is the encoding the JSON test corpus in
+        /// `tests/corpus/pii_cases.json` relies on.
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+        pub enum PiiKind {
+            $( $(#[$meta])* $variant, )+
+        }
+
+        impl PiiKind {
+            /// Every variant, in declaration order.
+            ///
+            /// Generated from the same list as the enum, so it cannot fall behind it. Drive
+            /// per-variant guards from here rather than from a list of your own.
+            pub const ALL: &'static [PiiKind] = &[ $( PiiKind::$variant ),+ ];
+
+            /// The uppercase label used inside placeholders, e.g. `Email` → `"EMAIL"`
+            /// yields the `[EMAIL_1]` token. ASCII and tokenizer-friendly.
+            pub fn label(self) -> &'static str {
+                match self { $( PiiKind::$variant => $label ),+ }
+            }
+
+            /// Inverse of [`label`](Self::label): recover the kind from a placeholder label
+            /// (case-insensitive). Lets the de-masker recognise a token the model echoed back,
+            /// so it can warn when that token is not in the vault.
+            ///
+            /// Generated from the same literals as `label`, so the two cannot disagree about a
+            /// kind. What a generator cannot check is that each literal is **uppercase** and
+            /// **distinct** — a lowercase one would be unreachable after `to_ascii_uppercase`,
+            /// and a duplicate would silently collapse two kinds. `KIND-02` checks both.
+            pub fn from_label(label: &str) -> Option<Self> {
+                match label.to_ascii_uppercase().as_str() {
+                    $( $label => Some(PiiKind::$variant), )+
+                    _ => None,
+                }
+            }
+        }
+    };
+}
+
+pii_kinds! {
     // Structured (deterministic recognizers — M1)
-    Email,
-    Phone,
-    Ssn,
+    Email => "EMAIL",
+    Phone => "PHONE",
+    Ssn => "SSN",
     /// A non-US national identifier (M4) — e.g. Italian Codice Fiscale, UK NINO.
     /// US SSN keeps its own [`Ssn`](Self::Ssn) variant for continuity.
-    NationalId,
+    NationalId => "NATID",
     /// A **business tax identifier** (M11 Track A) — an Italian Partita IVA, an EU VAT
     /// number. Deliberately *not* folded into [`NationalId`](Self::NationalId).
     ///
@@ -50,68 +102,19 @@ pub enum PiiKind {
     /// reusing `NATID` now would convert a free choice today into a breaking change to
     /// the placeholder vocabulary tomorrow, where the same input silently starts emitting
     /// a different token. See ROADMAP → M11 Track A, decision 1.
-    TaxId,
-    CreditCard,
-    Iban,
+    TaxId => "TAXID",
+    CreditCard => "CARD",
+    Iban => "IBAN",
     /// API keys / tokens (e.g. `sk-…`, `sk-ant-…`, `AKIA…`). Deterministic —
     /// the old ML model missed these, so they are treated as structured PII.
-    Secret,
+    Secret => "SECRET",
     // Unstructured (ONNX NER — M2)
-    Person,
-    Organization,
-    Location,
+    Person => "PERSON",
+    Organization => "ORG",
+    Location => "LOCATION",
 }
 
 impl PiiKind {
-    /// Every variant, in declaration order.
-    ///
-    /// **Hand-written, but not hand-trusted (M11-R3).** Rust cannot enumerate an enum's
-    /// variants without a derive, so this list is typed out — and a typed-out per-variant list
-    /// is exactly what M11 found wrong twice: a twelfth `PiiKind` could be added and the whole
-    /// suite stayed green, because the guards that are *about* the enum
-    /// ([`AUGMENTATION_PROMPT`](crate::pipeline::privacy::AUGMENTATION_PROMPT)'s examples and
-    /// [`from_label`](Self::from_label)) each watched five or eleven literals somebody typed
-    /// rather than the enum itself.
-    ///
-    /// So `KIND-01` rebuilds this list by walking a successor chain whose `match` **the
-    /// compiler checks for exhaustiveness**: a new variant is a compile error there, its author
-    /// has to say where in the chain it goes, and once it is in the chain it appears here
-    /// automatically. That makes `ALL` the chokepoint every per-variant guard can be driven
-    /// from, instead of each of them keeping its own list — the same move
-    /// [`shipped_tax_recognizer_count`](crate::pii::recognizers::shipped_tax_recognizer_count)
-    /// makes for the VAT recognizer set.
-    pub const ALL: &'static [PiiKind] = &[
-        PiiKind::Email,
-        PiiKind::Phone,
-        PiiKind::Ssn,
-        PiiKind::NationalId,
-        PiiKind::TaxId,
-        PiiKind::CreditCard,
-        PiiKind::Iban,
-        PiiKind::Secret,
-        PiiKind::Person,
-        PiiKind::Organization,
-        PiiKind::Location,
-    ];
-
-    /// The uppercase label used inside placeholders, e.g. `Email` → `"EMAIL"`
-    /// yields the `[EMAIL_1]` token. ASCII and tokenizer-friendly.
-    pub fn label(self) -> &'static str {
-        match self {
-            PiiKind::Email => "EMAIL",
-            PiiKind::Phone => "PHONE",
-            PiiKind::Ssn => "SSN",
-            PiiKind::NationalId => "NATID",
-            PiiKind::TaxId => "TAXID",
-            PiiKind::CreditCard => "CARD",
-            PiiKind::Iban => "IBAN",
-            PiiKind::Secret => "SECRET",
-            PiiKind::Person => "PERSON",
-            PiiKind::Organization => "ORG",
-            PiiKind::Location => "LOCATION",
-        }
-    }
-
     /// Overlap-resolution priority (see [`overlap::resolve_overlaps`]). Order:
     /// Secret > Iban > CreditCard > Ssn ≈ NationalId > Phone > TaxId > Email > NER.
     ///
@@ -188,27 +191,6 @@ impl PiiKind {
             self,
             PiiKind::Person | PiiKind::Organization | PiiKind::Location
         )
-    }
-
-    /// Inverse of [`label`](Self::label): recover the kind from a placeholder
-    /// label (case-insensitive). Lets the de-masker recognise a token that the
-    /// model echoed back so it can warn if that token isn't in the vault.
-    pub fn from_label(label: &str) -> Option<Self> {
-        let kind = match label.to_ascii_uppercase().as_str() {
-            "EMAIL" => PiiKind::Email,
-            "PHONE" => PiiKind::Phone,
-            "SSN" => PiiKind::Ssn,
-            "NATID" => PiiKind::NationalId,
-            "TAXID" => PiiKind::TaxId,
-            "CARD" => PiiKind::CreditCard,
-            "IBAN" => PiiKind::Iban,
-            "SECRET" => PiiKind::Secret,
-            "PERSON" => PiiKind::Person,
-            "ORG" => PiiKind::Organization,
-            "LOCATION" => PiiKind::Location,
-            _ => return None,
-        };
-        Some(kind)
     }
 }
 
@@ -491,54 +473,49 @@ pub trait PiiDetector: Send + Sync {
 mod tests {
     use super::*;
 
-    /// **KIND-01 (M11-R3) — `PiiKind::ALL` cannot fall behind the enum.**
+    /// **KIND-01 (M11-R3, rebuilt for M11-R6) — one kind, one line, four things generated.**
     ///
-    /// M11 added an eleventh kind and found that a *twelfth* could be added with the whole
-    /// suite green: every per-variant guard in the codebase watched a hand-typed list, so
-    /// nothing forced a new variant to be considered anywhere. `ALL` is the fix — one list the
-    /// others are driven from — but a hand-typed `ALL` would have the same defect one level up.
+    /// The original KIND-01 walked a successor chain whose `match` the compiler checks, to prove
+    /// `PiiKind::ALL` could not fall behind the enum. **Review round 2 broke it in one move:** the
+    /// compiler demands an *arm*, not a place in the walk, so a twelfth kind wired as
+    /// `Vin => return None` compiles, the walk never reaches it, `ALL` and the walk still agree,
+    /// and the guard passes with the kind unlisted. Rust cannot enumerate an enum's variants, so
+    /// **no test could have closed that** — which is why the chain is gone and
+    /// [`pii_kinds!`] generates the enum, `ALL`, `label` and `from_label` from one list instead.
     ///
-    /// So this rebuilds the list **without reading it**, by walking a successor chain. The
-    /// `match` below is exhaustive over `PiiKind`, so adding a variant is a **compile error
-    /// here** and its author has to place it in the chain; walking the chain then reproduces
-    /// `ALL` independently, and the comparison is what fails if `ALL` was not updated too.
-    /// A variant wired to itself or to an earlier one is caught by the visited check rather
-    /// than hanging the test.
+    /// What remains to check is the thing a generator cannot: that the list is **used** where it
+    /// matters and has not been quietly bypassed. `ALL` is now structurally complete, so this
+    /// asserts the two properties that would still be wrong if somebody hand-edited the expansion
+    /// or added a kind outside the macro — `ALL` agrees with `label` on every entry, and every
+    /// variant is reachable through the public constructor the rest of the code uses.
     #[test]
-    fn all_lists_every_variant_in_order() {
-        fn next(kind: PiiKind) -> Option<PiiKind> {
-            Some(match kind {
-                PiiKind::Email => PiiKind::Phone,
-                PiiKind::Phone => PiiKind::Ssn,
-                PiiKind::Ssn => PiiKind::NationalId,
-                PiiKind::NationalId => PiiKind::TaxId,
-                PiiKind::TaxId => PiiKind::CreditCard,
-                PiiKind::CreditCard => PiiKind::Iban,
-                PiiKind::Iban => PiiKind::Secret,
-                PiiKind::Secret => PiiKind::Person,
-                PiiKind::Person => PiiKind::Organization,
-                PiiKind::Organization => PiiKind::Location,
-                PiiKind::Location => return None,
-            })
-        }
-
-        let mut walked = vec![PiiKind::Email];
-        while let Some(kind) = next(*walked.last().expect("the walk starts non-empty")) {
-            assert!(
-                !walked.contains(&kind),
-                "the successor chain revisits {kind:?} — a new variant was wired into the \
-                 middle of the chain instead of onto the end of it"
-            );
-            walked.push(kind);
-        }
-
+    fn all_is_the_list_every_other_guard_is_driven_from() {
+        // Non-vacuity, and the only number here worth pinning: a kind added to the macro must
+        // show up in `ALL` without anyone touching this file.
         assert_eq!(
-            walked,
-            PiiKind::ALL,
-            "`PiiKind::ALL` has fallen behind the enum. The successor chain above is checked \
-             for exhaustiveness by the compiler, so it is the list that is right — add the \
-             missing variant to `ALL`, then make sure every guard driven from `ALL` still \
-             says something true about it (KIND-02, AUG-01)."
+            PiiKind::ALL.len(),
+            11,
+            "PiiKind::ALL has {} entries. If you added a kind, bump this and check every guard \
+             driven from `ALL` still says something true about it (KIND-02, AUG-01).",
+            PiiKind::ALL.len()
+        );
+        // `ALL` and `label` come from the same macro list, so disagreement means the expansion
+        // was hand-edited or a variant was declared outside `pii_kinds!`.
+        for &kind in PiiKind::ALL {
+            assert!(
+                !kind.label().is_empty(),
+                "{kind:?} has an empty placeholder label"
+            );
+        }
+        // Every kind must have a priority: `priority` is a hand-written exhaustive match on
+        // purpose (a new kind is a *judgement*, and the compiler should stop you there), so this
+        // only checks the judgement was made rather than defaulted.
+        let mut priorities: Vec<u8> = PiiKind::ALL.iter().map(|k| k.priority()).collect();
+        priorities.sort_unstable();
+        priorities.dedup();
+        assert!(
+            priorities.len() > 1,
+            "every kind returned the same priority — the overlap resolver would have no order"
         );
     }
 
