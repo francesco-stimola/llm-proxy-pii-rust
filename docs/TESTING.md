@@ -312,6 +312,31 @@ two *other* always-on tiers already claim that shape.
   tier already caught.
   **It measures the smaller of two collisions and was quoted as though it were the only one (M11-R2).** Its sweep runs `10_000_000_000 + i`, so every value starts with `1` — while the only phone family that can claim a bare digit run is the `Trunk` arm `\b0\d{6,11}\b`, which needs a leading `0`. The phone collision is outside this guard's range *by construction*. See VAT-17.
 - **VAT-17 (measured, M11-R2) — `bare_piva_phone_collision_rate_under_the_shipped_default`: the collision the milestone fixed the direction of without measuring the size of.** VAT-14 established that `TaxId` ranks below `Phone`, and that ordering stands — a numbering-plan lookup confirming an *assigned* number is better evidence than a mod-10 check. What nobody had was the magnitude, so nobody chose it. **Measured against `StructuredRecognizers::new()`, the configuration that ships: 1163/1500 = 0.775** of issuable bare P.IVAs are named `[PHONE_n]`, not `[TAXID_n]`. (An independent probe in review round 1, on a different sample, got 0.732 — same conclusion, different draw.) **The split by leading pair is the whole explanation:** `00xx` **5/152 = 0.033**, `0[1-9]xx` **1158/1348 = 0.859**. A leading `00` reads to libphonenumber as the international access code and is rejected — and all five real published P.IVAs this repo's corpus is built on are `00…`-leading, so VAT-01, VAT-03, VAT-05, VAT-06, VAT-14 and VAT-16's controls all sit **inside the immune sub-shape**. *A corpus has a shape, and that shape is a blind spot* (M4's lesson 2), landing again in the milestone that quotes it. Both sub-rates are asserted, not just the total, because the `00…` immunity is what every other VAT guard silently depends on. Like VAT-10 this is a **labelling** statistic — every byte is masked under either name — but what it costs is decision 1's purpose: telling a consumer *business* rather than *person*. Whether the separator-free arm alone should yield to `TaxId` is open and **product-visible**, so it is the maintainer's call; what this guard ends is the number being unknown.
+- **VAT-18 (M11 Track A) — `vat_numbers_round_trip_over_http_in_every_rendering`
+  (`tests/proxy_e2e.rs`): the new kind over real HTTP.** M11's headline feature shipped with
+  **no end-to-end coverage at all** — every VAT guard tested the detector, and review round 1
+  confirmed the HTTP round trip *by hand*. A capability verified by hand is one nothing will
+  notice losing, and `[TAXID_n]` is new vocabulary on the wire: exactly what a serde or
+  restore-path change breaks silently. This pins for `TaxId` what `E2E-01` pins for
+  email/phone/IBAN. One value per rendering family, because the resolver and the vault see them
+  differently — the bare Italian form, the VIES prefixed form, a second country's prefixed form,
+  and the format-only NL form whose `Confidence` is `Structural`. `00…`-leading P.IVAs on
+  purpose: that is the sub-shape the phone tier cannot claim (`VAT-17`), so the guard measures
+  the VAT path rather than the collision.
+  > **The vacuity trap it is built around, with the number.** The injected instruction
+  > *exemplifies* `[TAXID_1]` — that is `AUG-01`'s subject — so it contributes **one**
+  > `[TAXID_n]` token to the upstream body all by itself. A guard asserting the placeholder
+  > appears *somewhere* in that body would be satisfied by boilerplate while the user's VAT
+  > number went upstream in clear. Measured: four renderings give **5** tokens body-wide and
+  > **4** in the user field, so with one value leaking a body-wide count of 4 would still have
+  > passed. Every claim here is therefore made about the **field the PII was in**
+  > (`upstream_last_user`), never about the whole body.
+- **VAT-19 (M11 Track A) — `a_split_taxid_placeholder_is_restored_in_a_stream`.** The streaming
+  de-masker buffers across SSE events because a placeholder can straddle them, and `E2E`'s
+  split-placeholder guard proves that for `[EMAIL_1]`. `[TAXID_1]` is a **different length**, and
+  the buffering logic is length-sensitive by nature — it has to decide how much to hold back — so
+  "email works" does not imply "taxid works". The mock fragments the reply into 4-character
+  pieces, splitting a 9-character token three ways.
 - **VAT-11 — `nl_vat_confidence_splits_verified_from_format_only`: the one scheme with nothing to
   check.** The 2020 Dutch sole-trader `btw-id` is randomized by design; a legal entity's 9-digit
   body is an RSIN that satisfies the 11-proef. So NL is accepted on **format** (14 chars, mandatory
