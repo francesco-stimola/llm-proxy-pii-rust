@@ -2316,6 +2316,28 @@ form that we simply have not written a recognizer for.** That is this track, and
 - [x] Catalogue every new guard id in `TESTING.md` (`CAT-01` enforces this) and re-publish the
   coverage tables in both READMEs and `ARCHITECTURE.md`.
 
+**A third decision, taken 2026-09-03 — the published over-mask rate needs its real-traffic number,
+and the bar is set here BEFORE that number exists.** The bare Partita IVA recognizer is
+`\b\d{11}\b` + mod-10 with **no context required**, and it alone carries the whole measured
+**0.100** over-mask cost — the four prefixed schemes (`IT`/`DE`/`GB`/`PT`/`NL`) are effectively
+false-positive-free. That rate was shipped on [M4-R6](reviews/M4.md#m4-r6)'s grounds, which is half
+the precedent this project actually set: **[M10](#m10) accepted a synthetic rate for the domestic
+phone tier *and then proved zero hits on real traffic*** (`tests/phone_overmask.rs`, over the real
+~22 KiB Claude Code turn in `tests/common/m7_turn.rs`). The VAT tier has the synthetic half only.
+
+- **The gap is not theoretical.** ASCII word boundaries keep the match to runs of *exactly* eleven
+  digits, which excludes both common timestamp widths (10 = Unix seconds, 13 = milliseconds) — so
+  what is left exposed is **database ids and order numbers of exactly eleven digits**, and the CC
+  battery already guards that a SQL result's `id` survives a round trip intact.
+- **The bar, declared before the run:** **zero** bare-form `TaxId` spans over that same 22 KiB turn.
+  Clear it and `0.100` stands as a published *synthetic worst case* and the tag proceeds. Miss it
+  and this is the **same class as the phone collision** — a fidelity regression on a measured
+  capability — and it is fixed before `v1.3.0`, not documented around.
+- Rejected: requiring a keyword anchor (it would lose the P.IVA sitting alone in a `partita_iva`
+  column, which is the primary case, and adds a context-window heuristic this codebase has nowhere
+  else) and dropping the bare form (a P.IVA written the way Italians write it would go upstream in
+  clear — precision bought by gutting the feature for its primary locale).
+
 **Two decisions, taken by the maintainer 2026-09-02** (Track A's; B and C carry their own). Each
 changes product-visible behaviour, so none was the builder's. They are recorded with their cost and
 with what was rejected, because that is what a future reader needs — the verdict alone explains
