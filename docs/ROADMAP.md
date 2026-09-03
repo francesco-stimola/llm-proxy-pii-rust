@@ -2450,10 +2450,10 @@ in a log. Four findings, all on the net, and two of them are Round 1's own closu
 | [M11-R3](reviews/M11.md#m11-r3) | A twelfth `PiiKind` ships with the suite green — `AUG-01` and `from_label` are hand-kept lists the enum does not force you to revisit | guard | [x] |
 | [M11-R4](reviews/M11.md#m11-r4) | `CAT-01`'s non-vacuity floor is 20 against 54 declared ids, so a whole guard family can go invisible — and `VAT-OM` is already uncatalogued | guard | [x] |
 | [M11-R5](reviews/M11.md#m11-r5) | `VAT-09`'s band cannot go red: `0.100` is structural over a contiguous sweep, not a measurement of the checksum | guard | [x] |
-| [M11-R6](reviews/M11.md#m11-r6) | `KIND-01`'s successor chain forces an *arm*, not a place in the walk — a twelfth `PiiKind` still ships green, missing from `ALL` and from `from_label` | guard | [ ] |
-| [M11-R7](reviews/M11.md#m11-r7) | `CAT-01`'s floor was justified by a count that was never measured (73 vs 90), and the `//!` mutation its closure cites as proof is green at HEAD | guard | [ ] |
-| [M11-R8](reviews/M11.md#m11-r8) | Decision 4 is still written as an open question in `TESTING.md` — VAT-17 and in `recognizers.rs`'s VAT-17 doc comment | docs | [ ] |
-| [M11-R9](reviews/M11.md#m11-r9) | `TESTING.md` states `CAT-02`'s matrix as 18 against 15; the matrix holds 18 against 17 | docs | [ ] |
+| [M11-R6](reviews/M11.md#m11-r6) | `KIND-01`'s successor chain forces an *arm*, not a place in the walk — a twelfth `PiiKind` still ships green, missing from `ALL` and from `from_label` | guard | [x] |
+| [M11-R7](reviews/M11.md#m11-r7) | `CAT-01`'s floor was justified by a count that was never measured (73 vs 90), and the `//!` mutation its closure cites as proof is green at HEAD | guard | [x] |
+| [M11-R8](reviews/M11.md#m11-r8) | Decision 4 is still written as an open question in `TESTING.md` — VAT-17 and in `recognizers.rs`'s VAT-17 doc comment | docs | [x] |
+| [M11-R9](reviews/M11.md#m11-r9) | `TESTING.md` states `CAT-02`'s matrix as 18 against 15; the matrix holds 18 against 17 | docs | [x] |
 
 <a id="m11-b"></a>
 ### Track B — the intra-op thread base: physical cores, not logical threads ✅
