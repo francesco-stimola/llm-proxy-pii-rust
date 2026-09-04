@@ -2511,6 +2511,29 @@ would want ([M11-R28](reviews/M11.md#m11-r28)), and `iban_length_ok` measures by
 counts characters ([M11-R29](reviews/M11.md#m11-r29)). Round 7 ran on 252/0/5 and 288/0/22, `fmt` and
 `clippy` clean, and turned the suite red on all four M11 fixes it removed.
 
+**Round 8 (2026-09-04) took the axis round 7 closed and asked what a "separator" actually is.** A
+rendering has two coordinates — the separator *character* and the *grouping* — and `GAP_CHARS`,
+`SEPARATOR_ANSWERS` and `SEPARATOR-01` all quantify over the first. So an **American Express number
+written the way American Express prints it** (`3782 822463 10005`, four-six-five) reaches the provider
+byte for byte, in the same request in which a Visa in four-four-four-four is masked and the *same Amex
+number written compactly* is masked; a Luhn-valid 19-digit Visa is **truncated** to `[CARD_1] 110`,
+three digits of a real card in clear, which is [M10-R1](reviews/M10.md#m10-r1)'s shape
+([M11-R30](reviews/M11.md#m11-r30)). Seven more renderings that the issuing authority itself prints
+go the same way — the PT NIF's `524 287 244`, the ES DNI's `12345678-Z`, `DE 136695976`. Proved
+through the real `.exe` with two controls in the same request; not a regression (the card's single
+grouped arm is byte-identical at every tag since M1), and no corpus in the repo can express it — there
+is **not one** Amex or Diners number under `src/`, `tests/` or `docs/`. The guard finding underneath it
+is one line: the audit skips any pattern that has no gap, which is **16 of 24 shipped recognizers**,
+and its matrix re-renders one recorded positive per pattern, so the grouping is held constant
+([M11-R31](reviews/M11.md#m11-r31)). Both fix options are measured — adding the two published card
+groupings costs **0** added matches over 422.9 MB of third-party source, the general
+validator-decides-the-grouping arm costs **+24** — and both are product-visible, so the choice is the
+maintainer's. The third finding is `ARCHITECTURE.md` still saying the separator axis *"is not closed"*
+one commit after it was, in the very paragraph M11-R26's closure future-proofed
+([M11-R32](reviews/M11.md#m11-r32)) — third consecutive round in which an M11 closure did not reach
+that file. Round 8 ran on 253/0/5 and 289/0/22, `fmt` and `clippy -D warnings` clean, and both
+mutations it ran turned the suite red. **No fail-open, no over-mask regression, no raw value in a log.**
+
 | ID | Title | Sev | Status |
 |---|---|---|---|
 | [M11-R0](reviews/M11.md#m11-r0) | `cargo fmt --check` red on `main` across four files the M11 commits touched — CI gates on it, so M11 as committed would fail on push | build | [x] |
@@ -2543,6 +2566,9 @@ counts characters ([M11-R29](reviews/M11.md#m11-r29)). Round 7 ran on 252/0/5 an
 | [M11-R27](reviews/M11.md#m11-r27) | The rationale for leaving `\d` Unicode is published in three places and is false for all thirteen validated recognizers | precision | [x] |
 | [M11-R28](reviews/M11.md#m11-r28) | The `[Unreleased]` changelog omits M11-R21: a 30-byte request returned **500** on every release ever cut, and this one fixes it | docs | [x] |
 | [M11-R29](reviews/M11.md#m11-r29) | `iban_length_ok` compares an ISO 13616 **character** length against a **byte** count — latent, held only by `iban_mod97`'s short-circuit | hardening | [x] |
+| [M11-R30](reviews/M11.md#m11-r30) | A value written in the grouping its own issuer prints goes upstream in clear — Amex 4-6-5, Diners 4-6-4, PT NIF, ES DNI, DE/GB VAT — and a 19-digit card is **truncated** to `[CARD_1] 110` | **leak** | [ ] |
+| [M11-R31](reviews/M11.md#m11-r31) | `SEPARATOR-01` exempts 16 of 24 recognizers by construction (a `continue` on any pattern with no gap) and re-renders one positive per pattern, so the *grouping* is never varied and a refusal cannot be recorded | guard | [ ] |
+| [M11-R32](reviews/M11.md#m11-r32) | `ARCHITECTURE.md` still says the separator axis *"is not closed"* and that the patterns spell a literal ASCII space — in the commit that closed it, in the paragraph M11-R26 future-proofed | docs | [ ] |
 
 <a id="m11-b"></a>
 ### Track B — the intra-op thread base: physical cores, not logical threads ✅
