@@ -496,11 +496,22 @@ non-ASCII **letter** as part of a number. (`Email` / `Phone` are anchored by cha
 > never by indexing). A byte length is not a character count, and a `.len()` gate in front of a byte
 > slice only looks like a guard.
 >
-> **Nothing enforces this yet** — reverting `iban_mod97` to its pre-`831f916` body leaves the whole
-> suite green, because every corpus in the repo is ASCII (the `non_ascii_scripts` cases carry
-> non-ASCII *letters* around ASCII values, never a non-ASCII *digit inside* one). The chokepoint is a
-> property test — *`try_detect` panics on no input* — over a generator whose alphabet includes
-> multi-byte `\p{Nd}`; see [M11-R21](reviews/M11.md#m11-r21), open.
+> **`UTF8-01` enforces it**, and until it existed nothing did: reverting `iban_mod97` to its
+> pre-`831f916` body left the whole suite green, because every corpus in the repo is ASCII — the
+> `non_ascii_scripts` cases carry non-ASCII *letters* around ASCII values, never a non-ASCII *digit
+> inside* one. The guard substitutes four `\p{Nd}` digits of 2, 3, 3 and 4 bytes into every character
+> position of every positive in `CASE_ANSWERS` — the same registry the case axis derives from, so a
+> new recognizer joins both guards at once — and asserts that no validator panics and that the
+> round trip stays byte-exact. See [M11-R21](reviews/M11.md#m11-r21).
+>
+> **What `\d` being Unicode does *not* buy, stated because this file claimed otherwise (M11-R27).**
+> It does not make a value written in `\p{Nd}` digits *detected*: the pattern matches, and then
+> every one of the thirteen validated recognizers rejects it, because `iban_mod97`, `luhn_valid`,
+> `char::to_digit` and the national-ID checksums all fold **ASCII** digits only. The one recognizer
+> it does reach is the universal `Phone`, which has no validator. So a fullwidth-digit card or IBAN
+> is **not masked** — a pre-existing coverage gap, not a regression, and closing it would mean
+> normalising `\p{Nd}` to ASCII before validation, which is a coverage decision for the maintainer
+> rather than a bug to fix quietly.
 
 **Every letter-bearing recognizer carries a *decided* answer on letter case (M11-R10).** This is
 the ASCII-word-boundary rule's sibling, and it went undecided for ten milestones. The patterns above

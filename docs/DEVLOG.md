@@ -3,6 +3,101 @@
 Newest first. One entry per meaningful change — note *what* and *why*, not just
 *what*. This is the running history so context is never lost between sessions.
 
+## 2026-09-04 — M11 round 7: the separator, and the same sentence for the third time
+
+Round 7 found a leak by varying the axis round 6 opened but did not finish: after the letters' case
+and the digits' script, **the separator between a value's groups**.
+
+### M11-R25 — a value separated by a non-ASCII space goes upstream in clear
+
+Through the real `.exe` against a mock upstream:
+
+    client sends : IBAN DE89⍽3704⍽0044⍽0532⍽0130⍽00, carta 4111⍽1111⍽1111⍽1111,
+                   tel 020⍽7946⍽0958, mail a.b@example.com          (⍽ = U+00A0)
+    provider gets: …the same three values byte for byte… mail [EMAIL_1]
+
+The email is the control. **432 of 1 080 cells leaking**, predating M11 by ten milestones.
+
+Every pattern spelled its gap as a literal ASCII space while `iban_mod97`, `luhn_valid` and
+`nino_prefix_valid` all filter on `char::is_whitespace`, which accepts U+00A0, U+2007, U+202F,
+U+205F and tab. **The validators were written for input the regexes could never deliver** — which is
+M11-R10's sentence word for word, one axis over, and M11-R21's with the sign flipped. Three findings,
+one rule: *a recognizer and its validator must agree on the alphabet of every axis, and where the
+validator is the more permissive the difference is not slack — it is a set of renderings that reach
+the provider in clear.*
+
+**The fix is one class with three consumers**, so the two halves cannot drift apart again:
+`GAP_CHARS` (Unicode `Zs` plus `\t`; `\r`/`\n` deliberately out, since a value must not span lines)
+feeds the patterns' character class, the shrink's cut alphabet, and the phone validator's
+normalisation. Patterns hold a `{GAP}` template expanded at construction, written `\x{..}`-escaped
+so the pattern string stays ASCII and `CASE-01`'s ASCII assertion keeps speaking for it.
+
+**And the second half is the one a pattern-only fix would have shipped without.** Widening the
+patterns closed IBAN, the card, the universal phone and the NINO for every separator — and left the
+**domestic phone tier at 2 of 5**, because `phonenumber`'s own normalisation accepts U+00A0 and
+U+3000 and rejects U+202F, U+2007 and `\t`. So `020⍽7946⍽0958` matched the regex, reached the
+validator, and was *refused*: a miss dressed as a validation, the same shape as the leak itself. With
+`national_phone_valid` normalising through `GAP_CHARS` first: **5 of 5, all nine families**. Measured
+cost of the whole widening, on the reference corpus: **0 added matches** — so unlike the case fold
+(149 added, which needed `iban_case_gate`) this one needs no gate.
+
+The finding offered two variants; the difference is whether `\t` is in the class. I took the one
+that includes it — both measure 0, a TSV `tool_result` is ordinary agent traffic, every family
+behind it is checksum- or plan-gated so the worst case is an over-mask, and it is reversible by
+deleting one character literal.
+
+**`SEPARATOR-01` carries all three halves M11-R11 established** — audit, matrix, reachability — and
+its set is *derived*: the letter test became `pattern_can_match_any_of(pattern, wanted)`, called with
+`ASCII_LETTERS` for one axis and `GAP_CHARS` for the other. One derivation, two axes. That is why
+this took a morning where M11-R10 took a milestone, and it is the argument for building the
+chokepoint rather than the list, made in numbers rather than in principle.
+
+**Two guards went red on the way, and both were right to.** `CASE-01` unbound the moment the IBAN
+and NINO patterns changed — exactly the forcing function M11-R11 built — so the answers now hold the
+`{GAP}` template and the audit expands it, keeping "editing a pattern re-opens its answer" while not
+demanding that widening `GAP_CHARS` re-paste four blobs. And `PHONE-NAT-08`'s generator compiled a
+raw template; it fails loudly, so the fix is the const's **name**, `PHONE_SHAPE_TEMPLATES`, not a new
+guard.
+
+### The other four
+
+- **M11-R26** — `ARCHITECTURE.md` still said *"Nothing enforces this yet"* about M11-R21 and linked
+  it as **open**, a round after `UTF8-01` closed it. **Second time an M11 closure missed that file**,
+  and the two misses have one cause: a closure edits the code, the guard and the record, and
+  `ARCHITECTURE.md` is the one no test and no ledger row points at. Nothing mechanical can supply a
+  trigger — the file states rules, not ids — so both invariants added this milestone now **link the
+  ledger for their status** instead of restating it, which makes a stale *"open"* impossible rather
+  than unlikely.
+- **M11-R27** — *"matching `\p{Nd}` is what lets a value written in Arabic-Indic or fullwidth digits
+  be **detected**"* was published in three files and my own round-6 DEVLOG entry. Measured over 3
+  digit blocks × 17 values it is **false for all thirteen validated recognizers**: the pattern
+  matches and the validator rejects, because every checksum here folds ASCII digits only. True of the
+  universal `Phone` alone, which has no validator. So the reachable consequence of the Unicode `\d`
+  was R21's panic and a **coverage gap** — a fullwidth-digit card is not masked. Corrected in all
+  four places, and the gap is named beside M11-R18 rather than closed quietly, since normalising
+  `\p{Nd}` before validation is a coverage decision.
+- **M11-R28** — the CHANGELOG never mentioned that a 30-byte request returned `500` on every release
+  ever cut. Added, with the fact an operator needs: *refused, not leaked*. The separator leak went in
+  beside it.
+- **M11-R29** — `iban_length_ok` compared an ISO 13616 **character** length against a **byte** count.
+  Latent, held only by `iban_mod97`'s short-circuit — and M11-R18's option 3 proposes reordering
+  exactly those two checks, which would have made it live. Fixed now, while it costs nothing, rather
+  than as a surprise inside whichever option is picked. The slip is older than the rewrite that
+  carried it: the pre-M11-R18 body compared `compact.len()`, also bytes.
+
+### Numbers
+
+**253 / 0 / 5** over 24 binaries, twice, identical (round 7 measured 252; the +1 is `SEPARATOR-01`);
+`cargo test-onnx` **289 / 0 / 22**; `fmt` and `clippy --all-targets -D warnings` clean.
+
+**Guard-vs-product tally**, by the ledger's severity cell: round 7 is **2 in the product** (R25
+`leak`, R29 `hardening`) and **3 on the docs**. Running total: **20 on the net or the docs, 10 in the
+product**, 30 rows.
+
+**Still open, and still the only thing between here and the tag:
+[M11-R18](reviews/M11.md#m11-r18)** — now with two neighbours that want the same decision: the
+grouped glued-IBAN residue (M11-R23) and the `\p{Nd}` coverage gap (M11-R27).
+
 ## 2026-09-04 — M11 round 6: the alphabet, the axis M11 had never varied
 
 Round 6 found **no leak in `src/`** and four findings, three of them in the product — the first round
@@ -12,8 +107,11 @@ round held constant: **the alphabet**. Rounds 1-5 all ran on ASCII.
 ### M11-R21 — a panic in every tag ever cut, fixed at HEAD by accident two days ago
 
 `\d` is Unicode-aware. M4-R13 de-Unicoded the word *boundary* and correctly left `\d` alone —
-matching `\p{Nd}` is what lets a value written in Arabic-Indic or fullwidth digits be **detected**
-rather than forwarded in clear. The consequence nobody drew is that a matched span is then a `&str`
+matching `\p{Nd}` means such a value **matches the pattern**. *(Corrected 2026-09-04 by M11-R27:
+this line said it is what lets such a value "be detected rather than forwarded in clear", and that
+is false for all thirteen validated recognizers — the validator rejects what the pattern matched,
+because every checksum here folds ASCII digits only. It is true of the universal `Phone` alone,
+which has no validator.)* The consequence nobody drew is that a matched span is then a `&str`
 whose byte length is not its character count, and `iban_mod97` byte-sliced it (`&compact[..4]`).
 Through the **real v1.2.1 binary**, a 30-byte unauthenticated request —
 `{"content":"Account AB𝟎𝟏ABCDEFGHIJK please"}` — returns **HTTP 500 with nothing forwarded**:

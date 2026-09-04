@@ -416,6 +416,43 @@ two *other* always-on tiers already claim that shape.
   **Its first form was the instance-shaped fix wearing the chokepoint's words, and M11-R11 is that being found.** A nine-row hand-written `const` promised that "a new letter-bearing recognizer cannot ship without an entry here" while deriving nothing from the recognizer table, so **four** letter-bearing recognizers were outside it — `Secret`, `Email`, the GB NINO and the CN resident id. Measured: narrowing NINO to uppercase-only left the whole library suite green at **154 / 1**, the single red being a temporary probe, while `ab123456c` went from masked to forwarded in clear; the same held for the CN id and for `Secret`. Adding four rows would have closed four instances and left the class open.
   So the **set** now comes from `StructuredRecognizers::shipped_patterns()` — every recognizer the scan is actually built from — filtered by `pattern_can_match_a_letter`, which parses the pattern to the same HIR `regex` compiles and asks each literal and class whether it covers `A-Za-z`. A textual scan cannot answer this: a word boundary and a digit class are both spelled with letters that match none. `CASE_ANSWERS` then says only *what* the answer is, and it can say **`Fixed`** — deliberately does not fold — which is what makes M11-R10's decision 3 (`Secret`'s `sk-`/`AKIA` are formats, not conventions) expressible at all. For a `Folds` answer a known positive is checked uppercase, lowercase **and with exactly one letter flipped**, the last being the sharpest case and the one a corpus of lowercase strings would miss (`IT60x0542811101000000123456` was forwarded in clear).
   **Two decided limits, both measured rather than assumed.** (1) The axis is **ASCII** case, so a recognizer whose letters were non-ASCII would not be asked — the guard asserts every shipped pattern is itself ASCII, which makes that residue **0 patterns** today and turns the day it is not into a red test rather than a silent skip. (2) An empty *unanswered* list is also what a derivation that stopped seeing letters would produce, so every recorded answer must itself be about a pattern the derivation calls letter-bearing; the two lists are therefore an equality — the letter-bearing recognizers this build ships are precisely the ones the answers name — with **no count for anyone to keep current**.
+- **SEPARATOR-01 (M11-R25) — `every_gap_bearing_recognizer_answers_the_separator_axis`: the third
+  meeting of one sentence.** M11-R10 was the letters' case, M11-R21 the digits' script, this is the
+  separator between a value's groups — and the sentence is the same each time: *a recognizer and its
+  validator must agree on the alphabet of every axis, and where the validator is the more permissive
+  the difference is not slack, it is a set of renderings that reach the provider in clear.* Every
+  pattern spelled its gap as a literal ASCII space while `iban_mod97`, `luhn_valid` and
+  `nino_prefix_valid` all filter on `char::is_whitespace`, which accepts U+00A0 and its siblings.
+  **The validators were written for input the regexes could never deliver.** Driven through the real
+  binary, `IBAN DE89⍽3704⍽0044⍽0532⍽0130⍽00, carta 4111⍽1111⍽1111⍽1111, tel 020⍽7946⍽0958` (⍽ =
+  U+00A0) was forwarded **byte for byte** while the email in the same sentence was masked — **432 of
+  1 080 cells leaking**, predating M11 by ten milestones.
+  **The fix has two halves and a pattern-only fix would have shipped half of it.** One shared
+  `GAP_CHARS` — the Unicode `Zs` category plus tab, `\r`/`\n` deliberately out so a value cannot
+  span lines — is the single source for the patterns' character class *and* for the shrink's cut
+  rule, so the two cannot disagree. That closed IBAN, the card, the universal phone and the NINO for
+  every separator, and left the **domestic phone tier detecting 2 of 5**, because `phonenumber`'s
+  own normalisation accepts U+00A0 and U+3000 and rejects U+202F, U+2007 and `\t`. So
+  `national_phone_valid` maps `GAP_CHARS` to ASCII spaces before parsing — derived from what the
+  validator accepts, and structurally unable to narrow, since a span with no non-ASCII gap is passed
+  through untouched and un-allocated. After both halves: **5 of 5, in all nine families**.
+  **Measured cost of widening: 0 added matches** over 16 427 files / 341.7 MB of third-party source
+  (IBAN 1 072 → 1 072, card 5 443 → 5 443, phone-`Groups` 4 014 → 4 014). Unlike the case fold — 149
+  added, which needed `iban_case_gate` — this one needs no gate, which is why there is no
+  `CaseRule`-style *"deliberately does not"* answer here: nothing had a reason to say no.
+  **The set that must answer is derived**, not listed: every shipped pattern that
+  `pattern_can_match_any_of` says can match a `GAP_CHARS` member, using the same HIR walk `CASE-01`
+  uses with `ASCII_LETTERS`. One derivation, two axes — which is what lets a third be added as a
+  table rather than as a new mechanism. The guard carries all three halves the M11-R11 lesson asks
+  for: the **audit** (a gap-bearing pattern with no answer is named), the **matrix** (nine answers ×
+  eighteen separators, each asserting identical kind and span), and **reachability** (a stand-in
+  gap-bearing pattern must be reported unanswered), plus the non-vacuity check that every answered
+  pattern is still gap-bearing — because an empty *unanswered* list is also what a derivation that
+  stopped seeing gaps would produce.
+  **Why nothing saw it:** there is not one non-ASCII space character anywhere under `tests/` or
+  `src/`. `IBAN-05` varies five axes and the separator is not one of them; round 6's 400 000-input
+  fuzz had NBSP in its alphabet and used it to **glue fragments together**, never to replace the
+  space *inside* a value. *A quantity a test never varies is a quantity the test cannot see.*
 - **SHRINK-01 (M11-R22) — `a_shrunk_span_is_still_a_match_of_its_own_pattern`: the shrink must not
   widen what a recognizer can emit.** `shrink_on_reject` (the M11-R13 fix) was justified by an
   argument about the *validator's verdict on a prefix*, and on that set the argument holds. It
@@ -444,8 +481,14 @@ two *other* always-on tiers already claim that shape.
   already too high on the day it was written (M11-R7's lesson, applied to its own author).
 - **UTF8-01 (M11-R21) — `a_non_ascii_digit_inside_a_value_never_panics_a_validator`: `\d` is
   Unicode and a matched span is text, not bytes.** M4-R13 de-Unicoded the word *boundary* and
-  correctly left `\d` alone — matching `\p{Nd}` is what lets a value written in Arabic-Indic or
-  fullwidth digits be **detected** rather than forwarded. The consequence nobody drew is that a
+  left `\d` alone. **What that buys is smaller than this entry used to claim (M11-R27):** it said
+  `\p{Nd}` matching is what lets such a value *"be detected rather than forwarded"*, and measured
+  over 3 digit blocks x 17 values that is **false for all thirteen validated recognizers** — the
+  pattern matches and the validator rejects, because `iban_mod97`, `luhn_valid`, `char::to_digit`
+  and every national-ID checksum fold ASCII digits only. It holds for the universal `Phone` alone,
+  which has no validator. So a fullwidth-digit card or IBAN is **not masked** — a pre-existing
+  coverage gap, named here rather than left to be rediscovered, whose closure (normalising `\p{Nd}`
+  before validation) is a coverage decision for the maintainer. The consequence nobody drew is that a
   matched span is then a `&str` whose byte length is not its character count, and `iban_mod97`
   byte-sliced it (`&compact[..4]`). Through the **real v1.2.1 `.exe`**, a 30-byte unauthenticated
   request — `{"content":"Account AB𝟎𝟏ABCDEFGHIJK please"}` — returned **HTTP 500 with nothing

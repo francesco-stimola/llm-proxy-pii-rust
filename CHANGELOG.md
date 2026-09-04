@@ -107,6 +107,19 @@ Milestone [M11](https://github.com/francesco-stimola/llm-proxy-pii-rust/blob/mai
     having: a country code the ISO 13616 length table does not know is checked by mod-97 alone, so
     roughly one such string in 97 is still masked — measured at **1 in 936** over 304.9 MB of
     third-party source. It is masked, not leaked, and restored byte-identically on the way back.
+- **A 30-byte request could return `500` instead of being processed — on every release ever cut.**
+  A value whose digits are written in a non-ASCII script (`Account AB𝟎𝟏ABCDEFGHIJK`) made the IBAN
+  checksum slice a multi-byte character in half and panic. The proxy is **fail-closed**, so nothing
+  was ever forwarded: the request was refused, not leaked. But it is a refusal an unauthenticated
+  caller could trigger with one short string, and it is fixed.
+- **Values whose groups are separated by a non-ASCII space are now masked.** An IBAN, card, phone
+  number or UK NINO written with a no-break space, a narrow no-break space, a figure space, an
+  ideographic space or a tab between its groups — which is what a word processor, a web page or a
+  TSV tool result produces — matched nothing at all and was forwarded **in clear**, while an email
+  address in the same sentence was masked. Every pattern spelled its separator as a plain ASCII
+  space; every checksum behind it already accepted the others. Widening cost **no additional
+  matches** over 341.7 MB of third-party source, so there is nothing to trade and nothing to
+  configure.
 - **A real IBAN could be dropped entirely when followed by a short word.** Found and fixed inside
   this same release, so no shipped version carries it — but it is the shape to know. An IBAN whose
   compact length is a multiple of 4 (🇦🇩 🇦🇹 🇧🇪 🇨🇾 🇨🇿 🇪🇪 🇪🇸 🇭🇺 🇱🇹 🇱🇺 🇵🇱 🇷🇴 🇸🇪 🇸🇰) is

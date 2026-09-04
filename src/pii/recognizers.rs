@@ -58,6 +58,61 @@ use super::{Budget, Confidence, DetectError, PiiDetector, PiiEntity, PiiKind};
 /// checksums spend nothing at all.
 type Validator = Box<dyn Fn(&str, &Budget) -> bool + Send + Sync>;
 
+/// Every character that may separate a value's groups — **one definition, used by the patterns and
+/// by the shrink, so the two cannot disagree** (M11-R25).
+///
+/// **This is the third meeting of one sentence.** M11-R10 was the letters' case, M11-R21 the digits'
+/// script, and this is the separator: *a recognizer and its validator must agree on the alphabet of
+/// every axis, and where the validator is the more permissive the difference is not slack — it is a
+/// set of renderings that reach the provider in clear.* Every pattern here used to spell its gap as
+/// a literal ASCII space while `iban_mod97`, `luhn_valid` and `nino_prefix_valid` all filter on
+/// `char::is_whitespace`, which accepts U+00A0 and its siblings. The validators were written for
+/// input the regexes could never deliver, and `DE89⍽3704⍽0044⍽0532⍽0130⍽00` went upstream byte for
+/// byte for ten milestones.
+///
+/// **Derived from what the validators accept, not from what a corpus contained** — the Unicode
+/// `Zs` category plus `\t`. `\r` and `\n` are deliberately **out**: a value must not span lines, and
+/// letting it would make every pattern's bounded-length claim a claim about the whole body.
+///
+/// Measured cost of widening, over 16 427 files / 341.7 MB of `~/.cargo/registry/src`: **0 added
+/// matches** — IBAN 1 072 -> 1 072, card 5 443 -> 5 443, phone-`Groups` 4 014 -> 4 014. Unlike the
+/// case fold (149 added, which needed [`iban_case_gate`]), this one needs no gate.
+const GAP_CHARS: &[char] = &[
+    '\u{0009}', // tab — a TSV `tool_result` is ordinary agent traffic
+    '\u{0020}', // the ASCII space every pattern used to spell literally
+    '\u{00A0}', // no-break space — the one a word processor and a web page emit
+    '\u{1680}', '\u{2000}', '\u{2001}', '\u{2002}', '\u{2003}', '\u{2004}', '\u{2005}', '\u{2006}',
+    '\u{2007}', // figure space — typographically *made* for digit groups
+    '\u{2008}', '\u{2009}', '\u{200A}', '\u{202F}', // narrow no-break space
+    '\u{205F}', '\u{3000}', // ideographic space — the CJK rendering M4-R13 is about
+];
+
+/// Is `c` a separator a value's groups may be written with? The shrink's cut rule and
+/// [`gap_class`] are the same set by construction.
+fn is_gap(c: char) -> bool {
+    GAP_CHARS.contains(&c)
+}
+
+/// [`GAP_CHARS`] as a regex character class, `\x{..}`-escaped so **the pattern string stays ASCII**
+/// — which `CASE-01` asserts, and which keeps `pattern_can_match_a_letter` able to speak for it.
+fn gap_class() -> String {
+    let mut class = String::from("[");
+    for c in GAP_CHARS {
+        class.push_str(&format!("\\x{{{:X}}}", *c as u32));
+    }
+    class.push(']');
+    class
+}
+
+/// Expand every `{GAP}` placeholder in a pattern template into [`gap_class`].
+///
+/// A placeholder rather than string concatenation because the templates are `const` and read like
+/// regexes; `{GAP}` cannot collide with regex repetition syntax (`{4}`, `{2,7}`) and appears in no
+/// pattern for any other reason.
+fn with_gaps(template: &str) -> String {
+    template.replace("{GAP}", &gap_class())
+}
+
 /// A validator whose cost is negligible — a checksum over at most 18 bytes — adapted to the
 /// [`Validator`] shape without charging the request's budget (M10-R29).
 ///
@@ -253,9 +308,9 @@ fn universal_recognizers() -> Vec<Recognizer> {
         // EUR`). Already covers every country; mod-97 is a confidence signal only.
         Recognizer {
             kind: PiiKind::Iban,
-            regex: Regex::new(
-                r"(?-u:\b)[A-Za-z]{2}\d{2}(?:[A-Za-z0-9]{11,30}|(?: [A-Za-z0-9]{4}){2,7}(?: [A-Za-z0-9]{1,4})?)(?-u:\b)",
-            )
+            regex: Regex::new(&with_gaps(
+                r"(?-u:\b)[A-Za-z]{2}\d{2}(?:[A-Za-z0-9]{11,30}|(?:{GAP}[A-Za-z0-9]{4}){2,7}(?:{GAP}[A-Za-z0-9]{1,4})?)(?-u:\b)",
+            ))
             .unwrap(),
             validate: Some(free(iban_case_gate)),
             scan: Scan::Overlapping, // bounded: ≤ 44 chars
@@ -265,7 +320,10 @@ fn universal_recognizers() -> Vec<Recognizer> {
         // the Luhn checksum to reject look-alikes.
         Recognizer {
             kind: PiiKind::CreditCard,
-            regex: Regex::new(r"(?-u:\b)(?:\d{4}[ -]\d{4}[ -]\d{4}[ -]\d{4}|\d{13,19})(?-u:\b)").unwrap(),
+            regex: Regex::new(&with_gaps(
+                r"(?-u:\b)(?:\d{4}(?:-|{GAP})\d{4}(?:-|{GAP})\d{4}(?:-|{GAP})\d{4}|\d{13,19})(?-u:\b)",
+            ))
+            .unwrap(),
             validate: Some(free(credit_card_valid)),
             scan: Scan::Overlapping, // bounded: ≤ 19 digits — and this is the M4-R17 repro
             shrink_on_reject: false,
@@ -286,9 +344,9 @@ fn universal_recognizers() -> Vec<Recognizer> {
         //    shapes stops the match from swallowing an unrelated trailing number.
         Recognizer {
             kind: PiiKind::Phone,
-            regex: Regex::new(
-                r"(?:\+1[ .-]?)?(?:\(\d{3}\)[ .-]?|\d{3}[ .-])\d{3}[ .-]\d{4}|\+\d{1,3} \d{2,4} \d{2,4} \d{3,4}|\+\d{1,3} \d{2,4} \d{5,8}",
-            )
+            regex: Regex::new(&with_gaps(
+                r"(?:\+1(?:[.-]|{GAP})?)?(?:\(\d{3}\)(?:[.-]|{GAP})?|\d{3}(?:[.-]|{GAP}))\d{3}(?:[.-]|{GAP})\d{4}|\+\d{1,3}{GAP}\d{2,4}{GAP}\d{2,4}{GAP}\d{3,4}|\+\d{1,3}{GAP}\d{2,4}{GAP}\d{5,8}",
+            ))
             .unwrap(),
             validate: None,
             scan: Scan::Overlapping, // bounded: ≤ 20 chars
@@ -330,9 +388,9 @@ fn national_id_recognizers() -> Vec<Recognizer> {
         // rules (M4-R2) reject look-alikes like an order code `PO123456A`.
         Recognizer {
             kind: PiiKind::NationalId,
-            regex: Regex::new(
-                r"(?-u:\b)[A-Za-z]{2}\d{6}[A-Da-d](?-u:\b)|(?-u:\b)[A-Za-z]{2} \d{2} \d{2} \d{2} [A-Da-d](?-u:\b)",
-            )
+            regex: Regex::new(&with_gaps(
+                r"(?-u:\b)[A-Za-z]{2}\d{6}[A-Da-d](?-u:\b)|(?-u:\b)[A-Za-z]{2}{GAP}\d{2}{GAP}\d{2}{GAP}\d{2}{GAP}[A-Da-d](?-u:\b)",
+            ))
             .unwrap(),
             validate: Some(free(nino_prefix_valid)),
             scan: Scan::Overlapping,
@@ -702,19 +760,24 @@ use PhoneShape::{Groups, LongBlock, Trunk, TrunkPairs};
 /// Each family is one [`Recognizer`], and the *validator* loops the enabled regions — so
 /// the number of scans over a field is fixed at this table's length no matter how many
 /// regions are on.
-const PHONE_SHAPES: &[(PhoneShape, &str)] = &[
+/// **Templates, not patterns** — each carries `{GAP}` where a value's groups may be separated, and
+/// must go through [`with_gaps`] before it reaches `Regex::new` (M11-R25). The name says so because
+/// there are two consumers, the recognizer builder and `PHONE-NAT-08`'s generator, and the second
+/// one compiled a raw template the moment the first was widened. It fails loudly — `Regex::new`
+/// returns `Err` on the unexpanded `{GAP}` — which is why this is a naming fix and not a new guard.
+const PHONE_SHAPE_TEMPLATES: &[(PhoneShape, &str)] = &[
     // Trunk `0`, compact or 2/3 groups — GB `020 7946 0958`, DE `030 12345678`,
     // IT `011 5627111`, NL `020 123 4567`, CN `010 12345678`. **Unchanged from M8.1**:
     // GB and DE must keep exactly the behaviour that milestone measured.
     (
         PhoneShape::Trunk,
-        r"(?-u:\b)0\d{1,4}[ -]\d{3,4}[ -]\d{3,4}(?-u:\b)|(?-u:\b)0\d{1,4}[ -]\d{4,8}(?-u:\b)|(?-u:\b)0\d{6,11}(?-u:\b)",
+        r"(?-u:\b)0\d{1,4}(?:-|{GAP})\d{3,4}(?:-|{GAP})\d{3,4}(?-u:\b)|(?-u:\b)0\d{1,4}(?:-|{GAP})\d{4,8}(?-u:\b)|(?-u:\b)0\d{6,11}(?-u:\b)",
     ),
     // Trunk `0`, five 2-digit pairs — the standard French rendering (`01 23 45 67 89`,
     // also written with `.` or `-`). No arm above matches it: they top out at three groups.
     (
         PhoneShape::TrunkPairs,
-        r"(?-u:\b)0\d[ .-]\d{2}[ .-]\d{2}[ .-]\d{2}[ .-]\d{2}(?-u:\b)",
+        r"(?-u:\b)0\d(?:[.-]|{GAP})\d{2}(?:[.-]|{GAP})\d{2}(?:[.-]|{GAP})\d{2}(?:[.-]|{GAP})\d{2}(?-u:\b)",
     ),
     // **No trunk prefix**, 2–4 groups — ES `91 123 45 67`, PT `912 345 678`,
     // LV `67 22 33 44`, CN mobiles `138 0013 8000`. The leading digit is non-zero: a `0`
@@ -736,13 +799,13 @@ const PHONE_SHAPES: &[(PhoneShape, &str)] = &[
     // `67 22 33 44` and `67 123 456` forms.
     (
         PhoneShape::Groups,
-        r"(?-u:\b)[1-9]\d{1,2}(?:[ -]\d{2,4}){1,3}(?-u:\b)",
+        r"(?-u:\b)[1-9]\d{1,2}(?:(?:-|{GAP})\d{2,4}){1,3}(?-u:\b)",
     ),
     // **No trunk prefix**, prefix + one long block — the usual Italian mobile rendering
     // (`347 1234567`), which the arm above cannot reach: its groups top out at 4 digits.
     (
         PhoneShape::LongBlock,
-        r"(?-u:\b)[1-9]\d{2}[ -]\d{6,8}(?-u:\b)",
+        r"(?-u:\b)[1-9]\d{2}(?:-|{GAP})\d{6,8}(?-u:\b)",
     ),
 ];
 
@@ -781,7 +844,7 @@ const PHONE_SHAPES: &[(PhoneShape, &str)] = &[
 /// `redetect` to skip later passes. Every arm uses ASCII `(?-u:\b)` (M4-R13), so a digit run
 /// inside a longer ASCII token (`user0207946095@…`) is not a candidate.
 fn national_phone_recognizers(regions: &[(Id, &[PhoneShape])]) -> Vec<Recognizer> {
-    PHONE_SHAPES
+    PHONE_SHAPE_TEMPLATES
         .iter()
         .filter_map(|(shape, pattern)| {
             // **Only the regions that are actually written in this shape.** A region seeing a
@@ -804,7 +867,7 @@ fn national_phone_recognizers(regions: &[(Id, &[PhoneShape])]) -> Vec<Recognizer
             }
             Some(Recognizer {
                 kind: PiiKind::Phone,
-                regex: Regex::new(pattern).unwrap(),
+                regex: Regex::new(&with_gaps(pattern)).unwrap(),
                 validate: Some(Box::new(move |matched: &str, budget: &Budget| {
                     // **No cheap pre-filter here, and that is a decision with a measurement
                     // behind it (M10-R13).** A digit-count gate derived from libphonenumber's
@@ -876,7 +939,31 @@ fn national_phone_recognizers(regions: &[(Id, &[PhoneShape])]) -> Vec<Recognizer
 /// order refs and unassigned prefixes all *parse* and are **not valid**, so they are
 /// rejected.
 fn national_phone_valid(country: Id, matched: &str) -> bool {
-    phonenumber::parse(Some(country), matched)
+    // **Every separator in [`GAP_CHARS`] becomes an ASCII space first, and that is the other half
+    // of M11-R25.** Widening the *patterns* was not enough: `phonenumber`'s own normalisation
+    // accepts U+00A0 and U+3000 and rejects U+202F, U+2007 and `\t`, so `020⍽7946⍽0958` matched
+    // the regex, reached here and was **refused** — a miss dressed as a validation, which is the
+    // same shape as the leak: the pattern and the validator disagreeing about an alphabet.
+    //
+    // Measured, per separator, through the library: before this the domestic tier detected 2 of
+    // the 5 renderings probed and after it 5 of 5, while IBAN, card, universal phone and the NINO
+    // were already 5 of 5 from the pattern change alone.
+    //
+    // **Derived from what the validator accepts, not from what a corpus contained** (M10-R13's
+    // rule), and it can only ever *widen*: a span with no non-ASCII gap is passed through
+    // untouched and un-allocated, so the numbering-plan verdict on every rendering that reached
+    // here before is byte-identical.
+    let normalised = if matched.chars().any(|c| is_gap(c) && c != ' ') {
+        std::borrow::Cow::Owned(
+            matched
+                .chars()
+                .map(|c| if is_gap(c) { ' ' } else { c })
+                .collect::<String>(),
+        )
+    } else {
+        std::borrow::Cow::Borrowed(matched)
+    };
+    phonenumber::parse(Some(country), normalised.as_ref())
         .map(|number| number.is_valid())
         .unwrap_or(false)
 }
@@ -1099,7 +1186,12 @@ impl Recognizer {
         let mut end = span.end;
         while end > span.start {
             // The last separator strictly inside the candidate — i.e. drop one group.
-            let cut = input[span.start..end].rfind([' ', '-', '.'])?;
+            // The cut alphabet is [`GAP_CHARS`] plus the two ASCII separators the patterns
+            // spell explicitly — **the same set the patterns match**, by construction rather than
+            // by two lists agreeing (M11-R25). An ASCII-only cut rule here would leave a rejected
+            // NBSP-separated span with nowhere to shrink to, which is M11-R13 all over again on
+            // the axis M11-R25 opened.
+            let cut = input[span.start..end].rfind(|c: char| c == '-' || c == '.' || is_gap(c))?;
             end = span.start + cut;
             if end <= span.start {
                 return None;
@@ -1378,7 +1470,14 @@ fn iban_length_ok(text: &str) -> bool {
     let cc = [a.to_ascii_uppercase() as u8, b.to_ascii_uppercase() as u8];
     let cc = std::str::from_utf8(&cc).expect("two ASCII letters are valid UTF-8");
     match iban_country_length(cc) {
-        Some(len) => 2 + significant.map(char::len_utf8).sum::<usize>() == len,
+        // **Characters, not bytes** (M11-R29). ISO 13616 specifies a length in *characters*, and
+        // `\d` is Unicode-aware, so a span may carry a `\p{Nd}` digit that is 2-4 bytes wide. This
+        // read `Σ char::len_utf8` — a byte count — which the pre-M11-R18 `compact.len()` did too,
+        // so the slip is as old as the function. It is latent either way: `iban_mod97` folds only
+        // ASCII digits and letters and returns `false` on anything else, so the gate never reaches
+        // the length test for such a span. Latent is not correct, and M11-R18's option 3 proposes
+        // reordering exactly these two checks.
+        Some(len) => 2 + significant.count() == len,
         None => true,
     }
 }
@@ -2916,7 +3015,7 @@ mod tests {
         // Sized for the **debug** profile `cargo test` builds, where `phonenumber::parse` is
         // ~50× slower: 3,000 rounds took 93 s, which is a guard nobody would keep running.
         for _ in 0..400 {
-            // Per family, in `PHONE_SHAPES` order, built to that family's own grammar —
+            // Per family, in `PHONE_SHAPE_TEMPLATES` order, built to that family's own grammar —
             // including the group counts that push a candidate past any *domestic* length,
             // which is exactly the band the deleted length gate refused.
             let generated = [
@@ -2976,11 +3075,11 @@ mod tests {
                 // and reported them as misses.** A rendering no family matches is a documented
                 // recall gap (we do not claim every rendering on earth), not a defect on the
                 // path this test is about.
-                let pattern = PHONE_SHAPES
+                let pattern = PHONE_SHAPE_TEMPLATES
                     .iter()
                     .find(|(s, _)| *s == shape)
-                    .map(|(_, p)| Regex::new(p).unwrap())
-                    .expect("every generated shape must exist in PHONE_SHAPES");
+                    .map(|(_, p)| Regex::new(&with_gaps(p)).unwrap())
+                    .expect("every generated shape must exist in PHONE_SHAPE_TEMPLATES");
                 assert!(
                     pattern
                         .find(&candidate)
@@ -3430,8 +3529,16 @@ mod tests {
         },
     }
 
-    /// One recorded answer. `pattern` is the recognizer's own regex source, so an answer binds to
-    /// a live recognizer and cannot drift into describing a pattern that no longer ships.
+    /// One recorded answer. `pattern` is the recognizer's own regex source **as written** — the
+    /// `{GAP}` template, not its expansion — so an answer binds to a live recognizer and cannot
+    /// drift into describing a pattern that no longer ships.
+    ///
+    /// **The template rather than the expansion, and that is the point** (M11-R25): widening
+    /// [`GAP_CHARS`] rewrites four patterns, and if the answers held expanded blobs every one would
+    /// have to be re-pasted — which is how a table stops being read and starts being satisfied. The
+    /// audit expands the template with the same [`with_gaps`] the recognizer used, so the two are
+    /// the same string by construction. Editing the pattern *itself* still unbinds the answer and
+    /// demands it be re-decided, which is what this key is for.
     struct CaseAnswer {
         kind: PiiKind,
         pattern: &'static str,
@@ -3461,10 +3568,17 @@ mod tests {
         not_letter_bearing: Vec<String>,
     }
 
-    /// Does the inclusive range `start..=end` contain at least one ASCII letter?
-    fn covers_an_ascii_letter(start: char, end: char) -> bool {
-        ('A'..='Z').chain('a'..='z').any(|c| start <= c && c <= end)
+    /// Does the inclusive range `start..=end` contain at least one of `wanted`?
+    fn covers_any(start: char, end: char, wanted: &[char]) -> bool {
+        wanted.iter().any(|c| start <= *c && *c <= end)
     }
+
+    /// Every ASCII letter, as the character set [`pattern_can_match_a_letter`] asks about.
+    const ASCII_LETTERS: &[char] = &[
+        'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R',
+        'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z', 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j',
+        'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z',
+    ];
 
     /// **Can this pattern match a string containing an ASCII letter?** — the derivation the whole
     /// guard rests on, kept pure so it can be proved over a matrix of patterns.
@@ -3481,27 +3595,45 @@ mod tests {
     /// which they all are — so the residue is **0 patterns**, and the day one is not, the guard
     /// goes red and asks for a decision instead of quietly skipping it.
     fn pattern_can_match_a_letter(pattern: &str) -> bool {
+        pattern_can_match_any_of(pattern, ASCII_LETTERS)
+    }
+
+    /// **Can this pattern match a string containing one of `wanted`?** — the derivation both
+    /// registry guards rest on, kept pure so each can be proved over a matrix of patterns.
+    ///
+    /// One walk serves two axes because the question is the same one twice: `CASE-01` asks it with
+    /// [`ASCII_LETTERS`], `SEPARATOR-01` with [`GAP_CHARS`]. That is not tidiness — M11-R10,
+    /// M11-R21 and M11-R25 are one sentence met three times (*a recognizer and its validator must
+    /// agree on the alphabet of every axis*), and a shared derivation is what lets a third axis be
+    /// added as a table rather than as a new mechanism.
+    fn pattern_can_match_any_of(pattern: &str, wanted: &[char]) -> bool {
         use regex_syntax::hir::{Class, Hir, HirKind};
 
-        fn walk(hir: &Hir) -> bool {
+        fn walk(hir: &Hir, wanted: &[char]) -> bool {
             match hir.kind() {
-                HirKind::Literal(lit) => lit.0.iter().any(u8::is_ascii_alphabetic),
+                HirKind::Literal(lit) => std::str::from_utf8(&lit.0)
+                    .is_ok_and(|text| text.chars().any(|c| wanted.contains(&c))),
                 HirKind::Class(Class::Unicode(class)) => class
                     .ranges()
                     .iter()
-                    .any(|r| covers_an_ascii_letter(r.start(), r.end())),
+                    .any(|r| covers_any(r.start(), r.end(), wanted)),
                 HirKind::Class(Class::Bytes(class)) => class
                     .ranges()
                     .iter()
-                    .any(|r| covers_an_ascii_letter(char::from(r.start()), char::from(r.end()))),
-                HirKind::Repetition(rep) => walk(&rep.sub),
-                HirKind::Capture(cap) => walk(&cap.sub),
-                HirKind::Concat(subs) | HirKind::Alternation(subs) => subs.iter().any(walk),
+                    .any(|r| covers_any(char::from(r.start()), char::from(r.end()), wanted)),
+                HirKind::Repetition(rep) => walk(&rep.sub, wanted),
+                HirKind::Capture(cap) => walk(&cap.sub, wanted),
+                HirKind::Concat(subs) | HirKind::Alternation(subs) => {
+                    subs.iter().any(|h| walk(h, wanted))
+                }
                 HirKind::Empty | HirKind::Look(_) => false,
             }
         }
 
-        walk(&regex_syntax::parse(pattern).expect("every shipped recognizer pattern parses"))
+        walk(
+            &regex_syntax::parse(pattern).expect("every shipped recognizer pattern parses"),
+            wanted,
+        )
     }
 
     /// **The decision, pulled out of the test so it can be driven with a registry that is not the
@@ -3517,7 +3649,7 @@ mod tests {
             }
             let answered = answers
                 .iter()
-                .any(|a| a.kind == *kind && a.pattern == *pattern);
+                .any(|a| a.kind == *kind && with_gaps(a.pattern) == *pattern);
             let entry = named(*kind, pattern);
             if !answered && !audit.unanswered.contains(&entry) {
                 audit.unanswered.push(entry);
@@ -3525,15 +3657,15 @@ mod tests {
         }
 
         for answer in answers {
+            let expanded = with_gaps(answer.pattern);
             let still_shipped = shipped
                 .iter()
-                .any(|(kind, pattern)| *kind == answer.kind && *pattern == answer.pattern);
+                .any(|(kind, pattern)| *kind == answer.kind && *pattern == expanded);
             let entry = named(answer.kind, answer.pattern);
             if !still_shipped && !audit.stale.contains(&entry) {
                 audit.stale.push(entry.clone());
             }
-            if !pattern_can_match_a_letter(answer.pattern)
-                && !audit.not_letter_bearing.contains(&entry)
+            if !pattern_can_match_a_letter(&expanded) && !audit.not_letter_bearing.contains(&entry)
             {
                 audit.not_letter_bearing.push(entry);
             }
@@ -3577,13 +3709,13 @@ mod tests {
         // —— the two families M11-R10 found leaking ——
         CaseAnswer {
             kind: PiiKind::Iban,
-            pattern: r"(?-u:\b)[A-Za-z]{2}\d{2}(?:[A-Za-z0-9]{11,30}|(?: [A-Za-z0-9]{4}){2,7}(?: [A-Za-z0-9]{1,4})?)(?-u:\b)",
+            pattern: r"(?-u:\b)[A-Za-z]{2}\d{2}(?:[A-Za-z0-9]{11,30}|(?:{GAP}[A-Za-z0-9]{4}){2,7}(?:{GAP}[A-Za-z0-9]{1,4})?)(?-u:\b)",
             positive: "IT60X0542811101000000123456",
             rule: CaseRule::Folds,
         },
         CaseAnswer {
             kind: PiiKind::Iban,
-            pattern: r"(?-u:\b)[A-Za-z]{2}\d{2}(?:[A-Za-z0-9]{11,30}|(?: [A-Za-z0-9]{4}){2,7}(?: [A-Za-z0-9]{1,4})?)(?-u:\b)",
+            pattern: r"(?-u:\b)[A-Za-z]{2}\d{2}(?:[A-Za-z0-9]{11,30}|(?:{GAP}[A-Za-z0-9]{4}){2,7}(?:{GAP}[A-Za-z0-9]{1,4})?)(?-u:\b)",
             positive: "DE89370400440532013000",
             rule: CaseRule::Folds,
         },
@@ -3642,7 +3774,7 @@ mod tests {
         },
         CaseAnswer {
             kind: PiiKind::NationalId,
-            pattern: r"(?-u:\b)[A-Za-z]{2}\d{6}[A-Da-d](?-u:\b)|(?-u:\b)[A-Za-z]{2} \d{2} \d{2} \d{2} [A-Da-d](?-u:\b)",
+            pattern: r"(?-u:\b)[A-Za-z]{2}\d{6}[A-Da-d](?-u:\b)|(?-u:\b)[A-Za-z]{2}{GAP}\d{2}{GAP}\d{2}{GAP}\d{2}{GAP}[A-Da-d](?-u:\b)",
             positive: "AB123456C", // GB NINO — `nino_prefix_valid` upper-cases before checking
             rule: CaseRule::Folds,
         },
@@ -3996,10 +4128,17 @@ mod tests {
     ///
     /// **`\d` is Unicode-aware and always has been.** M4-R13 de-Unicoded the word *boundary*
     /// (`(?-u:\b)`) because a Unicode `\b` made every anchored recognizer inert in CJK prose. It did
-    /// not touch `\d`, and that was right — `\d` matching `\p{Nd}` is what lets a value written with
-    /// Arabic-Indic or fullwidth digits be **detected** rather than forwarded in clear. The
-    /// consequence nobody drew is that a matched span is then **`&str` whose byte length is not its
-    /// character count**, and a validator that byte-slices it will panic.
+    /// not touch `\d`, and the consequence nobody drew is that a matched span is then **`&str`
+    /// whose byte length is not its character count**, and a validator that byte-slices it panics.
+    ///
+    /// **What that Unicode `\d` buys is smaller than this comment used to claim (M11-R27).** It
+    /// said `\p{Nd}` matching *"is what lets a value written with Arabic-Indic or fullwidth digits
+    /// be detected rather than forwarded in clear"*. Measured — 3 digit blocks x 17 values — that
+    /// is false for all **thirteen validated recognizers**: the pattern matches and the validator
+    /// then rejects, because `iban_mod97`, `luhn_valid`, `char::to_digit` and every national-ID
+    /// checksum fold **ASCII** digits only. It is true of exactly one recognizer, the universal
+    /// `Phone`, which has no validator. So the reachable consequence of the Unicode `\d` was this
+    /// panic and a coverage gap — never the coverage the sentence promised.
     ///
     /// `iban_mod97` did exactly that until `831f916`: it compacted the span into a `String` and took
     /// `&compact[..4]`. Through the **real v1.2.1 binary**, a 30-byte unauthenticated request —
@@ -4069,6 +4208,180 @@ mod tests {
         assert!(
             substitutions >= 500,
             "only {substitutions} substitutions were built — the corpus is not exercising the axis"
+        );
+    }
+
+    /// One recorded answer on the **separator axis** (M11-R25). Same shape and same binding rule as
+    /// [`CaseAnswer`]: `pattern` is the recognizer's own source **as written**, `{GAP}` template and
+    /// all, so editing a pattern unbinds its answer and demands it be re-decided.
+    ///
+    /// There is no `rule` field, and that asymmetry is the finding's own measurement. The case axis
+    /// needed one because `Secret`'s `sk-`/`AKIA` are *formats* that deliberately do not fold. No
+    /// separator is a format: widening every gap-bearing pattern to the whole `Zs` class plus tab
+    /// costs **0 added matches** over 341.7 MB of third-party source, so there is nothing for a
+    /// second answer to say. If a recognizer ever needs one, this is where it goes.
+    struct SeparatorAnswer {
+        kind: PiiKind,
+        pattern: &'static str,
+        /// A value this recognizer detects, written with **ASCII spaces** between its groups.
+        positive: &'static str,
+    }
+
+    /// Every gap-bearing recognizer's recorded answer. Nine rows over eight patterns — the
+    /// universal `Phone` carries two, for its US and `+CC` arms, which are separate alternations
+    /// with separate separators.
+    const SEPARATOR_ANSWERS: &[SeparatorAnswer] = &[
+        SeparatorAnswer {
+            kind: PiiKind::Iban,
+            pattern: r"(?-u:\b)[A-Za-z]{2}\d{2}(?:[A-Za-z0-9]{11,30}|(?:{GAP}[A-Za-z0-9]{4}){2,7}(?:{GAP}[A-Za-z0-9]{1,4})?)(?-u:\b)",
+            positive: "DE89 3704 0044 0532 0130 00",
+        },
+        SeparatorAnswer {
+            kind: PiiKind::CreditCard,
+            pattern: r"(?-u:\b)(?:\d{4}(?:-|{GAP})\d{4}(?:-|{GAP})\d{4}(?:-|{GAP})\d{4}|\d{13,19})(?-u:\b)",
+            positive: "4111 1111 1111 1111",
+        },
+        SeparatorAnswer {
+            kind: PiiKind::Phone,
+            pattern: r"(?:\+1(?:[.-]|{GAP})?)?(?:\(\d{3}\)(?:[.-]|{GAP})?|\d{3}(?:[.-]|{GAP}))\d{3}(?:[.-]|{GAP})\d{4}|\+\d{1,3}{GAP}\d{2,4}{GAP}\d{2,4}{GAP}\d{3,4}|\+\d{1,3}{GAP}\d{2,4}{GAP}\d{5,8}",
+            positive: "415 555 2671", // the US 3-3-4 arm
+        },
+        SeparatorAnswer {
+            kind: PiiKind::Phone,
+            pattern: r"(?:\+1(?:[.-]|{GAP})?)?(?:\(\d{3}\)(?:[.-]|{GAP})?|\d{3}(?:[.-]|{GAP}))\d{3}(?:[.-]|{GAP})\d{4}|\+\d{1,3}{GAP}\d{2,4}{GAP}\d{2,4}{GAP}\d{3,4}|\+\d{1,3}{GAP}\d{2,4}{GAP}\d{5,8}",
+            positive: "+39 333 000 0001", // the `+CC` arm, a different alternation
+        },
+        SeparatorAnswer {
+            kind: PiiKind::NationalId,
+            pattern: r"(?-u:\b)[A-Za-z]{2}\d{6}[A-Da-d](?-u:\b)|(?-u:\b)[A-Za-z]{2}{GAP}\d{2}{GAP}\d{2}{GAP}\d{2}{GAP}[A-Da-d](?-u:\b)",
+            positive: "AB 12 34 56 C", // the GB NINO's spaced rendering
+        },
+        SeparatorAnswer {
+            kind: PiiKind::Phone,
+            pattern: r"(?-u:\b)0\d{1,4}(?:-|{GAP})\d{3,4}(?:-|{GAP})\d{3,4}(?-u:\b)|(?-u:\b)0\d{1,4}(?:-|{GAP})\d{4,8}(?-u:\b)|(?-u:\b)0\d{6,11}(?-u:\b)",
+            positive: "020 7946 0958",
+        },
+        SeparatorAnswer {
+            kind: PiiKind::Phone,
+            pattern: r"(?-u:\b)0\d(?:[.-]|{GAP})\d{2}(?:[.-]|{GAP})\d{2}(?:[.-]|{GAP})\d{2}(?:[.-]|{GAP})\d{2}(?-u:\b)",
+            positive: "01 23 45 67 89",
+        },
+        SeparatorAnswer {
+            kind: PiiKind::Phone,
+            pattern: r"(?-u:\b)[1-9]\d{1,2}(?:(?:-|{GAP})\d{2,4}){1,3}(?-u:\b)",
+            positive: "91 123 45 67",
+        },
+        SeparatorAnswer {
+            kind: PiiKind::Phone,
+            pattern: r"(?-u:\b)[1-9]\d{2}(?:-|{GAP})\d{6,8}(?-u:\b)",
+            positive: "347 1234567",
+        },
+    ];
+
+    /// **SEPARATOR-01 (M11-R25) — every recognizer whose pattern has an intra-value gap has a
+    /// recorded answer on the separator axis, and every member of [`GAP_CHARS`] is asserted.**
+    ///
+    /// **The third meeting of one sentence.** M11-R10 was the letters' case, M11-R21 the digits'
+    /// script, this is the separator: *a recognizer and its validator must agree on the alphabet of
+    /// every axis, and where the validator is the more permissive the difference is not slack — it
+    /// is a set of renderings that reach the provider in clear.* Every pattern spelled its gap as a
+    /// literal ASCII space while `iban_mod97`, `luhn_valid` and `nino_prefix_valid` all filter on
+    /// `char::is_whitespace`. Through the real binary,
+    /// `IBAN DE89⍽3704⍽0044⍽0532⍽0130⍽00, carta 4111⍽1111⍽1111⍽1111, tel 020⍽7946⍽0958` (⍽ = U+00A0)
+    /// was forwarded **byte for byte**, while the email in the same sentence was masked. **432 of
+    /// 1 080 cells leaking**, predating M11 by ten milestones.
+    ///
+    /// **It took two halves, and the second is the one a pattern-only fix would have missed.**
+    /// Widening the patterns closed IBAN, the card, the universal phone and the NINO for every
+    /// separator — and left the *domestic* phone tier detecting 2 of 5, because `phonenumber`'s own
+    /// normalisation accepts U+00A0 and U+3000 and rejects U+202F, U+2007 and `\t`. So
+    /// [`national_phone_valid`] maps [`GAP_CHARS`] to ASCII spaces before parsing: 5 of 5. A
+    /// pattern and a validator disagreeing about an alphabet is the whole finding, and it was true
+    /// on **both** sides of this one.
+    ///
+    /// The set of recognizers that must answer is **derived** — every shipped pattern that
+    /// [`pattern_can_match_any_of`] says can match a gap — exactly as `CASE-01` derives its own, and
+    /// for the reason M11-R11 established: a hand-kept list is not a chokepoint, it is a list.
+    #[test]
+    fn every_gap_bearing_recognizer_answers_the_separator_axis() {
+        let shipped = StructuredRecognizers::new();
+        let patterns = shipped.shipped_patterns();
+
+        // ——— the audit: no gap-bearing pattern without an answer, no answer without a pattern ———
+        let mut unanswered: Vec<String> = Vec::new();
+        for (kind, pattern) in &patterns {
+            if !pattern_can_match_any_of(pattern, GAP_CHARS) {
+                continue;
+            }
+            let answered = SEPARATOR_ANSWERS
+                .iter()
+                .any(|a| a.kind == *kind && with_gaps(a.pattern) == *pattern);
+            let entry = format!("{kind:?} :: {pattern}");
+            if !answered && !unanswered.contains(&entry) {
+                unanswered.push(entry);
+            }
+        }
+        assert!(
+            unanswered.is_empty(),
+            "these recognizers can match a separator and nothing records which separators they \
+             must accept — add a `SeparatorAnswer`:\n  {}",
+            unanswered.join("\n  ")
+        );
+        for answer in SEPARATOR_ANSWERS {
+            let expanded = with_gaps(answer.pattern);
+            assert!(
+                patterns
+                    .iter()
+                    .any(|(kind, pattern)| *kind == answer.kind && *pattern == expanded),
+                "the answer for {:?} names a pattern this build does not ship",
+                answer.positive
+            );
+            // The same non-vacuity trap `CASE-01` closes: an empty `unanswered` list is also what a
+            // derivation that stopped seeing gaps would produce.
+            assert!(
+                pattern_can_match_any_of(&expanded, GAP_CHARS),
+                "{:?}'s pattern carries no gap, so `pattern_can_match_any_of` has stopped seeing \
+                 them and the audit above is vacuous",
+                answer.positive
+            );
+        }
+
+        // ——— the matrix: every separator, every answer, identical detection ———
+        for answer in SEPARATOR_ANSWERS {
+            assert!(
+                answer.positive.contains(' '),
+                "{:?} has no ASCII space to re-render — it cannot exercise this axis",
+                answer.positive
+            );
+            for separator in GAP_CHARS {
+                let rendered = answer.positive.replace(' ', &separator.to_string());
+                assert_eq!(
+                    kinds(&rendered),
+                    vec![(answer.kind, rendered.clone())],
+                    "{:?} written with U+{:04X} between its groups must be detected exactly as it \
+                     is with an ASCII space. Before M11-R25 this reached the provider IN CLEAR: \
+                     every pattern spelled its gap ` ` while every validator behind it filtered on \
+                     `char::is_whitespace`.",
+                    answer.positive,
+                    *separator as u32
+                );
+            }
+        }
+
+        // ——— reachability: a new gap-bearing recognizer must make this red ———
+        // Not a synthetic registry — the real one, plus a stand-in. This is the half M11-R11 found
+        // missing from `CASE-01` after a full review round.
+        const NEWCOMER: &str = r"(?-u:\b)ZQ\d{3}{GAP}\d{3}(?-u:\b)";
+        let expanded_newcomer = with_gaps(NEWCOMER);
+        assert!(
+            pattern_can_match_any_of(&expanded_newcomer, GAP_CHARS),
+            "the stand-in must itself be gap-bearing, or it proves nothing"
+        );
+        assert!(
+            !SEPARATOR_ANSWERS
+                .iter()
+                .any(|a| with_gaps(a.pattern) == expanded_newcomer),
+            "a recognizer with a gap and no answer must be reported unanswered by the audit above"
         );
     }
 
