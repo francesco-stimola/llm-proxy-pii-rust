@@ -83,6 +83,36 @@ Milestone [M11](https://github.com/francesco-stimola/llm-proxy-pii-rust/blob/mai
     stays the logical count — exactly the previous behaviour.
   - `GLINER_INTRA_THREADS` derives from the same base, the same way.
 
+### Fixed
+
+- **A lower- or mixed-case IBAN or VAT number was forwarded in clear. It is now masked.** This is a
+  leak, and one half of it has been present since 1.0.0. The recognizers spelled their letters
+  uppercase-only, so `it00905811006`, `de136695976`, `nl111222333b01`,
+  `it60x0542811101000000123456` — and, sharpest, `IT60x0542811101000000123456`, an otherwise
+  canonical IBAN with **one** lowercase letter — matched nothing at all and reached the provider
+  byte for byte. Seven of thirteen renderings of real published values were affected. The Codice
+  Fiscale, ES DNI/NIE and CN resident-id recognizers always folded case, so the behaviour was also
+  inconsistent between tiers.
+  - **The five VAT prefixes and the Dutch literal `B` now fold case.** Measured cost over 341.1 MB
+    of third-party source: **no additional matches** for any scheme, and each is checksum-gated
+    besides. Nothing to configure.
+  - **IBAN folds too, but only for a rendering it can verify — and this asymmetry is worth
+    knowing.** A canonical all-uppercase IBAN behaves exactly as before: structurally valid is
+    masked even when mod-97 fails. A rendering carrying **any** lowercase letter is masked only if
+    it passes mod-97 *and* its country's ISO 13616 length. The reason is measured, not cautious:
+    folding without that gate would mask **931 additional spans** on the same corpus — hex digests,
+    base64 blobs, `Ed25519PublicKey` strings — and masking one of those inside a `tool_use.input`
+    is a real functional harm. So `de89370400440532013000` is masked; a lowercase IBAN-shaped
+    string that verifies as nothing is not.
+- **A real IBAN could be dropped entirely when followed by a short word.** Found and fixed inside
+  this same release, so no shipped version carries it — but it is the shape to know. An IBAN whose
+  compact length is a multiple of 4 (🇦🇩 🇦🇹 🇧🇪 🇨🇾 🇨🇿 🇪🇪 🇪🇸 🇭🇺 🇱🇹 🇱🇺 🇵🇱 🇷🇴 🇸🇪 🇸🇰) is
+  written in groups that leave the pattern's optional trailing group unused, so the match ran on
+  into the next 1–4-character token. `Please wire to ES91 2100 0418 4502 0005 1332 for the invoice`
+  produced no IBAN candidate at all, and the provider saw the country code, both check digits and
+  the final group in clear. A rejected span is now retried one separator shorter instead of being
+  discarded.
+
 ## [1.2.1] — 2026-07-31
 
 Milestone [M10](https://github.com/francesco-stimola/llm-proxy-pii-rust/blob/main/docs/ROADMAP.md#m10) — national phone coverage + release hygiene.

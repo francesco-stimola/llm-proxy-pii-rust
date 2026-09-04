@@ -223,25 +223,58 @@ false positive): `email`, `phone`, `ssn`, `credit_card`, `iban`, `secret`,
 - DEM-01 — de-mask tolerates `[EMAIL 1]` / `[email-1]` / `[ EMAIL_1 ]`; unknown bracketed text is left as-is.
 - ADV-01 — evasion recall: broadened phone shapes + IBAN-before-word are caught; obfuscated emails are a **documented gap** (`tests/adversarial.rs`).
 - IBAN-04 — the IBAN span never absorbs a trailing ALL-CAPS word (code-review guard).
+- **IBAN-05 (M11-R13) — `no_window_of_an_iban_survives_masking`: M10-R1's predicate, on the
+  recognizer that never received M10-R1's fix.** That finding drew the line this guard is built on:
+  *nothing detectable survives* (PROP-04) is satisfied by an orphan the mask ate, while *no byte of
+  the value survives* is not. The phone tier got a guard for it (`PHONE-NAT-09`); IBAN did not.
+  **What walked through the gap.** The grouped arm ends `(?: [A-Za-z0-9]{1,4})?`, so an IBAN whose
+  compact length is a **multiple of 4** leaves that tail unspent and the match runs into the next
+  short token. Folding case (M11-R10) made an ordinary lowercase word matchable there, and the same
+  fix's `iban_case_gate` then *rejects* the over-long span for the lowercase byte that word
+  contributed; `shrink_on_reject: false` meant no shorter prefix was tried, so **no candidate was
+  produced at all** and `ES91 2100 0418 4502 0005 1332 for` reached the provider as
+  `ES91 2100 [PHONE_1] 1332 for` — country code, both check digits and the last group in clear.
+  Measured by build, not argued: neutralising the gate took a 40-case matrix from **6** leaking rows
+  to **0**, so the gate converted a benign over-match into a dropped span. Fixed by
+  `shrink_on_reject: true` on the IBAN recognizer, which cuts at the last separator inside the span.
+  **Why `IBAN-04` was green through all of it** — its two fixtures are `IT60X…` (27) and `DE89…`
+  (22), the two lengths that *cannot* over-reach, and the repo's whole IBAN corpus was
+  DE/IT/FR/LV/NL/ZZ: not one vulnerable length in it. So this guard **derives** its corpus from
+  `iban_country_length` by probing all 676 two-letter codes — every country the table knows, each
+  synthesised with real check digits, in both renderings, three letter cases and six trailing
+  contexts. It asserts a non-vacuity floor in the dimension that matters (at least ten countries
+  whose length is divisible by 4; there are 14), because a corpus of immune countries is exactly
+  how the old guard passed.
+  **Decided limit, measured not assumed.** The trailing token is always *separated*, which is what
+  natural text produces. A lowercase IBAN **glued** to 1-4 alphanumerics
+  (`es9121000418450200051332abcd`) still yields no candidate — the continuous arm has no separator
+  to cut at. That is **not a regression**: verified against a build of the exact pre-M11-R10
+  recognizer, which produced no candidate for it either, its uppercase-only pattern being unable to
+  match the string at all. Closing it would need a length-derived cut rather than a separator-derived
+  one, whose false-positive cost is unmeasured — so it is left open deliberately and named here.
 
-> **The IBAN pattern is uppercase-only, and nothing here says so or checks it (M11-R10, open).**
-> `[A-Z]{2}\d{2}[A-Z0-9]{11,30}` means **one** lowercase letter anywhere drops the whole span:
-> driven through the real binary, `it60x0542811101000000123456`, the space-grouped lowercase
-> form, **and** `IT60x0542811101000000123456` — an otherwise-uppercase IBAN with a single
-> lowercase BBAN letter — all reach the upstream **in clear**, while
-> `IT60X0542811101000000123456` is masked. `iban_mod97`'s own doc says it folds letters to
-> uppercase, i.e. the *validator* was written for input the *regex* can never deliver.
-> **Unlike the VAT tier's version of this, the rule here is load-bearing and worth keeping:**
-> case-folding the continuous arm costs **+931 masked spans** over 341.1 MB of third-party
-> source (2 → 933 hits — hex digests, base64, `Ed25519PublicKey`), and IBAN has no hard
-> checksum gate, so every one of those is masked. The cheap way to buy the coverage without the
-> cost is measured too: require a **non-canonical-case** rendering to be `Verified` (mod-97 +
-> the ISO 13616 length) rather than `Structural`, and **0 of the 931** survive — leaving the
-> uppercase path's deliberate "a structurally-valid IBAN is masked even if mod-97 fails" rule
-> (M4) untouched. Recorded here rather than fixed, because it changes product-visible coverage.
-> The tier is **inconsistent** on this axis, which is the part that makes it an accident rather
-> than a policy: the national-ID recognizers (Codice Fiscale, ES DNI/NIE, CN resident id) all
-> fold case and mask either way; IBAN and the six VAT patterns do not.
+> **The IBAN pattern folded case in M11-R10, and the rule that replaced "uppercase-only" is an
+> asymmetry worth knowing.** Until `33eb159` the pattern was `[A-Z]{2}\d{2}[A-Z0-9]{11,30}`, so
+> **one** lowercase letter anywhere dropped the whole span: `it60x0542811101000000123456`, its
+> space-grouped form, **and** `IT60x0542811101000000123456` — an otherwise-uppercase IBAN with a
+> single lowercase BBAN letter — all reached the upstream **in clear**, while
+> `IT60X0542811101000000123456` was masked. `iban_mod97`'s doc had promised to fold letters since
+> M1, for input the regex could never deliver.
+> It could not simply be folded, and the numbers are why: case-folding the continuous arm costs
+> **+931 masked spans** over 341.1 MB of third-party source (2 -> 933 hits — hex digests, base64,
+> `Ed25519PublicKey`), and IBAN has no hard checksum gate, so every one would be masked. So
+> [`iban_case_gate`] splits the rule **by rendering**: a canonical all-uppercase span keeps M4's
+> deliberate "structurally valid is masked even when mod-97 fails" behaviour, while a span carrying
+> **any** lowercase letter must be fully verifiable (mod-97 **and** the ISO 13616 length).
+> Measured residue: **0 of the 931**. Pinned by `CASE-02`, both halves, because getting either
+> wrong is silent.
+> **The asymmetry is product-visible and operators need it stated:** a *lowercase* IBAN whose
+> mod-97 fails is **not** masked, while its uppercase twin is. That is the price of the +931, and
+> it is a decision, not an oversight.
+> **And the gate cost a leak on the way in — see `IBAN-05` (M11-R13).** Rejecting a span is not
+> free when the pattern can over-reach: the grouped arm's optional `(?: [A-Za-z0-9]{1,4})?` tail
+> swallowed the next short word, the gate then refused the over-long span for the lowercase byte
+> that word contributed, and with `shrink_on_reject: false` the real IBAN vanished entirely.
 
 ### M2 — hybrid detection (unstructured entities)
 - OVL-01 — shared overlap resolution: structured PII wins a span an ML entity overlaps; non-overlapping spans all survive in reading order (`src/pii/overlap.rs`).
@@ -329,29 +362,22 @@ two *other* always-on tiers already claim that shape.
   > here rather than filed — a guard on a guard is worth one level, not four. If the floor is ever
   > touched, 11 is the number, and the doc comment's stated reason (*"the shortest shipped form is
   > `DE` + 9 digits"*) is what makes 9 look right.
-- **VAT-05 — `lowercase_country_prefix_is_not_a_vat_number`: the country prefixes are
-  uppercase-only.** The recognizers match `IT`/`DE`/`GB`/`PT`/`NL` in uppercase only, so a
-  lower- or mixed-case rendering matches **nothing at all** — the letters are ASCII word
-  characters, so there is no `(?-u:\b)` between them and the digits for the bare recognizer to
-  use either.
-  > **The stated reason for that does not survive the tier's own grammar, and the measured cost
-  > of the rule is not what the reason claims (M11-R10, open).** The rationale in
-  > `recognizers.rs` and in this entry's first version was *"lowercased, `call it <11 digits>`
-  > would produce a 14-character span swallowing an ordinary word"* — but the tier also forbids
-  > **any space between prefix and digits**, so `it 00905811006` cannot match whatever the case
-  > rule says. Mutation: making the `IT` pattern case-insensitive turned exactly **one**
-  > assertion red in 149 lib tests — `kinds("it00905811006").is_empty()`, the one that pins the
-  > miss itself. The `"call it …"` assertion, which carries the rationale, stayed **green under
-  > the very change it is quoted as forbidding**. Measured cost of folding case on all five
-  > prefixed schemes, over 341.1 MB / 16 380 files of uncurated third-party source: **0
-  > additional matches** (0 uppercase, 0 case-insensitive, for every scheme). Measured cost of
-  > *keeping* it, driven through the real binary: **7 of 13 renderings of real published VAT
-  > numbers reach the upstream in clear**, including `NL111222333b01` — an uppercase prefix with
-  > a lowercase internal `B` separator, which no stated decision covers at all, and whose case
-  > **no test pins in either direction** (changing `B` to `[Bb]` leaves the suite at 246/0/5).
-  > The rule may well be right; it has never been *decided*. Tracked as
-  > [M11-R10](reviews/M11.md#m11-r10) — a product-visible labelling/coverage change, so the
-  > maintainer's call.
+- **VAT-05 — `a_vat_span_never_swallows_the_word_before_it`: the span boundary, which is the
+  property that survived.** The entry under this id used to describe a *different* test
+  (`lowercase_country_prefix_is_not_a_vat_number`) asserting that the country prefixes are
+  uppercase-only. **That test no longer exists and the rule it pinned was refuted** (M11-R10): the
+  tier forbids any space between prefix and digits, so the `"call it <11 digits>"` span the
+  uppercase-only rule was justified by could never match under *any* case rule — while the rule
+  itself cost **7 of 13 renderings of real published VAT numbers reaching the upstream in clear**.
+  Mutation, at the time: making the `IT` pattern case-insensitive turned exactly **one** assertion
+  red in 149 lib tests, and it was the one pinning the miss; the `"call it …"` assertion carrying
+  the rationale stayed **green under the very change it was quoted as forbidding**. Measured cost
+  of folding all five prefixed schemes over 341.1 MB / 16 380 files: **0 additional matches**.
+  The prefixes fold as of `33eb159`, spelled `[Ii][Tt]` rather than `(?i)` so no Unicode case
+  folding can widen them. What this guard keeps is the property the old test's first assertion
+  really exercised and which is **independent of the case rule**: a VAT number written after an
+  English word still yields the digits alone (`call it 00905811006 back` -> `00905811006`, never
+  `it 00905811006`), in both cases, plus the leak itself in both directions.
 - **CASE-01 (M11-R10, rebuilt for M11-R11) — `every_letter_bearing_recognizer_answers_the_case_axis`: the set comes from the registry, not from a list.** M11-R10 was not one bug — **seven of thirteen renderings of values already in this repo's own corpus went upstream in clear**, because the VAT prefixes and the IBAN pattern spelled their letters `[A-Z]` while the Codice Fiscale, the ES DNI/NIE and the CN resident id folded case. Nobody had ever decided the axis: `iban_mod97`'s doc comment has promised to fold letters since **M1**, for input the regex could not deliver — the validator was written for a case the pattern made impossible, which is how it survived ten milestones.
   **Its first form was the instance-shaped fix wearing the chokepoint's words, and M11-R11 is that being found.** A nine-row hand-written `const` promised that "a new letter-bearing recognizer cannot ship without an entry here" while deriving nothing from the recognizer table, so **four** letter-bearing recognizers were outside it — `Secret`, `Email`, the GB NINO and the CN resident id. Measured: narrowing NINO to uppercase-only left the whole library suite green at **154 / 1**, the single red being a temporary probe, while `ab123456c` went from masked to forwarded in clear; the same held for the CN id and for `Secret`. Adding four rows would have closed four instances and left the class open.
   So the **set** now comes from `StructuredRecognizers::shipped_patterns()` — every recognizer the scan is actually built from — filtered by `pattern_can_match_a_letter`, which parses the pattern to the same HIR `regex` compiles and asks each literal and class whether it covers `A-Za-z`. A textual scan cannot answer this: a word boundary and a digit class are both spelled with letters that match none. `CASE_ANSWERS` then says only *what* the answer is, and it can say **`Fixed`** — deliberately does not fold — which is what makes M11-R10's decision 3 (`Secret`'s `sk-`/`AKIA` are formats, not conventions) expressible at all. For a `Folds` answer a known positive is checked uppercase, lowercase **and with exactly one letter flipped**, the last being the sharpest case and the one a corpus of lowercase strings would miss (`IT60x0542811101000000123456` was forwarded in clear).

@@ -460,6 +460,40 @@ anti-false-positive guarantee is preserved **exactly** — an ID still cannot fi
 non-ASCII **letter** as part of a number. (`Email` / `Phone` are anchored by character classes, not
 `\b`, so they were never affected.)
 
+**Every letter-bearing recognizer carries a *decided* answer on letter case (M11-R10).** This is
+the ASCII-word-boundary rule's sibling, and it went undecided for ten milestones. The patterns above
+spell their letters themselves, so *how a value is capitalised* is a coverage decision — and it had
+never been made: the Codice Fiscale, the ES DNI/NIE and the CN resident id folded case, while the
+VAT prefixes and IBAN were written `[A-Z]`. The consequence is not a shorter span but **no span at
+all**: the letters are ASCII word characters, so there is no `(?-u:\b)` between them and the digits
+for a bare-digit recognizer to fall back on. Seven of thirteen renderings of values already in this
+repo's corpus reached the provider **in clear**. The rule now has three parts:
+
+- **Case is a rendering convention -> fold it.** The five VAT prefixes and the NL literal `B` do,
+  spelled as explicit ASCII classes (`[Ii][Tt]`) rather than `(?i)`, so no *Unicode* case folding
+  can widen them. Measured cost over 341.1 MB of third-party source: **0 added matches**.
+- **Case is part of a format -> keep it.** `Secret`'s `sk-` and `AKIA` are literal prefixes the
+  provider issues, not renderings of one. This is an answer, not an omission, and the guard can
+  express it.
+- **IBAN folds only under a verification gate, and the asymmetry is deliberate.** Folding IBAN's
+  continuous arm costs **+931 masked spans** on that same corpus — hex digests, base64 blobs — and
+  IBAN has no hard checksum gate (M4 masks a structurally valid one even when mod-97 fails). So
+  [`iban_case_gate`] splits by rendering: canonical uppercase keeps M4's rule, while a span
+  carrying **any** lowercase letter must pass mod-97 **and** the ISO 13616 length. Residue: **0 of
+  the 931**. An operator reading this should know the visible consequence — *a lowercase IBAN whose
+  mod-97 fails is not masked, while its uppercase twin is.*
+
+**A validator that rejects must not be able to delete a value (M11-R13).** The corollary, learned
+immediately and the hard way. `iban_case_gate` was added to a recognizer that had previously
+accepted everything, and rejection is not free when a pattern can over-reach: the grouped arm's
+optional trailing group swallowed the next short word, the gate refused the over-long span for the
+lowercase byte that word contributed, and the whole candidate disappeared — country code, check
+digits and last group forwarded raw. The rule: **whatever a newly added validator refuses, those
+bytes must still reach the resolver in some form**, or the gate is a coverage switch wearing a
+precision argument. Mechanically that is `shrink_on_reject`, which retries the span one separator
+shorter; the predicate that proves it is *no byte of the value survives masking* (M10-R1), not
+*nothing detectable survives*.
+
 **Candidate generation must see *overlapping* matches (M4-R17).** `Regex::find_iter` is
 leftmost-**non-overlapping**: after a hit it resumes at the match's *end*. A real value that **starts
 inside** an earlier match of the *same* recognizer is therefore never emitted as a candidate — and an

@@ -2474,11 +2474,11 @@ re-measured at **0** on 435.6 MB of third-party source, which is the half the cl
 | [M11-R10](reviews/M11.md#m11-r10) | A lower- or mixed-case IBAN or VAT number is forwarded **in clear** — the structured tier's case axis was never decided | **leak** | [x] |
 | [M11-R11](reviews/M11.md#m11-r11) | `CASE-01` is a hand-written list wearing a chokepoint's doc comment: four letter-bearing recognizers have no answer, and NINO can be made uppercase-only with the suite green | guard | [x] |
 | [M11-R12](reviews/M11.md#m11-r12) | The M11 review record was truncated to a single finding — `M11-R0`…`M11-R9` are gone and all ten ledger links are dead | docs | [x] |
-| [M11-R13](reviews/M11.md#m11-r13) | M11-R10's own fix leaks: `iban_case_gate` rejects the grouped arm's over-match and `shrink_on_reject: false` drops the span, so a real IBAN's country code and check digits go upstream **in clear** | **leak** | [ ] |
-| [M11-R14](reviews/M11.md#m11-r14) | The refuted uppercase-only rationale still stands in three places, two of them still marking M11-R10 *open* and one naming a deleted test | docs | [ ] |
-| [M11-R15](reviews/M11.md#m11-r15) | `vat_grammar_could_match` still states the grammar as `[A-Z]{2}` — the invalidation condition its own doc names, happening in the commit that caused it | guard | [ ] |
-| [M11-R16](reviews/M11.md#m11-r16) | `confidence_of`'s NL case fold — a named half of the M11-R10 fix — is pinned by nothing: un-fold it and the suite is green at 152/0 | guard | [ ] |
-| [M11-R17](reviews/M11.md#m11-r17) | The case-axis decision reached neither `ARCHITECTURE.md`'s invariants nor `CHANGELOG.md`'s `[Unreleased]` — a closed leak the release page will not mention | docs | [ ] |
+| [M11-R13](reviews/M11.md#m11-r13) | M11-R10's own fix leaks: `iban_case_gate` rejects the grouped arm's over-match and `shrink_on_reject: false` drops the span, so a real IBAN's country code and check digits go upstream **in clear** | **leak** | [x] |
+| [M11-R14](reviews/M11.md#m11-r14) | The refuted uppercase-only rationale still stands in three places, two of them still marking M11-R10 *open* and one naming a deleted test | docs | [x] |
+| [M11-R15](reviews/M11.md#m11-r15) | `vat_grammar_could_match` still states the grammar as `[A-Z]{2}` — the invalidation condition its own doc names, happening in the commit that caused it | guard | [x] |
+| [M11-R16](reviews/M11.md#m11-r16) | `confidence_of`'s NL case fold — a named half of the M11-R10 fix — is pinned by nothing: un-fold it and the suite is green at 152/0 | guard | [x] |
+| [M11-R17](reviews/M11.md#m11-r17) | The case-axis decision reached neither `ARCHITECTURE.md`'s invariants nor `CHANGELOG.md`'s `[Unreleased]` — a closed leak the release page will not mention | docs | [x] |
 
 <a id="m11-b"></a>
 ### Track B — the intra-op thread base: physical cores, not logical threads ✅

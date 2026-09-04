@@ -3,6 +3,98 @@
 Newest first. One entry per meaningful change — note *what* and *why*, not just
 *what*. This is the running history so context is never lost between sessions.
 
+## 2026-09-04 — M11 round 4: the case-axis fix leaked, and the gate that caused it
+
+Round 4 came back with five findings and the sharpest was in the product: **the M11-R10 fix
+relocated the leak it closed.** The other four are the same fix's paperwork — a refuted rationale
+still standing, a grammar helper invalidated by the very change its doc named as its invalidation
+condition, an unpinned half of the fix, and a decision that never reached the two files a reader
+outside the review loop would open.
+
+### M11-R13 — a real IBAN dropped entirely, by the gate added to close a leak
+
+```
+client sends : Please wire the deposit to ES91 2100 0418 4502 0005 1332 for the invoice.
+provider gets: Please wire the deposit to ES91 2100 [PHONE_1] 1332 for the invoice.
+```
+
+Country code, both check digits and the last group forwarded verbatim; the middle announced under
+the wrong kind. Three lines that were never all true at once before M11: the grouped arm ends
+`(?: [A-Za-z0-9]{1,4})?`, so an IBAN whose compact length is a **multiple of 4** leaves that tail
+unspent and the match runs into the next short token; `iban_case_gate` — added by M11-R10 — then
+*rejects* the over-long span for the lowercase byte the swallowed word contributed; and
+`shrink_on_reject: false` meant no shorter prefix was tried. No candidate at all, so the resolver
+never learned the value existed.
+
+**Proved a regression by build, in three runs of the same probe.** At HEAD the sentence above yields
+`[(Phone, "0418 4502 0005")]`. With `iban_case_gate` neutralised it yields `[(Iban, "ES91 … 1332
+for")]` — the benign over-match, an over-mask. With the **exact** pre-M11-R10 recognizer restored
+(uppercase-only pattern, `validate: None`) it yields `[(Iban, "ES91 … 1332")]`, because a pattern
+that cannot match a lowercase byte can never swallow an English word. Folding case made the
+over-reach possible; the gate turned it into a deletion.
+
+**Fixed with `shrink_on_reject: true`**, the mechanism M10-R1 built for exactly this and which a doc
+comment about *checksum* recognizers had excluded IBAN from. IBAN is not one: the gate accepts
+unconditionally unless the span carries a lowercase byte, so every prefix the shrink tries either
+carries no lowercase — accepted structurally, exactly what shipped for ten milestones — or must pass
+mod-97 **and** the ISO 13616 length. **The shrink cannot admit anything the pre-M11-R10 build did
+not already admit**, and that argument now lives on the field rather than in this entry.
+
+**The guard is the predicate, not another example.** `IBAN-05` asserts M10-R1's rule — *no byte of
+the value survives masking*, not *nothing detectable survives* — which the phone tier has had since
+M10 and IBAN never got. Its corpus is **derived**: all 676 two-letter codes probed against
+`iban_country_length`, every country it knows synthesised into a valid IBAN with real check digits
+solved for and re-verified, driven in both renderings × three letter cases × six trailing contexts.
+It carries a non-vacuity floor in the dimension that matters — at least ten countries whose length is
+divisible by 4, of which there are 14 — because `IBAN-04`, the guard *named* for this behaviour, held
+`IT60X…` (27) and `DE89…` (22): the two lengths that cannot over-reach. The repo's whole IBAN corpus
+was DE/IT/FR/LV/NL/ZZ, not one vulnerable length in it.
+
+Removing the fix turns `IBAN-05` red on a **worse** case than the one reported: with the carrier
+`" and confirm."` the AD IBAN is not masked at all.
+
+**Decided limit, and it is not a regression.** A lowercase IBAN glued to 1-4 alphanumerics
+(`es9121000418450200051332abcd`) still yields no candidate — no separator to cut at. The pre-M11-R10
+build produced no candidate for it either, its uppercase-only pattern being unable to match the
+string. Closing it needs a length-derived cut whose false-positive cost is unmeasured, so it goes to
+the maintainer rather than being decided here.
+
+### The other four, and one of them was green on the first attempt
+
+- **M11-R14** — the refuted uppercase-only rationale was still standing in three places, two of them
+  describing the leak as **current behaviour** and the finding as *open*, and the third citing a test
+  that no longer exists. These are not stale trivia: they are the argument for reverting the fix,
+  written in the voice of a decision, where the next person to touch the patterns will read them.
+- **M11-R15** — `vat_grammar_could_match` still asserted `[A-Z]{2}`, and its own doc named *"a
+  pattern that stops being `[A-Z]{2}`-prefixed makes this function wrong"* as its invalidation
+  condition. That happened in `33eb159`. Now `is_ascii_alphabetic`, with `es12345678z` moved into the
+  **reachable** list where it belongs and a `1S12345678Z` row added so the weakened rule keeps a
+  floor.
+- **M11-R16** — `confidence_of`'s NL case fold, a named half of the M11-R10 fix, was pinned by
+  nothing. Closed at the chokepoint: `CaseRule::Folds` now asserts kind, span **and `Confidence`**,
+  so every recognizer with a confidence split is covered rather than NL alone. **The first attempt at
+  that was green**, and that is the part worth keeping: with the only NL positive being one whose
+  11-proef *passes*, both branches of `confidence_of` return the same thing and a broken fold is
+  invisible. A second row carrying the `Structural` side makes it red. The rule, written beside the
+  two rows: an answer must carry a positive from **each** branch of a confidence split.
+- **M11-R17** — the case decision had reached the code and the review archive and neither
+  `ARCHITECTURE.md` nor `CHANGELOG.md`. Waiting on R13 was right: the invariant it produced —
+  ***a validator that rejects must not be able to delete a value*** — could not have been written a
+  day earlier.
+
+### Numbers
+
+**250 / 0 / 5** over 24 binaries, re-run twice with identical counts (round 4 measured 249; the +1 is
+`IBAN-05`). `cargo test-onnx` **286 / 0 / 22** (round 4: 285). `fmt` and `clippy --all-targets -D
+warnings` clean.
+
+**Guard-vs-product tally.** Round 4: **1 in the product** (R13, a leak) and **4 on the net or the
+docs**. Running total across M11: **14 on the guards or docs, 3 in the product** — and the shape of
+the three is worth naming, because they are the same shape: R2 an unmeasured labelling collision,
+R10 an axis nobody had decided, R13 the fix for R10 deleting what it was meant to protect. Every
+product finding this milestone came from a decision that was never made rather than from code that
+was written wrong.
+
 ## 2026-09-04 — M11-R11/R12: the chokepoint that was a list, and the record that was deleted
 
 Two findings arrived before round 4 could start, and both are about the *loop* rather than the

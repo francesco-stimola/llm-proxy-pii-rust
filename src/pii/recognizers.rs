@@ -91,9 +91,18 @@ struct Recognizer {
     /// validator accepts a prefix starting at the same byte — see
     /// [`shrink_to_a_valid_prefix`](Recognizer::shrink_to_a_valid_prefix).
     ///
-    /// Only the phone recognizers set it. A checksum recognizer must not: a shorter prefix
-    /// of a non-Luhn-valid digit run can be Luhn-valid by coincidence, and that would trade a
-    /// documented, measured false-positive rate for an unmeasured one.
+    /// **The phone recognizers and IBAN.** A *checksum* recognizer must not set it: a shorter
+    /// prefix of a non-Luhn-valid digit run can be Luhn-valid by coincidence, and that would trade
+    /// a documented, measured false-positive rate for an unmeasured one.
+    ///
+    /// **IBAN is not one of those, and M11-R13 is what happens when it is treated as one.** Its
+    /// validator is [`iban_case_gate`], which *accepts unconditionally* unless the span carries a
+    /// lowercase byte — so a rejection only ever happens on a rendering the pattern could not even
+    /// match before M11-R10, and every prefix the shrink then tries either carries no lowercase
+    /// (accepted structurally, which is exactly what shipped for ten milestones) or must pass
+    /// mod-97 **and** the ISO 13616 length. The shrink therefore cannot admit anything the
+    /// pre-M11-R10 build did not already admit; what it *prevents* is the gate silently deleting a
+    /// real IBAN because the greedy `{1,4}` tail swallowed the next word.
     shrink_on_reject: bool,
 }
 
@@ -241,7 +250,7 @@ fn universal_recognizers() -> Vec<Recognizer> {
             .unwrap(),
             validate: Some(free(iban_case_gate)),
             scan: Scan::Overlapping, // bounded: ≤ 44 chars
-            shrink_on_reject: false,
+            shrink_on_reject: true,
         },
         // Credit cards: 13–19 digits, either grouped in 4s or continuous, gated by
         // the Luhn checksum to reject look-alikes.
@@ -408,13 +417,22 @@ fn national_id_recognizers() -> Vec<Recognizer> {
 /// bare digits are already claimed by the always-on national-ID tier and adding a second,
 /// unprefixed claim on them would buy coverage nobody measured.
 ///
-/// ## The country prefix must be UPPERCASE, and that is an anti-false-positive decision
+/// ## The country prefix folds case, and the argument for uppercase-only was refuted
 ///
-/// Lowercase would make `it` a matchable prefix — and `it` is one of the commonest words in
-/// English prose. `"call it 12345678901"` with a mod-10-valid tail would then produce a
-/// **14-character** span swallowing an ordinary English word. VAT numbers are written
-/// uppercase by convention and VIES requires it, so nothing real is lost. Pinned by
-/// `lowercase_country_prefix_is_not_a_vat_number`.
+/// This section used to read *"the country prefix must be UPPERCASE, and that is an
+/// anti-false-positive decision"*, reasoning that lowercase would make `it` — one of the commonest
+/// words in English prose — a matchable prefix, so `"call it 12345678901"` would yield a
+/// 14-character span swallowing an ordinary word. **The tier's own grammar refutes it:** the very
+/// next section forbids any space between prefix and digits, so `it 12345678901` cannot match
+/// under *any* case rule. What the rule actually bought was a **leak** — `it00905811006`,
+/// `de136695976` and `nl111222333b01` matched nothing and went upstream in clear for the whole of
+/// M11 (M11-R10).
+///
+/// The prefixes now fold, spelled as explicit ASCII classes (`[Ii][Tt]`) rather than `(?i)`, so no
+/// Unicode case folding can widen them. Measured cost of folding, over 341.1 MB / 16 380 files of
+/// third-party source: **0 added matches for every scheme**, and each is checksum-gated besides.
+/// Pinned by `a_vat_span_never_swallows_the_word_before_it` — which keeps the span-boundary
+/// property the old test's first assertion really exercised — and by `CASE-01`.
 ///
 /// ## No space between prefix and digits
 ///
@@ -1567,14 +1585,22 @@ fn vat_body(matched: &str) -> &str {
 ///
 /// Not used on the request path. This is the grammar the VIES-form patterns share, stated once
 /// so that `VAT-04`'s *absence* assertions can be checked for **reachability** before they are
-/// believed (M11-R1): every prefixed pattern is `[A-Z]{2}` immediately followed by an unbroken
-/// run of ASCII alphanumerics, with ASCII word boundaries at both ends. A negative written in a
-/// shape this returns `false` for is absent because of its punctuation, not because its country
-/// does not ship — and asserting *that* absence proves nothing at all.
+/// believed (M11-R1): every prefixed pattern is **two ASCII letters, in either case**, immediately
+/// followed by an unbroken run of ASCII alphanumerics, with ASCII word boundaries at both ends. A
+/// negative written in a shape this returns `false` for is absent because of its punctuation, not
+/// because its country does not ship — and asserting *that* absence proves nothing at all.
 ///
 /// It lives here, beside the patterns, rather than in the test module, because it is a statement
-/// about the grammar: a pattern that stops being `[A-Z]{2}`-prefixed makes this function wrong,
-/// and this is where somebody making that change will be looking.
+/// about the grammar: a pattern whose prefix stops being two ASCII letters makes this function
+/// wrong, and this is where somebody making that change will be looking.
+///
+/// **It said `[A-Z]{2}` until M11-R15, and the change that invalidated it was the one this
+/// sentence was written to catch.** `33eb159` folded every prefix to `[Ii][Tt]`-style classes and
+/// left the grammar statement behind, so the helper began answering *unreachable* for shapes the
+/// recognizers really can match. Nothing went red — every live negative in the loop is uppercase —
+/// which is the whole point: an author adding a lowercase negative would have been told it was
+/// unreachable and "fixed" it by uppercasing, losing the assertion. That is M11-R1's own failure,
+/// arriving through the helper written to prevent it.
 ///
 /// **Byte-indexed on purpose.** The length floor runs first, so `bytes[..2]` and `bytes[2..]`
 /// cannot panic, and comparing bytes rather than `char`s means a multi-byte character can never
@@ -1589,7 +1615,7 @@ fn vat_grammar_could_match(token: &str) -> bool {
     if bytes.len() < 9 {
         return false;
     }
-    bytes[..2].iter().all(u8::is_ascii_uppercase)
+    bytes[..2].iter().all(u8::is_ascii_alphabetic)
         && bytes[2..].iter().all(u8::is_ascii_alphanumeric)
 }
 
@@ -1797,6 +1823,22 @@ pub fn iban_mod97(iban: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Detection as `(kind, text, confidence)` — what [`kinds`] returns plus the field it drops.
+    ///
+    /// `Confidence` is a **product-visible claim**: it is what the audit log reports as
+    /// `structure-only PII match (checksum unverified)` and what a downstream consumer reads. A
+    /// case rendering that is masked correctly but tagged `Verified` where its twin is `Structural`
+    /// is a silent lie, and M11-R16 is that lie shipping — un-folding `confidence_of`'s NL arm left
+    /// the whole library suite green while a lowercase btw-id whose 11-proef fails was promoted to
+    /// `Verified`.
+    fn graded(input: &str) -> Vec<(PiiKind, String, Confidence)> {
+        StructuredRecognizers::new()
+            .detect(input)
+            .into_iter()
+            .map(|e| (e.kind, e.text, e.confidence))
+            .collect()
+    }
 
     fn kinds(input: &str) -> Vec<(PiiKind, String)> {
         StructuredRecognizers::new()
@@ -3212,6 +3254,14 @@ mod tests {
             "ES12345678Z",
             "FR40404833048",
             "NL123456789B01",
+            // Lowercase and mixed-case prefixes are REACHABLE (M11-R15). They moved here from the
+            // list below, where they sat with the comment "the patterns are uppercase-only" — a
+            // statement `33eb159` had already made false. What keeps a Spanish VAT number absent
+            // is that no ES recognizer ships at all, which is this test's whole subject; letter
+            // case has nothing to do with it, and saying otherwise would tell the next author
+            // their lowercase negative is unreachable.
+            "es12345678z",
+            "Es12345678Z",
         ] {
             assert!(
                 vat_grammar_could_match(reachable),
@@ -3220,8 +3270,8 @@ mod tests {
         }
         for unreachable in [
             "ES B12345678", // a space — the M11-R1 defect itself
-            "es12345678z",  // lowercase prefix: the patterns are uppercase-only (VAT-05)
             "E12345678Z",   // one prefix letter, not two
+            "1S12345678Z",  // a digit in the prefix — two ASCII LETTERS is still the rule
             "ESB1234567-8", // punctuation inside the body
             "ES1234",       // body too short for any shipped scheme
             "ES",           // prefix only
@@ -3505,10 +3555,26 @@ mod tests {
             positive: "PT524287244",
             rule: CaseRule::Folds,
         },
+        // **Both sides of NL's confidence split, and that is the point of the second row**
+        // (M11-R16). `confidence_of` grades a btw-id `Verified` when its 9-digit RSIN passes the
+        // 11-proef and `Structural` when it does not — the one VAT recognizer with a split, since
+        // the 2020 sole-trader btw-id carries no checksum at all. A grading function that stops
+        // folding case is **invisible from the `Verified` side**: both branches return `Verified`
+        // there, so the assertion passes while a lowercase btw-id whose arithmetic failed is
+        // silently promoted. Only a positive from the *other* side of the split can see it.
+        //
+        // The rule this leaves behind, for the next recognizer that grows a split: an answer here
+        // must carry a positive from **each** branch, or the fold is only half asserted.
         CaseAnswer {
             kind: PiiKind::TaxId,
             pattern: r"(?-u:\b)[Nn][Ll]\d{9}[Bb]\d{2}(?-u:\b)",
-            positive: "NL111222333B01",
+            positive: "NL111222333B01", // 11-proef passes -> `Verified`
+            rule: CaseRule::Folds,
+        },
+        CaseAnswer {
+            kind: PiiKind::TaxId,
+            pattern: r"(?-u:\b)[Nn][Ll]\d{9}[Bb]\d{2}(?-u:\b)",
+            positive: "NL123456789B01", // 11-proef fails -> `Structural`, masked all the same
             rule: CaseRule::Folds,
         },
         // —— the four the first form of this guard never asked (M11-R11) ——
@@ -3642,10 +3708,26 @@ mod tests {
 
             match rule {
                 CaseRule::Folds => {
+                    // The canonical rendering's grade, which every other rendering must match.
+                    // **Kind and span are not the whole answer** (M11-R16): `Confidence` is a
+                    // product-visible claim, and a rendering masked under the right kind but
+                    // graded `Verified` where its twin is `Structural` is a silent lie in the
+                    // audit log. Asserting it here closes that for every recognizer with a
+                    // confidence split rather than for the one that happens to have it today.
+                    let canonical = graded(positive);
                     for rendering in [positive.to_lowercase(), positive.to_uppercase()]
                         .into_iter()
                         .chain(flip_one_letter(positive))
                     {
+                        assert_eq!(
+                            graded(&rendering),
+                            canonical
+                                .iter()
+                                .map(|(k, _, c)| (*k, rendering.clone(), *c))
+                                .collect::<Vec<_>>(),
+                            "{rendering} must be graded exactly as {positive} is — same kind, same \
+                             span, same `Confidence` (M11-R16)"
+                        );
                         assert_eq!(
                             kinds(&rendering),
                             vec![(*kind, rendering.clone())],
@@ -3783,6 +3865,175 @@ mod tests {
             vec![format!("{:?} :: {NEWCOMER}", PiiKind::NationalId)],
             "an answer naming no shipped recognizer must be reported as stale"
         );
+    }
+
+    /// Every two-letter country code [`iban_country_length`] knows, **derived from the function
+    /// rather than copied out of it** (M11-R13).
+    ///
+    /// The table is a `match`, so it cannot be iterated; probing all 676 two-letter codes can. It
+    /// costs microseconds and it cannot go stale: a country added to the table joins the guard the
+    /// moment it is added, which a hand-copied list is exactly what does not do. This matters here
+    /// more than usual, because the defect below is **keyed on the length** — it reaches only the
+    /// countries whose length is a multiple of 4, and which those are is the table's business.
+    fn every_known_iban_country() -> Vec<(String, usize)> {
+        let mut out = Vec::new();
+        for a in b'A'..=b'Z' {
+            for b in b'A'..=b'Z' {
+                let cc = String::from_utf8(vec![a, b]).unwrap();
+                if let Some(len) = iban_country_length(&cc) {
+                    out.push((cc, len));
+                }
+            }
+        }
+        out
+    }
+
+    /// A structurally valid IBAN for `cc`: the country's exact length, an all-digit BBAN, and
+    /// **real** ISO 13616 check digits, so `iban_mod97` accepts it.
+    ///
+    /// Synthesised rather than collected because the guard needs one per country and a corpus of
+    /// hand-found IBANs is precisely what left thirteen vulnerable countries untested (M11-R13:
+    /// the repo's whole IBAN corpus was DE/IT/FR/LV/NL/ZZ, not one of them a multiple of 4).
+    fn synthesise_iban(cc: &str, len: usize) -> String {
+        /// The ISO 7064 mod-97 remainder of `s`, letters folded to 10..35 — the same arithmetic
+        /// [`iban_mod97`] applies, minus its "== 1" verdict, so the check digits can be *solved*
+        /// for instead of guessed.
+        fn remainder(s: &str) -> u32 {
+            s.chars().fold(0u32, |acc, c| {
+                let value = if c.is_ascii_digit() {
+                    c as u32 - '0' as u32
+                } else {
+                    c.to_ascii_uppercase() as u32 - 'A' as u32 + 10
+                };
+                if value >= 10 {
+                    (acc * 100 + value) % 97
+                } else {
+                    (acc * 10 + value) % 97
+                }
+            })
+        }
+
+        let bban: String = (0..len - 4)
+            .map(|i| char::from(b'0' + ((i * 7 + 1) % 10) as u8))
+            .collect();
+        let check = 98 - remainder(&format!("{bban}{cc}00"));
+        let iban = format!("{cc}{check:02}{bban}");
+        assert!(
+            iban_mod97(&iban) && iban_length_ok(&iban) && iban.len() == len,
+            "the synthesiser must produce a real IBAN for {cc}, got {iban}"
+        );
+        iban
+    }
+
+    /// `ES9121000418450200051332` -> `ES91 2100 0418 4502 0005 1332`, the rendering banks print.
+    fn in_groups_of_four(compact: &str) -> String {
+        compact
+            .as_bytes()
+            .chunks(4)
+            .map(|chunk| std::str::from_utf8(chunk).unwrap())
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    /// **IBAN-05 (M11-R13) — no eight-character window of an IBAN survives masking, whatever
+    /// follows it.**
+    ///
+    /// **This is M10-R1's predicate, on the recognizer that never received M10-R1's fix.** That
+    /// finding established the difference that matters: *nothing detectable survives* (PROP-04) is
+    /// satisfied by an orphan the mask ate, while *no byte of the value survives* is not. The
+    /// phone tier got a guard for it (`PHONE-NAT-09`); IBAN did not, and M11-R13 is what walked
+    /// through the gap.
+    ///
+    /// **What went wrong, in one line each.** The grouped arm ends with an optional
+    /// `(?: [A-Za-z0-9]{1,4})?`, so an IBAN whose compact length is a **multiple of 4** leaves that
+    /// tail unspent and the match runs on into the next short token. Folding case (M11-R10) made
+    /// that token matchable when it is an ordinary lowercase word — `ES91 2100 0418 4502 0005 1332
+    /// for` — and the same fix's [`iban_case_gate`] then *rejects* the over-long span for carrying
+    /// a lowercase byte. With `shrink_on_reject: false` the whole candidate vanished, and the
+    /// provider received the country code, both check digits and the last group **in clear**, with
+    /// the middle announced as `[PHONE_1]`. Measured by build rather than argued: neutralising the
+    /// gate took a 40-case matrix from 6 leaking rows to 0, so the gate converted a benign
+    /// over-match into a dropped span.
+    ///
+    /// **Why the old guards could not see it.** `IBAN-04` — the guard named for exactly this
+    /// behaviour — holds `IT60X…` (27) and `DE89…` (22), the two lengths that *cannot* over-reach.
+    /// `CASE-02` never puts anything after the IBAN. `PROP-03` quantifies over **accepted**
+    /// candidates and these bytes belonged to a **rejected** one. So this guard derives its corpus
+    /// from [`iban_country_length`] instead of collecting one: **every country the table knows**,
+    /// each in both renderings, three letter cases and six trailing contexts.
+    ///
+    /// **Decided limit, measured not assumed.** The trailing token here is always *separated* —
+    /// which is what natural text produces. A lowercase IBAN **glued** to 1-4 alphanumerics
+    /// (`es9121000418450200051332abcd`) still yields no candidate: the continuous arm has no
+    /// separator for [`Recognizer::shrink_to_a_valid_prefix`] to cut at. That is **not** a
+    /// regression — verified against a build of the exact pre-M11-R10 recognizer, which produced
+    /// no candidate for it either, because its uppercase-only pattern could not match the string
+    /// at all. See `docs/TESTING.md` -> `IBAN-05` for the residue and what closing it would cost.
+    #[test]
+    fn no_window_of_an_iban_survives_masking() {
+        // Deliberately digit-free, so an eight-character window of the IBAN cannot coincide with
+        // the carrier text and report a leak that is really a fixture accident.
+        const CARRIERS: &[(&str, &str)] = &[
+            ("Please wire the deposit to ", " and confirm."),
+            ("Il mio IBAN e' ", " grazie."),
+        ];
+        // The trailing token is what decides whether the optional `{1,4}` tail over-reaches.
+        const TRAILING: &[&str] = &["", " for", " EUR", " x", " abcd", " alone"];
+
+        let detector = StructuredRecognizers::new();
+        let countries = every_known_iban_country();
+        assert!(
+            countries.len() >= 30,
+            "the country probe returned {} codes — the derivation is broken, and an empty corpus \
+             would make every assertion below vacuous",
+            countries.len()
+        );
+        // Non-vacuity, in the dimension the defect actually lives in: the corpus must contain
+        // lengths that are a multiple of 4, or the guard exercises only the immune countries —
+        // which is precisely how `IBAN-04` stayed green through this leak.
+        let vulnerable = countries.iter().filter(|(_, len)| len % 4 == 0).count();
+        assert!(
+            vulnerable >= 10,
+            "only {vulnerable} of {} known countries have a length divisible by 4; the shape this \
+             guard exists for is barely represented",
+            countries.len()
+        );
+
+        for (cc, len) in &countries {
+            let compact = synthesise_iban(cc, *len);
+            for rendering in [compact.clone(), in_groups_of_four(&compact)] {
+                for cased in [
+                    rendering.to_uppercase(),
+                    rendering.to_lowercase(),
+                    flip_one_letter(&rendering).expect("an IBAN carries its country code"),
+                ] {
+                    for trailing in TRAILING {
+                        for (before, after) in CARRIERS {
+                            let input = format!("{before}{cased}{trailing}{after}");
+                            let mut vault = crate::pii::anonymizer::Vault::new();
+                            let masked = vault
+                                .mask_all(&input, &detector, &Budget::per_call())
+                                .expect("masking must not refuse an ordinary sentence");
+
+                            for window in cased
+                                .as_bytes()
+                                .windows(8)
+                                .map(|w| std::str::from_utf8(w).unwrap())
+                            {
+                                assert!(
+                                    !masked.contains(window),
+                                    "{window:?} — eight characters of a real {cc} IBAN — reached \
+                                     the provider in clear.\n  input:  {input:?}\n  masked: \
+                                     {masked:?}\nM11-R13: the span was REJECTED rather than \
+                                     shortened, so no candidate was produced and the resolver \
+                                     never learned the value existed."
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /// **CASE-02 (M11-R10) — folding case on IBAN does not open the false-positive door it was
