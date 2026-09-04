@@ -868,6 +868,28 @@ impl StructuredRecognizers {
     /// Exposed (crate-internal) so the resolver's invariant can be tested directly: every
     /// structured candidate's bytes must end up covered in the resolved output — see
     /// `every_structured_candidate_byte_is_covered` (M4-R10 / M4-R11).
+    /// Every shipped recognizer as **(kind, pattern)** — the seam the case-axis guard asks its
+    /// question over (M11-R11).
+    ///
+    /// **This is what makes `CASE-01` a chokepoint rather than a list.** Its first form was a
+    /// nine-row `const` that derived nothing from here, so four letter-bearing recognizers —
+    /// `Secret`, `Email`, the GB NINO and the CN resident id — were simply outside it, and three
+    /// of them could be narrowed to uppercase-only with the whole library suite green. Deriving
+    /// the question from the set the scan actually runs is the same move
+    /// [`shipped_tax_recognizer_count`] makes for the count and `pii_kinds!` makes for the enum:
+    /// a new recognizer is in scope the moment it is *built*, not when somebody remembers it.
+    ///
+    /// The pattern is the identity here because it is what carries the letters, so editing a
+    /// letter-bearing pattern also invalidates its recorded answer — which is exactly the moment
+    /// the answer needs re-deciding.
+    #[cfg(test)]
+    pub(crate) fn shipped_patterns(&self) -> Vec<(PiiKind, &str)> {
+        self.recognizers
+            .iter()
+            .map(|rec| (rec.kind, rec.regex.as_str()))
+            .collect()
+    }
+
     #[cfg(test)]
     pub(crate) fn raw_candidates(&self, input: &str) -> Vec<PiiEntity> {
         // Unbounded on purpose: this exists to inspect the *resolver's* invariant over every
@@ -3281,89 +3303,486 @@ mod tests {
         );
     }
 
-    /// **CASE-01 (M11-R10) — every letter-bearing recognizer has a recorded answer on the case
-    /// axis, and the answer is asserted rather than assumed.**
+    /// The answer one **letter-bearing** recognizer gives on the case axis (M11-R10 / M11-R11).
     ///
-    /// **This is the chokepoint the leak asked for.** M11-R10 was not one bug: seven of thirteen
-    /// renderings of the same values went upstream **in clear** because the VAT prefixes and the
-    /// IBAN pattern spelled their letters `[A-Z]`, while the Codice Fiscale, the ES DNI/NIE and
-    /// the CN resident id folded case. Nobody had ever decided the axis — `iban_mod97`'s doc
-    /// comment has promised to fold letters since M1, for input the regex could not deliver. The
-    /// instance-shaped fix (add `it00905811006` to a corpus) would have closed IT and left DE, GB,
-    /// PT, NL and IBAN open, which is the move [M4's retrospective] is six rounds of warning
-    /// against.
+    /// Two answers are possible, and the second one is why this is an enum rather than a boolean:
+    /// M11-R10's **decision 3** — *"`Secret`'s `AKIA…` stays uppercase-only, that one is a format,
+    /// not a convention"* — is a real answer, and the guard's first form could not express it. A
+    /// matrix in which every row means *folds* silently redefines the question as "which
+    /// recognizers fold", and the recognizers that deliberately do not then have nowhere to be.
+    #[derive(Clone, Copy)]
+    enum CaseRule {
+        /// Letter case is a **rendering convention**: every case rendering of the positive is the
+        /// same value, and all of them must be detected as the same kind.
+        Folds,
+        /// Letter case is part of the **format**: the canonical rendering is detected, and
+        /// `variant` — a case rendering of the same characters, named here so the claim is
+        /// falsifiable — must not be. `why` states what makes it a format rather than a habit.
+        Fixed {
+            variant: &'static str,
+            why: &'static str,
+        },
+    }
+
+    /// One recorded answer. `pattern` is the recognizer's own regex source, so an answer binds to
+    /// a live recognizer and cannot drift into describing a pattern that no longer ships.
+    struct CaseAnswer {
+        kind: PiiKind,
+        pattern: &'static str,
+        /// A value this recognizer really detects, in its canonical rendering.
+        positive: &'static str,
+        rule: CaseRule,
+    }
+
+    /// What the audit found: the two ways the answers and the shipped registry can disagree.
+    #[derive(Debug, Default, PartialEq, Eq)]
+    struct CaseAxisAudit {
+        /// Letter-bearing recognizers this build ships and the answers say nothing about.
+        unanswered: Vec<String>,
+        /// Answers naming a `(kind, pattern)` this build does not ship — a deleted recognizer
+        /// must not leave its answer behind, or the table keeps asserting a closed question.
+        stale: Vec<String>,
+        /// Answers whose pattern [`pattern_can_match_a_letter`] does **not** consider
+        /// letter-bearing.
+        ///
+        /// **This is the field that stops the guard passing vacuously**, and it closes the risk
+        /// this design creates: an empty `unanswered` list is exactly what a derivation answering
+        /// *no* to everything would also produce. Requiring every recorded answer to be about a
+        /// pattern the derivation *does* classify as letter-bearing turns the two lists into an
+        /// equality — the letter-bearing recognizers this build ships are precisely the ones the
+        /// answers name — with no count for anyone to keep current. A derivation that silently
+        /// stopped seeing letters puts every answer in here.
+        not_letter_bearing: Vec<String>,
+    }
+
+    /// Does the inclusive range `start..=end` contain at least one ASCII letter?
+    fn covers_an_ascii_letter(start: char, end: char) -> bool {
+        ('A'..='Z').chain('a'..='z').any(|c| start <= c && c <= end)
+    }
+
+    /// **Can this pattern match a string containing an ASCII letter?** — the derivation the whole
+    /// guard rests on, kept pure so it can be proved over a matrix of patterns.
     ///
-    /// So the question is asked **once per pattern**: given a known positive, does the lowercase
-    /// rendering behave like the uppercase one? A new letter-bearing recognizer cannot ship
-    /// without an entry here, and an entry cannot be added without stating the answer — the same
-    /// move `shipped_tax_recognizer_count` makes for the count and `pii_kinds!` for the enum.
+    /// It cannot be a substring scan: a word boundary and the digit and word classes are all
+    /// spelled with letters that match no letter, so every pattern in this file "contains a
+    /// letter" textually and none of that is the question. So the pattern is parsed to the same
+    /// HIR `regex` compiles from, and every literal byte and character class is asked whether it
+    /// covers `A-Za-z`.
     ///
-    /// **`MUST_MATCH` is not decoration: `Some(kind)` means the lowercase form must be detected
-    /// *as that kind*.** A recognizer that silently stopped folding case would go red here even
-    /// though its uppercase corpus tests all stay green — which is exactly the state the tier was
-    /// in before this guard existed.
-    #[test]
-    fn every_letter_bearing_recognizer_answers_the_case_axis() {
-        // (a known positive, the kind its UPPERCASE form yields, why it is here)
-        const MATRIX: &[(&str, PiiKind)] = &[
-            // —— the two families M11-R10 found leaking ——
-            ("IT00905811006", PiiKind::TaxId),
-            ("DE136695976", PiiKind::TaxId),
-            ("GB220430231", PiiKind::TaxId),
-            ("PT524287244", PiiKind::TaxId),
-            ("NL111222333B01", PiiKind::TaxId),
-            ("IT60X0542811101000000123456", PiiKind::Iban),
-            ("DE89370400440532013000", PiiKind::Iban),
-            // —— the families that already folded case, kept so a regression is visible ——
-            ("RSSMRA85T10A562S", PiiKind::NationalId), // Codice Fiscale
-            ("X1234567L", PiiKind::NationalId),        // ES NIE
-        ];
+    /// **Scope: the axis is ASCII case, and the residue is measured rather than assumed.** A class
+    /// of non-ASCII letters answers *no* here, so a recognizer built from one would not be asked
+    /// the question. `CASE-01` closes that by asserting every shipped pattern is itself ASCII —
+    /// which they all are — so the residue is **0 patterns**, and the day one is not, the guard
+    /// goes red and asks for a decision instead of quietly skipping it.
+    fn pattern_can_match_a_letter(pattern: &str) -> bool {
+        use regex_syntax::hir::{Class, Hir, HirKind};
 
-        for (upper, kind) in MATRIX {
-            let lower = upper.to_lowercase();
-            assert_ne!(
-                &lower, upper,
-                "{upper} carries no letter — it does not belong in a case matrix"
-            );
-
-            assert_eq!(
-                kinds(upper),
-                vec![(*kind, (*upper).to_string())],
-                "{upper} must be detected in its canonical uppercase rendering"
-            );
-            assert_eq!(
-                kinds(&lower),
-                vec![(*kind, lower.clone())],
-                "{lower} is the same value in lowercase and must be masked the same way. \
-                 Before M11-R10 this reached the provider IN CLEAR: the letters are ASCII word \
-                 characters, so there is no ASCII word boundary for a shorter recognizer to fall back on \
-                 — the span does not shrink, it disappears."
-            );
-
-            // The sharpest case, and the one a corpus of lowercase strings would miss entirely:
-            // an otherwise canonical value with exactly ONE letter flipped.
-            let flipped: String = {
-                let mut out = String::with_capacity(upper.len());
-                let mut done = false;
-                for c in upper.chars() {
-                    if !done && c.is_ascii_uppercase() && !out.is_empty() {
-                        out.extend(c.to_lowercase());
-                        done = true;
-                    } else {
-                        out.push(c);
-                    }
-                }
-                out
-            };
-            if flipped != *upper {
-                assert_eq!(
-                    kinds(&flipped),
-                    vec![(*kind, flipped.clone())],
-                    "{flipped} differs from {upper} by a single letter's case and must still be \
-                     masked (M11-R10: `IT60x0542811101000000123456` was forwarded in clear)"
-                );
+        fn walk(hir: &Hir) -> bool {
+            match hir.kind() {
+                HirKind::Literal(lit) => lit.0.iter().any(u8::is_ascii_alphabetic),
+                HirKind::Class(Class::Unicode(class)) => class
+                    .ranges()
+                    .iter()
+                    .any(|r| covers_an_ascii_letter(r.start(), r.end())),
+                HirKind::Class(Class::Bytes(class)) => class
+                    .ranges()
+                    .iter()
+                    .any(|r| covers_an_ascii_letter(char::from(r.start()), char::from(r.end()))),
+                HirKind::Repetition(rep) => walk(&rep.sub),
+                HirKind::Capture(cap) => walk(&cap.sub),
+                HirKind::Concat(subs) | HirKind::Alternation(subs) => subs.iter().any(walk),
+                HirKind::Empty | HirKind::Look(_) => false,
             }
         }
+
+        walk(&regex_syntax::parse(pattern).expect("every shipped recognizer pattern parses"))
+    }
+
+    /// **The decision, pulled out of the test so it can be driven with a registry that is not the
+    /// real one** (M11-R11). Given what a build ships and what the answers claim, which
+    /// letter-bearing recognizers are unanswered, and which answers are stale?
+    fn audit_case_axis(shipped: &[(PiiKind, &str)], answers: &[CaseAnswer]) -> CaseAxisAudit {
+        let named = |kind: PiiKind, pattern: &str| format!("{kind:?} :: {pattern}");
+        let mut audit = CaseAxisAudit::default();
+
+        for (kind, pattern) in shipped {
+            if !pattern_can_match_a_letter(pattern) {
+                continue;
+            }
+            let answered = answers
+                .iter()
+                .any(|a| a.kind == *kind && a.pattern == *pattern);
+            let entry = named(*kind, pattern);
+            if !answered && !audit.unanswered.contains(&entry) {
+                audit.unanswered.push(entry);
+            }
+        }
+
+        for answer in answers {
+            let still_shipped = shipped
+                .iter()
+                .any(|(kind, pattern)| *kind == answer.kind && *pattern == answer.pattern);
+            let entry = named(answer.kind, answer.pattern);
+            if !still_shipped && !audit.stale.contains(&entry) {
+                audit.stale.push(entry.clone());
+            }
+            if !pattern_can_match_a_letter(answer.pattern)
+                && !audit.not_letter_bearing.contains(&entry)
+            {
+                audit.not_letter_bearing.push(entry);
+            }
+        }
+
+        audit
+    }
+
+    /// The recorded answers. **Not the guard's source of truth for *which* recognizers must appear
+    /// here** — that comes from [`StructuredRecognizers::shipped_patterns`]; this is only what the
+    /// answer *is*, one row per letter-bearing pattern, or two where one pattern carries two
+    /// independent formats.
+    const CASE_ANSWERS: &[CaseAnswer] = &[
+        // —— formats, not conventions: these deliberately do NOT fold (M11-R10, decision 3) ——
+        CaseAnswer {
+            kind: PiiKind::Secret,
+            pattern: r"(?-u:\b)(?:sk-[A-Za-z0-9_-]{6,}|AKIA[0-9A-Z]{16})(?-u:\b)",
+            // Mixed-case body on purpose: the `sk-` prefix is case-fixed, but the key body is
+            // opaque and every rendering of it is a DIFFERENT key that must still be caught. An
+            // all-lowercase positive would leave the body's case unpinned — and that is a real
+            // hole, not a hypothetical: narrowing the body to `sk-[a-z0-9_-]{6,}` was one of
+            // M11-R11's four green mutations.
+            positive: "sk-AbCdEf123456",
+            rule: CaseRule::Fixed {
+                variant: "SK-AbCdEf123456",
+                why: "`sk-` is the literal prefix the provider issues, not a rendering of it — \
+                      `SK-…` is a different string, and treating it as the same key would widen a \
+                      secret recognizer on nothing but a guess",
+            },
+        },
+        CaseAnswer {
+            kind: PiiKind::Secret,
+            pattern: r"(?-u:\b)(?:sk-[A-Za-z0-9_-]{6,}|AKIA[0-9A-Z]{16})(?-u:\b)",
+            positive: "AKIAIOSFODNN7EXAMPLE",
+            rule: CaseRule::Fixed {
+                variant: "akiaiosfodnn7example",
+                why: "an AWS access-key id is uppercase by format, not by convention — the \
+                      lowercase rendering is not a key that exists",
+            },
+        },
+        // —— the two families M11-R10 found leaking ——
+        CaseAnswer {
+            kind: PiiKind::Iban,
+            pattern: r"(?-u:\b)[A-Za-z]{2}\d{2}(?:[A-Za-z0-9]{11,30}|(?: [A-Za-z0-9]{4}){2,7}(?: [A-Za-z0-9]{1,4})?)(?-u:\b)",
+            positive: "IT60X0542811101000000123456",
+            rule: CaseRule::Folds,
+        },
+        CaseAnswer {
+            kind: PiiKind::Iban,
+            pattern: r"(?-u:\b)[A-Za-z]{2}\d{2}(?:[A-Za-z0-9]{11,30}|(?: [A-Za-z0-9]{4}){2,7}(?: [A-Za-z0-9]{1,4})?)(?-u:\b)",
+            positive: "DE89370400440532013000",
+            rule: CaseRule::Folds,
+        },
+        CaseAnswer {
+            kind: PiiKind::TaxId,
+            pattern: r"(?-u:\b)[Ii][Tt]\d{11}(?-u:\b)",
+            positive: "IT00905811006",
+            rule: CaseRule::Folds,
+        },
+        CaseAnswer {
+            kind: PiiKind::TaxId,
+            pattern: r"(?-u:\b)[Dd][Ee]\d{9}(?-u:\b)",
+            positive: "DE136695976",
+            rule: CaseRule::Folds,
+        },
+        CaseAnswer {
+            kind: PiiKind::TaxId,
+            pattern: r"(?-u:\b)[Gg][Bb]\d{9}(?-u:\b)",
+            positive: "GB220430231",
+            rule: CaseRule::Folds,
+        },
+        CaseAnswer {
+            kind: PiiKind::TaxId,
+            pattern: r"(?-u:\b)[Pp][Tt]\d{9}(?-u:\b)",
+            positive: "PT524287244",
+            rule: CaseRule::Folds,
+        },
+        CaseAnswer {
+            kind: PiiKind::TaxId,
+            pattern: r"(?-u:\b)[Nn][Ll]\d{9}[Bb]\d{2}(?-u:\b)",
+            positive: "NL111222333B01",
+            rule: CaseRule::Folds,
+        },
+        // —— the four the first form of this guard never asked (M11-R11) ——
+        CaseAnswer {
+            kind: PiiKind::Email,
+            pattern: r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}",
+            positive: "MARIO.ROSSI@EXAMPLE.COM",
+            rule: CaseRule::Folds,
+        },
+        CaseAnswer {
+            kind: PiiKind::NationalId,
+            pattern: r"(?-u:\b)[A-Za-z]{2}\d{6}[A-Da-d](?-u:\b)|(?-u:\b)[A-Za-z]{2} \d{2} \d{2} \d{2} [A-Da-d](?-u:\b)",
+            positive: "AB123456C", // GB NINO — `nino_prefix_valid` upper-cases before checking
+            rule: CaseRule::Folds,
+        },
+        CaseAnswer {
+            kind: PiiKind::NationalId,
+            pattern: r"(?-u:\b)\d{17}[0-9Xx](?-u:\b)",
+            positive: "11010519491231002X", // CN resident id — the check char may be `X`
+            rule: CaseRule::Folds,
+        },
+        // —— already folding before M11-R10, kept so a regression is visible ——
+        CaseAnswer {
+            kind: PiiKind::NationalId,
+            pattern: r"(?-u:\b)[A-Za-z]{6}\d{2}[A-Za-z]\d{2}[A-Za-z]\d{3}[A-Za-z](?-u:\b)",
+            positive: "RSSMRA85T10A562S",
+            rule: CaseRule::Folds,
+        },
+        CaseAnswer {
+            kind: PiiKind::NationalId,
+            pattern: r"(?-u:\b)(?:[XYZxyz]\d{7}|\d{8})[A-Za-z](?-u:\b)",
+            positive: "X1234567L",
+            rule: CaseRule::Folds,
+        },
+    ];
+
+    /// The same string with its **first case-flippable letter after the opening character**
+    /// flipped — the sharpest rendering on this axis, and the one a corpus of lowercase strings
+    /// misses entirely (`IT60x0542811101000000123456` was forwarded in clear, M11-R10).
+    fn flip_one_letter(value: &str) -> Option<String> {
+        let mut out = String::with_capacity(value.len());
+        let mut flipped = false;
+        for c in value.chars() {
+            if !flipped && !out.is_empty() && c.is_ascii_alphabetic() {
+                out.push(if c.is_ascii_uppercase() {
+                    c.to_ascii_lowercase()
+                } else {
+                    c.to_ascii_uppercase()
+                });
+                flipped = true;
+            } else {
+                out.push(c);
+            }
+        }
+        flipped.then_some(out)
+    }
+
+    /// **CASE-01 (M11-R10, rebuilt for M11-R11) — every letter-bearing recognizer *this build
+    /// ships* has a recorded answer on the case axis, and the answer is asserted rather than
+    /// assumed.**
+    ///
+    /// **M11-R10 is why the question exists.** Seven of thirteen renderings of values already in
+    /// this repo's own corpus went upstream **in clear**, because the VAT prefixes and the IBAN
+    /// pattern spelled their letters `[A-Z]` while the Codice Fiscale, the ES DNI/NIE and the CN
+    /// resident id folded case. Nobody had ever decided the axis — `iban_mod97`'s doc comment has
+    /// promised to fold letters since **M1**, for input the regex could not deliver.
+    ///
+    /// **M11-R11 is why it is asked *here*.** The first version of this guard was a nine-row
+    /// `const` that described itself in exactly the words above and derived nothing from the
+    /// recognizer registry, so `Secret`, `Email`, the GB NINO and the CN resident id were outside
+    /// it. Measured: narrowing NINO to uppercase-only left the whole library suite green at
+    /// **154 / 1** — the only red was a temporary probe — while `ab123456c` went from masked to
+    /// forwarded in clear. Adding four rows would have closed those four and left the class open;
+    /// [M4's retrospective](../../../docs/reviews/M4.md#retrospective) is six rounds of exactly
+    /// that. So the *set* now comes from [`StructuredRecognizers::shipped_patterns`], and the
+    /// answers only say what the answer is.
+    ///
+    /// Two things are proved, and they are different: the **answers are right** (the matrix
+    /// below), and the **question is unavoidable** ([`audit_case_axis`] driven with a registry
+    /// that is not the real one — `CASE-03`).
+    #[test]
+    fn every_letter_bearing_recognizer_answers_the_case_axis() {
+        let shipped = StructuredRecognizers::new();
+        let patterns = shipped.shipped_patterns();
+
+        // The derivation only reads ASCII case, so a pattern built from non-ASCII letters would
+        // not be asked. Measured residue today: none — and this is what keeps it that way.
+        for (kind, pattern) in &patterns {
+            assert!(
+                pattern.is_ascii(),
+                "{kind:?}'s pattern is not ASCII, so `pattern_can_match_a_letter` cannot speak \
+                 for it: {pattern}\nDecide the case axis for non-ASCII letters before shipping it."
+            );
+        }
+
+        let audit = audit_case_axis(&patterns, CASE_ANSWERS);
+        assert!(
+            audit.unanswered.is_empty(),
+            "these recognizers can match an ASCII letter and nothing records what letter case \
+             means for them — add a `CaseAnswer` (it may say `Fixed`, i.e. deliberately does not \
+             fold):\n  {}",
+            audit.unanswered.join("\n  ")
+        );
+        assert!(
+            audit.stale.is_empty(),
+            "these answers name a recognizer this build does not ship — an answer left behind \
+             keeps asserting a question nobody is asking:\n  {}",
+            audit.stale.join("\n  ")
+        );
+        assert!(
+            audit.not_letter_bearing.is_empty(),
+            "these answers record a case rule for a pattern that cannot match an ASCII letter, \
+             so the derivation this guard rests on has stopped seeing letters — an empty \
+             `unanswered` list would then be vacuous:\n  {}",
+            audit.not_letter_bearing.join("\n  ")
+        );
+
+        for CaseAnswer {
+            kind,
+            positive,
+            rule,
+            ..
+        } in CASE_ANSWERS
+        {
+            assert_eq!(
+                kinds(positive),
+                vec![(*kind, (*positive).to_string())],
+                "{positive} must be detected in its canonical rendering — an answer whose \
+                 positive is not a positive proves nothing in either direction"
+            );
+
+            match rule {
+                CaseRule::Folds => {
+                    for rendering in [positive.to_lowercase(), positive.to_uppercase()]
+                        .into_iter()
+                        .chain(flip_one_letter(positive))
+                    {
+                        assert_eq!(
+                            kinds(&rendering),
+                            vec![(*kind, rendering.clone())],
+                            "{rendering} is {positive} in a different letter case and must be \
+                             masked the same way. Before M11-R10 renderings like this reached the \
+                             provider IN CLEAR: the letters are ASCII word characters, so there \
+                             is no ASCII word boundary for a shorter recognizer to fall back on — \
+                             the span does not shrink, it disappears."
+                        );
+                    }
+                }
+                CaseRule::Fixed { variant, why } => {
+                    assert!(
+                        variant.eq_ignore_ascii_case(positive) && variant != positive,
+                        "{variant} must be {positive} in a different letter case — otherwise this \
+                         row asserts that an unrelated string is undetected, which is free"
+                    );
+                    assert!(
+                        !kinds(variant).iter().any(|(k, _)| k == kind),
+                        "{variant} must NOT be detected as {kind:?}: {why}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// **CASE-03 (M11-R11) — the case-axis question is unavoidable: a new letter-bearing
+    /// recognizer keeps `CASE-01` red until somebody writes its answer down.**
+    ///
+    /// `CASE-01` proves the recorded answers are *right*. That is the half that gets built. This
+    /// is the other half — that the guard is **reached** — and it is the one that gets skipped,
+    /// which is precisely how a nine-row `const` came to be documented as a chokepoint and
+    /// survived a full review round (M11-R11).
+    ///
+    /// Both pure decisions are driven directly: the derivation over a matrix that includes the
+    /// readings a substring scan gets wrong, and the audit over the **real shipped registry plus a
+    /// stand-in recognizer** — a wholly synthetic registry would only prove the function works on
+    /// synthetic input.
+    #[test]
+    fn the_case_axis_audit_notices_a_recognizer_with_no_answer() {
+        // —— the derivation, over the readings a textual scan gets wrong ——
+        const PATTERNS: &[(&str, bool, &str)] = &[
+            (
+                r"(?-u:\b)\d{11}(?-u:\b)",
+                false,
+                "a word boundary and a digit class are spelled with letters and match none",
+            ),
+            (
+                r"(?-u:\b)\d{3}-\d{2}-\d{4}(?-u:\b)",
+                false,
+                "US SSN — digits only",
+            ),
+            (
+                r"(?-u:\b)[12]\d{2}\d{10}(?-u:\b)",
+                false,
+                "a digit class is not a letter class",
+            ),
+            (
+                r"(?-u:\b)0\d{1,4}[ -]\d{3,4}[ -]\d{3,4}(?-u:\b)",
+                false,
+                "the phone trunk family",
+            ),
+            (
+                r"(?-u:\b)\d{17}[0-9Xx](?-u:\b)",
+                true,
+                "one letter, inside a class, at the end — the CN resident id",
+            ),
+            (
+                r"(?-u:\b)[A-Za-z]{2}\d{6}[A-Da-d](?-u:\b)",
+                true,
+                "the GB NINO",
+            ),
+            (
+                r"(?-u:\b)sk-[0-9]{6,}(?-u:\b)",
+                true,
+                "letters in a LITERAL rather than in a class",
+            ),
+            (
+                r"\p{Greek}+",
+                false,
+                "the axis is ASCII case — this is the residue `CASE-01` measures at 0",
+            ),
+            (
+                r"(?-u:[A-Za-z])",
+                true,
+                "a BYTE class — the walker's other class arm, which no shipped pattern reaches",
+            ),
+            (r"(?-u:[0-9])", false, "a byte class carrying no letters"),
+        ];
+        for (pattern, letter_bearing, why) in PATTERNS {
+            assert_eq!(
+                pattern_can_match_a_letter(pattern),
+                *letter_bearing,
+                "{pattern} — {why}"
+            );
+        }
+
+        // —— the audit, over the registry this build really ships ——
+        let shipped = StructuredRecognizers::new();
+        let real = shipped.shipped_patterns();
+        assert_eq!(
+            audit_case_axis(&real, CASE_ANSWERS),
+            CaseAxisAudit::default()
+        );
+
+        // A stand-in for the next recognizer somebody adds. It carries letters and has no answer,
+        // so the audit must name it — this is what makes `CASE-01` unavoidable rather than merely
+        // present.
+        const NEWCOMER: &str = r"(?-u:\b)[Zz]{2}\d{7}[A-Za-z](?-u:\b)";
+        let mut with_newcomer = real.clone();
+        with_newcomer.push((PiiKind::NationalId, NEWCOMER));
+        assert_eq!(
+            audit_case_axis(&with_newcomer, CASE_ANSWERS).unanswered,
+            vec![format!("{:?} :: {NEWCOMER}", PiiKind::NationalId)],
+            "a new letter-bearing recognizer must be reported as unanswered"
+        );
+
+        // ...and the derivation does not simply say yes to everything: a digits-only newcomer is
+        // not asked a question it has no answer to.
+        let mut digits_only = real.clone();
+        digits_only.push((PiiKind::NationalId, r"(?-u:\b)\d{12}(?-u:\b)"));
+        assert!(audit_case_axis(&digits_only, CASE_ANSWERS)
+            .unanswered
+            .is_empty());
+
+        // A deleted recognizer must not leave its answer behind asserting a closed question.
+        let orphan = [CaseAnswer {
+            kind: PiiKind::NationalId,
+            pattern: NEWCOMER,
+            positive: "ZZ1234567A",
+            rule: CaseRule::Folds,
+        }];
+        assert_eq!(
+            audit_case_axis(&real, &orphan).stale,
+            vec![format!("{:?} :: {NEWCOMER}", PiiKind::NationalId)],
+            "an answer naming no shipped recognizer must be reported as stale"
+        );
     }
 
     /// **CASE-02 (M11-R10) — folding case on IBAN does not open the false-positive door it was

@@ -1599,6 +1599,7 @@ dependencies = [
  "phonenumber",
  "proptest",
  "regex",
+ "regex-syntax 0.8.11",
  "reqwest",
  "serde",
  "serde_json",

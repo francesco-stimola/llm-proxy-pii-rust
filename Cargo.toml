@@ -229,3 +229,16 @@ strip = "symbols"    # smaller artifact; we don't ship debuginfo
 # Property-based testing — the faithful port of the old proxy's Hypothesis suite
 # (PROP-01/PROP-02 in docs/TESTING.md). Test-only; not in the shipped binary.
 proptest = "1"
+# The regex front-end `regex` itself parses with — test-only, for ONE question: does a shipped
+# recognizer's pattern carry an ASCII letter? (M11-R11, `CASE-01`.) That question has to be
+# answered from the *pattern* rather than from a hand-kept list, or the case-axis guard is a list
+# again; and it cannot be answered by string-scanning a pattern, because a word boundary and a
+# digit class are both spelled with letters that match none of them.
+# Parsing to the HIR and asking each literal and class whether it covers `A-Za-z` is the only
+# reading that is not a guess.
+#
+# Costs nothing: `regex` already depends on it, so this is the crate that is ALREADY in
+# `Cargo.lock` and already compiled — a dev-dependency edge to it adds no crate, no build script
+# and no native code, and `tests/dependency_footprint.rs` asserts the DEFAULT tree, which
+# dev-dependencies do not enter.
+regex-syntax = "0.8"

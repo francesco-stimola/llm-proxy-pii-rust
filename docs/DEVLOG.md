@@ -3,6 +3,104 @@
 Newest first. One entry per meaningful change — note *what* and *why*, not just
 *what*. This is the running history so context is never lost between sessions.
 
+## 2026-09-04 — M11-R11/R12: the chokepoint that was a list, and the record that was deleted
+
+Two findings arrived before round 4 could start, and both are about the *loop* rather than the
+product: the guard that closed round 3's leak did not have the property it documented, and the
+commit that closed it deleted ten finding records. Both were registered before either was touched.
+
+### M11-R11 — `CASE-01` was the instance-shaped fix wearing the chokepoint's words
+
+Round 3 closed a real leak (a lower- or mixed-case IBAN or VAT number forwarded in clear) and built
+`CASE-01` to keep it closed. Its doc comment promised that *"every letter-bearing recognizer has a
+recorded answer on the case axis"* and that *"a new letter-bearing recognizer cannot ship without an
+entry here"*, citing `shipped_tax_recognizer_count` and `pii_kinds!` as the moves it was making.
+
+It was making neither. `MATRIX` was a nine-row hand-written `const` deriving nothing from the
+recognizer registry — the exact move [M4's retrospective] is six rounds of warning against, with the
+vocabulary of the chokepoint that finding had asked for. Derived from the registry rather than
+counted by eye, the build ships **12** letter-bearing recognizers; the nine rows named eight.
+**Four had no answer:** `Secret`, `Email`, the GB NINO and the CN resident id.
+
+Reproduced by mutation, each paired with a temporary probe so a green could not be a mutation that
+mutated nothing (at HEAD, with the four probes: **155 passed / 0 failed** — every rendering really
+was detected, so each mutation removed real coverage):
+
+    NINO   -> [A-Z]{2}(digits)[A-D]   probe red, CASE-01 GREEN, suite 154/1
+    CN id  -> (17 digits)[0-9X]       probe red, CASE-01 GREEN, suite 154/1
+    Secret -> sk-[a-z0-9_-]{6,}       probe red, CASE-01 GREEN, suite 154/1
+    Email  -> lowercase-only          probe red, CASE-01 GREEN, suite 151/4
+
+For three of the four the **whole library suite stayed green** while a recognizer was narrowed to
+uppercase-only: `ab123456c` — a real NINO, and one `nino_prefix_valid` accepts, since it upper-cases
+before checking — went from masked to forwarded in clear with nothing red. Round 3's own class,
+alive inside the fix that closed it. `Email` was caught only *incidentally*, by three tests whose
+fixtures happen to carry an uppercase letter; incidental coverage is not a recorded answer and moves
+the moment a fixture is rewritten.
+
+The finding's second half was smaller and sharper: the doc comment described a `MUST_MATCH` with
+`Some(kind)` that does not exist in the file. The const was `(&str, PiiKind)` and every row meant
+*folds* — so round 3's own **decision 3**, *"`Secret`'s `AKIA` stays uppercase-only, that one is a
+format not a convention"*, was **unrepresentable in the matrix that existed to record it**. That is
+why `Secret` was a missing row rather than a row saying *no*.
+
+**The fix is a derivation, not four more rows.** `StructuredRecognizers::shipped_patterns()` exposes
+every recognizer the scan is built from as `(kind, pattern)`; `pattern_can_match_a_letter` parses
+each pattern to the same HIR `regex` compiles and asks every literal and class whether it covers
+`A-Za-z`. A textual scan cannot answer this — a word boundary and a digit class are both spelled
+with letters that match none, so every pattern "contains a letter" and none of that is the question.
+Cost: a test-only `regex-syntax` dev-dependency, the crate `regex` already pulls, so no new crate
+and nothing the default-tree footprint guard can see.
+
+`CaseRule` is an enum precisely so decision 3 has somewhere to live: `Folds` checks lowercase,
+uppercase and one-letter-flipped renderings; `Fixed { variant, why }` checks the canonical rendering
+IS detected and a **named** case rendering is not — with `eq_ignore_ascii_case` asserted, so a row
+cannot cheat by naming an unrelated undetectable string. `Secret`'s positive is mixed-case on
+purpose (`sk-AbCdEf123456`): the prefix is case-fixed, the key body is opaque, and an all-lowercase
+positive would have left the body unpinned — which was mutation D.
+
+**Two things had to be proved, and the second is the one that gets skipped.** The matrix proves the
+answers are *right*. A `Recognizer` **injected into `universal_recognizers()`** — not a synthetic
+list handed to the pure function — proves the guard is *reached*: it came back red naming
+`NationalId :: (?-u:\b)QQ\d{7}[A-Za-z](?-u:\b)` and refusing to pass until an answer was written. Removed
+after being seen red. All four originally-green mutations are now red, as is forcing the derivation
+itself to answer *no* — that last one caught by `not_letter_bearing`, the field that stops an empty
+`unanswered` list being vacuous. It makes the two lists an **equality** — the letter-bearing
+recognizers shipped are precisely the ones the answers name — with no count for anyone to keep
+current, which is deliberately not the shape `CAT-01`'s floor had (M11-R4 / M11-R7).
+
+One more mutation worth recording: updating the answer table's copy of the pattern *along with* the
+product defeats the key check, and `CASE-01` is still red — on the behaviour, naming `ab123456c`.
+The key and the assertion cover each other; neither alone is enough.
+
+### M11-R12 — the record was deleted by the commit that closed the leak
+
+`docs/reviews/M11.md` was **120 lines holding one anchor**. The ledger carried eleven rows, ten
+linking to anchors that no longer existed. Measured over the file's history: `17ec2e5` 983 lines
+(r0-r9), `c8b8aef` 1330 (r0-r10), `33eb159` **120** (r10). Round 3's fix commit rewrote the record
+whole instead of appending R10's closure note, dropping **1210 lines and ten finding records** —
+including the two closures round 2 had found did not hold, whose evidence lived only there.
+
+Restored as the union of the two sides: R0-R9 from `c8b8aef` verbatim, R10 as HEAD had it (which is
+`c8b8aef`'s entry **plus** the closure note), verified by diffing the two renderings of R10 against
+each other — the closure lines are the only difference.
+
+`CLAUDE.md` already says a finding is *"never copied, and never moved"* and that closing one
+*appends*. The word that needed emphasis is **append**: on a 1400-line record, a fix commit that
+regenerates the file destroys history silently, because no test and no lint can see it. `33eb159`
+was otherwise a good commit, which is exactly why it went unnoticed for a full round.
+
+### Numbers
+
+**249 / 0 / 5** over 24 test binaries, re-run twice with identical counts (round 3 closed at
+248/0/5; the +1 is `CASE-03`). `cargo fmt --check` clean, `cargo clippy --all-targets -D warnings`
+clean. `CAT-01` caught `CASE-03` as uncatalogued before it was written up — the guard working on its
+own author for the second round running.
+
+**Guard-vs-product tally, which is the number that says whether the loop is working:** R11 and R12
+are both on the **net**, not the product — no shipped detection behaviour changed. Running total
+across M11: **10 on the guards or docs, 2 in the product.**
+
 ## 2026-09-03 — M11 rounds 2 and 3: a guard that could not work, and a leak ten milestones old
 
 **Round 2 broke a fix from round 1, and was right to.** `KIND-01` proved `PiiKind::ALL` complete by

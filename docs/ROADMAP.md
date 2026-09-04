@@ -2462,7 +2462,7 @@ to decide on are in the record.
 | [M11-R8](reviews/M11.md#m11-r8) | Decision 4 is still written as an open question in `TESTING.md` — VAT-17 and in `recognizers.rs`'s VAT-17 doc comment | docs | [x] |
 | [M11-R9](reviews/M11.md#m11-r9) | `TESTING.md` states `CAT-02`'s matrix as 18 against 15; the matrix holds 18 against 17 | docs | [x] |
 | [M11-R10](reviews/M11.md#m11-r10) | A lower- or mixed-case IBAN or VAT number is forwarded **in clear** — the structured tier's case axis was never decided | **leak** | [x] |
-| [M11-R11](reviews/M11.md#m11-r11) | `CASE-01` is a hand-written list wearing a chokepoint's doc comment: four letter-bearing recognizers have no answer, and NINO can be made uppercase-only with the suite green | guard | [ ] |
+| [M11-R11](reviews/M11.md#m11-r11) | `CASE-01` is a hand-written list wearing a chokepoint's doc comment: four letter-bearing recognizers have no answer, and NINO can be made uppercase-only with the suite green | guard | [x] |
 | [M11-R12](reviews/M11.md#m11-r12) | The M11 review record was truncated to a single finding — `M11-R0`…`M11-R9` are gone and all ten ledger links are dead | docs | [x] |
 
 <a id="m11-b"></a>
