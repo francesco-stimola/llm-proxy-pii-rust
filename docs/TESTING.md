@@ -455,6 +455,36 @@ two *other* always-on tiers already claim that shape.
   **The span assertion is what separates a leak from a miss.** Each detected rendering must be
   **one span covering the whole value**; a presence assertion would have called `[CARD_1] 110`
   masked. That is M10-R1's predicate made checkable per recognizer.
+  **The neighbour sweep, added by M11-R33 — the assertion that tells two builds apart.** Closing the
+  19-digit truncation gave the 4-4-4-4 arm an optional 1-3-digit tail, and the tail is *greedy*: a
+  card beside its CVV (`4111 1111 1111 1111 123`) matched as 19 digits, failed Luhn, and — with
+  `shrink_on_reject: false` — the whole candidate was discarded. **152 of 200 measured cards went
+  upstream in clear**, and the suite stayed at 254/0/5: nothing distinguished the two builds. A
+  rendering is not detected in isolation, it is detected in a sentence, so every recorded rendering
+  is now driven followed by each of six neighbours and asserted to leave **no six-character window**
+  in clear. The predicate is M10-R1's — *no byte of the value survives* — rather than *one span
+  equals the value*, because a legitimate coalesced over-mask (M10-R26/R31) covers more than the
+  value and must stay green. The window is **six and not four** because a four-character window of
+  `AB 12 34 56 C` is `" 12 "`, which the neighbour ` 12` reconstructs on its own — the guard's own
+  first run said so.
+  **And the fix is `shrink_on_reject: true` on the card**, which the field's doc had forbidden for
+  checksum recognizers. That rule was written when a shrunk prefix could be any cut of the span;
+  since M11-R22 it must be a **full match of the recognizer's own pattern**, so the only prefixes the
+  card can shrink to are complete card renderings, Luhn-checked exactly as the un-shrunk span would
+  be — the accepted rate, not a new one. The real rule is about a **pair**: a pattern whose reach
+  exceeds what its validator accepts *must* shrink, or a rejected span takes a real value with it.
+  **The audit's third assertion (M11-R34): a rendering quoted in `why` must appear in a list.** Three
+  of the 24 rows described a published, undetected rendering in prose while `not_detected` was empty,
+  so the assertion the row claimed to carry was never made — and `86 095 742 719` reached the
+  provider as `86 [PHONE_1]`, two digits in clear and the rest mislabelled as a phone number. Prose
+  cannot be audited; a list can. `looks_like_a_rendering` is deliberately narrow (six characters,
+  four digits, alphanumerics/space/hyphen only) so `\d{9}`, `M4-R6` and `[PHONE_1]` are not mistaken
+  for values.
+  **One recorded reason was measurably false (M11-R35)** and is corrected: the `Ssn` row said a
+  compact SSN is covered by the always-on 9-digit recognizer. That recognizer is checksum-gated, so
+  it accepts only ~2 in 11 arbitrary nine-digit runs — a compact SSN is masked when it happens to
+  satisfy a Dutch or Portuguese checksum and forwarded otherwise. A real gap on a headline PII type,
+  escalated rather than papered over.
   **Why no corpus could see it:** there is not one Amex or Diners number anywhere under `src/`,
   `tests/` or `docs/` — zero hits for `3782`, `378282`, `Diners`, `30569309`. The whole card corpus
   has been two 16-digit Visa numbers in 4-4-4-4 since M1. *A corpus has a shape, and that shape is

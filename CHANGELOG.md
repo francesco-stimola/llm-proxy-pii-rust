@@ -107,6 +107,13 @@ Milestone [M11](https://github.com/francesco-stimola/llm-proxy-pii-rust/blob/mai
     having: a country code the ISO 13616 length table does not know is checked by mod-97 alone, so
     roughly one such string in 97 is still masked — measured at **1 in 936** over 304.9 MB of
     third-party source. It is masked, not leaked, and restored byte-identically on the way back.
+- **Credit cards written the way the issuer prints them are now masked.** Only two renderings were
+  detected — compact, and four groups of four — so an American Express number in its own 4-6-5
+  grouping (`3782 822463 10005`) and a Diners 4-6-4 went to the provider **in clear**, while the
+  same digits compact were masked. Worse, a 19-digit card written in groups had its first sixteen
+  digits masked and **the last three forwarded**. Both are fixed: the groupings issuers publish are
+  detected, and a card followed by a short token — its CVV, a row index, a spreadsheet column — is
+  masked whole rather than dropped.
 - **A 30-byte request could return `500` instead of being processed — on every release ever cut.**
   A value whose digits are written in a non-ASCII script (`Account AB𝟎𝟏ABCDEFGHIJK`) made the IBAN
   checksum slice a multi-byte character in half and panic. The proxy is **fail-closed**, so nothing

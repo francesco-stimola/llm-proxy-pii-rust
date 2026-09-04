@@ -3,6 +3,98 @@
 Newest first. One entry per meaningful change — note *what* and *why*, not just
 *what*. This is the running history so context is never lost between sessions.
 
+## 2026-09-05 — M11 round 9: my own fix leaked, and nothing could tell the two builds apart
+
+Round 8 closed the card's 19-digit truncation by giving the `4-4-4-4` arm an optional 1-3-digit
+tail. Round 9 found that the tail leaks.
+
+### M11-R33 — the same mechanism as M11-R13, one recognizer over and one commit later
+
+    sent : carta 4111 1111 1111 1111 123 e mail a.b@example.com
+    seen : carta 4111 1111 1111 1111 123 e mail [EMAIL_1]      <- the email is the control
+    sent : carta 4111 1111 1111 1111 e mail a.b@example.com
+    seen : carta [CARD_1] e mail [EMAIL_1]
+
+A card beside its CVV, a row index, a spreadsheet column. The tail is **greedy**, so the span matches
+as 19 digits, `credit_card_valid` rejects it about nine times in ten, and `CreditCard` still carried
+`shrink_on_reject: false` — so the rejected candidate was discarded and nothing shorter was proposed
+at the same start. **152 of 200 measured cards in clear, 31 more truncated**, and the suite stayed
+green at 254/0/5.
+
+**What stopped me seeing it was the field's own doc**, which said a *checksum* recognizer must not
+shrink because a shorter prefix of a non-Luhn-valid run can be Luhn-valid by coincidence. That was
+written when a shrunk prefix could be any cut of the span. Since **M11-R22** it must be a full match
+of the recognizer's own pattern, so the only prefixes the card can shrink to are complete card
+renderings, Luhn-checked exactly as the un-shrunk span would be — the accepted rate, not a new one.
+I read a rule I had rewritten two rounds earlier and did not notice it had stopped applying.
+
+The form that generalises is now on the field: **a pattern whose reach exceeds what its validator
+accepts must shrink.** It is a property of the *pair*, not of a recognizer — reading M11-R13 as "IBAN
+needs this" is what let it recur.
+
+**And round 9's sharpest observation is not the leak but that no test saw it.** Flipping the flag
+took 152 leaking cells to 0 and nothing went red. A rendering is not detected in isolation; it is
+detected in a sentence, and what follows it decides whether a greedy arm over-reaches into a
+rejection. `RENDER-01` now drives every recorded rendering followed by six neighbours and asserts
+**no six-character window** survives — M10-R1's predicate, *no byte of the value survives*, rather
+than *one span equals the value*, since a legitimate coalesced over-mask covers more than the value
+and must stay green. Six and not four because four produced a false positive on the guard's first
+run: `" 12 "` is a window of `AB 12 34 56 C` and the neighbour `" 12"` rebuilds it unaided.
+
+### M11-R34 — a field that asserts nothing while the thing it asserts lives in the sentence beside it
+
+Three of the 24 `RENDERING_ANSWERS` rows named a published, undetected rendering in `why` while
+`not_detected` was empty — in the commit that introduced the idea, with nothing to notice. The first
+is worse than unasserted: `86 095 742 719` reaches the provider as `86 [PHONE_1]`, two digits in
+clear and the remaining nine announced to the model as a **phone number**.
+
+The audit gained the missing half, mechanically: every backtick-quoted token in `why` that looks like
+a rendering must appear in one of the lists. It caught all three on its first run — and then caught
+my first correction, which backticked the sentence `Steuer-ID 86 095 742 719` instead of the
+rendering. Correctly: a quoted string it cannot match against a list is precisely the ambiguity the
+assertion removes.
+
+**Prose cannot be audited; a list can.**
+
+### M11-R35 — and the one row that filled the field correctly gave a false reason
+
+The `Ssn` row said the compact form is covered by the always-on 9-digit recognizer. That recognizer
+is checksum-gated, so it accepts ~2 in 11 arbitrary nine-digit runs: a compact SSN is masked when it
+happens to satisfy a Dutch or Portuguese checksum and forwarded otherwise. A real gap on a headline
+PII type, now stated with its rate and escalated rather than papered over.
+
+Worth more than the row: it was the **only** one of 24 that used `not_detected` correctly, and its
+reason was still false. A filled field is not evidence that the sentence beside it is true, and
+M11-R34's new assertion cannot catch this class either. Only reading it can, and that limit is
+written on the guard.
+
+### M11-R36 / M11-R37
+
+The comment above the card recognizer described the **general** arm — the one measured and *not*
+taken. Same class as M11-R32 one file over: a comment describing an intention rather than the code
+beside it. And `[Unreleased]` said nothing about the card grouping change; it now does, with R33
+folded into the same entry because it is the same release and the same value.
+
+### Numbers
+
+**254 / 0 / 5** over 24 binaries, twice, identical; `cargo test-onnx` **290 / 0 / 22**; `fmt` and
+`clippy --all-targets -D warnings` clean. No test count moved — `RENDER-01` gained two assertions
+rather than a sibling, which is the shape a guard should grow in when the axis is already registered.
+
+**Tally**, by the ledger's severity cell: round 9 is **2 in the product** (R33 `leak`, R35
+`precision`) and **3 on the net or the docs**. Running total: **25 on the net or the docs, 13 in the
+product**, 38 rows.
+
+**Two rounds in a row have found a leak in the previous round's fix** (R30 -> R33 after R10 -> R13),
+and both times the mechanism was a widened pattern in front of a rejecting validator. That is not the
+loop feeding itself: it is one class being met repeatedly because the fix for it kept being recorded
+as a fact about a recognizer instead of about a pair. It is now on the field, in `ARCHITECTURE.md`,
+and asserted by a guard that drives values in sentences rather than alone.
+
+**Still open: [M11-R18](reviews/M11.md#m11-r18)**, with the coverage decisions that have accumulated
+beside it — R23's glued IBAN, R27's `\p{Nd}` gap, R30's national-identifier groupings and the general
+card arm, R35's compact SSN.
+
 ## 2026-09-04 — M11 round 8: a rendering has two coordinates, and round 7 closed one
 
 Round 7 closed the separator axis by widening **which character** may sit between a value's groups.

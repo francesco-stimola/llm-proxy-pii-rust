@@ -146,9 +146,19 @@ struct Recognizer {
     /// validator accepts a prefix starting at the same byte — see
     /// [`shrink_to_a_valid_prefix`](Recognizer::shrink_to_a_valid_prefix).
     ///
-    /// **The phone recognizers and IBAN.** A *checksum* recognizer must not set it: a shorter
-    /// prefix of a non-Luhn-valid digit run can be Luhn-valid by coincidence, and that would trade
-    /// a documented, measured false-positive rate for an unmeasured one.
+    /// **The phone recognizers, IBAN and the card.** The rule this field used to state — *"a
+    /// checksum recognizer must not set it: a shorter prefix of a non-Luhn-valid digit run can be
+    /// Luhn-valid by coincidence, trading a measured false-positive rate for an unmeasured one"* —
+    /// was written when a shrunk prefix could be **any** cut of the span. Since M11-R22 it must be a
+    /// **full match of the recognizer's own pattern**, so the only prefixes the card can shrink to
+    /// are complete card renderings, which are then Luhn-checked exactly as the un-shrunk span
+    /// would be. The false-positive rate is therefore the one already measured and accepted for
+    /// those arms, not a new one — and the rule as written was costing a leak (M11-R33).
+    ///
+    /// **The real rule, and it is about a pair rather than a recognizer:** a pattern whose reach
+    /// exceeds what its validator accepts **must** shrink, or a rejected span takes a real value
+    /// with it. M11-R13 established that for IBAN and M11-R33 met it again on the card, one commit
+    /// after the paragraph explaining it was written.
     ///
     /// **IBAN is not one of those, and M11-R13 is what happens when it is treated as one.** Its
     /// validator is [`iban_case_gate`], which *accepts unconditionally* unless the span carries a
@@ -316,26 +326,29 @@ fn universal_recognizers() -> Vec<Recognizer> {
             scan: Scan::Overlapping, // bounded: ≤ 44 chars
             shrink_on_reject: true,
         },
-        // Credit cards: 13–19 digits, **any grouping or none**, gated by the Luhn checksum and a
-        // digit count to reject look-alikes.
+        // Credit cards: 13–19 digits, compact or in **the groupings issuers publish**, gated by
+        // the Luhn checksum and a digit count to reject look-alikes.
         //
         // **The pattern proposes; the validator decides — and it did not until M11-R30.** This arm
         // used to offer exactly one grouping, `4-4-4-4`, while `credit_card_valid` already required
-        // 13–19 digits *and* Luhn over any grouping of them. That is `ARCHITECTURE.md`'s own
-        // sentence on a second coordinate: where the validator is more permissive than the pattern,
-        // the difference is a set of renderings that reach the provider **in clear**. Amex prints
-        // `3782 822463 10005` (4-6-5) and Diners `3056 930902 5904` (4-6-4); both went upstream
-        // untouched while the same numbers compact were masked. Worse, a Luhn-valid 19-digit card
-        // written `4111 1111 1111 1111 110` had its first sixteen digits matched and the rest
-        // **eaten** — `[CARD_1] 110`, three digits of a real card forwarded, which is M10-R1's
-        // shape and which `mask_all`'s fixpoint cannot recover.
+        // 13–19 digits *and* Luhn over any grouping of them. That is `ARCHITECTURE.md`'s sentence
+        // on the rendering axis' second coordinate: where the validator is more permissive than the
+        // pattern, the difference is a set of renderings that reach the provider **in clear**. Amex
+        // prints `3782 822463 10005` (4-6-5) and Diners `3056 930902 5904` (4-6-4); both went
+        // upstream untouched while the same numbers compact were masked. Worse, a Luhn-valid
+        // 19-digit card written `4111 1111 1111 1111 110` had its first sixteen digits matched and
+        // the rest **eaten** — `[CARD_1] 110`, three digits forwarded, M10-R1's shape.
         //
-        // Giving the grouping to the validator closes Amex, Diners, the truncation, and any
-        // rendering nobody has thought of, in one arm — the chokepoint rather than a list of the
-        // groupings somebody remembered. **Measured: +24 matches** over 22 944 files / 422.9 MB of
-        // third-party source (998 -> 1 022), an order of magnitude under the bare P.IVA's accepted
-        // 0.100 and never a leak. Still bounded (≤ 6 digits x 5 groups + 4 separators = 34 chars),
-        // so `Scan::Overlapping` stays linear (M4-R19).
+        // **The general arm was tried and is not what ships (M11-R30).** Letting the validator own
+        // the grouping outright — `\d{1,6}(?:[sep]\d{1,6}){1,4}` — closes every grouping including
+        // ones nobody has thought of, at a measured +24 matches over 422.9 MB. It also breaks
+        // `national_phone_does_not_swallow_an_adjacent_number`: in digit-dense text it finds
+        // several Luhn-valid sub-runs, `push_candidates` coalesces them into a maximal run, and
+        // `020 7946 0958 0161 496 0000` comes back as one `[CARD_1]` instead of two phone spans. A
+        // match count cannot see that; it is a span-fidelity cost, and it is why these arms
+        // enumerate the published groupings and the general one stays escalated.
+        //
+        // Bounded at 4+6+5 digits plus separators, so `Scan::Overlapping` stays linear (M4-R19).
         Recognizer {
             kind: PiiKind::CreditCard,
             regex: Regex::new(&with_gaps(
@@ -344,7 +357,15 @@ fn universal_recognizers() -> Vec<Recognizer> {
             .unwrap(),
             validate: Some(free(credit_card_valid)),
             scan: Scan::Overlapping, // bounded: ≤ 19 digits — and this is the M4-R17 repro
-            shrink_on_reject: false,
+            // **Required by the optional tail above, and M11-R33 is the cost of not seeing that**
+            // (see [`Recognizer::shrink_on_reject`]). The `(?:[sep]\d{1,3})?` that closes the
+            // 19-digit truncation is *greedy*, so `4111 1111 1111 1111 123` — a card beside its
+            // CVV, a row index, a column — matches as 19 digits, fails Luhn, and with no shrink the
+            // whole candidate is discarded: the card went upstream **in clear**, 152 of 200
+            // measured. Widening a pattern's reach in front of a **rejecting** validator obliges
+            // the shrink; that is the pair M11-R13 established, and R33 is it met a second time on
+            // the recognizer whose doc said checksum recognizers must not shrink.
+            shrink_on_reject: true,
         },
         Recognizer {
             kind: PiiKind::Email,
@@ -4311,18 +4332,15 @@ mod tests {
                 "(415) 555-2671",
                 "+39 333 000 0001",
             ],
-            not_detected: &[],
-            why: "the US 3-3-4 renderings and the `+CC` arm; the domestic families are separate \
-                  recognizers with their own rows",
+            not_detected: &["4155552671"],
+            why: "the US 3-3-4 renderings and the `+CC` arm. The compact `4155552671` is not \n                  this recognizer's — the US arm requires a separator, for the same reason the \n                  domestic `Groups` family does — and the US has no domestic trunk form to fall \n                  back on, so it is a real gap, listed rather than left to prose (M11-R34)",
         },
         RenderingAnswer {
             kind: PiiKind::Ssn,
             pattern: r"(?-u:\b)\d{3}-\d{2}-\d{4}(?-u:\b)",
             detected: &["123-45-6789"],
             not_detected: &["123456789"],
-            why: "an SSN is printed 3-2-4 and only so. The compact form is deliberately not this \
-                  recognizer's: nine bare digits belong to the always-on 9-digit national-ID \
-                  recognizer, whose own row covers them",
+            why: "an SSN is printed 3-2-4, and this recognizer detects only that. **The reason \n                  this row used to give was false, and M11-R35 measured it:** it said the \n                  compact form `123456789` is covered by the always-on 9-digit national-ID \n                  recognizer. That recognizer is checksum-gated (NL 11-proef or PT mod-11), so \n                  it accepts only about 2 in 11 arbitrary nine-digit runs — a compact SSN is \n                  masked when it happens to satisfy a Dutch or Portuguese checksum and \n                  forwarded in clear otherwise. A real coverage gap on a headline PII type; \n                  closing it means masking every bare nine-digit run, which is a coverage \n                  decision escalated with M11-R30's national-identifier rows",
         },
         RenderingAnswer {
             kind: PiiKind::NationalId,
@@ -4371,9 +4389,8 @@ mod tests {
             kind: PiiKind::NationalId,
             pattern: r"(?-u:\b)\d{11}(?-u:\b)",
             detected: &["86095742719"],
-            not_detected: &[],
-            why: "a DE Steuer-ID is printed `86 095 742 719` and an LV personal code compact; the \
-                  spaced Steuer-ID is the same escalation as the 9-digit row and is named there",
+            not_detected: &["86 095 742 719"],
+            why: "a DE Steuer-ID is printed `86 095 742 719` and an LV personal code compact. \n                  The spaced form is worse than undetected and this row says so because M11-R34 \n                  measured it: a sentence carrying `86 095 742 719` reaches the provider as \n                  `86 [PHONE_1]` — two digits in clear and the remaining nine announced as a \n                  phone number. Admitting it is the same escalation as the 9-digit row (M11-R30)",
         },
         RenderingAnswer {
             kind: PiiKind::NationalId,
@@ -4455,11 +4472,8 @@ mod tests {
             kind: PiiKind::Phone,
             pattern: r"(?-u:\b)[1-9]\d{1,2}(?:(?:-|{GAP})\d{2,4}){1,3}(?-u:\b)",
             detected: &["91 123 45 67"],
-            not_detected: &[],
-            why:
-                "the un-anchored 2-4 group family; a compact rendering is a documented recall gap \
-                  (DEVLOG M10), traded for the false-positive rate that made this tier shippable \
-                  on by default",
+            not_detected: &["911234567"],
+            why: "the un-anchored 2-4 group family. The compact rendering `911234567` is a \n                  documented recall gap (DEVLOG M10) — separators are required here on purpose, \n                  since a bare digit run is indistinguishable from an order number or a \n                  timestamp, and that trade is what made this tier shippable on by default. \n                  Listed rather than described, so the refusal is asserted (M11-R34)",
         },
         RenderingAnswer {
             kind: PiiKind::Phone,
@@ -4469,6 +4483,22 @@ mod tests {
             why: "the Italian mobile prefix-plus-block rendering",
         },
     ];
+
+    /// Does `token` look like a **rendering of a value** rather than a pattern fragment, a
+    /// finding id or a placeholder? (M11-R34.)
+    ///
+    /// Deliberately narrow, and the residue is stated: at least six characters, at least four
+    /// ASCII digits, and nothing but digits, ASCII letters, spaces and hyphens. That admits
+    /// `86 095 742 719` and `524 287 244` and excludes `\d{9}` (braces, backslash), `M4-R6` (two
+    /// digits), `[PHONE_1]` (brackets) and `4-4-4-4` (four digits but no group of a real value —
+    /// it is a *shape*, and the row that quotes one also quotes the value it belongs to).
+    fn looks_like_a_rendering(token: &str) -> bool {
+        token.len() >= 6
+            && token.chars().filter(char::is_ascii_digit).count() >= 4
+            && token
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == ' ' || c == '-')
+    }
 
     /// **RENDER-01 (M11-R30 / M11-R31) — every shipped recognizer records which renderings of its
     /// value it detects, and each detected one is masked as a *whole span*.**
@@ -4494,6 +4524,7 @@ mod tests {
     fn every_recognizer_records_the_renderings_it_detects() {
         let shipped = StructuredRecognizers::new();
         let patterns = shipped.shipped_patterns();
+        let detector = StructuredRecognizers::new();
 
         // ——— the audit: no recognizer without an answer, no answer without a recognizer ———
         let mut unanswered: Vec<String> = Vec::new();
@@ -4525,6 +4556,22 @@ mod tests {
                 "{:?}'s answer must state what it detects and why that is the whole list",
                 answer.kind
             );
+            // **The half the contract stated and the audit did not enforce** (M11-R34). Three of
+            // the 24 rows named a published, undetected rendering in `why` while `not_detected`
+            // was empty — so the assertion the row claimed to carry was never made, and
+            // `Steuer-ID 86 095 742 719` reached the provider as `86 [PHONE_1]`: two digits in
+            // clear and the rest mislabelled. Prose cannot be audited; a **list** can. So every
+            // rendering-shaped token quoted in `why` must appear in one of the two lists.
+            for quoted in answer.why.split('`').skip(1).step_by(2) {
+                if !looks_like_a_rendering(quoted) {
+                    continue;
+                }
+                assert!(
+                    answer.detected.contains(&quoted) || answer.not_detected.contains(&quoted),
+                    "{:?}'s `why` quotes the rendering {quoted:?} and neither list names it, so                      nothing asserts what this build does with it. Put it in `detected` or in                      `not_detected` — that is what the fields are for.",
+                    answer.kind
+                );
+            }
         }
 
         // ——— the matrix: every detected rendering is ONE span covering the WHOLE value ———
@@ -4549,6 +4596,45 @@ mod tests {
                      folklore. Reason on record: {}",
                     answer.why
                 );
+            }
+
+            // ——— and no neighbour may take the value with it (M11-R33) ———
+            //
+            // **This is the assertion that tells the two builds apart**, and round 9 found there
+            // was none: `shrink_on_reject: false` -> `true` on the card changed 152 leaking cells
+            // in 200 to 0 and **no test noticed**. A rendering is not detected in isolation; it is
+            // detected in a sentence, and what follows it decides whether a greedy arm over-reaches
+            // into a rejection. The predicate is M10-R1's — *no byte of the value survives* — not
+            // *one span equals the value*, because a legitimate coalesced over-mask (M10-R26/R31)
+            // covers more than the value and must stay green.
+            for rendering in answer.detected {
+                for neighbour in [" 123", " 12", " 7", " 4567", " end", ""] {
+                    let input = format!("valore {rendering}{neighbour} fine");
+                    let mut vault = crate::pii::anonymizer::Vault::new();
+                    let masked = vault
+                        .mask_all(&input, &detector, &Budget::per_call())
+                        .expect("an ordinary sentence must not be refused");
+                    // **Six, not four**, and the reason is a false positive this guard produced on
+                    // its first run: a four-character window of `AB 12 34 56 C` is `" 12 "`, which
+                    // the *neighbour token* ` 12` puts into the output on its own. The window has
+                    // to be long enough that it cannot be reconstructed from the carrier and the
+                    // neighbour — six is, and every rendering recorded here is at least six
+                    // characters, so no row loses its assertion to the choice.
+                    for window in rendering
+                        .as_bytes()
+                        .windows(6)
+                        .map(|w| std::str::from_utf8(w).unwrap())
+                    {
+                        assert!(
+                            !masked.contains(window),
+                            "{window:?} — six characters of {rendering:?} — reached the provider \
+                             in clear when followed by {neighbour:?}.\n  masked: {masked:?}\n\
+                             M11-R33: a greedy arm over-reaches into the neighbour, the validator \
+                             rejects the longer run, and with no shrink the whole candidate is \
+                             discarded."
+                        );
+                    }
+                }
             }
         }
     }
