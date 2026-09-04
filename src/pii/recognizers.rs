@@ -97,12 +97,21 @@ struct Recognizer {
     ///
     /// **IBAN is not one of those, and M11-R13 is what happens when it is treated as one.** Its
     /// validator is [`iban_case_gate`], which *accepts unconditionally* unless the span carries a
-    /// lowercase byte — so a rejection only ever happens on a rendering the pattern could not even
-    /// match before M11-R10, and every prefix the shrink then tries either carries no lowercase
-    /// (accepted structurally, which is exactly what shipped for ten milestones) or must pass
-    /// mod-97 **and** the ISO 13616 length. The shrink therefore cannot admit anything the
-    /// pre-M11-R10 build did not already admit; what it *prevents* is the gate silently deleting a
-    /// real IBAN because the greedy `{1,4}` tail swallowed the next word.
+    /// lowercase byte, so a rejection only ever happens on a rendering the pattern could not even
+    /// match before M11-R10. What the shrink prevents is that gate silently **deleting** a real
+    /// IBAN because the greedy `{1,4}` tail swallowed the next word.
+    ///
+    /// **What this doc claimed until M11-R22, and why it was wrong, is worth keeping.** It read:
+    /// *"the shrink therefore cannot admit anything the pre-M11-R10 build did not already admit"* —
+    /// reasoning that every prefix either carries no lowercase (accepted structurally, exactly M4's
+    /// rule) or must verify. On the set it quantified over, *the validator's verdict on a prefix*,
+    /// that is true. But the shrink also changes **which spans exist to be judged**: the emitted set
+    /// went from *"the spans this regex matches"* to that set **union their group-boundary
+    /// prefixes**, and `Registers AB12 cafe babe dead beef` walked back to a bare `AB12` — waved
+    /// through without arithmetic, and a span the pattern could never emit. *An invariant is only as
+    /// strong as the set it quantifies over.* The claim is now **true by construction** rather than
+    /// by argument: `shrink_to_a_valid_prefix` requires each prefix to be a full match of the
+    /// recognizer's own pattern, and `SHRINK-01` checks the property differentially.
     shrink_on_reject: bool,
 }
 
@@ -1096,6 +1105,25 @@ impl Recognizer {
                 return None;
             }
             let prefix = &input[span.start..end];
+            // **A shrunk span must still be something this recognizer could have matched on its
+            // own** (M11-R22). Without this the shrink widens the recognizer's output set rather
+            // than narrowing a candidate: `iban_case_gate` waves any span with no lowercase byte
+            // through *without arithmetic*, so walking `AB12 cafe babe dead beef` back one group at
+            // a time stopped at the bare `AB12` and masked it — a span the pattern demands eleven
+            // more characters or two more groups for, and which no build before M11-R13 could emit.
+            //
+            // The invariant, and it is the one M4's retrospective is about: **an invariant is only
+            // as strong as the set it quantifies over.** Reasoning about the validator's verdict on
+            // a prefix is not enough, because the shrink also changes *which spans exist to be
+            // judged*. Asking the pattern is the only check that quantifies over the right set, and
+            // it is differential — it cannot be satisfied by an example somebody chose.
+            if !self
+                .regex
+                .find(prefix)
+                .is_some_and(|m| m.start() == 0 && m.end() == prefix.len())
+            {
+                continue;
+            }
             let verdict = match memo.get(prefix) {
                 Some(known) => *known,
                 None => {
@@ -3963,8 +3991,177 @@ mod tests {
             .join(" ")
     }
 
-    /// **IBAN-05 (M11-R13) — no eight-character window of an IBAN survives masking, whatever
-    /// follows it.**
+    /// **UTF8-01 (M11-R21) — a non-ASCII digit inside a value-shaped token must not panic a
+    /// validator, and the round trip must stay exact.**
+    ///
+    /// **`\d` is Unicode-aware and always has been.** M4-R13 de-Unicoded the word *boundary*
+    /// (`(?-u:\b)`) because a Unicode `\b` made every anchored recognizer inert in CJK prose. It did
+    /// not touch `\d`, and that was right — `\d` matching `\p{Nd}` is what lets a value written with
+    /// Arabic-Indic or fullwidth digits be **detected** rather than forwarded in clear. The
+    /// consequence nobody drew is that a matched span is then **`&str` whose byte length is not its
+    /// character count**, and a validator that byte-slices it will panic.
+    ///
+    /// `iban_mod97` did exactly that until `831f916`: it compacted the span into a `String` and took
+    /// `&compact[..4]`. Through the **real v1.2.1 binary**, a 30-byte unauthenticated request —
+    /// `{"content":"Account AB𝟎𝟏ABCDEFGHIJK please"}` — returned **HTTP 500 with nothing
+    /// forwarded**, `panicked at 'byte index 4 is not a char boundary'`. Fail-closed and never a
+    /// leak, which is why it survived: the IBAN pattern is byte-identical at every tag ever cut, and
+    /// no corpus in this repo contains a non-ASCII digit **inside** an ASCII-shaped value.
+    /// `non_ascii_scripts` puts non-ASCII letters *around* one, which is a different axis.
+    ///
+    /// **It is fixed at HEAD by accident, which is the reason this guard exists.** The M11-R18
+    /// allocation-free rewrite iterates `chars()` and never indexes, so the panic is gone — and its
+    /// differential proof ran on ASCII groups, so it could not have noticed. Reverting that function
+    /// to its pre-`831f916` body leaves the suite at 250/0/5. Nothing pinned the property; this
+    /// does.
+    ///
+    /// The corpus is **derived from [`CASE_ANSWERS`]** rather than hand-written, so a new
+    /// letter-bearing recognizer is exercised on this axis the moment its case answer is recorded —
+    /// one registry, two guards.
+    #[test]
+    fn a_non_ascii_digit_inside_a_value_never_panics_a_validator() {
+        // One per encoded length that is not one byte, so a byte index into a matched span lands
+        // mid-character for every width a `\p{Nd}` can have.
+        const DIGITS: &[char] = &[
+            '\u{0663}',  // ٣  Arabic-Indic three   — 2 bytes
+            '\u{0E53}',  // ๓  Thai three           — 3 bytes
+            '\u{FF10}',  // ０ fullwidth zero       — 3 bytes
+            '\u{1D7CE}', // 𝟎 mathematical bold zero — 4 bytes
+        ];
+
+        let detector = StructuredRecognizers::new();
+        let mut substitutions = 0usize;
+
+        for answer in CASE_ANSWERS {
+            for digit in DIGITS {
+                // Every character position, so the substitution lands in the country code, the
+                // check digits, the body and the final character in turn.
+                for cut in 0..answer.positive.chars().count() {
+                    let mutated: String = answer
+                        .positive
+                        .chars()
+                        .enumerate()
+                        .map(|(i, c)| if i == cut { *digit } else { c })
+                        .collect();
+                    let input = format!("Account {mutated} please");
+                    substitutions += 1;
+
+                    // The panic is the assertion: `detect` runs every validator in the tier.
+                    let found = detector.detect(&input);
+
+                    // And the round trip must survive it — masking a span whose bytes and
+                    // characters disagree is where an index would go wrong a second time.
+                    let mut vault = crate::pii::anonymizer::Vault::new();
+                    let masked = vault
+                        .mask_all(&input, &detector, &Budget::per_call())
+                        .expect("an ordinary sentence must not be refused");
+                    assert_eq!(
+                        vault.demask(&masked),
+                        input,
+                        "the round trip must be byte-exact for {input:?} (found {found:?})"
+                    );
+                }
+            }
+        }
+
+        // Non-vacuity, and the number is read off a run rather than reasoned about (M11-R19):
+        // the answers x 4 digits x their character counts come to **932** today.
+        assert!(
+            substitutions >= 500,
+            "only {substitutions} substitutions were built — the corpus is not exercising the axis"
+        );
+    }
+
+    /// **SHRINK-01 (M11-R22) — every raw candidate is a **full match of a shipped pattern of its
+    /// own kind**, so the shrink can never widen what a recognizer emits.**
+    ///
+    /// **The invariant this replaces was true about the wrong set.** `shrink_on_reject` (M11-R13)
+    /// was justified by reasoning about the *validator's verdict on a prefix*: `iban_case_gate`
+    /// accepts unconditionally unless the span carries a lowercase byte, so a shrunk prefix either
+    /// carries none — accepted structurally, exactly M4's rule — or must verify. On that set the
+    /// argument holds. But the shrink also changes **which spans exist to be judged**: before it,
+    /// the recognizer emitted *the spans its regex matches*; after it, that set **union their
+    /// group-boundary prefixes**. `Registers AB12 cafe babe dead beef are clobbered` walked back
+    /// one group at a time to the bare `AB12` — which the gate waves through without arithmetic,
+    /// and which the pattern demands eleven more characters or two more groups for. Masked at
+    /// HEAD, untouched by every shipped tag. *An invariant is only as strong as the set it
+    /// quantifies over* — [M4's retrospective](../../../docs/reviews/M4.md#retrospective), third
+    /// lesson, landing on the fix for the second one.
+    ///
+    /// So the check is **differential against the patterns themselves**, taken from
+    /// [`StructuredRecognizers::shipped_patterns`], and cannot be satisfied by an example somebody
+    /// chose: **a shipped pattern of the candidate's own kind must match at offset 0 of its text.**
+    /// `AB12` fails that outright — no IBAN pattern matches any prefix of it — which is the class.
+    ///
+    /// It runs on [`StructuredRecognizers::raw_candidates`] rather than `detect`, deliberately: the
+    /// resolver **unions** overlapping spans (M4-R10/R11), so a *resolved* span legitimately need
+    /// not match any single pattern. The candidate set is where each span still belongs to exactly
+    /// one recognizer, and it is the set the shrink widened.
+    ///
+    /// **Stated limit, because the first version of this guard was stronger and wrong.** It
+    /// required a *full* match and went red on `020 7946 0958 0161 496 0000` — a legitimate span:
+    /// `push_candidates` coalesces a recognizer's overlapping hits into **maximal runs**, so even a
+    /// raw candidate can be a run of matches rather than one. The check is therefore *"the pattern
+    /// matches at the start"*, which is exactly strong enough for M11-R22 (a span the pattern
+    /// cannot produce **at all**) and does not claim to catch a span that is a *strict prefix* of a
+    /// longer match — a truncating shrink, which no recognizer performs and which
+    /// `IBAN-05`/`PHONE-NAT-09` cover from the other side, by asserting no byte of a real value is
+    /// left behind.
+    #[test]
+    fn a_shrunk_span_is_still_a_match_of_its_own_pattern() {
+        // Shapes chosen to make the shrink run: a rejected match with separators inside it, so
+        // there is something to walk back through. The last two are the M11-R22 repros.
+        const BODIES: &[&str] = &[
+            "Registers AB12 cafe babe dead beef are clobbered",
+            "DE12 3456 789a bcde f012 follows",
+            "Please wire the deposit to ES91 2100 0418 4502 0005 1332 for the invoice.",
+            "Please wire to es91 2100 0418 4502 0005 1332 for the invoice.",
+            "Konto AT61 1904 3002 3457 3201 bei der Bank.",
+            "IBAN ad87 0123 4567 8901 2345 6789 abcd and confirm.",
+            "call 020 7946 0958 0161 496 0000 now",
+            "aa11 bb22 cc33 dd44 ee55 ff66 gg77 hh88 ii99 jj00 kk11",
+            "XX99 AAAA BBBB cccc dddd eeee",
+            "P.IVA 00159560366 e IT00905811006 e nl111222333b01",
+        ];
+
+        let detector = StructuredRecognizers::new();
+        let patterns = detector.shipped_patterns();
+        let compiled: Vec<(PiiKind, Regex)> = patterns
+            .iter()
+            .map(|(kind, pattern)| (*kind, Regex::new(pattern).unwrap()))
+            .collect();
+
+        let mut checked = 0usize;
+        for body in BODIES {
+            for candidate in detector.raw_candidates(body) {
+                checked += 1;
+                let starts_with_its_own_grammar = compiled.iter().any(|(kind, regex)| {
+                    *kind == candidate.kind
+                        && regex.find(&candidate.text).is_some_and(|m| m.start() == 0)
+                });
+                assert!(
+                    starts_with_its_own_grammar,
+                    "{:?} emitted {:?}, which no shipped {:?} pattern matches at all — the \
+                     recognizer's output set is wider than its own grammar. That is what \
+                     `shrink_on_reject` did before M11-R22: `AB12 cafe babe dead beef` walked back \
+                     to the bare `AB12`, which the pattern demands eleven more characters or two \
+                     more groups for.",
+                    candidate.kind, candidate.text, candidate.kind
+                );
+            }
+        }
+        // Non-vacuity: an empty candidate set satisfies the loop above for free. The floor is
+        // **measured, not guessed** (M11-R7): these bodies yield **14** candidates today, and 20 —
+        // the number that felt right before it was counted — was already too high on the day it
+        // was written.
+        assert!(
+            checked >= 10,
+            "only {checked} candidates were examined — the corpus stopped exercising the shrink"
+        );
+    }
+
+    /// **IBAN-05 (M11-R13, tightened by M11-R22/R23) — no **four**-character window of an IBAN
+    /// survives masking when the token after it is separated.**
     ///
     /// **This is M10-R1's predicate, on the recognizer that never received M10-R1's fix.** That
     /// finding established the difference that matters: *nothing detectable survives* (PROP-04) is
@@ -3990,13 +4187,29 @@ mod tests {
     /// from [`iban_country_length`] instead of collecting one: **every country the table knows**,
     /// each in both renderings, three letter cases and six trailing contexts.
     ///
-    /// **Decided limit, measured not assumed.** The trailing token here is always *separated* —
-    /// which is what natural text produces. A lowercase IBAN **glued** to 1-4 alphanumerics
-    /// (`es9121000418450200051332abcd`) still yields no candidate: the continuous arm has no
-    /// separator for [`Recognizer::shrink_to_a_valid_prefix`] to cut at. That is **not** a
-    /// regression — verified against a build of the exact pre-M11-R10 recognizer, which produced
-    /// no candidate for it either, because its uppercase-only pattern could not match the string
-    /// at all. See `docs/TESTING.md` -> `IBAN-05` for the residue and what closing it would cost.
+    /// **The window is four characters, and that is a measurement rather than a preference.** It
+    /// shipped at eight, which could not report a residue shorter than eight while its own doc
+    /// claimed M10-R1's *no byte* predicate (M11-R23). Four is the width of a group — the smallest
+    /// unit an IBAN's printed rendering has — and it is the threshold round 6 measured the glued
+    /// residue with, so guard and finding speak the same language. Measured: four passes on every
+    /// separated rendering; one and two cannot, because a single character or a pair of them
+    /// legitimately occurs in the carrier sentence.
+    ///
+    /// **Decided limit, and the escalation was mis-scoped twice before it was right (M11-R20,
+    /// M11-R23).** The trailing token here is always *separated*, which is what natural text
+    /// produces. When it is **glued** the two arms behave differently, and the first two statements
+    /// of this limit described only the first:
+    /// - the **continuous** arm yields no candidate at all — it carries no separator for
+    ///   [`Recognizer::shrink_to_a_valid_prefix`] to cut at;
+    /// - the **grouped** arm — *the rendering banks print* — yields a candidate that stops at the
+    ///   last complete group, leaving up to **ten** consecutive bytes of the value in clear
+    ///   (`ad87 [PHONE_1] 2345 6789abcd`: country code, both check digits and two whole groups).
+    ///
+    /// Measured over the 36 countries in [`iban_country_length`] x 2 renderings x 2 letter cases x
+    /// 4 glued tokens: **236 of 288 grouped rows leave 4+ bytes**. **Neither is a regression** — the
+    /// identical matrix against a `v1.2.1` build is byte-identical in all 576 cells, and the
+    /// pre-M11-R10 recognizer matched neither string. It is a **pre-existing open residue**, raised
+    /// to the maintainer beside [M11-R18]; see `docs/TESTING.md` -> `IBAN-05`.
     #[test]
     fn no_window_of_an_iban_survives_masking() {
         // Deliberately digit-free, so an eight-character window of the IBAN cannot coincide with
@@ -4045,7 +4258,7 @@ mod tests {
 
                             for window in cased
                                 .as_bytes()
-                                .windows(8)
+                                .windows(4)
                                 .map(|w| std::str::from_utf8(w).unwrap())
                             {
                                 assert!(

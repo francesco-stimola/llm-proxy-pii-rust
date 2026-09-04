@@ -245,19 +245,30 @@ false positive): `email`, `phone`, `ssn`, `credit_card`, `iban`, `secret`,
   contexts. It asserts a non-vacuity floor in the dimension that matters (at least ten countries
   whose length is divisible by 4; there are 14), because a corpus of immune countries is exactly
   how the old guard passed.
-  **Decided limit, measured not assumed — and it is not confined to lowercase (M11-R20).** The
-  trailing token here is always *separated*, which is what natural text produces. An IBAN **glued**
-  to 1-4 alphanumerics still yields no candidate, because the continuous arm carries no separator
-  for the shrink to cut at — and that is true of `es9121000418450200051332abcd` **and** of a
-  canonical uppercase `ES9121000418450200051332abcd`, which the first statement of this limit missed
-  by scoping itself to the lowercase rendering. One lowercase byte anywhere in the glued token is
-  enough to make the gate demand verification of the over-long span, whatever case the IBAN itself
-  is written in.
-  It is **not a regression** either way: verified against a build of the exact pre-M11-R10
-  recognizer, which produced no candidate for those strings either — its uppercase-only pattern
-  could not match them at all. Closing it would need a **length-derived** cut rather than a
-  separator-derived one, whose false-positive cost is unmeasured, so it is left open deliberately and
-  raised to the maintainer rather than decided here.
+  **The window is four characters, measured.** It shipped at eight, which could not report a
+  residue shorter than eight while claiming M10-R1's *no byte* predicate (M11-R23). Four is a
+  group — the smallest unit of the printed rendering — and the threshold round 6 measured the glued
+  residue with. One and two cannot pass: a single character or a pair legitimately occurs in the
+  carrier sentence.
+  **Decided limit — an OPEN residue, and it was mis-scoped twice before it was stated right
+  (M11-R20 on the case axis, M11-R23 on the rendering axis).** The trailing token in this guard is
+  always *separated*, which is what natural text produces. When it is **glued**, the two arms differ
+  and only the first was ever described:
+  - the **continuous** arm yields no candidate at all — no separator for the shrink to cut at, and
+    this is true in either letter case;
+  - the **grouped** arm — *the rendering banks print* — yields a candidate that stops at the last
+    complete group and leaves up to **ten consecutive bytes** in clear:
+    `Please wire the deposit to ad87 0123 4567 8901 2345 6789abcd and confirm.` masks to
+    `… ad87 [PHONE_1] 2345 6789abcd …` — country code, both check digits and two whole groups.
+    **That is the output shape M11-R13 was filed as a leak for**, differing only in that R13's
+    trailing token is separated and this one is glued.
+  Measured over the 36 countries in `iban_country_length` × 2 renderings × 2 letter cases × 4 glued
+  tokens: **236 of 288 grouped rows leave 4+ bytes**; every continuous/lowercase row masks nothing.
+  **Neither is a regression, and that half is confirmed rather than assumed:** the identical matrix
+  against a `v1.2.1` build is **byte-identical in all 576 cells**, and the pre-M11-R10 recognizer
+  matched neither string. Closing it needs a **length-derived** cut rather than a separator-derived
+  one, whose false-positive cost is unmeasured — so it is **open**, raised to the maintainer beside
+  `M11-R18`, and named here rather than left to be rediscovered.
   **What the shrink costs in the other direction, measured because nothing else had been:** on 4 MiB
   of distinct lowercase alphanumeric groups it takes the masked-span count from **7 943 to 56 729**
   (7.1x) and the scan from ~590 ms to a 2.1 s median. Both are over-masks, so the direction is safe;
@@ -405,6 +416,51 @@ two *other* always-on tiers already claim that shape.
   **Its first form was the instance-shaped fix wearing the chokepoint's words, and M11-R11 is that being found.** A nine-row hand-written `const` promised that "a new letter-bearing recognizer cannot ship without an entry here" while deriving nothing from the recognizer table, so **four** letter-bearing recognizers were outside it — `Secret`, `Email`, the GB NINO and the CN resident id. Measured: narrowing NINO to uppercase-only left the whole library suite green at **154 / 1**, the single red being a temporary probe, while `ab123456c` went from masked to forwarded in clear; the same held for the CN id and for `Secret`. Adding four rows would have closed four instances and left the class open.
   So the **set** now comes from `StructuredRecognizers::shipped_patterns()` — every recognizer the scan is actually built from — filtered by `pattern_can_match_a_letter`, which parses the pattern to the same HIR `regex` compiles and asks each literal and class whether it covers `A-Za-z`. A textual scan cannot answer this: a word boundary and a digit class are both spelled with letters that match none. `CASE_ANSWERS` then says only *what* the answer is, and it can say **`Fixed`** — deliberately does not fold — which is what makes M11-R10's decision 3 (`Secret`'s `sk-`/`AKIA` are formats, not conventions) expressible at all. For a `Folds` answer a known positive is checked uppercase, lowercase **and with exactly one letter flipped**, the last being the sharpest case and the one a corpus of lowercase strings would miss (`IT60x0542811101000000123456` was forwarded in clear).
   **Two decided limits, both measured rather than assumed.** (1) The axis is **ASCII** case, so a recognizer whose letters were non-ASCII would not be asked — the guard asserts every shipped pattern is itself ASCII, which makes that residue **0 patterns** today and turns the day it is not into a red test rather than a silent skip. (2) An empty *unanswered* list is also what a derivation that stopped seeing letters would produce, so every recorded answer must itself be about a pattern the derivation calls letter-bearing; the two lists are therefore an equality — the letter-bearing recognizers this build ships are precisely the ones the answers name — with **no count for anyone to keep current**.
+- **SHRINK-01 (M11-R22) — `a_shrunk_span_is_still_a_match_of_its_own_pattern`: the shrink must not
+  widen what a recognizer can emit.** `shrink_on_reject` (the M11-R13 fix) was justified by an
+  argument about the *validator's verdict on a prefix*, and on that set the argument holds. It
+  quantified over the wrong set: the shrink also changes **which spans exist to be judged**, taking
+  the emitted set from *"the spans this regex matches"* to that **union their group-boundary
+  prefixes**. `iban_case_gate` short-circuits `true` on any span with no lowercase byte *without
+  arithmetic*, so `Registers AB12 cafe babe dead beef are clobbered` walked back one group at a time
+  and masked the bare **`AB12`** — a span the pattern demands eleven more characters or two more
+  groups for, and which no shipped tag could emit. Verified through both real binaries: `v1.2.1`
+  forwarded the sentence unchanged, HEAD sent `[IBAN_1] cafe babe…`. Rate on real traffic **0** —
+  0 four-character `Iban` spans over 319.7 MB of third-party source, 0 over the M7 turn — so the
+  finding was never the behaviour; **it was that a false invariant is worse than an absent one**,
+  because the next person adding a rejecting validator to a variable-length recognizer would read it
+  and conclude the shrink is free.
+  The fix makes the claim true by construction rather than by argument: a shrunk prefix must be a
+  **full match of the recognizer's own pattern**. The guard checks it **differentially**, against
+  the patterns from `shipped_patterns()`, so no chosen example can satisfy it: every raw candidate's
+  text must be matched at offset 0 by a shipped pattern of its own kind.
+  **Two stated limits.** It runs on `raw_candidates`, not `detect`, because the resolver **unions**
+  overlapping spans (M4-R10/R11) and a resolved span legitimately matches no single pattern. And it
+  asks for a match *at the start* rather than a full match — the first version demanded a full one
+  and went red on `020 7946 0958 0161 496 0000`, a legitimate **coalesced maximal run**. That is
+  exactly strong enough for the class (a span the pattern cannot produce at all) and does not claim
+  to catch a *truncating* shrink, which `IBAN-05` and `PHONE-NAT-09` cover from the other side.
+  Non-vacuity floor **10, measured at 14** — the 20 that felt right before it was counted was
+  already too high on the day it was written (M11-R7's lesson, applied to its own author).
+- **UTF8-01 (M11-R21) — `a_non_ascii_digit_inside_a_value_never_panics_a_validator`: `\d` is
+  Unicode and a matched span is text, not bytes.** M4-R13 de-Unicoded the word *boundary* and
+  correctly left `\d` alone — matching `\p{Nd}` is what lets a value written in Arabic-Indic or
+  fullwidth digits be **detected** rather than forwarded. The consequence nobody drew is that a
+  matched span is then a `&str` whose byte length is not its character count, and `iban_mod97`
+  byte-sliced it (`&compact[..4]`). Through the **real v1.2.1 `.exe`**, a 30-byte unauthenticated
+  request — `{"content":"Account AB𝟎𝟏ABCDEFGHIJK please"}` — returned **HTTP 500 with nothing
+  forwarded**: `panicked at 'byte index 4 is not a char boundary'`. Fail-closed, never a leak, and
+  the IBAN pattern is byte-identical at **every tag ever cut**.
+  **It is fixed at HEAD by accident**, by the M11-R18 allocation-free rewrite, whose differential
+  proof ran on ASCII groups and so could not have noticed; reverting that one function leaves the
+  suite at 250/0/5. This guard is what pins it. The corpus is **derived from `CASE_ANSWERS`**, so a
+  new letter-bearing recognizer is exercised on this axis the moment its case answer is recorded —
+  one registry, two guards — substituting each of four `\p{Nd}` digits of 2, 3, 3 and 4 bytes into
+  every character position of every positive, and asserting both that no validator panics and that
+  the `mask_all` -> `demask` round trip stays byte-exact. **932 substitutions** measured, floor 500.
+  **The residue this measures, stated because it is the reason the panic lived ten milestones:**
+  every corpus in this repo is ASCII, `non_ascii_scripts` included — it puts non-ASCII letters
+  *around* an ASCII value, never a non-ASCII digit *inside* one.
 - **CASE-02 (M11-R10) — `a_lowercase_iban_is_masked_only_when_it_verifies`: folding case on IBAN without opening the door it was keeping shut.** The IBAN half could not simply be folded. An IBAN has **no hard checksum gate** — M4 decided that a structurally valid one is masked even when mod-97 fails — so widening `[A-Z]` to `[A-Za-z]` sweeps in hex digests and base64 blobs. **Measured over 341.1 MB / 16 380 files of third-party source: 1 match uppercase, 150 case-folded**, and masking a hex digest inside a `tool_use.input` is the functional harm M10 spent nine rounds bounding. So `iban_case_gate` splits the rule by rendering: canonical uppercase keeps M4's behaviour untouched, while a rendering carrying **any** lowercase letter must be fully verifiable — mod-97 *and* the ISO 13616 length. Measured residue: **1 of 936** added matches, over 304.9 MB / 13 998 files (`ab22 ab23 ab44 ab45 ab66 ab67`, a matrix kernel's SIMD register list, masked as `[IBAN_1]`). **Not zero, and it was never going to be:** `iban_length_ok` answers `true` for a country code it does not know, so a span prefixed `ab` is gated by mod-97 **alone** and one arbitrary span in 97 passes it. The expected residue is therefore `added / 97` — here ~9.6 — and the earlier rounds' published **0** was a corpus artefact nobody checked against that expectation (M11-R19). The direction is safe (over-mask, restored byte-identically) and the rate is ~1 per 300 MB, but the *bound* is the mod-97 rate, not zero. Both halves of the split are pinned here, because getting either wrong is silent.
 - **CASE-03 (M11-R11) — `the_case_axis_audit_notices_a_recognizer_with_no_answer`: the half that gets skipped.** `CASE-01` proves the recorded answers are **right**; this proves the question is **reached**, and it exists because skipping this half is exactly how a nine-row `const` came to be documented as a chokepoint and survived a full review round. Both pure decisions are driven directly. The derivation gets a matrix of eleven patterns including the readings a substring scan gets wrong — a word boundary and `\d` (no), letters in a *literal* rather than a class (yes), one letter at the end of a digit run (yes), a byte class (yes, the walker arm no shipped pattern reaches), and `\p{Greek}` (no — the measured ASCII residue above). The audit gets the **real shipped registry plus a stand-in recognizer**, not a synthetic list, because a synthetic registry would only prove the function works on invented input; a digits-only stand-in must *not* be asked, and an answer naming no shipped recognizer must be reported **stale**, so a deleted recognizer cannot leave its answer behind asserting a closed question.
 - **VAT-06 — `vat_is_always_on_regardless_of_locales`: the posture, and the guard against a config

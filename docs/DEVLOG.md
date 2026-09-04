@@ -3,6 +3,111 @@
 Newest first. One entry per meaningful change — note *what* and *why*, not just
 *what*. This is the running history so context is never lost between sessions.
 
+## 2026-09-04 — M11 round 6: the alphabet, the axis M11 had never varied
+
+Round 6 found **no leak in `src/`** and four findings, three of them in the product — the first round
+since round 4 that is not mostly about guards. It got there by varying the one axis every earlier
+round held constant: **the alphabet**. Rounds 1-5 all ran on ASCII.
+
+### M11-R21 — a panic in every tag ever cut, fixed at HEAD by accident two days ago
+
+`\d` is Unicode-aware. M4-R13 de-Unicoded the word *boundary* and correctly left `\d` alone —
+matching `\p{Nd}` is what lets a value written in Arabic-Indic or fullwidth digits be **detected**
+rather than forwarded in clear. The consequence nobody drew is that a matched span is then a `&str`
+whose byte length is not its character count, and `iban_mod97` byte-sliced it (`&compact[..4]`).
+Through the **real v1.2.1 binary**, a 30-byte unauthenticated request —
+`{"content":"Account AB𝟎𝟏ABCDEFGHIJK please"}` — returns **HTTP 500 with nothing forwarded**:
+`panicked at 'byte index 4 is not a char boundary'`. The IBAN pattern is byte-identical at every tag
+ever cut.
+
+Fail-closed and never a leak, which is exactly why it survived. **And it is already fixed at HEAD —
+by `831f916`'s allocation-free rewrite, which iterates `chars()` and never indexes, and whose
+differential proof ran on ASCII groups and so could not have noticed.** Nothing pinned the property:
+reverting that one function left the suite at 250/0/5.
+
+`UTF8-01` pins it now, with its corpus **derived from `CASE_ANSWERS`** — one registry, two guards, so
+a new letter-bearing recognizer is exercised on this axis the moment its case answer is recorded.
+Four `\p{Nd}` digits of 2, 3, 3 and 4 bytes into every character position of every positive: **932
+substitutions**, a number read off a run rather than estimated (I first wrote 896, which was a guess,
+which is M11-R19 one round later and in my own hand). Reverting `iban_mod97` byte-for-byte from
+`git show 831f916^` turns it red with the round's own panic message.
+
+### M11-R22 — my own invariant, true about the wrong set
+
+Three places carried this sentence, and I wrote it: *"the shrink cannot admit anything the
+pre-M11-R10 build did not already admit."* It is false. `iban_case_gate` short-circuits `true` on any
+span with no lowercase byte **without arithmetic**, so `Registers AB12 cafe babe dead beef are
+clobbered` walks back one group at a time and stops at the bare **`AB12`** — masked at HEAD,
+untouched by v1.2.1, verified through both real binaries.
+
+The argument quantified over *the validator's verdict on a prefix*, and on that set it holds. But the
+shrink also changes **which spans exist to be judged**: the emitted set went from *"the spans this
+regex matches"* to that set **union their group-boundary prefixes**. *An invariant is only as strong
+as the set it quantifies over* — M4's third lesson, landing on the fix for its second one.
+
+**Closed by making the sentence true rather than by softening it**, which was the option I rejected:
+a claim that the shrink is free is what the next person adding a rejecting validator will read, and
+*"except sometimes"* leaves them no rule. `shrink_to_a_valid_prefix` now requires each prefix to be a
+**full match of the recognizer's own pattern**. It touches the phone tier too, so that was measured
+rather than assumed: **252 / 0 / 5**, every `PHONE-NAT` guard included.
+
+`SHRINK-01` checks it differentially against `shipped_patterns()`. Its first version demanded a full
+match and went red on `020 7946 0958 0161 496 0000` — a legitimate **coalesced maximal run** — so it
+asks for a match *at the start*, and that limit is written on the guard rather than discovered again.
+Rate of the original defect on real traffic: **0** over 319.7 MB and 0 over the M7 turn. The finding
+was never the behaviour; it was that a false invariant is worse than an absent one.
+
+### M11-R23 — the same sentence mis-scoped a second time, in the edit that fixed the first scoping
+
+The glued residue handed to the maintainer read *"an IBAN glued to 1-4 alphanumerics yields no
+candidate"*. R20 had fixed that sentence on the **case** axis one round earlier and left it wrong on
+the **rendering** axis. The reason given is a property of the *continuous* arm; the claim is made
+about *an IBAN*. For the **grouped** arm — the rendering banks print, and the guard's own helper is
+called `in_groups_of_four` — a candidate **is** produced, stopping at the last complete group:
+
+    in     : Please wire the deposit to ad87 0123 4567 8901 2345 6789abcd and confirm.
+    masked : Please wire the deposit to ad87 [PHONE_1] 2345 6789abcd and confirm.
+
+Country code, both check digits and two whole groups — **ten consecutive bytes** — in clear. That is
+the output shape M11-R13 was filed as a **leak** for, word for word; the only difference is that
+R13's trailing token is separated and this one is glued. **Not a regression** — the identical matrix
+against a `v1.2.1` build is byte-identical in all 576 cells — but a pre-existing open residue whose
+escalation read as *"nothing happens"*.
+
+Restated with both arms, both axes and the numbers (**236 of 288** grouped rows leave 4+ bytes). And
+`IBAN-05`'s window went from **eight** bytes to **four**: eight could not report a residue shorter
+than eight while the doc claimed M10-R1's *no byte* predicate. Four is a group, and the threshold this
+round measured with. One and two were tried and cannot pass — a single character or a pair
+legitimately occurs in the carrier sentence — so the limit is measured and written down.
+
+The lesson, since the same sentence was wrong twice in two rounds: **state a limit as a matrix over
+its axes, not as a sentence with an example in it.**
+
+### M11-R24 — and the tally was wrong too
+
+Two DEVLOG entries reported guard-vs-product counts that did not add up to the ledger, and one called
+M11-R18 — an open `hardening` row on `recognizers.rs` that blocks the tag — not-in-the-product. Both
+corrected in place with a note saying what they used to read. The arithmetic was the smaller half:
+**nothing said what counted**, so the fix is a stated rule carried in both entries — the split is read
+off the **ledger's severity cell**, `leak`/`fidelity`/`hardening`/`precision` against
+`build`/`guard`/`docs`, which anyone can check from `ROADMAP.md` in a minute.
+
+### Numbers
+
+**252 / 0 / 5** over 24 binaries (round 6 measured 250; the +2 are `SHRINK-01` and `UTF8-01`); `fmt`
+and `clippy --all-targets -D warnings` clean.
+
+**Guard-vs-product tally, under the rule above.** Round 6: **3 in the product** (R21 `hardening`, R22
+and R23 `precision`), 1 on the docs. Running total: **17 on the net or the docs, 8 in the product**,
+25 rows. The ratio has moved twice now — rounds 1 and 2 were 9 net findings to 1 product, rounds 4-6
+are 8 net to 7 product — and the reason is legible: the early rounds were fixing a test net that could
+not go red, and once it could, the rounds started finding things in the product instead. That is the
+loop working rather than feeding itself.
+
+**Still open, and still the only thing between here and the tag:
+[M11-R18](reviews/M11.md#m11-r18)**, plus the pre-existing glued-IBAN residue R23 measured, which
+wants the same decision.
+
 ## 2026-09-04 — M11 round 5: the fix held, what it cost had never been measured
 
 Round 5 attacked M11-R13's fix on the axis its own guard holds constant and **could not break it**:
@@ -79,9 +184,12 @@ the IBAN is written in. Restated without the scoping.
 moved this round — the work was measurement and documentation, plus one allocation-free rewrite whose
 correctness is proved differentially (identical span counts) rather than by a new assertion.
 
-**Guard-vs-product tally.** Round 5: **0 in the product**, 3 on the docs and the cost model. Running
-total across M11: **16 on guards or docs, 3 in the product** — and the trend is the loop doing what
-it is for. Rounds 3 and 4 each found a leak; round 5 found none, and spent itself on numbers that had
+**Guard-vs-product tally.** Round 5: 3 findings, and by the ledger's own severities **2 of them
+are in the product** — R18 is `hardening` on the shipped binary's availability and R19 is
+`precision` on what it masks; only R20 is docs. Running total across M11: **16 on guards or docs, 5
+in the product**, 21 rows. *(Corrected 2026-09-04 by M11-R24: this entry originally said 16 + 3 =
+19, and called M11-R18 — an open finding on `recognizers.rs` that blocks the tag — not-in-the-
+product. The split is read off the **ledger's severity cell**, so it is checkable rather than a judgement call: *product* = `leak` / `fidelity` / `hardening` / `precision`; *net or docs* = `build` / `guard` / `docs`. Stating the rule is half the fix — M11-R24 was two wrong tallies, and they were wrong because nothing said what counted.)* The trend is still the loop doing what it is for. Rounds 3 and 4 each found a leak; round 5 found none, and spent itself on numbers that had
 been published without being checked.
 
 **Open, and the only thing between here and the tag: [M11-R18](reviews/M11.md#m11-r18).**
@@ -172,11 +280,19 @@ the maintainer rather than being decided here.
 warnings` clean.
 
 **Guard-vs-product tally.** Round 4: **1 in the product** (R13, a leak) and **4 on the net or the
-docs**. Running total across M11: **14 on the guards or docs, 3 in the product** — and the shape of
-the three is worth naming, because they are the same shape: R2 an unmeasured labelling collision,
-R10 an axis nobody had decided, R13 the fix for R10 deleting what it was meant to protect. Every
-product finding this milestone came from a decision that was never made rather than from code that
-was written wrong.
+docs**. Running total across M11: **15 on the guards or docs, 3 in the product** — 18 rows, the
+ledger's length at this point.
+
+*(Corrected 2026-09-04 by M11-R24, which found this line reading 14 + 3 = 17 against an 18-row
+ledger.* **The split is read off the ledger's severity cell**, so it is checkable rather than a
+judgement call: *product* = `leak` / `fidelity` / `hardening` / `precision`; *net or docs* =
+`build` / `guard` / `docs`. *Stating the rule is half the fix — two tallies were wrong, and they
+were wrong because nothing said what counted.)*
+
+The shape of the three product findings is worth naming, because it is one shape: R2 an unmeasured
+labelling collision, R10 an axis nobody had decided, R13 the fix for R10 deleting what it was meant
+to protect. Every product finding this milestone came from a decision that was never made rather
+than from code that was written wrong.
 
 ## 2026-09-04 — M11-R11/R12: the chokepoint that was a list, and the record that was deleted
 

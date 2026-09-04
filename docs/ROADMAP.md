@@ -2516,10 +2516,10 @@ short-circuit. **No leak in `src/`.**
 | [M11-R18](reviews/M11.md#m11-r18) | M11-R13's fix runs a `free` (unbudgeted) validator up to 8x per rejected match: a legal 14.6 MiB request costs 8–10 s against a published ceiling of ~3 s, and no DoS guard varies this alphabet | hardening | [ ] |
 | [M11-R19](reviews/M11.md#m11-r19) | `iban_case_gate`'s residue is published as **0** in five places; measured on 304.9 MB it is **1 of 936**, and the survivor is a real over-mask | precision | [x] |
 | [M11-R20](reviews/M11.md#m11-r20) | The residue escalated to the maintainer is scoped to *lowercase*; a canonical uppercase IBAN glued to a lowercase token has the identical fate | docs | [x] |
-| [M11-R21](reviews/M11.md#m11-r21) | A Unicode decimal digit in an IBAN candidate **panicked** `iban_mod97` — 500 on a 30-byte legal request in **every release ever cut**; fixed at HEAD as an undocumented side effect, and the suite is green with the fix reverted | hardening | [ ] |
-| [M11-R22](reviews/M11.md#m11-r22) | *"The shrink cannot admit anything the pre-M11-R10 build did not already admit"* is false in three places: `AB12 cafe babe dead beef` is untouched by v1.2.1 and masked at HEAD, on a prefix no arithmetic ever saw | precision | [ ] |
-| [M11-R23](reviews/M11.md#m11-r23) | The glued residue is published as *"yields no candidate"*; for the **grouped** rendering a candidate is produced and up to ten bytes of a real IBAN survive — the maintainer is deciding on the wrong description | precision | [ ] |
-| [M11-R24](reviews/M11.md#m11-r24) | The guard-vs-product tally does not reconcile with its own ledger: DEVLOG says 16 + 3 = 19 against 21 rows, and calls the milestone's own open blocker not-in-the-product | docs | [ ] |
+| [M11-R21](reviews/M11.md#m11-r21) | A Unicode decimal digit in an IBAN candidate **panicked** `iban_mod97` — 500 on a 30-byte legal request in **every release ever cut**; fixed at HEAD as an undocumented side effect, and the suite is green with the fix reverted | hardening | [x] |
+| [M11-R22](reviews/M11.md#m11-r22) | *"The shrink cannot admit anything the pre-M11-R10 build did not already admit"* is false in three places: `AB12 cafe babe dead beef` is untouched by v1.2.1 and masked at HEAD, on a prefix no arithmetic ever saw | precision | [x] |
+| [M11-R23](reviews/M11.md#m11-r23) | The glued residue is published as *"yields no candidate"*; for the **grouped** rendering a candidate is produced and up to ten bytes of a real IBAN survive — the maintainer is deciding on the wrong description | precision | [x] |
+| [M11-R24](reviews/M11.md#m11-r24) | The guard-vs-product tally does not reconcile with its own ledger: DEVLOG says 16 + 3 = 19 against 21 rows, and calls the milestone's own open blocker not-in-the-product | docs | [x] |
 
 <a id="m11-b"></a>
 ### Track B — the intra-op thread base: physical cores, not logical threads ✅
