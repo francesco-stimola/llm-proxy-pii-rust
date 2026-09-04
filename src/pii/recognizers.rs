@@ -1337,10 +1337,20 @@ fn confidence_of(kind: PiiKind, text: &str) -> Confidence {
 /// Whether an IBAN's length matches its country's fixed length (ISO 13616). An
 /// unknown country code isn't penalized (we can't check it — rely on mod-97).
 fn iban_length_ok(text: &str) -> bool {
-    let compact: String = text.chars().filter(|c| !c.is_whitespace()).collect();
-    let cc = compact.get(..2).unwrap_or("").to_ascii_uppercase();
-    match iban_country_length(&cc) {
-        Some(len) => compact.len() == len,
+    // Allocation-free for the same reason as [`iban_mod97`] (M11-R18): the shrink calls this per
+    // retry. Every code the table knows is two ASCII letters, so anything else can only ever have
+    // answered `None` — i.e. `true` — and is short-circuited rather than compacted into a `String`.
+    let mut significant = text.chars().filter(|c| !c.is_whitespace());
+    let (Some(a), Some(b)) = (significant.next(), significant.next()) else {
+        return true;
+    };
+    if !a.is_ascii_alphabetic() || !b.is_ascii_alphabetic() {
+        return true;
+    }
+    let cc = [a.to_ascii_uppercase() as u8, b.to_ascii_uppercase() as u8];
+    let cc = std::str::from_utf8(&cc).expect("two ASCII letters are valid UTF-8");
+    match iban_country_length(cc) {
+        Some(len) => 2 + significant.map(char::len_utf8).sum::<usize>() == len,
         None => true,
     }
 }
@@ -1775,13 +1785,14 @@ pub fn luhn_valid(input: &str) -> bool {
 /// purpose), so without a gate every one of them would be masked. Masking a hex digest inside a
 /// `tool_use.input` is exactly the functional harm M10 spent nine rounds bounding.
 ///
-/// **So the rule is split by rendering, and it costs nothing.** A **canonical** (all-uppercase)
+/// **So the rule is split by rendering, and it costs very little — but not nothing.** A **canonical** (all-uppercase)
 /// rendering keeps M4's rule untouched: structurally valid is masked, mod-97 only sets
 /// [`Confidence`]. A rendering carrying **any** lowercase letter is accepted only if it is fully
-/// verifiable — mod-97 *and* the ISO 13616 length. Measured residue of that gate on the same
-/// corpus: **0 of the 149**. (Note `iban_length_ok` returns `true` for a country code it does not
-/// know, so for 145 of those the gate is mod-97 alone — the zero survives that weaker reading,
-/// which is the one the code actually implements.)
+/// verifiable — mod-97 *and* the ISO 13616 length. **Measured residue: 1 of 936 added matches over
+/// 304.9 MB, not the 0 five places published until M11-R19** — `iban_length_ok` answers `true` for
+/// a country code it does not know, so a span prefixed `ab` is gated by mod-97 alone and one in 97
+/// passes. The bound is that rate; the zero was a corpus artefact, and the comment that once stood
+/// here reasoned about exactly this hole and concluded the zero survived it.
 fn iban_case_gate(matched: &str) -> bool {
     if !matched.bytes().any(|b| b.is_ascii_lowercase()) {
         return true;
@@ -1790,32 +1801,49 @@ fn iban_case_gate(matched: &str) -> bool {
 }
 
 pub fn iban_mod97(iban: &str) -> bool {
-    let compact: String = iban
-        .chars()
-        .filter(|c| !c.is_whitespace())
-        .map(|c| c.to_ascii_uppercase())
-        .collect();
-    if compact.len() < 4 {
-        return false;
-    }
-    // Move the first four characters (country + check digits) to the end.
-    let rearranged = format!("{}{}", &compact[4..], &compact[..4]);
-
-    // Fold letters to 10..35 and reduce mod 97 incrementally to avoid big ints.
-    let mut remainder: u32 = 0;
-    for c in rearranged.chars() {
+    /// Fold one character into the running remainder — digits as themselves, letters as 10..35.
+    /// `false` means the character belongs to no IBAN and the whole check fails.
+    fn fold(remainder: &mut u32, c: char) -> bool {
         let value = if c.is_ascii_digit() {
             c as u32 - '0' as u32
         } else if c.is_ascii_alphabetic() {
-            c as u32 - 'A' as u32 + 10
+            c.to_ascii_uppercase() as u32 - 'A' as u32 + 10
         } else {
             return false;
         };
-        remainder = if value >= 10 {
-            (remainder * 100 + value) % 97
+        *remainder = if value >= 10 {
+            (*remainder * 100 + value) % 97
         } else {
-            (remainder * 10 + value) % 97
+            (*remainder * 10 + value) % 97
         };
+        true
+    }
+
+    // **Two passes over the borrowed string, no allocation** (M11-R18). This used to build a
+    // compacted `String` and then a `format!`ed rearrangement — two allocations per call, which
+    // was a fair price while the validator ran **once** per match. It does not run once any more:
+    // `shrink_on_reject` (M11-R13) retries a rejected span at every interior separator, up to
+    // eight calls for the grouped arm's widest form, and on a body of *distinct* groups the
+    // per-scan memo is inert, so every one of them is a miss. The arithmetic below is unchanged
+    // and so is every verdict; what is gone is the allocation.
+    let significant = || iban.chars().filter(|c| !c.is_whitespace());
+
+    // The first four characters — country code + check digits — move to the end (ISO 13616).
+    let mut head = ['\0'; 4];
+    let mut seen = 0usize;
+    for c in significant().take(4) {
+        head[seen] = c;
+        seen += 1;
+    }
+    if seen < 4 {
+        return false;
+    }
+
+    let mut remainder: u32 = 0;
+    for c in significant().skip(4).chain(head) {
+        if !fold(&mut remainder, c) {
+            return false;
+        }
     }
     remainder == 1
 }
@@ -4048,7 +4076,8 @@ mod tests {
     ///
     /// So [`iban_case_gate`] splits the rule by rendering: canonical uppercase keeps M4's
     /// behaviour untouched, while a rendering carrying **any** lowercase letter must be fully
-    /// verifiable — mod-97 *and* the ISO 13616 length. Measured residue: **0 of the 149 added**.
+    /// verifiable — mod-97 *and* the ISO 13616 length. Measured residue: **1 of 936** added matches over 304.9 MB — the bound is the mod-97 rate,
+    /// not zero, because an unknown country code is gated by mod-97 alone (M11-R19).
     /// This pins both halves of that split, because getting either wrong is silent.
     #[test]
     fn a_lowercase_iban_is_masked_only_when_it_verifies() {

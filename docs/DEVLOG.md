@@ -3,6 +3,89 @@
 Newest first. One entry per meaningful change — note *what* and *why*, not just
 *what*. This is the running history so context is never lost between sessions.
 
+## 2026-09-04 — M11 round 5: the fix held, what it cost had never been measured
+
+Round 5 attacked M11-R13's fix on the axis its own guard holds constant and **could not break it**:
+0 leaks over 3 360 separated renderings, including six leading tokens that can themselves start an
+IBAN match. Three findings, none a leak. What the round is really about is that **the fix's price was
+never measured** — not by me when I shipped it, and not by the round that prescribed it.
+
+### M11-R18 — an unbudgeted term nobody had counted, and it is the maintainer's call
+
+`shrink_on_reject: true` retries a rejected IBAN span at every interior separator — up to eight
+`iban_case_gate` calls per match — and that validator is wrapped in `free()`, so **none of it is
+charged to the request budget**. The wrapper's own doc justifies the exemption as *"a checksum over
+at most 18 bytes"*, which was true while each validator ran once per match and is not true now: an
+IBAN span is up to 44 characters and the shrink runs it eight times. On a body of *distinct* groups
+the per-scan memo is inert, so every call is a miss.
+
+Measured through the real binary: a legal 14.6 MiB request takes **8–10 s** where the same body
+uppercased takes 2–3 s. `ARCHITECTURE.md` published *"across every shape measured, a request costs at
+most about 3 s"* and a **two**-term CPU model. Both are now false — there is a third term, per
+*candidate* rather than per byte, and the M11-R13 fix made it the largest of the three for a legal
+body. This is a constant factor on a linear path, not a blow-up and not a leak, but availability is a
+privacy property here in this repo's own words.
+
+**All four options are product-visible — a new refusal on legal traffic, a retry cap that changes
+what is detected, or republishing the ceiling — so the decision is the maintainer's and the finding
+stays open.** What did not need an answer was done:
+
+- **`iban_mod97` and `iban_length_ok` are now allocation-free.** The first built a compacted `String`
+  and then a `format!`ed rearrangement — two allocations per call, a fair price while the validator
+  ran once per match. Same arithmetic, same verdicts. Median of 9 on 4 MiB of distinct lowercase
+  groups, with the uppercase control that proves it is the case-fold path and not the machine:
+  **2 573 ms -> 2 108 ms** (min 2 012 -> 1 624), control flat at 694 -> 671 ms, **span counts
+  byte-identical at 56 729**. ~18% off, and it does **not** close the finding — the lowercase path is
+  still ~3x its own control.
+- **Option 3 as the round framed it was measured and rejected.** Checking the ISO 13616 length before
+  mod-97 buys nothing on the shape that matters: `iban_length_ok` answers `true` for a country code
+  it does not know, and on random two-letter prefixes ~95% are unknown, so it rejects nothing
+  earlier. A pre-filter that does not filter is M10-R13 wearing a different hat.
+- **`ARCHITECTURE.md` was corrected regardless of the decision.** The model names three terms, states
+  the measured numbers, says plainly that "at most about 3 s" no longer holds, and points at the open
+  finding. Leaving a knowingly false availability guarantee standing is M11-R14's defect; correcting
+  a number is not choosing an option.
+
+**One number the round did not have, found while attributing the cost:** the shrink's price is not
+only time. On the same body it takes the masked-span count from **7 943 to 56 729** — **7.1x more
+over-masking** on an adversarial shape. All over-masks, restored byte-identically, so the direction
+is safe — but it changes the balance between the options, because capping the retries would buy that
+back as well as the time.
+
+### M11-R19 — a number used to justify a design decision in five places did not reproduce
+
+`iban_case_gate`'s residue was published as **0** in five places and promised to operators in the
+CHANGELOG. Measured on 304.9 MB it is **1 of 936**: `ab22 ab23 ab44 ab45 ab66 ab67`, a matrix
+kernel's SIMD register list, masked as `[IBAN_1]`.
+
+The finding is not the behaviour — it is an over-mask, restored byte-identically, at ~1 per 300 MB.
+It is that **the one place which reasoned about how the zero could fail concluded that it could
+not.** `iban_length_ok` answers `true` for an unknown country code, so such a span is gated by mod-97
+alone and one in 97 passes: the **expected** residue was `added / 97` ≈ 9.6. A measurement whose
+expected value is ~10 should never have been published as 0 without asking why. All six sites now
+carry the rate, its corpus, the survivor, and that expectation — so the number and the reasoning
+cannot drift apart again.
+
+### M11-R20 — the escalated limit was scoped to the wrong half
+
+The residue handed to the maintainer said *"a **lowercase** IBAN glued to 1-4 alphanumerics"*.
+A canonical **uppercase** IBAN glued to a lowercase token has the identical fate: one lowercase byte
+anywhere in the glued token makes the gate demand verification of the over-long span, whatever case
+the IBAN is written in. Restated without the scoping.
+
+### Numbers
+
+**250 / 0 / 5** over 24 binaries; `fmt` and `clippy --all-targets -D warnings` clean. No test count
+moved this round — the work was measurement and documentation, plus one allocation-free rewrite whose
+correctness is proved differentially (identical span counts) rather than by a new assertion.
+
+**Guard-vs-product tally.** Round 5: **0 in the product**, 3 on the docs and the cost model. Running
+total across M11: **16 on guards or docs, 3 in the product** — and the trend is the loop doing what
+it is for. Rounds 3 and 4 each found a leak; round 5 found none, and spent itself on numbers that had
+been published without being checked.
+
+**Open, and the only thing between here and the tag: [M11-R18](reviews/M11.md#m11-r18).**
+
 ## 2026-09-04 — M11 round 4: the case-axis fix leaked, and the gate that caused it
 
 Round 4 came back with five findings and the sharpest was in the product: **the M11-R10 fix

@@ -103,7 +103,10 @@ Milestone [M11](https://github.com/francesco-stimola/llm-proxy-pii-rust/blob/mai
     folding without that gate would mask **931 additional spans** on the same corpus — hex digests,
     base64 blobs, `Ed25519PublicKey` strings — and masking one of those inside a `tool_use.input`
     is a real functional harm. So `de89370400440532013000` is masked; a lowercase IBAN-shaped
-    string that verifies as nothing is not.
+    string that verifies as nothing almost never is. **Almost**, and the honest number is worth
+    having: a country code the ISO 13616 length table does not know is checked by mod-97 alone, so
+    roughly one such string in 97 is still masked — measured at **1 in 936** over 304.9 MB of
+    third-party source. It is masked, not leaked, and restored byte-identically on the way back.
 - **A real IBAN could be dropped entirely when followed by a short word.** Found and fixed inside
   this same release, so no shipped version carries it — but it is the shape to know. An IBAN whose
   compact length is a multiple of 4 (🇦🇩 🇦🇹 🇧🇪 🇨🇾 🇨🇿 🇪🇪 🇪🇸 🇭🇺 🇱🇹 🇱🇺 🇵🇱 🇷🇴 🇸🇪 🇸🇰) is

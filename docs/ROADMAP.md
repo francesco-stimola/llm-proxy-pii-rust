@@ -2496,8 +2496,8 @@ per `CLAUDE.md`: every one of them is product-visible.
 | [M11-R16](reviews/M11.md#m11-r16) | `confidence_of`'s NL case fold — a named half of the M11-R10 fix — is pinned by nothing: un-fold it and the suite is green at 152/0 | guard | [x] |
 | [M11-R17](reviews/M11.md#m11-r17) | The case-axis decision reached neither `ARCHITECTURE.md`'s invariants nor `CHANGELOG.md`'s `[Unreleased]` — a closed leak the release page will not mention | docs | [x] |
 | [M11-R18](reviews/M11.md#m11-r18) | M11-R13's fix runs a `free` (unbudgeted) validator up to 8x per rejected match: a legal 14.6 MiB request costs 8–10 s against a published ceiling of ~3 s, and no DoS guard varies this alphabet | hardening | [ ] |
-| [M11-R19](reviews/M11.md#m11-r19) | `iban_case_gate`'s residue is published as **0** in five places; measured on 304.9 MB it is **1 of 936**, and the survivor is a real over-mask | precision | [ ] |
-| [M11-R20](reviews/M11.md#m11-r20) | The residue escalated to the maintainer is scoped to *lowercase*; a canonical uppercase IBAN glued to a lowercase token has the identical fate | docs | [ ] |
+| [M11-R19](reviews/M11.md#m11-r19) | `iban_case_gate`'s residue is published as **0** in five places; measured on 304.9 MB it is **1 of 936**, and the survivor is a real over-mask | precision | [x] |
+| [M11-R20](reviews/M11.md#m11-r20) | The residue escalated to the maintainer is scoped to *lowercase*; a canonical uppercase IBAN glued to a lowercase token has the identical fate | docs | [x] |
 
 <a id="m11-b"></a>
 ### Track B — the intra-op thread base: physical cores, not logical threads ✅

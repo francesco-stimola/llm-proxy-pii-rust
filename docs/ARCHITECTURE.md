@@ -393,11 +393,29 @@ raise is not a bound. Headroom against a conversation is total — the M7 turn s
 pinned by `PHONE-BUD`.
 
 > **The budget bounds validation, not the whole request — and saying otherwise would be M10-R30 in a
-> new place.** Two terms make up a request's CPU: `units x ~3 µs`, which the allowance caps at
-> ~1.5 s, **plus** regex scanning and the mask rewrite, linear in body size and entity count and
-> bounded only by `MAX_BODY_BYTES` — **229 ms** for 16 MiB with the tier off. Across every shape
-> measured, a request costs at most about **3 s**: a 16 MiB body that is masked takes 2.4 s, and one
-> that is refused takes **1.3–2.9 s** depending on how far the scan gets before the allowance is gone.
+> new place.** **Three** terms make up a request's CPU, and the third was found by M11-R18 rather
+> than designed:
+> 1. `units x ~3 µs`, which the allowance caps at ~1.5 s.
+> 2. Regex scanning and the mask rewrite, linear in body size and entity count and bounded only by
+>    `MAX_BODY_BYTES` — **229 ms** for 16 MiB with the tier off.
+> 3. **`free()` validator work, which is per *candidate* and charged to nothing.** The wrapper's own
+>    doc justifies the exemption as *"a checksum over at most 18 bytes"*, and that was true while
+>    each validator ran once per match. `shrink_on_reject` (M11-R13) retries a rejected IBAN at every
+>    interior separator — up to eight `iban_case_gate` calls per match, on spans up to 44 characters
+>    — and on a body of *distinct* alphanumeric groups the per-scan memo is inert, so every one is a
+>    miss.
+>
+> **The old two-term model published "at most about 3 s" and that no longer holds.** On the shape
+> term 3 is sensitive to — 4 MiB of distinct lowercase `[a-z]{2}[0-9]{2}` groups — the library
+> measures a **median of 2.1 s** against a **671 ms** uppercase control of identical size, and a
+> 14.6 MiB request through the real binary takes **8–10 s** against 2–3 s for the same body
+> uppercased (M11-R18). A masked 16 MiB body of ordinary content still takes 2.4 s and a refused one
+> 1.3–2.9 s; what changed is that those are no longer the worst shapes measured.
+>
+> **This is a constant factor on a linear path, not a blow-up, and not a leak** — but availability is
+> a privacy property here, so the number matters. **How to bound term 3 is an open maintainer
+> decision** ([M11-R18](reviews/M11.md#m11-r18) lists four options with what each costs); the
+> allocation-free rewrite of `iban_mod97`/`iban_length_ok` took ~18% off it and does not close it.
 > *(An earlier version of this line said "every refusal lands at ~1.4–1.9 s". That band came only from
 > DOS-BUD's adversarial rows, whose candidates are rejected and whose scan therefore stops early; a
 > **legal** refused body runs further and costs more — M10-R53.)*
@@ -479,8 +497,9 @@ repo's corpus reached the provider **in clear**. The rule now has three parts:
   continuous arm costs **+931 masked spans** on that same corpus — hex digests, base64 blobs — and
   IBAN has no hard checksum gate (M4 masks a structurally valid one even when mod-97 fails). So
   [`iban_case_gate`] splits by rendering: canonical uppercase keeps M4's rule, while a span
-  carrying **any** lowercase letter must pass mod-97 **and** the ISO 13616 length. Residue: **0 of
-  the 931**. An operator reading this should know the visible consequence — *a lowercase IBAN whose
+  carrying **any** lowercase letter must pass mod-97 **and** the ISO 13616 length. Residue: **1 of 936** added matches over 304.9 MB — not zero, and the *bound* is the
+  mod-97 rate rather than zero, because a country code the length table does not know is gated
+  by mod-97 alone (M11-R19). An operator reading this should know the visible consequence — *a lowercase IBAN whose
   mod-97 fails is not masked, while its uppercase twin is.*
 
 **A validator that rejects must not be able to delete a value (M11-R13).** The corollary, learned
