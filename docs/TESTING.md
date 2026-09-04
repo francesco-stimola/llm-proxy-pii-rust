@@ -416,6 +416,49 @@ two *other* always-on tiers already claim that shape.
   **Its first form was the instance-shaped fix wearing the chokepoint's words, and M11-R11 is that being found.** A nine-row hand-written `const` promised that "a new letter-bearing recognizer cannot ship without an entry here" while deriving nothing from the recognizer table, so **four** letter-bearing recognizers were outside it — `Secret`, `Email`, the GB NINO and the CN resident id. Measured: narrowing NINO to uppercase-only left the whole library suite green at **154 / 1**, the single red being a temporary probe, while `ab123456c` went from masked to forwarded in clear; the same held for the CN id and for `Secret`. Adding four rows would have closed four instances and left the class open.
   So the **set** now comes from `StructuredRecognizers::shipped_patterns()` — every recognizer the scan is actually built from — filtered by `pattern_can_match_a_letter`, which parses the pattern to the same HIR `regex` compiles and asks each literal and class whether it covers `A-Za-z`. A textual scan cannot answer this: a word boundary and a digit class are both spelled with letters that match none. `CASE_ANSWERS` then says only *what* the answer is, and it can say **`Fixed`** — deliberately does not fold — which is what makes M11-R10's decision 3 (`Secret`'s `sk-`/`AKIA` are formats, not conventions) expressible at all. For a `Folds` answer a known positive is checked uppercase, lowercase **and with exactly one letter flipped**, the last being the sharpest case and the one a corpus of lowercase strings would miss (`IT60x0542811101000000123456` was forwarded in clear).
   **Two decided limits, both measured rather than assumed.** (1) The axis is **ASCII** case, so a recognizer whose letters were non-ASCII would not be asked — the guard asserts every shipped pattern is itself ASCII, which makes that residue **0 patterns** today and turns the day it is not into a red test rather than a silent skip. (2) An empty *unanswered* list is also what a derivation that stopped seeing letters would produce, so every recorded answer must itself be about a pattern the derivation calls letter-bearing; the two lists are therefore an equality — the letter-bearing recognizers this build ships are precisely the ones the answers name — with **no count for anyone to keep current**.
+- **RENDER-01 (M11-R30 / M11-R31) — `every_recognizer_records_the_renderings_it_detects`: the
+  second coordinate of a rendering, and the first guard here whose scope is *every* recognizer.**
+  A rendering has two coordinates: **which character** sits between a value's groups, and **where
+  the groups fall**. `SEPARATOR-01` closed the first and quantified over it alone, so the second
+  stayed open — and it was leaking. Through the real `.exe`: `Amex 3782 822463 10005 and Visa
+  4111 1111 1111 1111` came back as `Amex 3782 822463 10005 and Visa [CARD_1]`, while the *same
+  Amex number compact* is masked, so the value was recognised and Luhn passed; what was not
+  recognised is 4-6-5, the grouping Amex itself prints. **Worse than a miss:** a Luhn-valid
+  19-digit card written `4111 1111 1111 1111 110` had its first sixteen digits matched and the last
+  three forwarded — `[CARD_1] 110` — which is M10-R1's *"the mask ate it"* shape, and the fixpoint
+  cannot recover a value the mask consumed.
+  **The card recognizer now offers the groupings issuers publish** — 4-4-4-4 with an optional
+  1-3 digit tail (which closes the 19-digit truncation), Amex/Diners 4-6-4/5, and compact — with
+  `credit_card_valid`'s 13–19-digit count and Luhn deciding as before. **Measured: 0 added matches**
+  over the reference corpus.
+  **The chokepoint version was tried, measured and rejected, which is the number worth keeping.**
+  `\d{1,6}(?:[sep]\d{1,6}){1,4}` — let the validator own the grouping entirely — closes every
+  grouping including ones nobody has thought of, and the round measured it at +24 matches on
+  422.9 MB. It also **breaks `national_phone_does_not_swallow_an_adjacent_number`**: in digit-dense
+  text it finds several Luhn-valid sub-runs, `push_candidates` coalesces them into a maximal run,
+  and `020 7946 0958 0161 496 0000` comes back as one `[CARD_1]` instead of two phone placeholders.
+  That is a fidelity cost the corpus match-count cannot show, and it is why the narrow arm ships
+  and the general one is escalated in `M11-R30` rather than taken.
+  **Its scope is every shipped recognizer, and that is M11-R31's fix.** `SEPARATOR-01` derives its
+  scope from the pattern — *can this pattern match a gap?* — which exempted **16 of 24** recognizers
+  by construction, and a recognizer that offers no grouping is exactly the one whose missing
+  grouping cannot be noticed that way. Grouping is a property of the **value**, so all 24 must
+  answer; the audit names any that does not.
+  **`not_detected` is the way to say no**, which the separator registry had no field for. A row
+  lists renderings the value *is* published in and this build deliberately does not detect — the
+  hyphenated ES DNI, the spaced FR NIR, HMRC's 3-4-2 GB VAT, PT's 3-3-3 — and they are **asserted
+  absent**, so widening coverage forces the answer to be rewritten instead of letting a limit drift
+  into folklore. Each carries its cost in `why`, and each is escalated in `M11-R30`: for `\d{9}`,
+  admitting `524 287 244` would make every three-column numeric table a candidate under a checksum
+  that already accepts ~2/11 of arbitrary values (M4-R6), and the honest answer may well be a
+  documented refusal.
+  **The span assertion is what separates a leak from a miss.** Each detected rendering must be
+  **one span covering the whole value**; a presence assertion would have called `[CARD_1] 110`
+  masked. That is M10-R1's predicate made checkable per recognizer.
+  **Why no corpus could see it:** there is not one Amex or Diners number anywhere under `src/`,
+  `tests/` or `docs/` — zero hits for `3782`, `378282`, `Diners`, `30569309`. The whole card corpus
+  has been two 16-digit Visa numbers in 4-4-4-4 since M1. *A corpus has a shape, and that shape is
+  a blind spot.*
 - **SEPARATOR-01 (M11-R25) — `every_gap_bearing_recognizer_answers_the_separator_axis`: the third
   meeting of one sentence.** M11-R10 was the letters' case, M11-R21 the digits' script, this is the
   separator between a value's groups — and the sentence is the same each time: *a recognizer and its

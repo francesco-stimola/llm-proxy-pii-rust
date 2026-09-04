@@ -547,12 +547,26 @@ there is nothing for the resolver or the fixpoint to recover. The case axis (M11
 for ten milestones — `iban_mod97`'s doc has said *"letters are folded to uppercase"* since M1 while
 the pattern spelled `[A-Z]`. The digit-script axis is the same shape read the other way (M11-R21):
 `\d` matches `\p{Nd}`, the validators are ASCII-only, and what the mismatch produced was a panic
-rather than a miss. **The separator axis is the third, and it is not closed** — the patterns spell a
-literal ASCII space while `iban_mod97` filters `char::is_whitespace()`; see the M11 ledger in
-[`ROADMAP.md`](ROADMAP.md#m11) for its current status, which is deliberately *not* restated here so
-this paragraph cannot go stale. **When adding or editing a recognizer, ask the three questions
-together**, and record the answers in the registry the guards derive from (`CASE_ANSWERS`) rather
-than in a comment: a hand-written list of the recognizers somebody remembered is what M11-R11 found.
+rather than a miss. The separator axis is the third (M11-R25): the patterns spelled a literal ASCII
+space while `iban_mod97` filters `char::is_whitespace()`, so an IBAN, card, phone or NINO written
+with a no-break space went upstream in clear.
+
+**And a rendering has two coordinates, which is the fourth question (M11-R30).** *Which character*
+sits between a value's groups is one; *where the groups fall* is the other, and closing the first
+left the second open — Amex's own `3782 822463 10005` was forwarded while the same digits compact
+were masked, and a 19-digit card lost its last three digits to a mask that stopped at sixteen. So
+the question is not *"can this pattern match a separator?"* — which exempts, by construction,
+exactly the recognizers that offer no grouping — but *"which renderings is this value published
+in?"*, which is a property of the **value** and therefore has to be asked of every recognizer.
+
+**When adding or editing a recognizer, ask the four questions together** — case, digit script,
+separator, grouping — and record the answers in the registries the guards derive from
+(`CASE_ANSWERS`, `SEPARATOR_ANSWERS`, `RENDERING_ANSWERS`) rather than in a comment: a hand-written
+list of the recognizers somebody remembered is what M11-R11 found. The ledger in
+[`ROADMAP.md`](ROADMAP.md#m11) carries each axis's current status, deliberately *not* restated here
+so this paragraph cannot go stale — a clause that failed three rounds running (M11-R17, M11-R26,
+M11-R32) because the sentence beside it still asserted one. **A status is a fact about today; put it
+in the ledger and link it, never in prose.**
 
 **A validator that rejects must not be able to delete a value (M11-R13).** The corollary, learned
 immediately and the hard way. `iban_case_gate` was added to a recognizer that had previously

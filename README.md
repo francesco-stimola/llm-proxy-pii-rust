@@ -58,7 +58,7 @@ request — so a masked conversation still makes sense to the model.
 | kind | placeholder | engine | what makes it a match | coverage |
 |---|---|---|---|---|
 | **Email** | `[EMAIL_1]` | deterministic · always on | address shape, on ASCII word boundaries | universal |
-| **Credit card** | `[CARD_1]` | deterministic · always on | **Luhn** checksum | universal |
+| **Credit card** | `[CARD_1]` | deterministic · always on | **Luhn** checksum + 13–19 digits, compact or in the groupings issuers print (4-4-4-4, Amex 4-6-5, Diners 4-6-4, 19-digit 4-4-4-4-3) | universal |
 | **IBAN** | `[IBAN_1]` | deterministic · always on | **mod-97** + that country's length | universal |
 | **Secret / API key** | `[SECRET_1]` | deterministic · always on | issuer prefix — `sk-…`, `sk-ant-…`, `AKIA…` | universal |
 | **Phone** | `[PHONE_1]` | deterministic · always on | the country's **real numbering plan** says the number is *assigned* | `+CC` and US always · **9 domestic plans** |

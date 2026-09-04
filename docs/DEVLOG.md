@@ -3,6 +3,96 @@
 Newest first. One entry per meaningful change — note *what* and *why*, not just
 *what*. This is the running history so context is never lost between sessions.
 
+## 2026-09-04 — M11 round 8: a rendering has two coordinates, and round 7 closed one
+
+Round 7 closed the separator axis by widening **which character** may sit between a value's groups.
+Round 8 varied the other coordinate — **where the groups fall** — and found the card recognizer
+forwarding values in clear.
+
+### M11-R30 — Amex's own grouping, and a truncation that is worse than a miss
+
+Through the real `.exe`, one request with its own control:
+
+    client sends  : Amex 3782 822463 10005 and Visa 4111 1111 1111 1111
+    provider gets : Amex 3782 822463 10005 and Visa [CARD_1]
+
+    client sends  : Amex 378282246310005 compact
+    provider gets : Amex [CARD_1] compact
+
+The same Amex number compact **is** masked, so the value is recognised and Luhn passes; what is not
+recognised is 4-6-5, the grouping Amex itself prints. And the 19-digit row is worse than a miss:
+`4111 1111 1111 1111 110` had its first sixteen digits matched and the last three **forwarded** —
+`[CARD_1] 110` — which is M10-R1's *"the mask ate it"* shape, the one the fixpoint cannot undo.
+
+The card arm offered exactly one grouping while `credit_card_valid` already accepted any grouping of
+13–19 Luhn-valid digits. That is `ARCHITECTURE.md`'s own sentence — *where the validator is more
+permissive than the pattern, the difference is a set of renderings that reach the provider in clear*
+— read on the coordinate the sentence did not name. Not a regression: the card's one grouped arm is
+byte-identical at every tag since M1, and the whole card corpus has been two 16-digit Visa numbers in
+4-4-4-4 for as long. *A corpus has a shape, and that shape is a blind spot.*
+
+**I took the narrow fix, and the reason is a measurement the round could not have had.** The
+chokepoint version — `\d{1,6}(?:[sep]\d{1,6}){1,4}`, letting the validator own the grouping, which
+the round measured at +24 matches on 422.9 MB and which I preferred on reading it — comes back:
+
+    both adjacent numbers must be detected separately,
+    got [(CreditCard, "020 7946 0958 0161 496 0000")]
+
+In digit-dense text the general arm finds several Luhn-valid sub-runs, `push_candidates` coalesces a
+recognizer's overlapping hits into maximal runs, and two merge into one span that swallows both
+phone numbers — breaking M8.1's promise that two adjacent numbers yield two placeholders. **A match
+count cannot show that; it is a span-fidelity cost.** So what ships is the groupings issuers publish
+(4-4-4-4 with an optional 1–3-digit tail, which closes the truncation; Amex/Diners 4-6-4/5; compact),
+measured at **0 added matches**, and the general arm stays escalated with the new number attached.
+
+This is knowingly the list rather than the chokepoint, and it is written down as such — because here
+the class-wide fix breaks a shipped promise, and the alternative to saying so is a comment claiming
+we thought about it.
+
+### M11-R31 — and the guard that could not have caught it
+
+`SEPARATOR-01` derives its scope from the pattern: *can this pattern match a gap?* For the separator
+**character** that is the right question. For the **grouping** it is not — it exempted **16 of 24**
+recognizers by construction, and a recognizer that offers no grouping is exactly the one whose
+missing grouping is invisible that way.
+
+`RENDER-01` asks the question of the **value** instead, so all 24 must answer, and the audit names
+any that does not. It carries the `CaseRule::Fixed`-shaped way to say *no* that the separator
+registry lacked: `not_detected` lists renderings the value **is** published in and this build
+deliberately does not detect — the hyphenated ES DNI, the spaced FR NIR, HMRC's 3-4-2 GB VAT, PT's
+3-3-3 — **asserted absent**, so widening coverage rewrites the answer instead of letting a limit
+drift into folklore. Each carries its cost, and each is escalated: for `\d{9}`, admitting
+`524 287 244` would make every three-column numeric table a candidate under a checksum that already
+accepts ~2/11 of arbitrary values, and the honest answer may well be a documented refusal.
+
+**Its span assertion is the half that separates a leak from a miss.** Each detected rendering must be
+one span covering the **whole** value — a presence assertion calls `[CARD_1] 110` masked.
+
+### M11-R32 — the third stale status in that paragraph, and the rule that ends it
+
+`ARCHITECTURE.md` said *"The separator axis is the third, and it is not closed"* in the commit that
+closed it — **inside the clause M11-R26 had added to prevent exactly that**: *"deliberately not
+restated here so this paragraph cannot go stale."* The clause was right and the sentence next to it
+asserted a status anyway.
+
+So the fix is not a third correction. It is the rule: **a status is a fact about today; put it in the
+ledger and link it, never in prose.** The paragraph now states the four axes as *questions to ask* —
+case, digit script, separator, grouping — names the finding behind each, and asserts no status at
+all, with all three stale-text findings cited beside it.
+
+### Numbers
+
+**254 / 0 / 5** over 24 binaries, twice, identical (round 8 measured 253; the +1 is `RENDER-01`);
+`cargo test-onnx` **290 / 0 / 22**; `fmt` and `clippy --all-targets -D warnings` clean.
+
+**Tally**, by the ledger's severity cell: round 8 is **1 in the product** (R30, `leak`) and **2 on
+the net or the docs** (R31 `guard`, R32 `docs`). Running total: **22 on the net or the docs, 11 in
+the product**, 33 rows.
+
+**Still open: [M11-R18](reviews/M11.md#m11-r18)**, now with three neighbours wanting the same kind of
+decision — the grouped glued-IBAN residue (R23), the `\p{Nd}` coverage gap (R27), and R30's
+national-identifier groupings plus the general card arm.
+
 ## 2026-09-04 — M11 round 7: the separator, and the same sentence for the third time
 
 Round 7 found a leak by varying the axis round 6 opened but did not finish: after the letters' case

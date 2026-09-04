@@ -61,7 +61,7 @@ all'interno di una richiesta — così una conversazione mascherata resta compre
 | categoria | segnaposto | motore | cosa fa scattare il match | copertura |
 |---|---|---|---|---|
 | **Email** | `[EMAIL_1]` | deterministico · sempre attivo | forma dell'indirizzo, su confini di parola ASCII | universale |
-| **Carta di credito** | `[CARD_1]` | deterministico · sempre attivo | checksum di **Luhn** | universale |
+| **Carta di credito** | `[CARD_1]` | deterministico · sempre attivo | checksum di **Luhn** + 13–19 cifre, compatta o nei raggruppamenti stampati dagli emittenti (4-4-4-4, Amex 4-6-5, Diners 4-6-4, 19 cifre 4-4-4-4-3) | universale |
 | **IBAN** | `[IBAN_1]` | deterministico · sempre attivo | **mod-97** + lunghezza del paese | universale |
 | **Secret / chiave API** | `[SECRET_1]` | deterministico · sempre attivo | prefisso dell'emittente — `sk-…`, `sk-ant-…`, `AKIA…` | universale |
 | **Telefono** | `[PHONE_1]` | deterministico · sempre attivo | il **piano di numerazione reale** del paese dice che il numero è *assegnato* | `+CC` e USA sempre · **9 piani nazionali** |

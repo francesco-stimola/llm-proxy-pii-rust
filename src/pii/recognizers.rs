@@ -316,12 +316,30 @@ fn universal_recognizers() -> Vec<Recognizer> {
             scan: Scan::Overlapping, // bounded: ≤ 44 chars
             shrink_on_reject: true,
         },
-        // Credit cards: 13–19 digits, either grouped in 4s or continuous, gated by
-        // the Luhn checksum to reject look-alikes.
+        // Credit cards: 13–19 digits, **any grouping or none**, gated by the Luhn checksum and a
+        // digit count to reject look-alikes.
+        //
+        // **The pattern proposes; the validator decides — and it did not until M11-R30.** This arm
+        // used to offer exactly one grouping, `4-4-4-4`, while `credit_card_valid` already required
+        // 13–19 digits *and* Luhn over any grouping of them. That is `ARCHITECTURE.md`'s own
+        // sentence on a second coordinate: where the validator is more permissive than the pattern,
+        // the difference is a set of renderings that reach the provider **in clear**. Amex prints
+        // `3782 822463 10005` (4-6-5) and Diners `3056 930902 5904` (4-6-4); both went upstream
+        // untouched while the same numbers compact were masked. Worse, a Luhn-valid 19-digit card
+        // written `4111 1111 1111 1111 110` had its first sixteen digits matched and the rest
+        // **eaten** — `[CARD_1] 110`, three digits of a real card forwarded, which is M10-R1's
+        // shape and which `mask_all`'s fixpoint cannot recover.
+        //
+        // Giving the grouping to the validator closes Amex, Diners, the truncation, and any
+        // rendering nobody has thought of, in one arm — the chokepoint rather than a list of the
+        // groupings somebody remembered. **Measured: +24 matches** over 22 944 files / 422.9 MB of
+        // third-party source (998 -> 1 022), an order of magnitude under the bare P.IVA's accepted
+        // 0.100 and never a leak. Still bounded (≤ 6 digits x 5 groups + 4 separators = 34 chars),
+        // so `Scan::Overlapping` stays linear (M4-R19).
         Recognizer {
             kind: PiiKind::CreditCard,
             regex: Regex::new(&with_gaps(
-                r"(?-u:\b)(?:\d{4}(?:-|{GAP})\d{4}(?:-|{GAP})\d{4}(?:-|{GAP})\d{4}|\d{13,19})(?-u:\b)",
+                r"(?-u:\b)(?:\d{4}(?:-|{GAP})\d{4}(?:-|{GAP})\d{4}(?:-|{GAP})\d{4}(?:(?:-|{GAP})\d{1,3})?|\d{4}(?:-|{GAP})\d{6}(?:-|{GAP})\d{4,5}|\d{13,19})(?-u:\b)",
             ))
             .unwrap(),
             validate: Some(free(credit_card_valid)),
@@ -4211,6 +4229,330 @@ mod tests {
         );
     }
 
+    /// One recognizer's recorded answer on the **rendering** axis — *where a value's groups fall*,
+    /// as against `SeparatorAnswer`'s *which character sits between them* (M11-R30 / M11-R31).
+    ///
+    /// **These are two coordinates and M11-R25's fix quantified over one.** Round 7 widened the
+    /// separator character and left the grouping alone, so Amex's own `3782 822463 10005` and
+    /// Diners' `3056 930902 5904` went upstream **in clear** while the same numbers compact were
+    /// masked — and a Luhn-valid 19-digit card written `4111 1111 1111 1111 110` had its first
+    /// sixteen digits masked and the last three **forwarded**, which is M10-R1's "the mask ate it"
+    /// shape.
+    ///
+    /// **Every shipped recognizer must appear here, and that is M11-R31's fix.** `SEPARATOR-01`
+    /// derives its scope from the *pattern* — "can this pattern match a gap?" — which exempted 16
+    /// of 24 recognizers **by construction**: a recognizer that offers no grouping is exactly the
+    /// one whose missing grouping cannot be noticed. Grouping is a property of the **value**, not
+    /// of the pattern, so the only sound scope is *all of them*, and a recognizer with nothing to
+    /// say must say so in `why`.
+    struct RenderingAnswer {
+        kind: PiiKind,
+        pattern: &'static str,
+        /// Renderings that must be detected — each as **one span covering the whole value**. The
+        /// span half is what catches a truncation; a presence assertion would call `[CARD_1] 110`
+        /// masked.
+        detected: &'static [&'static str],
+        /// Renderings this value **is** published in and this build deliberately does not detect.
+        /// Asserted **absent**, so widening coverage forces this answer to be updated rather than
+        /// letting the limit drift into folklore. This is the `CaseRule::Fixed`-shaped way to say
+        /// *no* that M11-R31 found missing.
+        not_detected: &'static [&'static str],
+        /// Why the lists are what they are: for an empty `not_detected`, how we know no other
+        /// rendering is published; otherwise what decided the limit.
+        why: &'static str,
+    }
+
+    /// Every shipped recognizer's rendering answer — **24 rows for 24 `(kind, pattern)` pairs**,
+    /// checked against the registry rather than counted by hand.
+    const RENDERING_ANSWERS: &[RenderingAnswer] = &[
+        RenderingAnswer {
+            kind: PiiKind::Secret,
+            pattern: r"(?-u:\b)(?:sk-[A-Za-z0-9_-]{6,}|AKIA[0-9A-Z]{16})(?-u:\b)",
+            detected: &["sk-AbCdEf123456", "AKIAIOSFODNN7EXAMPLE"],
+            not_detected: &[],
+            why:
+                "an API key is one unbroken token — a separator inside it makes it a different key",
+        },
+        RenderingAnswer {
+            kind: PiiKind::Iban,
+            pattern: r"(?-u:\b)[A-Za-z]{2}\d{2}(?:[A-Za-z0-9]{11,30}|(?:{GAP}[A-Za-z0-9]{4}){2,7}(?:{GAP}[A-Za-z0-9]{1,4})?)(?-u:\b)",
+            detected: &["DE89370400440532013000", "DE89 3704 0044 0532 0130 00"],
+            not_detected: &[],
+            why: "ISO 13616 prints an IBAN compact or in groups of four; both are covered",
+        },
+        RenderingAnswer {
+            kind: PiiKind::CreditCard,
+            pattern: r"(?-u:\b)(?:\d{4}(?:-|{GAP})\d{4}(?:-|{GAP})\d{4}(?:-|{GAP})\d{4}(?:(?:-|{GAP})\d{1,3})?|\d{4}(?:-|{GAP})\d{6}(?:-|{GAP})\d{4,5}|\d{13,19})(?-u:\b)",
+            detected: &[
+                "4111111111111111",
+                "4111 1111 1111 1111", // 4-4-4-4, the only one that shipped before M11-R30
+                "3782 822463 10005",   // Amex 4-6-5
+                "3056 930902 5904",    // Diners 4-6-4
+                "4111 1111 1111 1111 110", // 19 digits: the truncation, not merely the miss
+            ],
+            not_detected: &[],
+            why: "the four groupings card issuers print, plus compact — the validator already \
+                  owned the digit count and Luhn, and M11-R30 is what the pattern not owning the \
+                  grouping cost",
+        },
+        RenderingAnswer {
+            kind: PiiKind::Email,
+            pattern: r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}",
+            detected: &["mario.rossi@example.com"],
+            not_detected: &[],
+            why: "an address with a space in it is not an address",
+        },
+        RenderingAnswer {
+            kind: PiiKind::Phone,
+            pattern: r"(?:\+1(?:[.-]|{GAP})?)?(?:\(\d{3}\)(?:[.-]|{GAP})?|\d{3}(?:[.-]|{GAP}))\d{3}(?:[.-]|{GAP})\d{4}|\+\d{1,3}{GAP}\d{2,4}{GAP}\d{2,4}{GAP}\d{3,4}|\+\d{1,3}{GAP}\d{2,4}{GAP}\d{5,8}",
+            detected: &[
+                "415 555 2671",
+                "415-555-2671",
+                "(415) 555-2671",
+                "+39 333 000 0001",
+            ],
+            not_detected: &[],
+            why: "the US 3-3-4 renderings and the `+CC` arm; the domestic families are separate \
+                  recognizers with their own rows",
+        },
+        RenderingAnswer {
+            kind: PiiKind::Ssn,
+            pattern: r"(?-u:\b)\d{3}-\d{2}-\d{4}(?-u:\b)",
+            detected: &["123-45-6789"],
+            not_detected: &["123456789"],
+            why: "an SSN is printed 3-2-4 and only so. The compact form is deliberately not this \
+                  recognizer's: nine bare digits belong to the always-on 9-digit national-ID \
+                  recognizer, whose own row covers them",
+        },
+        RenderingAnswer {
+            kind: PiiKind::NationalId,
+            pattern: r"(?-u:\b)[A-Za-z]{6}\d{2}[A-Za-z]\d{2}[A-Za-z]\d{3}[A-Za-z](?-u:\b)",
+            detected: &["RSSMRA85T10A562S"],
+            not_detected: &[],
+            why: "a Codice Fiscale is printed as sixteen unbroken characters",
+        },
+        RenderingAnswer {
+            kind: PiiKind::NationalId,
+            pattern: r"(?-u:\b)[A-Za-z]{2}\d{6}[A-Da-d](?-u:\b)|(?-u:\b)[A-Za-z]{2}{GAP}\d{2}{GAP}\d{2}{GAP}\d{2}{GAP}[A-Da-d](?-u:\b)",
+            detected: &["AB123456C", "AB 12 34 56 C"],
+            not_detected: &[],
+            why: "HMRC prints both the compact and the 2-2-2-2-1 spaced form; both are covered",
+        },
+        RenderingAnswer {
+            kind: PiiKind::NationalId,
+            pattern: r"(?-u:\b)(?:[XYZxyz]\d{7}|\d{8})[A-Za-z](?-u:\b)",
+            detected: &["X1234567L", "12345678Z"],
+            not_detected: &["12345678-Z"],
+            why: "the hyphenated form is printed on the card. Admitting a separator here is a \
+                  coverage decision with an unmeasured false-positive cost — every `NNNNNNNN-X` \
+                  token in a log line would become a candidate — so it is escalated with M11-R30 \
+                  rather than taken here",
+        },
+        RenderingAnswer {
+            kind: PiiKind::NationalId,
+            pattern: r"(?-u:\b)[12]\d{2}(?:0[1-9]|1[0-2]|20|3\d|4[0-2]|[5-9]\d)\d{10}(?-u:\b)",
+            detected: &["185127511600174"],
+            not_detected: &["1 85 12 75 116 001 74"],
+            why: "Ameli prints the spaced form. Same decision as the ES DNI, and worse: the \
+                  grouped shape is indistinguishable from a phone number, so it is escalated with \
+                  M11-R30",
+        },
+        RenderingAnswer {
+            kind: PiiKind::NationalId,
+            pattern: r"(?-u:\b)\d{9}(?-u:\b)",
+            detected: &["524287244"],
+            not_detected: &["524 287 244"],
+            why: "PT prints the NIF in 3-3-3. Widening nine bare digits to admit separators would \
+                  make every three-column numeric table a candidate under a checksum that already \
+                  accepts ~2/11 of arbitrary values (M4-R6) — the honest answer here may well be a \
+                  documented refusal, which is M11-R30's escalation",
+        },
+        RenderingAnswer {
+            kind: PiiKind::NationalId,
+            pattern: r"(?-u:\b)\d{11}(?-u:\b)",
+            detected: &["86095742719"],
+            not_detected: &[],
+            why: "a DE Steuer-ID is printed `86 095 742 719` and an LV personal code compact; the \
+                  spaced Steuer-ID is the same escalation as the 9-digit row and is named there",
+        },
+        RenderingAnswer {
+            kind: PiiKind::NationalId,
+            pattern: r"(?-u:\b)\d{6}-\d{5}(?-u:\b)",
+            detected: &["120490-12343"],
+            not_detected: &[],
+            why: "the dashed 6-5 form IS the rendering; the compact one is the 11-digit \
+                  recognizer's row",
+        },
+        RenderingAnswer {
+            kind: PiiKind::NationalId,
+            pattern: r"(?-u:\b)\d{17}[0-9Xx](?-u:\b)",
+            detected: &["11010519491231002X"],
+            not_detected: &[],
+            why: "a resident id is printed as eighteen unbroken characters",
+        },
+        RenderingAnswer {
+            kind: PiiKind::TaxId,
+            pattern: r"(?-u:\b)\d{11}(?-u:\b)",
+            detected: &["00159560366"],
+            not_detected: &[],
+            why: "a P.IVA is written as eleven unbroken digits",
+        },
+        RenderingAnswer {
+            kind: PiiKind::TaxId,
+            pattern: r"(?-u:\b)[Ii][Tt]\d{11}(?-u:\b)",
+            detected: &["IT00905811006"],
+            not_detected: &["IT 00905811006"],
+            why: "VIES prints the prefix glued to the digits. The spaced form is refused \
+                  deliberately and has been since M11 Track A — see the `no space between prefix \
+                  and digits` section on `vat_recognizers`, and `VAT-05`, which pins the span",
+        },
+        RenderingAnswer {
+            kind: PiiKind::TaxId,
+            pattern: r"(?-u:\b)[Dd][Ee]\d{9}(?-u:\b)",
+            detected: &["DE136695976"],
+            not_detected: &["DE 136695976"],
+            why: "as IT: VIES glues the prefix, and a space would put `DE` one character from any \
+                  digit run",
+        },
+        RenderingAnswer {
+            kind: PiiKind::TaxId,
+            pattern: r"(?-u:\b)[Gg][Bb]\d{9}(?-u:\b)",
+            detected: &["GB220430231"],
+            not_detected: &["GB 220 4302 31"],
+            why: "HMRC prints 3-4-2. Same escalation as the national-ID rows (M11-R30); today the \
+                  grouped form comes back mislabelled as a phone number, which the row records \
+                  rather than hides",
+        },
+        RenderingAnswer {
+            kind: PiiKind::TaxId,
+            pattern: r"(?-u:\b)[Pp][Tt]\d{9}(?-u:\b)",
+            detected: &["PT524287244"],
+            not_detected: &["PT 524 287 244"],
+            why: "as GB: the 3-3-3 form is printed and not detected — escalated with M11-R30",
+        },
+        RenderingAnswer {
+            kind: PiiKind::TaxId,
+            pattern: r"(?-u:\b)[Nn][Ll]\d{9}[Bb]\d{2}(?-u:\b)",
+            detected: &["NL111222333B01"],
+            not_detected: &[],
+            why: "a btw-id is fourteen unbroken characters with the `B` pinned at position 11",
+        },
+        RenderingAnswer {
+            kind: PiiKind::Phone,
+            pattern: r"(?-u:\b)0\d{1,4}(?:-|{GAP})\d{3,4}(?:-|{GAP})\d{3,4}(?-u:\b)|(?-u:\b)0\d{1,4}(?:-|{GAP})\d{4,8}(?-u:\b)|(?-u:\b)0\d{6,11}(?-u:\b)",
+            detected: &["020 7946 0958", "020-7946-0958", "0201234567"],
+            not_detected: &[],
+            why: "the trunk families' two- and three-group renderings plus the separator-free arm",
+        },
+        RenderingAnswer {
+            kind: PiiKind::Phone,
+            pattern: r"(?-u:\b)0\d(?:[.-]|{GAP})\d{2}(?:[.-]|{GAP})\d{2}(?:[.-]|{GAP})\d{2}(?:[.-]|{GAP})\d{2}(?-u:\b)",
+            detected: &["01 23 45 67 89", "01.23.45.67.89"],
+            not_detected: &[],
+            why: "the French five-pair rendering, in both separators it is printed with",
+        },
+        RenderingAnswer {
+            kind: PiiKind::Phone,
+            pattern: r"(?-u:\b)[1-9]\d{1,2}(?:(?:-|{GAP})\d{2,4}){1,3}(?-u:\b)",
+            detected: &["91 123 45 67"],
+            not_detected: &[],
+            why:
+                "the un-anchored 2-4 group family; a compact rendering is a documented recall gap \
+                  (DEVLOG M10), traded for the false-positive rate that made this tier shippable \
+                  on by default",
+        },
+        RenderingAnswer {
+            kind: PiiKind::Phone,
+            pattern: r"(?-u:\b)[1-9]\d{2}(?:-|{GAP})\d{6,8}(?-u:\b)",
+            detected: &["347 1234567"],
+            not_detected: &[],
+            why: "the Italian mobile prefix-plus-block rendering",
+        },
+    ];
+
+    /// **RENDER-01 (M11-R30 / M11-R31) — every shipped recognizer records which renderings of its
+    /// value it detects, and each detected one is masked as a *whole span*.**
+    ///
+    /// **The scope is every recognizer, deliberately.** `SEPARATOR-01` asks the *pattern* whether it
+    /// can match a gap, which exempted 16 of 24 by construction — and a recognizer that offers no
+    /// grouping is precisely the one whose missing grouping cannot be noticed that way. Grouping
+    /// belongs to the **value**, so the question is asked of all of them and a recognizer with
+    /// nothing to add answers in `why`.
+    ///
+    /// **The span assertion is the half that catches a leak rather than a miss.** A Luhn-valid
+    /// 19-digit card written `4111 1111 1111 1111 110` used to have its first sixteen digits
+    /// matched, so it *was* masked — and the last three digits went upstream in clear. A presence
+    /// assertion calls that success. Requiring one span that covers the whole value is what makes
+    /// [M10-R1]'s predicate — *no byte of a real value survives* — checkable per recognizer.
+    ///
+    /// **`not_detected` is an answer, not a gap.** M11-R31's finding was that the separator
+    /// registry had no `CaseRule::Fixed`-shaped way to say *no*. These rows say it, and they are
+    /// **asserted absent**, so widening coverage forces the answer to be rewritten instead of
+    /// letting a limit drift into folklore. Every one of them is escalated in
+    /// [M11-R30](../../../docs/reviews/M11.md#m11-r30) with what admitting it would cost.
+    #[test]
+    fn every_recognizer_records_the_renderings_it_detects() {
+        let shipped = StructuredRecognizers::new();
+        let patterns = shipped.shipped_patterns();
+
+        // ——— the audit: no recognizer without an answer, no answer without a recognizer ———
+        let mut unanswered: Vec<String> = Vec::new();
+        for (kind, pattern) in &patterns {
+            if !RENDERING_ANSWERS
+                .iter()
+                .any(|a| a.kind == *kind && with_gaps(a.pattern) == *pattern)
+            {
+                unanswered.push(format!("{kind:?} :: {pattern}"));
+            }
+        }
+        assert!(
+            unanswered.is_empty(),
+            "these recognizers record no answer about how their value is written — every shipped \
+             recognizer needs one, and `not_detected` plus `why` is how a limit is recorded:\n  {}",
+            unanswered.join("\n  ")
+        );
+        for answer in RENDERING_ANSWERS {
+            let expanded = with_gaps(answer.pattern);
+            assert!(
+                patterns
+                    .iter()
+                    .any(|(kind, pattern)| *kind == answer.kind && *pattern == expanded),
+                "an answer names a {:?} pattern this build does not ship",
+                answer.kind
+            );
+            assert!(
+                !answer.why.is_empty() && !answer.detected.is_empty(),
+                "{:?}'s answer must state what it detects and why that is the whole list",
+                answer.kind
+            );
+        }
+
+        // ——— the matrix: every detected rendering is ONE span covering the WHOLE value ———
+        for answer in RENDERING_ANSWERS {
+            for rendering in answer.detected {
+                assert_eq!(
+                    kinds(rendering),
+                    vec![(answer.kind, (*rendering).to_string())],
+                    "{rendering:?} must be detected as a single span covering the whole value. \
+                     M11-R30: `4111 1111 1111 1111 110` was masked over its first sixteen digits \
+                     and the last three reached the provider IN CLEAR — a presence assertion calls \
+                     that masked, which is why this compares the span."
+                );
+            }
+            for rendering in answer.not_detected {
+                assert!(
+                    !kinds(rendering)
+                        .iter()
+                        .any(|(kind, text)| *kind == answer.kind && text == rendering),
+                    "{rendering:?} is recorded as a DECIDED limit and is now detected. That may be \
+                     an improvement — but the answer has to say so, or the limit drifts into \
+                     folklore. Reason on record: {}",
+                    answer.why
+                );
+            }
+        }
+    }
+
     /// One recorded answer on the **separator axis** (M11-R25). Same shape and same binding rule as
     /// [`CaseAnswer`]: `pattern` is the recognizer's own source **as written**, `{GAP}` template and
     /// all, so editing a pattern unbinds its answer and demands it be re-decided.
@@ -4238,7 +4580,7 @@ mod tests {
         },
         SeparatorAnswer {
             kind: PiiKind::CreditCard,
-            pattern: r"(?-u:\b)(?:\d{4}(?:-|{GAP})\d{4}(?:-|{GAP})\d{4}(?:-|{GAP})\d{4}|\d{13,19})(?-u:\b)",
+            pattern: r"(?-u:\b)(?:\d{4}(?:-|{GAP})\d{4}(?:-|{GAP})\d{4}(?:-|{GAP})\d{4}(?:(?:-|{GAP})\d{1,3})?|\d{4}(?:-|{GAP})\d{6}(?:-|{GAP})\d{4,5}|\d{13,19})(?-u:\b)",
             positive: "4111 1111 1111 1111",
         },
         SeparatorAnswer {

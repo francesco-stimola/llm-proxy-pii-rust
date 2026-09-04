@@ -2566,9 +2566,9 @@ mutations it ran turned the suite red. **No fail-open, no over-mask regression, 
 | [M11-R27](reviews/M11.md#m11-r27) | The rationale for leaving `\d` Unicode is published in three places and is false for all thirteen validated recognizers | precision | [x] |
 | [M11-R28](reviews/M11.md#m11-r28) | The `[Unreleased]` changelog omits M11-R21: a 30-byte request returned **500** on every release ever cut, and this one fixes it | docs | [x] |
 | [M11-R29](reviews/M11.md#m11-r29) | `iban_length_ok` compares an ISO 13616 **character** length against a **byte** count — latent, held only by `iban_mod97`'s short-circuit | hardening | [x] |
-| [M11-R30](reviews/M11.md#m11-r30) | A value written in the grouping its own issuer prints goes upstream in clear — Amex 4-6-5, Diners 4-6-4, PT NIF, ES DNI, DE/GB VAT — and a 19-digit card is **truncated** to `[CARD_1] 110` | **leak** | [ ] |
-| [M11-R31](reviews/M11.md#m11-r31) | `SEPARATOR-01` exempts 16 of 24 recognizers by construction (a `continue` on any pattern with no gap) and re-renders one positive per pattern, so the *grouping* is never varied and a refusal cannot be recorded | guard | [ ] |
-| [M11-R32](reviews/M11.md#m11-r32) | `ARCHITECTURE.md` still says the separator axis *"is not closed"* and that the patterns spell a literal ASCII space — in the commit that closed it, in the paragraph M11-R26 future-proofed | docs | [ ] |
+| [M11-R30](reviews/M11.md#m11-r30) | A value written in the grouping its own issuer prints goes upstream in clear — Amex 4-6-5, Diners 4-6-4, PT NIF, ES DNI, DE/GB VAT — and a 19-digit card is **truncated** to `[CARD_1] 110` | **leak** | [x] |
+| [M11-R31](reviews/M11.md#m11-r31) | `SEPARATOR-01` exempts 16 of 24 recognizers by construction (a `continue` on any pattern with no gap) and re-renders one positive per pattern, so the *grouping* is never varied and a refusal cannot be recorded | guard | [x] |
+| [M11-R32](reviews/M11.md#m11-r32) | `ARCHITECTURE.md` still says the separator axis *"is not closed"* and that the patterns spell a literal ASCII space — in the commit that closed it, in the paragraph M11-R26 future-proofed | docs | [x] |
 
 <a id="m11-b"></a>
 ### Track B — the intra-op thread base: physical cores, not logical threads ✅
