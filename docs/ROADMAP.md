@@ -2445,9 +2445,19 @@ in a log. Four findings, all on the net, and two of them are Round 1's own closu
 **Round 3 (2026-09-03) went after the one axis no earlier round varies — letter case — and found
 the leak. One finding, in the product.** The `pii_kinds!` macro checks out against the pre-macro
 source; every published rate reproduces; two further net variants were recorded as decided limits
-in [`TESTING.md`](TESTING.md) rather than filed. **[M11-R10](reviews/M11.md#m11-r10) needs a
-maintainer decision before `v1.3.0`** — it is a product-visible coverage change, and the numbers
-to decide on are in the record.
+in [`TESTING.md`](TESTING.md) rather than filed. [M11-R10](reviews/M11.md#m11-r10) was a
+product-visible coverage change, so it went to the maintainer with the numbers; **the call was taken
+2026-09-03 — option 1, fold both families** — and the fix landed in `33eb159`.
+
+**Round 4 (2026-09-04) went after that fix, and it relocated the leak.** `iban_case_gate` gave the
+IBAN recognizer its first *rejecting* validator while it kept `shrink_on_reject: false`, so the
+grouped arm's long-standing over-match into a following short token stopped being an over-mask and
+started being a **dropped span**: `Please wire the deposit to ES91 2100 0418 4502 0005 1332 for the
+invoice` reaches the provider as `ES91 2100 [PHONE_1] 1332 for the invoice`, country code and check
+digits in clear. Proved a regression by rebuilding with the gate neutralised — 0 leaks of 40 before,
+6 after. **[M11-R13](reviews/M11.md#m11-r13) blocks `v1.3.0`.** The four others are the same fix not
+reaching everything that states its rule; the case fold's *false-positive* cost was independently
+re-measured at **0** on 435.6 MB of third-party source, which is the half the closure did measure.
 
 | ID | Title | Sev | Status |
 |---|---|---|---|
@@ -2464,6 +2474,11 @@ to decide on are in the record.
 | [M11-R10](reviews/M11.md#m11-r10) | A lower- or mixed-case IBAN or VAT number is forwarded **in clear** — the structured tier's case axis was never decided | **leak** | [x] |
 | [M11-R11](reviews/M11.md#m11-r11) | `CASE-01` is a hand-written list wearing a chokepoint's doc comment: four letter-bearing recognizers have no answer, and NINO can be made uppercase-only with the suite green | guard | [x] |
 | [M11-R12](reviews/M11.md#m11-r12) | The M11 review record was truncated to a single finding — `M11-R0`…`M11-R9` are gone and all ten ledger links are dead | docs | [x] |
+| [M11-R13](reviews/M11.md#m11-r13) | M11-R10's own fix leaks: `iban_case_gate` rejects the grouped arm's over-match and `shrink_on_reject: false` drops the span, so a real IBAN's country code and check digits go upstream **in clear** | **leak** | [ ] |
+| [M11-R14](reviews/M11.md#m11-r14) | The refuted uppercase-only rationale still stands in three places, two of them still marking M11-R10 *open* and one naming a deleted test | docs | [ ] |
+| [M11-R15](reviews/M11.md#m11-r15) | `vat_grammar_could_match` still states the grammar as `[A-Z]{2}` — the invalidation condition its own doc names, happening in the commit that caused it | guard | [ ] |
+| [M11-R16](reviews/M11.md#m11-r16) | `confidence_of`'s NL case fold — a named half of the M11-R10 fix — is pinned by nothing: un-fold it and the suite is green at 152/0 | guard | [ ] |
+| [M11-R17](reviews/M11.md#m11-r17) | The case-axis decision reached neither `ARCHITECTURE.md`'s invariants nor `CHANGELOG.md`'s `[Unreleased]` — a closed leak the release page will not mention | docs | [ ] |
 
 <a id="m11-b"></a>
 ### Track B — the intra-op thread base: physical cores, not logical threads ✅
