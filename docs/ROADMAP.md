@@ -2534,6 +2534,30 @@ one commit after it was, in the very paragraph M11-R26's closure future-proofed
 that file. Round 8 ran on 253/0/5 and 289/0/22, `fmt` and `clippy -D warnings` clean, and both
 mutations it ran turned the suite red. **No fail-open, no over-mask regression, no raw value in a log.**
 
+**Round 9 (2026-09-05) took round 8's own fix as its target, and it had relocated the leak.** To close
+the 19-digit truncation the card arm gained an **optional 1–3-digit tail**; the tail is greedy,
+`credit_card_valid` rejects the extension it produces about nine times in ten, and `CreditCard` still
+carries `shrink_on_reject: false` — so the rejected span is discarded and no shorter candidate is
+proposed. An ordinary Visa followed by a CVV, a row index or a two-digit column is therefore
+**forwarded in clear**: over 200 generated Luhn-valid cards each followed by a random 1–3-digit token,
+**183 of 200 fail M10-R1's predicate at HEAD** (152 whole value, 31 truncated to a surviving 4–9-digit
+prefix) against **0 of 200 at the commit immediately before the fix** — reproduced through the real
+`.exe` on both wire schemas, with an email in the same request as the control
+([M11-R33](reviews/M11.md#m11-r33)). It is [M11-R13](reviews/M11.md#m11-r13)'s mechanism on a different
+recognizer, and the one-line fix (`shrink_on_reject: true`) measures 0 / 200 and 0 / 380 with the suite
+unchanged at 254 / 0 / 5 — *which is the second half of the finding*: no guard in the repo can tell the
+two builds apart, because `RENDER-01` tests every rendering **alone** and the neighbouring token is the
+one quantity this defect varies. Four further findings, none of them a leak: three of `RENDERING_ANSWERS`'
+24 rows record a published-but-undetected rendering in prose while leaving `not_detected` empty, and the
+audit never checks the two agree ([M11-R34](reviews/M11.md#m11-r34)); the `Ssn` row's recorded reason is
+measurably false — 2 of 4 realistic compact nine-digit SSNs go upstream in clear
+([M11-R35](reviews/M11.md#m11-r35)); the comment above the card recognizer describes the chokepoint arm
+that was deliberately **not** taken, `+24` figure and all ([M11-R36](reviews/M11.md#m11-r36)); and the
+`[Unreleased]` changelog says nothing about the card grouping change, though it fixes a leak and both
+READMEs were rewritten for it ([M11-R37](reviews/M11.md#m11-r37)). Round 9 ran on 254/0/5 twice,
+identical, `fmt` and `clippy --all-targets --all-features -D warnings` clean, and both mutations it ran
+behaved as written down. **No fail-open, no over-mask regression, no raw value in a log.**
+
 | ID | Title | Sev | Status |
 |---|---|---|---|
 | [M11-R0](reviews/M11.md#m11-r0) | `cargo fmt --check` red on `main` across four files the M11 commits touched — CI gates on it, so M11 as committed would fail on push | build | [x] |
@@ -2569,6 +2593,11 @@ mutations it ran turned the suite red. **No fail-open, no over-mask regression, 
 | [M11-R30](reviews/M11.md#m11-r30) | A value written in the grouping its own issuer prints goes upstream in clear — Amex 4-6-5, Diners 4-6-4, PT NIF, ES DNI, DE/GB VAT — and a 19-digit card is **truncated** to `[CARD_1] 110` | **leak** | [x] |
 | [M11-R31](reviews/M11.md#m11-r31) | `SEPARATOR-01` exempts 16 of 24 recognizers by construction (a `continue` on any pattern with no gap) and re-renders one positive per pattern, so the *grouping* is never varied and a refusal cannot be recorded | guard | [x] |
 | [M11-R32](reviews/M11.md#m11-r32) | `ARCHITECTURE.md` still says the separator axis *"is not closed"* and that the patterns spell a literal ASCII space — in the commit that closed it, in the paragraph M11-R26 future-proofed | docs | [x] |
+| [M11-R33](reviews/M11.md#m11-r33) | Round 8's optional 1–3-digit card tail is rejected by Luhn and `shrink_on_reject: false` **drops the span** — a Visa followed by a CVV or a row index goes upstream in clear; 183 of 200 at HEAD against 0 before the fix | **leak** | [ ] |
+| [M11-R34](reviews/M11.md#m11-r34) | Three `RENDERING_ANSWERS` rows record a published-but-undetected rendering in `why` while `not_detected` is empty; the audit never checks the two agree, so `86 095 742 719` is asserted by nothing | guard | [ ] |
+| [M11-R35](reviews/M11.md#m11-r35) | The `Ssn` row's recorded reason is measurably false — the 9-digit national-ID recognizer is mod-11-gated, so 2 of 4 realistic compact SSNs are forwarded in clear | precision | [ ] |
+| [M11-R36](reviews/M11.md#m11-r36) | The comment above the card recognizer describes the chokepoint arm that was deliberately **not** taken — "any grouping or none", "+24 matches", a 34-char bound: all four claims belong to the rejected option | docs | [ ] |
+| [M11-R37](reviews/M11.md#m11-r37) | `CHANGELOG.md`'s `[Unreleased]` says nothing about the card grouping change, though it fixes a leak (Amex/Diners in clear, a 19-digit card truncated) and both READMEs were rewritten for it | docs | [ ] |
 
 <a id="m11-b"></a>
 ### Track B — the intra-op thread base: physical cores, not logical threads ✅

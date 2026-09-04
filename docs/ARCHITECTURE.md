@@ -579,6 +579,23 @@ precision argument. Mechanically that is `shrink_on_reject`, which retries the s
 shorter; the predicate that proves it is *no byte of the value survives masking* (M10-R1), not
 *nothing detectable survives*.
 
+> **The invariant belongs to the *pair*, not to whichever half a commit touches (M11-R33).** M11-R13
+> read as a rule about *adding a validator*, and that is one of the two ways to reach the same state.
+> The other is to widen a **pattern** in front of a validator that has been rejecting all along: the
+> credit-card arm gained an optional trailing group, `credit_card_valid` refuses the longer run it
+> produces about nine times in ten, and with `shrink_on_reject: false` the whole candidate is
+> discarded — a real card followed by a CVV or a row index proposes nothing at all. Identical
+> mechanism, opposite side of the same pair, one commit after the first was written down.
+>
+> So the question to ask of every recognizer is a conjunction of two things the code already
+> knows: **can this pattern match more than the value** (an optional or repeated trailing group),
+> **and can its validator reject?** Where both hold, whatever the validator refuses must still reach
+> the resolver — mechanically, `shrink_on_reject` — and a hand-set boolean is the weakest possible
+> way to record an answer that is derivable from the pattern and from whether `validate` is `Some`.
+> The predicate stays M10-R1's, quantified over the **neighbour** rather than over the rendering:
+> *appending a token that makes the validator refuse must not remove any byte of the value from the
+> output.* See the M11 ledger in [`ROADMAP.md`](ROADMAP.md#m11) for where each recognizer stands.
+
 **Candidate generation must see *overlapping* matches (M4-R17).** `Regex::find_iter` is
 leftmost-**non-overlapping**: after a hit it resumes at the match's *end*. A real value that **starts
 inside** an earlier match of the *same* recognizer is therefore never emitted as a candidate — and an

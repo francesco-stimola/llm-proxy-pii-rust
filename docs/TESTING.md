@@ -459,6 +459,31 @@ two *other* always-on tiers already claim that shape.
   `tests/` or `docs/` — zero hits for `3782`, `378282`, `Diners`, `30569309`. The whole card corpus
   has been two 16-digit Visa numbers in 4-4-4-4 since M1. *A corpus has a shape, and that shape is
   a blind spot.*
+  **Two things it does not yet quantify over, both found the round after it landed (M11-R33 /
+  M11-R34).**
+  1. **The neighbour.** Every rendering is asserted **alone** — `kinds(rendering)` against a
+     one-element vector — so the token *before and after* the value is held constant at "nothing".
+     That is the one quantity a rejecting validator's over-reach varies: append a short numeric token
+     to a card and the pattern's optional tail proposes a longer run, the validator refuses it, and
+     with `shrink_on_reject: false` the value is not merely mis-spanned but **absent from the
+     candidate set**. `IBAN-05` already varies the preceding token for one recognizer; the axis
+     belongs to all of them, with M10-R1's predicate — *no byte of the value survives* — rather than
+     a presence check.
+  2. **`not_detected` versus `why`.** The audit requires `why` and `detected` to be non-empty and
+     stops there, so a row may name a published, undetected rendering in prose and leave the field
+     that would assert it empty. Three rows do. *A field that records a refusal only records it when
+     something forces the two halves to agree.*
+- **"0 added matches" measures a widening and cannot see a narrowing (M11-R33) — the rule that
+  belongs beside every corpus sweep in this file.** Running a recognizer over 341–423 MB of
+  third-party source and comparing match **counts** before and after is the right check for *"does
+  this widening over-mask?"*, and it is how the case fold, the separator class and the card
+  groupings were each cleared. It is structurally blind to the opposite failure: a change that also
+  makes the pattern **stop** proposing something is a *removal*, and the removal shows up only on an
+  input the corpus contains — third-party source has essentially no Luhn-valid card followed by a
+  short numeric token, so a net `998 → 998` was true and said nothing. **Ask which direction the
+  edit moves in; an edit that widens one arm and lengthens another moves in both, and needs a
+  differential over the recognizer's own recorded positives, not a count over somebody else's
+  corpus.**
 - **SEPARATOR-01 (M11-R25) — `every_gap_bearing_recognizer_answers_the_separator_axis`: the third
   meeting of one sentence.** M11-R10 was the letters' case, M11-R21 the digits' script, this is the
   separator between a value's groups — and the sentence is the same each time: *a recognizer and its
