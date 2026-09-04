@@ -526,6 +526,23 @@ repo's corpus reached the provider **in clear**. The rule now has three parts:
   by mod-97 alone (M11-R19). An operator reading this should know the visible consequence — *a lowercase IBAN whose
   mod-97 fails is not masked, while its uppercase twin is.*
 
+**The general rule the case axis is one instance of: a recognizer and its validator must agree on
+the alphabet of every axis.** Three axes carry a value's *rendering* rather than its content — the
+**case** of its letters, the **script** of its digits, and the **separator** between its groups — and
+on each one the pattern decides what is seen while the validator decides what is accepted. Where the
+**validator is more permissive than the pattern, the difference is not slack: it is a set of
+renderings that reach the provider in clear**, because the pattern proposes no candidate at all and
+there is nothing for the resolver or the fixpoint to recover. The case axis (M11-R10) was that gap
+for ten milestones — `iban_mod97`'s doc has said *"letters are folded to uppercase"* since M1 while
+the pattern spelled `[A-Z]`. The digit-script axis is the same shape read the other way (M11-R21):
+`\d` matches `\p{Nd}`, the validators are ASCII-only, and what the mismatch produced was a panic
+rather than a miss. **The separator axis is the third, and it is not closed** — the patterns spell a
+literal ASCII space while `iban_mod97` filters `char::is_whitespace()`; see the M11 ledger in
+[`ROADMAP.md`](ROADMAP.md#m11) for its current status, which is deliberately *not* restated here so
+this paragraph cannot go stale. **When adding or editing a recognizer, ask the three questions
+together**, and record the answers in the registry the guards derive from (`CASE_ANSWERS`) rather
+than in a comment: a hand-written list of the recognizers somebody remembered is what M11-R11 found.
+
 **A validator that rejects must not be able to delete a value (M11-R13).** The corollary, learned
 immediately and the hard way. `iban_case_gate` was added to a recognizer that had previously
 accepted everything, and rejection is not free when a pattern can over-reach: the grouped arm's

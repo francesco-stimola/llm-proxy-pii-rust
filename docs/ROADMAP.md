@@ -2493,6 +2493,24 @@ residue independently (it reproduces), ran 400 000 `mask_all`→`demask` round-t
 and 0 panics, and turned the suite red by removing `shrink_on_reject` and `iban_case_gate`'s
 short-circuit. **No leak in `src/`.**
 
+**Round 7 (2026-09-04) varied the byte between a value's groups, and found the leak the case axis is
+the sibling of.** Every structured pattern spells its intra-value separator as a literal ASCII space
+while every validator behind it is separator-agnostic (`iban_mod97` filters `char::is_whitespace()`),
+so an IBAN, a credit card or a domestic phone number written with **U+00A0** — what a copy from a
+bank page, a PDF or Word produces — reaches the provider byte for byte, proved through the real
+`.exe` with an email in the same sentence masked as the control
+([M11-R25](reviews/M11.md#m11-r25)). Measured at **432 of 1 080** cells, exactly the predicted set,
+and the fix is measured too: widening the separator class adds **0** matches over 341.7 MB of
+third-party source, so unlike the case fold it needs no gate. Not a regression — it predates M11 by
+ten milestones — and no corpus in the repo can express it: there is **not one** non-ASCII space
+character under `tests/` or `src/`. Four further findings are on what rounds 5 and 6 published:
+`ARCHITECTURE.md` still calls M11-R21 *open* and unguarded a round after `UTF8-01` closed it
+([M11-R26](reviews/M11.md#m11-r26)), the `\p{Nd}` rationale is false for all thirteen validated
+recognizers ([M11-R27](reviews/M11.md#m11-r27)), the changelog omits an availability fix an operator
+would want ([M11-R28](reviews/M11.md#m11-r28)), and `iban_length_ok` measures bytes where ISO 13616
+counts characters ([M11-R29](reviews/M11.md#m11-r29)). Round 7 ran on 252/0/5 and 288/0/22, `fmt` and
+`clippy` clean, and turned the suite red on all four M11 fixes it removed.
+
 | ID | Title | Sev | Status |
 |---|---|---|---|
 | [M11-R0](reviews/M11.md#m11-r0) | `cargo fmt --check` red on `main` across four files the M11 commits touched — CI gates on it, so M11 as committed would fail on push | build | [x] |
@@ -2520,6 +2538,11 @@ short-circuit. **No leak in `src/`.**
 | [M11-R22](reviews/M11.md#m11-r22) | *"The shrink cannot admit anything the pre-M11-R10 build did not already admit"* is false in three places: `AB12 cafe babe dead beef` is untouched by v1.2.1 and masked at HEAD, on a prefix no arithmetic ever saw | precision | [x] |
 | [M11-R23](reviews/M11.md#m11-r23) | The glued residue is published as *"yields no candidate"*; for the **grouped** rendering a candidate is produced and up to ten bytes of a real IBAN survive — the maintainer is deciding on the wrong description | precision | [x] |
 | [M11-R24](reviews/M11.md#m11-r24) | The guard-vs-product tally does not reconcile with its own ledger: DEVLOG says 16 + 3 = 19 against 21 rows, and calls the milestone's own open blocker not-in-the-product | docs | [x] |
+| [M11-R25](reviews/M11.md#m11-r25) | A value whose groups are separated by a **non-ASCII space** (U+00A0, U+202F, U+2007, tab) is forwarded in clear — IBAN, card and every phone shape; the separator axis was never decided | **leak** | [ ] |
+| [M11-R26](reviews/M11.md#m11-r26) | `ARCHITECTURE.md` still says *"nothing enforces this yet"* about M11-R21 and links it as **open**, one round after `UTF8-01` closed it | docs | [ ] |
+| [M11-R27](reviews/M11.md#m11-r27) | The rationale for leaving `\d` Unicode is published in three places and is false for all thirteen validated recognizers | precision | [ ] |
+| [M11-R28](reviews/M11.md#m11-r28) | The `[Unreleased]` changelog omits M11-R21: a 30-byte request returned **500** on every release ever cut, and this one fixes it | docs | [ ] |
+| [M11-R29](reviews/M11.md#m11-r29) | `iban_length_ok` compares an ISO 13616 **character** length against a **byte** count — latent, held only by `iban_mod97`'s short-circuit | hardening | [ ] |
 
 <a id="m11-b"></a>
 ### Track B — the intra-op thread base: physical cores, not logical threads ✅
