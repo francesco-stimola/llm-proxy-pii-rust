@@ -263,6 +263,19 @@ false positive): `email`, `phone`, `ssn`, `credit_card`, `iban`, `secret`,
   (7.1x) and the scan from ~590 ms to a 2.1 s median. Both are over-masks, so the direction is safe;
   the cost is availability, and it is [M11-R18](reviews/M11.md#m11-r18)'s subject.
 
+> **Every corpus in this repo is ASCII, and that is the standing blind spot — measured, not supposed
+> (M11-R21).** The case matrix, the leading matrix, `IBAN-05`'s derived countries, `phone_eval`'s
+> pools, the DoS bodies, `CASE-02`'s 300+ MB of third-party Rust and the M7 turn are ASCII end to end.
+> The one deliberate exception, `non_ascii_scripts` (M4-R13), carries non-ASCII **letters around** an
+> ASCII value — never a non-ASCII **digit inside** one, which is what Rust `regex`'s Unicode-aware
+> `\d` actually admits. The residue is not hypothetical: it hid a **panic** on the masking path
+> (`iban_mod97` byte-indexing a compacted string) through every release this project has cut, and
+> reverting that function today still leaves the suite at 250/0/5. Whatever else changes, the shape of
+> the guard is fixed: *`try_detect` panics on no input*, over a generator whose alphabet includes
+> multi-byte `\p{Nd}` — a property, because an example only pins the digit block somebody happened to
+> think of. See [ARCHITECTURE](ARCHITECTURE.md) → *…but `\d` is still Unicode* for the invariant it
+> guards.
+
 > **The IBAN pattern folded case in M11-R10, and the rule that replaced "uppercase-only" is an
 > asymmetry worth knowing.** Until `33eb159` the pattern was `[A-Z]{2}\d{2}[A-Z0-9]{11,30}`, so
 > **one** lowercase letter anywhere dropped the whole span: `it60x0542811101000000123456`, its

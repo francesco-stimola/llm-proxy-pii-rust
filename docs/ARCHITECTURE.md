@@ -478,6 +478,30 @@ anti-false-positive guarantee is preserved **exactly** — an ID still cannot fi
 non-ASCII **letter** as part of a number. (`Email` / `Phone` are anchored by character classes, not
 `\b`, so they were never affected.)
 
+> **…but `\d` is still Unicode, on purpose — so a validator may never index a match by *byte*
+> (M11-R21).** The M4-R13 fix turned Unicode off for `\b` and left it **on** for `\d`, and that
+> asymmetry is right: a digit written `٤`, `๔`, `４` or `𝟒` is a digit, and a recognizer that could not
+> see one would be inert in exactly the scripts M4-R13 was about. The consequence is that **every
+> pattern containing `\d` can hand its validator a match with 2-, 3- or 4-byte characters in it**, and
+> `str` indexing panics on a non-`char` boundary. `iban_mod97` did precisely that — `&compact[..4]`
+> after compacting — from the project's first commit until `831f916`, so `AB𝟎𝟏ABCDEFGHIJK` in a legal
+> `content` field returned **500** on every release up to `v1.2.1`. Fail-*closed* (nothing is
+> forwarded), never a leak — but a 30-byte unauthenticated request that kills its own response is an
+> availability defect, and availability is a privacy property here.
+>
+> **The rule: a validator takes `&str` and must treat it as text.** Iterate `chars()`, or filter to
+> ASCII bytes *before* checking a length and indexing — which is what every other validator in this
+> file already does (`es_dni_nie_valid`, `fr_nir_valid`, `cf_check_valid`, `nl_bsn_valid`,
+> `zh_resident_id_valid`, `de_steuerid_valid` all reject a multi-byte character by returning `false`,
+> never by indexing). A byte length is not a character count, and a `.len()` gate in front of a byte
+> slice only looks like a guard.
+>
+> **Nothing enforces this yet** — reverting `iban_mod97` to its pre-`831f916` body leaves the whole
+> suite green, because every corpus in the repo is ASCII (the `non_ascii_scripts` cases carry
+> non-ASCII *letters* around ASCII values, never a non-ASCII *digit inside* one). The chokepoint is a
+> property test — *`try_detect` panics on no input* — over a generator whose alphabet includes
+> multi-byte `\p{Nd}`; see [M11-R21](reviews/M11.md#m11-r21), open.
+
 **Every letter-bearing recognizer carries a *decided* answer on letter case (M11-R10).** This is
 the ASCII-word-boundary rule's sibling, and it went undecided for ten milestones. The patterns above
 spell their letters themselves, so *how a value is capitalised* is a coverage decision — and it had

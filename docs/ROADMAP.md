@@ -2475,6 +2475,24 @@ escalated to the maintainer is scoped to *lowercase* when the canonical uppercas
 claims a release should not carry unrevised. Which of R18's four options to take is the maintainer's,
 per `CLAUDE.md`: every one of them is product-visible.
 
+**Round 6 (2026-09-04) varied the one thing every M11 corpus had held constant — the alphabet — and
+found a panic that predates the milestone by ten of them.** Rust `regex`'s `\d` is Unicode-aware
+(M4-R13 turned Unicode off for `\b`, not for `\d`), so an IBAN candidate can carry a multi-byte
+decimal digit, and `iban_mod97` byte-sliced its compacted string at index 4: **`AB𝟎𝟏ABCDEFGHIJK`
+inside a legal `content` field returns 500 with nothing forwarded**, reproduced through the real
+`v1.2.1` `.exe`, and the pattern is byte-identical at every tag ever cut
+([M11-R21](reviews/M11.md#m11-r21)). It is **already fixed at HEAD** — as an unremarked side effect of
+`831f916`'s allocation-free rewrite, whose own differential proof ran on ASCII groups and so could not
+see it; reverting that function leaves the suite at 250/0/5. Two more are invariants stated as the
+opposite of what the code does: the shrink *can* admit a span the pre-M11-R10 build could not
+([M11-R22](reviews/M11.md#m11-r22)), and the glued residue handed to the maintainer as *"yields no
+candidate"* actually leaves up to ten bytes of a real IBAN in clear for the **grouped** rendering
+([M11-R23](reviews/M11.md#m11-r23)) — neither a regression, both verified byte-for-byte against
+v1.2.1. Round 6 ran on 250/0/5 and 286/0/22, `fmt` and `clippy` clean; it re-measured M11-R19's
+residue independently (it reproduces), ran 400 000 `mask_all`→`demask` round-trips with 0 mismatches
+and 0 panics, and turned the suite red by removing `shrink_on_reject` and `iban_case_gate`'s
+short-circuit. **No leak in `src/`.**
+
 | ID | Title | Sev | Status |
 |---|---|---|---|
 | [M11-R0](reviews/M11.md#m11-r0) | `cargo fmt --check` red on `main` across four files the M11 commits touched — CI gates on it, so M11 as committed would fail on push | build | [x] |
@@ -2498,6 +2516,10 @@ per `CLAUDE.md`: every one of them is product-visible.
 | [M11-R18](reviews/M11.md#m11-r18) | M11-R13's fix runs a `free` (unbudgeted) validator up to 8x per rejected match: a legal 14.6 MiB request costs 8–10 s against a published ceiling of ~3 s, and no DoS guard varies this alphabet | hardening | [ ] |
 | [M11-R19](reviews/M11.md#m11-r19) | `iban_case_gate`'s residue is published as **0** in five places; measured on 304.9 MB it is **1 of 936**, and the survivor is a real over-mask | precision | [x] |
 | [M11-R20](reviews/M11.md#m11-r20) | The residue escalated to the maintainer is scoped to *lowercase*; a canonical uppercase IBAN glued to a lowercase token has the identical fate | docs | [x] |
+| [M11-R21](reviews/M11.md#m11-r21) | A Unicode decimal digit in an IBAN candidate **panicked** `iban_mod97` — 500 on a 30-byte legal request in **every release ever cut**; fixed at HEAD as an undocumented side effect, and the suite is green with the fix reverted | hardening | [ ] |
+| [M11-R22](reviews/M11.md#m11-r22) | *"The shrink cannot admit anything the pre-M11-R10 build did not already admit"* is false in three places: `AB12 cafe babe dead beef` is untouched by v1.2.1 and masked at HEAD, on a prefix no arithmetic ever saw | precision | [ ] |
+| [M11-R23](reviews/M11.md#m11-r23) | The glued residue is published as *"yields no candidate"*; for the **grouped** rendering a candidate is produced and up to ten bytes of a real IBAN survive — the maintainer is deciding on the wrong description | precision | [ ] |
+| [M11-R24](reviews/M11.md#m11-r24) | The guard-vs-product tally does not reconcile with its own ledger: DEVLOG says 16 + 3 = 19 against 21 rows, and calls the milestone's own open blocker not-in-the-product | docs | [ ] |
 
 <a id="m11-b"></a>
 ### Track B — the intra-op thread base: physical cores, not logical threads ✅
