@@ -620,6 +620,40 @@ two *other* always-on tiers already claim that shape.
   a third time, now on the alphabet. When it is widened, non-vacuity must assert that the alphabet
   actually varied contains a **non-whitespace** member, or the widened guard can silently narrow
   back. Status lives in the ledger in [`ROADMAP.md`](ROADMAP.md#m11), not here.
+  **A guard has three separate decisions — scope, alphabet and cardinality — and this one inherited
+  the third (M11-R51 / M11-R53).** The matrix is
+  `answer.positive.replace(' ', &separator.to_string())` and `separator` is a **`char`**, so every
+  string this guard will ever evaluate is exactly as long as the positive it came from: it cannot
+  express *"and the same value written with two spaces between its groups"*. That is not a gap in
+  the alphabet — it is a gap in the **cardinality**, and it is where the axis was still leaking after
+  M11-R25 closed it, after M11-R48 corrected its alphabet and after M11-R49 made that alphabet
+  per-recognizer. Measured: **all ten** `SEPARATOR_ANSWERS` positives are forwarded in clear when
+  their separator is doubled, using only characters their own row already declares; for the phone
+  tier that is 0.923 of international and 1.000 of domestic renderings over 13 000 valid numbers.
+  Proved from inside the suite rather than argued: change the substitution to
+  `&format!(" {separator} ")` and the guard goes **red on the first row it evaluates** — IBAN, U+0009
+  — before it reaches a phone at all. **So the matrix must render each positive with a single member,
+  a doubled member and a mixed pair from its own alphabet**, and the non-vacuity check must assert
+  that a multi-character run was actually produced, or the widened guard can silently narrow back the
+  way the alphabet did.
+  **Its sibling defect is on the other registry, and it is why the limit could not even be written
+  down.** `RENDER-01`'s prose-to-list audit only asks about a token `looks_like_a_rendering` accepts,
+  and that filter's alphabet is `[A-Za-z0-9 +-]` — so `.`, `/`, `(` and `)` cannot bind. Quoting
+  `+49 (0)30 12345678` in the `+CC` row's `why` leaves the **full suite green at 255/0/5**, while
+  `+44 7911 123456` in the identical position turns it red: same field, same audit, one character's
+  difference. This is M11-R44 with the fix having added the one character *that* finding needed
+  (`+`) and no more, and the consequence is structural — a row whose `not_detected` is empty is
+  asserting a completeness the registry has **no way to contradict**. The filter's alphabet must be
+  **derived from the union of the recorded separator alphabets**, and its own matrix must carry a
+  `true` row per member, so it can never again be narrower than the code it is asked about.
+  **And a third mutation says what none of the above is watching.** Removing `/` from
+  `PHONE_SEPARATORS` **and** from `PHONE_ALPHABET` — the two sites one narrowing commit would touch —
+  leaves the suite **green at 255/0/5**: nothing in this repository asserts *behaviourally* that
+  `+39.347.1234567` or `+49 30/12345678` is masked. `RENDERING_ANSWERS` is the registry that does
+  assert behaviour (`detected` must be one span covering the whole value), and the `+CC` row's
+  `detected` list carries no punctuated rendering — because the filter above makes it unwritable.
+  *A decision recorded in two lists that only check each other is bookkeeping; it becomes a guard the
+  moment one of them is a behaviour.*
 - **SHRINK-01 (M11-R22) — `a_shrunk_span_is_still_a_match_of_its_own_pattern`: the shrink must not
   widen what a recognizer can emit.** `shrink_on_reject` (the M11-R13 fix) was justified by an
   argument about the *validator's verdict on a prefix*, and on that set the argument holds. It

@@ -603,6 +603,37 @@ with a no-break space went upstream in clear.
 > named for is unguarded. Which recognizers currently answer which alphabet is a status, so it lives
 > in the ledger in [`ROADMAP.md`](ROADMAP.md#m11) and is deliberately not restated here.
 
+> **An alphabet has a *cardinality*, and deciding the alphabet is not deciding the cardinality
+> (M11-R51 / M11-R52).** The same sentence one level further down, and the third time this axis has
+> been "closed". Every gap-bearing pattern here spells its separator as **exactly one** character —
+> `{GAP}`, `{PGAP}`, `(?:-|{GAP})`, `(?:[.-]|{GAP})` — while every validator behind them normalises a
+> **run**: `phonenumber::parse` discards each ignorable character independently, and `iban_mod97`
+> filters `char::is_whitespace()` over the whole string. So the pattern is again strictly narrower
+> than its validator, and the difference is again a set of renderings that reach the provider in
+> clear. **The sharpest proof needs no new character at all: `+39 347 1234567` is masked and
+> `+39  347  1234567` — two ASCII spaces — is not.** Measured on 13 000 libphonenumber-confirmed
+> numbers: international renderings **0.923**, domestic **1.000**; `030 / 12345678`, the ordinary
+> German business rendering, is forwarded whole.
+>
+> The same question asked about *shape* rather than count gives the second half: a separator may
+> **bracket** a group instead of sitting between two. `PHONE_SEPARATORS`' own doc names `(` and `)`
+> among what `phonenumber::parse` discards and the constant omits them, so `+49 (0)30 12345678`
+> (**0.714**) and `(020) 7946 0958` (**0.923**) are forwarded — while `+1 (415) 555-2671` is masked,
+> because the universal US arm is the one recognizer of the four that spells `\(\d{3}\)`. **The
+> repository holds the answer and three of the four recognizers do not have it**, which is the
+> hand-spelled-alphabet contradiction above, one round on.
+>
+> **The rule, stated so the next axis does not need a fourth round: an axis is not decided until its
+> alphabet, its cardinality and its shape are.** Derive all three from the validator's normalisation
+> rather than enumerating them — a class that a validator *ignores* is accepted in any quantity and
+> in any position, so a pattern that spells it once has answered a different question. Widening the
+> repetition carries the two obligations this file already states: the **shrink**
+> ([M11-R13](reviews/M11.md#m11-r13) / [M11-R33](reviews/M11.md#m11-r33), below) because a repetition
+> widens the greedy reach, and a **bound** (`{1,3}`, not `+`)
+> because M4-R19's O(n · L) argument and the phone budget's accounting both rest on every pattern
+> having a bounded longest match. Which recognizers currently answer which cardinality is a status,
+> so it lives in the ledger in [`ROADMAP.md`](ROADMAP.md#m11) and is deliberately not restated here.
+
 **And a rendering has two coordinates, which is the fourth question (M11-R30).** *Which character*
 sits between a value's groups is one; *where the groups fall* is the other, and closing the first
 left the second open — Amex's own `3782 822463 10005` was forwarded while the same digits compact

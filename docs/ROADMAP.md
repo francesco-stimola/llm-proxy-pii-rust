@@ -2653,6 +2653,28 @@ round-12 commit and false in it, the third consecutive round that cell overstate
 **red in disguise** that is recorded because it would have closed the question falsely. **No fail-open,
 no new over-mask class, and no raw value in a log.**
 
+**Round 14 (2026-09-05) asked what rounds 11–13 held constant, and it was the separator's *length*.**
+Round 13's fix re-measures **0 / 13 000** at HEAD in all six format renderings, `Mode::Rfc3966` and the
+dot and slash forms included — genuinely closed. But every gap-bearing pattern in the repository spells
+its separator as **exactly one character** while every validator behind it normalises a *run*, so
+`+39 347 1234567` is masked and `+39  347  1234567` — two ASCII spaces, nothing the code does not
+already accept — is forwarded: **0.923** international, **1.000** domestic, and all ten
+`SEPARATOR_ANSWERS` positives leak on a doubled separator
+([M11-R51](reviews/M11.md#m11-r51)). The second half is the two characters `PHONE_SEPARATORS`' own doc
+comment names and the constant omits: `+49 (0)30 12345678` at **0.714**, `(020) 7946 0958` at **0.923**
+([M11-R52](reviews/M11.md#m11-r52)) — while `+1 (415) 555-2671` is masked, because the US arm is the one
+recognizer of the four that knows about parentheses. **Both are misses, not truncations** — 0 of 65 000
+renderings had part of a value masked and the rest forwarded. Neither is a regression; what round 13
+changed is the claim. The guards can express neither coordinate: the matrix is a 1:1 character
+substitution, `looks_like_a_rendering` rejects `.` `/` `(` `)`, and deleting `/` from the shipped `+CC`
+class at both its sites is **green at 255/0/5** ([M11-R53](reviews/M11.md#m11-r53)) — M11-R31 / R40 / R49
+a fourth time. And the round-13 closure did not reach the docs
+([M11-R54](reviews/M11.md#m11-r54)): `TESTING.md` publishes a mutation that is now **red**,
+`ARCHITECTURE.md` still says *"any grouping"*, and the README `+CC` coverage cell is on its fourth round.
+Round 14 ran on 255/0/5 twice and 291/0/22, `fmt` and `clippy --all-targets --all-features -- -D
+warnings` clean; six mutations, four red, **two green** (both findings), each restored from the `HEAD`
+blob with the sha256 re-compared. **No fail-open, no new over-mask class, no raw value in a log.**
+
 | ID | Title | Sev | Status |
 |---|---|---|---|
 | [M11-R0](reviews/M11.md#m11-r0) | `cargo fmt --check` red on `main` across four files the M11 commits touched — CI gates on it, so M11 as committed would fail on push | build | [x] |
@@ -2706,6 +2728,10 @@ no new over-mask class, and no raw value in a log.**
 | [M11-R48](reviews/M11.md#m11-r48) | A `+CC` phone written with `-`, `.` or `/` between its groups goes upstream **in clear** — `Mode::Rfc3966`, the hyphenated format mode no round sampled, leaks **0.385** of 13 000 valid numbers and the dot rendering **0.846**; the arm spells `{GAP}` while its own validator normalises punctuation away | **leak** | [x] |
 | [M11-R49](reviews/M11.md#m11-r49) | `SEPARATOR-01` takes both its scope and its matrix alphabet from `GAP_CHARS`, so the `-`/`.` half of the axis is unguarded: hyphen support can be deleted from a shipped recognizer with the suite green at 255/0/5 | guard | [x] |
 | [M11-R50](reviews/M11.md#m11-r50) | Both READMEs and `ARCHITECTURE.md` claim *"every `+CC` rendering — any grouping"*, written in the round-12 commit and false in it — third consecutive round the `+CC` coverage cell overstates | precision/docs | [x] |
+| [M11-R51](reviews/M11.md#m11-r51) | A phone number whose groups are separated by **more than one** character is forwarded in clear — `+39  347  1234567` (two ASCII spaces) at 0.923 international, 1.000 domestic; every gap-bearing pattern spells one character while its validator normalises a run | **leak** | [ ] |
+| [M11-R52](reviews/M11.md#m11-r52) | A parenthesised phone rendering goes upstream in clear — `+49 (0)30 12345678` **0.714**, `(020) 7946 0958` **0.923**; `(` and `)` are named in `PHONE_SEPARATORS`' own doc comment and absent from the constant | **leak** | [ ] |
+| [M11-R53](reviews/M11.md#m11-r53) | The separator guards can express neither coordinate: `SEPARATOR-01`'s matrix is a 1:1 char substitution, `looks_like_a_rendering` rejects `.` `/` `(` `)`, and deleting `/` from the shipped `+CC` class at both its sites is green at 255/0/5 | guard | [ ] |
+| [M11-R54](reviews/M11.md#m11-r54) | Round 13's closure did not reach the docs: `TESTING.md` publishes a mutation that is now **red**, `ARCHITECTURE.md` still says *"any grouping"*, and the README `+CC` coverage cell is on its fourth round | docs | [ ] |
 
 <a id="m11-b"></a>
 ### Track B — the intra-op thread base: physical cores, not logical threads ✅
