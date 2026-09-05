@@ -2583,6 +2583,33 @@ found **no live defect** behind that exemption. Round 10 ran on 254/0/5 twice an
 hypothesis** (the card shrink is not a measurable cost) and one of which was refused by the
 non-empty-substitution check before it could report a false green.
 
+**Round 11 (2026-09-05) asked [M11-R30](reviews/M11.md#m11-r30)'s question one level up — of the
+*value* rather than of the recognizer — and found the leak underneath it.** `RENDERING_ANSWERS` is
+keyed on `(kind, pattern)`, one row per recognizer; `Phone` is the only kind served by **two**
+families, and a phone number is published in a domestic *and* an international rendering. Only the
+domestic half was ever measured. The international half is two hand-enumerated groupings with **no
+validator and no right anchor**, so over 13 000 generated numbers that libphonenumber itself confirms
+valid, rendered in its own three canonical modes: **E.164 compact leaks 11 934 of 13 000 (0.918)**,
+the spaced international form 2 000 of 13 000 (0.154), and the national form **0** — the always-on
+"universal" tier misses 92% of its values in the rendering every API payload and `tel:` URI uses,
+while the tier the README calls FP-prone and narrowable has no gap at all. Some shapes are worse than
+missed: `+55 11 91234 5678` comes back `[PHONE_1] 5678`, four digits of a real mobile in clear
+([M11-R41](reviews/M11.md#m11-r41)). Proved through the real `.exe` on five renderings with an email
+in the same sentence as the control; **not a regression** — the two arms are byte-identical at every
+tag ever cut, and no corpus in the repo can express it (of 35 phone positives, **not one** is E.164).
+The fix is a chokepoint rather than a third grouping — `phonenumber::parse(None, ..)` needs no region
+hint for a `+CC` number, and is measured at **83 masked spans against today's 5** over 358.4 MB of
+third-party source, **all 83 real phone numbers**; without the validator the same arm masks 273,
+including expanded-year ISO dates. It is product-visible, so the gate-vs-confidence call is the
+maintainer's. The second finding is the sentence that would have made a reader look: the README's
+coverage table credits the `+CC` and US arms with a numbering-plan check they do not run
+([M11-R42](reviews/M11.md#m11-r42)) — `+99 999 999 9999` is masked, and `555-867-5309`, the repo's
+own `PHONE-01`, is `is_valid`-false. Round 11 ran on 254/0/5 twice and 290/0/22, `fmt` and
+`clippy --all-targets --all-features -D warnings` clean, and **could not break rounds 7-10's fixes**:
+1 360 800 card cells and 26 880 corpus cells across six separator characters and both neighbours came
+back **0 leaks, 0 round-trip breaks**. All three mutations turned red.
+
+
 | ID | Title | Sev | Status |
 |---|---|---|---|
 | [M11-R0](reviews/M11.md#m11-r0) | `cargo fmt --check` red on `main` across four files the M11 commits touched — CI gates on it, so M11 as committed would fail on push | build | [x] |
@@ -2626,6 +2653,8 @@ non-empty-substitution check before it could report a false green.
 | [M11-R38](reviews/M11.md#m11-r38) | The budget's published ceiling multiplies its count by the **cheapest** verdict: 500,000 units cost ~1.7 s on accepting traffic and **13–15 s** on a zero-padded id column, which the real `.exe` refuses only after **14.6 s** | hardening | [ ] |
 | [M11-R39](reviews/M11.md#m11-r39) | `DOS-BUD` varies rendering, layout and size but never the **verdict** — every row is built from valid numbers, so the grid samples only the branch `.any()` short-circuits on | guard | [x] |
 | [M11-R40](reviews/M11.md#m11-r40) | `UTF8-01` inherits `CASE_ANSWERS`' letter-bearing scope, so 12 of 24 recognizers — the digit-only half — are outside the digit-script guard; `ARCHITECTURE.md` claims the opposite | guard | [x] |
+| [M11-R41](reviews/M11.md#m11-r41) | A phone number in its **international** rendering goes upstream in clear — E.164 **0.918**, spaced **0.154**, national 0.000 — or is *truncated* (`+55 11 91234 5678` -> `[PHONE_1] 5678`); the `+CC` family is two hand-written groupings with no validator and no right anchor | **leak** | [ ] |
+| [M11-R42](reviews/M11.md#m11-r42) | The README coverage table credits the `+CC` and US phone arms with the numbering-plan check they do not run — `+99 999 999 9999` is masked, and `555-867-5309` is `is_valid`-false | precision/docs | [ ] |
 
 <a id="m11-b"></a>
 ### Track B — the intra-op thread base: physical cores, not logical threads ✅

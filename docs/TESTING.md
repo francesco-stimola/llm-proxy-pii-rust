@@ -503,6 +503,21 @@ two *other* always-on tiers already claim that shape.
      stops there, so a row may name a published, undetected rendering in prose and leave the field
      that would assert it empty. Three rows do. *A field that records a refusal only records it when
      something forces the two halves to agree.*
+  3. **The *value*, as opposed to the recognizer that owns one of its forms (M11-R41).** The registry
+     is keyed on `(kind, pattern)` — one row per **recognizer** — and the audit checks that every
+     recognizer has a row and every row a recognizer. Neither question is *"is every rendering of this
+     **value** owned by some row?"*, and `Phone` is the kind where the difference bites: it is served
+     by **two** families, the universal `+CC`/US arms and the nine domestic ones, and a phone number
+     is published domestically **and** internationally. The universal row records one `+CC` rendering
+     and says in `why` *"the US 3-3-4 renderings and the `+CC` arm"* — locally true, and it reads as
+     an answer about the **value**. The domestic rows answer for the domestic renderings. Nothing owns
+     E.164, so nothing noticed that **0.918 of 13 000 generated valid numbers reach the provider in
+     clear** in the form every API payload and `tel:` URI uses, against **0.000** for the same numbers
+     written domestically. Adding `"+393330000001"` to the universal row's `detected` turns this
+     guard red at once — *it was never asked the question*, which is the failure mode a registry has
+     instead of a blind spot: **an unasked question looks exactly like an answered one.** Where a kind
+     has more than one recognizer, the rendering space must be **partitioned** across their rows, and
+     the audit should be able to say which row owns which rendering.
 - **"0 added matches" measures a widening and cannot see a narrowing (M11-R33) — the rule that
   belongs beside every corpus sweep in this file.** Running a recognizer over 341–423 MB of
   third-party source and comparing match **counts** before and after is the right check for *"does

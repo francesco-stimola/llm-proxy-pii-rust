@@ -595,6 +595,30 @@ so this paragraph cannot go stale — a clause that failed three rounds running 
 M11-R32) because the sentence beside it still asserted one. **A status is a fact about today; put it
 in the ledger and link it, never in prose.**
 
+> **And the four questions are asked of the *kind*, not of the recognizer that happens to own one of
+> its forms (M11-R41).** `RENDERING_ANSWERS` is keyed on `(kind, pattern)` — one row per
+> **recognizer** — which is right while a kind has one. `Phone` has **two** families: the universal
+> `+CC`/US arms and the nine domestic ones. A phone number is published domestically *and*
+> internationally, and the two rows split that space between them without ever saying so: each was
+> locally true, and their **union had a hole**. The universal row's `why` says *"the US 3-3-4
+> renderings and the `+CC` arm"* — a sentence that reads as an answer about the `+CC` **value**
+> while being an answer about the **arm** — and no row was responsible for the value, so the missing
+> rendering had nowhere to be missing from. Measured, E.164 (`+393471234567`, the form every API
+> payload and `tel:` URI uses) reached the provider in clear for **0.918** of 13 000 generated valid
+> numbers, against **0.000** for the same numbers written domestically.
+>
+> **The rule: a value's published renderings belong to the value.** Where one kind is served by more
+> than one recognizer, every rendering must be owned by **exactly one** row, and no row may answer for
+> a rendering it does not carry. The M11 ledger in [`ROADMAP.md`](ROADMAP.md#m11) carries where that
+> stands.
+>
+> Its corollary is about validators rather than patterns: **the strongest check available should reach
+> the easiest case first.** The nine domestic families need a region hint and a loose candidate, and
+> they got `phonenumber::is_valid()`; the `+CC` form carries its own country code, so
+> `parse(None, ..)` is decisive for it with no hint at all — and it is the one phone family with **no
+> validator whatsoever**. When a tier's hardest case is validated and its easiest is not, that is a
+> sign the seam was drawn around the code that was being written rather than around the question.
+
 **A validator that rejects must not be able to delete a value (M11-R13).** The corollary, learned
 immediately and the hard way. `iban_case_gate` was added to a recognizer that had previously
 accepted everything, and rejection is not free when a pattern can over-reach: the grouped arm's
