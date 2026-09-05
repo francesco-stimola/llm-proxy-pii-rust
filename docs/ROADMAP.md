@@ -2432,6 +2432,23 @@ nothing:
 
 ### Review ledger — M11 → [`reviews/M11.md`](reviews/M11.md)
 
+> **Where the loop stands after 15 rounds (2026-09-05).** 60 findings; **six were leaks**, every one
+> in the *deterministic* tier and every one a rendering the recognizers could not match while their
+> validators could. **Round 15 is the first to find no leak**, and it verified round 14's fix
+> differentially (3 150 renderings: 0 new leaks, 1 270 newly masked).
+>
+> **The loop has not closed empty, and three findings are open — all three are yours, not the
+> builder's:** [M11-R18](reviews/M11.md#m11-r18) and [M11-R38](reviews/M11.md#m11-r38) are one
+> decision about the budget's unit in two rows, and [M11-R55](reviews/M11.md#m11-r55) is the
+> over-mask that round 14's leak-fix bought. Each carries measured options in the record.
+> Coverage questions recorded beside them, with numbers: R23, R27, R30, R35, R48.
+>
+> **The sentence this milestone is about, met eight times:** *a recognizer and its validator must
+> agree on the alphabet of every axis* — case, digit script, separator character, separator
+> alphabet, separator cardinality, separator set, and the rendering axis' two coordinates. Three
+> registries now answer it, one per axis, all derived from `shipped_patterns()`.
+
+
 **This milestone reached code-complete with zero review rounds** — the code landed 2026-09-02, the
 builder→reviewer loop rules landed 2026-09-03 (`01fbadd`). The loop opened after the fact, and R0 is the
 builder's own pass rather than a round. **Round 1 (2026-09-03) is the first independent one: no leak,
