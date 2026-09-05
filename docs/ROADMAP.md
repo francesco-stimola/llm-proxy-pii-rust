@@ -2432,16 +2432,28 @@ nothing:
 
 ### Review ledger — M11 → [`reviews/M11.md`](reviews/M11.md)
 
-> **Where the loop stands after 15 rounds (2026-09-05).** 60 findings; **six were leaks**, every one
-> in the *deterministic* tier and every one a rendering the recognizers could not match while their
-> validators could. **Round 15 is the first to find no leak**, and it verified round 14's fix
+> **Where the loop stands (2026-09-06).** 60 findings; **six were leaks**, every one in the
+> *deterministic* tier and every one a rendering the recognizers could not match while their
+> validators could. **Round 15 was the first to find no leak**, and it verified round 14's fix
 > differentially (3 150 renderings: 0 new leaks, 1 270 newly masked).
 >
-> **The loop has not closed empty, and three findings are open — all three are yours, not the
-> builder's:** [M11-R18](reviews/M11.md#m11-r18) and [M11-R38](reviews/M11.md#m11-r38) are one
-> decision about the budget's unit in two rows, and [M11-R55](reviews/M11.md#m11-r55) is the
-> over-mask that round 14's leak-fix bought. Each carries measured options in the record.
-> Coverage questions recorded beside them, with numbers: R23, R27, R30, R35, R48.
+> **All 60 rows are closed**, and the last three were the maintainer's to decide rather than the
+> builder's:
+> - [M11-R55](reviews/M11.md#m11-r55) — **accepted and published.** The over-mask round 14's
+>   leak-fix bought is the trade this tier now makes on purpose: both alternatives cost a leak, and
+>   an over-mask is restored byte-identically where a miss is not. `phone_eval` stopped being
+>   `#[ignore]`d and its output *is* the published table; `PHONE-OM` gained a command-output fixture
+>   whose expectation is the measured span set.
+> - [M11-R18](reviews/M11.md#m11-r18) + [M11-R38](reviews/M11.md#m11-r38) — **one decision about
+>   what the allowance is a count of.** `iban_case_gate` is charged, so the third CPU term is inside
+>   the budget; and the ceiling is republished as the measured band, stated on the worst shape
+>   (~0.6 s to ~8.5 s of validation for 500 000 units) rather than on the cheapest. R38's stated
+>   mechanism — *a rejection costs more* — did not survive measurement and the record says so: the
+>   spread is the candidate's **shape**, not its verdict.
+>
+> Coverage questions recorded beside their findings, with numbers: R23, R27, R30, R35, R48. Two
+> behaviour changes for anyone upgrading are named in `CHANGELOG.md` → `### Changed`: the over-mask
+> above, and Track B's halved NER thread count.
 >
 > **The sentence this milestone is about, met eight times:** *a recognizer and its validator must
 > agree on the alphabet of every axis* — case, digit script, separator character, separator
@@ -2717,6 +2729,27 @@ mutation: green alone, red against the narrowing. And the round's published cost
 findings, two of them the proposed fixes proving free), each restored from the `HEAD` blob with the
 sha256 re-compared and `git status` asserted empty. **No leak, no fail-open, no raw value in a log.**
 
+**The three decisions the maintainer took (2026-09-06), and what they cost to implement.**
+[M11-R55](reviews/M11.md#m11-r55) is **accepted and published**: no recognizer changes, so R48, R51
+and R52 stay whole and no leak re-opens. `phone_eval`'s precision test is no longer `#[ignore]`d and
+its output *is* the block `ARCHITECTURE.md` publishes — asserted byte for byte on every `cargo test`,
+which is what a hand-transcribed table could not be; the pool gained `ips`, `ips10`, `ips192`,
+`ips172` and `aligned`; and `PHONE-OM-TOOL` pins **11** spans over a turn of `ls -l`, `df -h`, a
+`psql` result and journal lines, so narrowing *and* widening are both red.
+[M11-R18](reviews/M11.md#m11-r18) charges `iban_case_gate` on its arithmetic branch — 708 648 calls
+on one 4 MiB field were charged nothing — with `DOS-10` asserting the term is inside the count and
+turning red at 0 units when the gate goes back inside `free()`.
+[M11-R38](reviews/M11.md#m11-r38) republishes the ceiling as the measured band, **and reports that
+its own stated mechanism does not survive measurement**: the rejecting column is *cheaper* per unit
+than the accepting one (2.9–3.5 against 3.2–4.3 µs), and the 9× spread belongs to the candidate's
+**shape** (a three-group key column measures 15.1–21.7). `DOS-BUD` now prints µs/unit beside ms/row,
+which is what tells "more units" from "dearer units" apart.
+[M11-R58](reviews/M11.md#m11-r58)'s disagreement is closed the same way: measured against `ed5214b`
+in a worktree, the delta is **+9 000 units flat** at three row counts and on both shapes, so
+*"+22% per row"* and *"8.00 on both builds"* are one constant divided by two different row counts —
+and deleting the body's `NNN.50` money column at HEAD reproduces the old figure exactly. `cargo test`
+258/0/4; `fmt` and both `clippy` passes clean.
+
 | ID | Title | Sev | Status |
 |---|---|---|---|
 | [M11-R0](reviews/M11.md#m11-r0) | `cargo fmt --check` red on `main` across four files the M11 commits touched — CI gates on it, so M11 as committed would fail on push | build | [x] |
@@ -2737,7 +2770,7 @@ sha256 re-compared and `git status` asserted empty. **No leak, no fail-open, no 
 | [M11-R15](reviews/M11.md#m11-r15) | `vat_grammar_could_match` still states the grammar as `[A-Z]{2}` — the invalidation condition its own doc names, happening in the commit that caused it | guard | [x] |
 | [M11-R16](reviews/M11.md#m11-r16) | `confidence_of`'s NL case fold — a named half of the M11-R10 fix — is pinned by nothing: un-fold it and the suite is green at 152/0 | guard | [x] |
 | [M11-R17](reviews/M11.md#m11-r17) | The case-axis decision reached neither `ARCHITECTURE.md`'s invariants nor `CHANGELOG.md`'s `[Unreleased]` — a closed leak the release page will not mention | docs | [x] |
-| [M11-R18](reviews/M11.md#m11-r18) | M11-R13's fix runs a `free` (unbudgeted) validator up to 8x per rejected match: a legal 14.6 MiB request costs 8–10 s against a published ceiling of ~3 s, and no DoS guard varies this alphabet | hardening | [ ] |
+| [M11-R18](reviews/M11.md#m11-r18) | M11-R13's fix runs a `free` (unbudgeted) validator up to 8x per rejected match: a legal 14.6 MiB request costs 8–10 s against a published ceiling of ~3 s, and no DoS guard varies this alphabet | hardening | [x] |
 | [M11-R19](reviews/M11.md#m11-r19) | `iban_case_gate`'s residue is published as **0** in five places; measured on 304.9 MB it is **1 of 936**, and the survivor is a real over-mask | precision | [x] |
 | [M11-R20](reviews/M11.md#m11-r20) | The residue escalated to the maintainer is scoped to *lowercase*; a canonical uppercase IBAN glued to a lowercase token has the identical fate | docs | [x] |
 | [M11-R21](reviews/M11.md#m11-r21) | A Unicode decimal digit in an IBAN candidate **panicked** `iban_mod97` — 500 on a 30-byte legal request in **every release ever cut**; fixed at HEAD as an undocumented side effect, and the suite is green with the fix reverted | hardening | [x] |
@@ -2757,7 +2790,7 @@ sha256 re-compared and `git status` asserted empty. **No leak, no fail-open, no 
 | [M11-R35](reviews/M11.md#m11-r35) | The `Ssn` row's recorded reason is measurably false — the 9-digit national-ID recognizer is mod-11-gated, so 2 of 4 realistic compact SSNs are forwarded in clear | precision | [x] |
 | [M11-R36](reviews/M11.md#m11-r36) | The comment above the card recognizer describes the chokepoint arm that was deliberately **not** taken — "any grouping or none", "+24 matches", a 34-char bound: all four claims belong to the rejected option | docs | [x] |
 | [M11-R37](reviews/M11.md#m11-r37) | `CHANGELOG.md`'s `[Unreleased]` says nothing about the card grouping change, though it fixes a leak (Amex/Diners in clear, a 19-digit card truncated) and both READMEs were rewritten for it | docs | [x] |
-| [M11-R38](reviews/M11.md#m11-r38) | The budget's published ceiling multiplies its count by the **cheapest** verdict: 500,000 units cost ~1.7 s on accepting traffic and **13–15 s** on a zero-padded id column, which the real `.exe` refuses only after **14.6 s** | hardening | [ ] |
+| [M11-R38](reviews/M11.md#m11-r38) | The budget's published ceiling multiplies its count by the **cheapest** verdict: 500,000 units cost ~1.7 s on accepting traffic and **13–15 s** on a zero-padded id column, which the real `.exe` refuses only after **14.6 s** | hardening | [x] |
 | [M11-R39](reviews/M11.md#m11-r39) | `DOS-BUD` varies rendering, layout and size but never the **verdict** — every row is built from valid numbers, so the grid samples only the branch `.any()` short-circuits on | guard | [x] |
 | [M11-R40](reviews/M11.md#m11-r40) | `UTF8-01` inherits `CASE_ANSWERS`' letter-bearing scope, so 12 of 24 recognizers — the digit-only half — are outside the digit-script guard; `ARCHITECTURE.md` claims the opposite | guard | [x] |
 | [M11-R41](reviews/M11.md#m11-r41) | A phone number in its **international** rendering goes upstream in clear — E.164 **0.918**, spaced **0.154**, national 0.000 — or is *truncated* (`+55 11 91234 5678` -> `[PHONE_1] 5678`); the `+CC` family is two hand-written groupings with no validator and no right anchor | **leak** | [x] |
@@ -2774,7 +2807,7 @@ sha256 re-compared and `git status` asserted empty. **No leak, no fail-open, no 
 | [M11-R52](reviews/M11.md#m11-r52) | A parenthesised phone rendering goes upstream in clear — `+49 (0)30 12345678` **0.714**, `(020) 7946 0958` **0.923**; `(` and `)` are named in `PHONE_SEPARATORS`' own doc comment and absent from the constant | **leak** | [x] |
 | [M11-R53](reviews/M11.md#m11-r53) | The separator guards can express neither coordinate: `SEPARATOR-01`'s matrix is a 1:1 char substitution, `looks_like_a_rendering` rejects `.` `/` `(` `)`, and deleting `/` from the shipped `+CC` class at both its sites is green at 255/0/5 | guard | [x] |
 | [M11-R54](reviews/M11.md#m11-r54) | Round 13's closure did not reach the docs: `TESTING.md` publishes a mutation that is now **red**, `ARCHITECTURE.md` still says *"any grouping"*, and the README `+CC` coverage cell is on its fourth round | docs | [x] |
-| [M11-R55](reviews/M11.md#m11-r55) | Round 14's separator widening masks an IPv4 address, a dotted or slashed date and a column-aligned table row — 0.000 -> 0.517 / 0.440 / 0.872 against the pre-round-14 binary, and `phone_eval`'s union `dates` is 0.270 against a published 0.180 | precision | [ ] |
+| [M11-R55](reviews/M11.md#m11-r55) | Round 14's separator widening masks an IPv4 address, a dotted or slashed date and a column-aligned table row — 0.000 -> 0.517 / 0.440 / 0.872 against the pre-round-14 binary, and `phone_eval`'s union `dates` is 0.270 against a published 0.180 | precision | [x] |
 | [M11-R56](reviews/M11.md#m11-r56) | M11-R52's fix is pinned by nothing: `PHONE_ALPHABET` is a hand-copied twin of `PHONE_SEPARATORS` two characters behind it, so deleting `(` and `)` is green at 255/0/5 while three real renderings become misses and one a truncation | guard | [x] |
 | [M11-R57](reviews/M11.md#m11-r57) | `SEPARATOR-01`'s matrix substitutes runs of `1..=3` against a pattern declaring `{1,4}`, so the bound can be narrowed to `{1,3}` with the suite green — the one value the constant chose is the one the guard never tries | guard | [x] |
 | [M11-R58](reviews/M11.md#m11-r58) | Round 14's published cost does not reproduce on `DOS-BUD`, the harness its closure names (8.00 units/row before and after, not 8 -> 9.8), while the unbudgeted term M11-R18 is open on grew 4.7-6.5x on a column-aligned body | hardening | [x] |
