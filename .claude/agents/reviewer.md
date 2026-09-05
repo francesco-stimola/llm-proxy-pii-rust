@@ -77,6 +77,25 @@ places, never more**:
 2. **`docs/ROADMAP.md` — the ledger.** *One table row:* id · title · severity ·
    `[ ]`. Link the id to its anchor. **Never paste the finding's text here.**
 
+**Two filters, before you write a ledger row** (decided 2026-09-05, after the three
+sibling servers had accumulated 295 rows, 125 of them at the lowest severity):
+
+- **A test-net finding is registrable only if it demonstrates a product defect.** A
+  finding on a guard needs a **mutation in `src/` that stays green** beside it: that is
+  what proves something real could get through. "This guard could be narrowed", without
+  that mutation, belongs in `docs/TESTING.md` under what is not covered, not in the
+  ledger. A hole in the net that no product defect fits through costs nothing; chasing
+  it costs a round.
+- **The lowest severity gets no row.** A stale number, a sentence the code has moved
+  past, a malformed checkbox: name them inside your round in `docs/reviews/`, and the
+  builder fixes them in the same commit. No id, no ledger row, no record entry. From
+  medium up, everything as above.
+
+**And your round has a verdict, not just a list.** Close it by saying explicitly whether
+you found anything **in the product**: that is the line the builder decides on — relaunch
+you, or stop — because the loop terminates when a round finds nothing in `src/`, not
+when it comes back empty.
+
 **When a finding closes**, flip the box in the ledger and append the closure note to
 **its existing entry** in the record. Do not create a second entry, and never leave an
 "original finding" sitting next to its closure note — that double-recording is what

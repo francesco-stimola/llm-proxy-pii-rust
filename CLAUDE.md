@@ -88,9 +88,16 @@ mirror; everything under `docs/` stays English-only.
 ## Workflow — build → review → formalize
 Development runs as a two-role loop, and **the builder closes it alone**: implement,
 launch the `reviewer` subagent to try to break what you just wrote, close the findings
-it raises, and launch it again. Keep going until a round comes back **empty** — no
-finding in `src/`, and no guard that can be mutated without turning red. Only then move
-on to the next item.
+it raises, and launch it again. Keep going **until a round finds nothing in the
+product** — no finding in `src/`. Only then move on to the next item.
+
+**A round that brings back only test-net or documentation findings is the signal to
+stop, not to continue.** That surface does not run out by construction: a document can
+always drift by one number, and a guard can always be narrowed somewhere. The previous
+wording — "until a round comes back *empty*" — therefore could not terminate, and on
+2026-09-05 the count was this: **295 ledger rows across the three sibling Python MCP
+servers, 125 of them at the lowest severity**, and whole days of rounds correcting their
+own net instead of the product.
 - **Builder** implements the current ROADMAP item + tests, appends to DEVLOG, commits
   the feature work, and **runs the review rounds itself**.
 - **Reviewer** (`.claude/agents/reviewer.md`) verifies independently and records
@@ -103,7 +110,7 @@ working. What they get handed is a report they can spot-check (see *What you han
 over*), not a narrative.
 
 ### The shape of a fix
-Two rules that apply **while** you write the fix, not after — and this codebase has paid
+The rules that apply **while** you write the fix, not after — and this codebase has paid
 for both. [`docs/reviews/M4.md#retrospective`](docs/reviews/M4.md#retrospective) is six
 rounds of the first one.
 - **Look for the chokepoint, not the list.** A fix that enumerates the cases you thought
@@ -115,6 +122,12 @@ rounds of the first one.
   The half left inline inside the hook, the wrapper or the branch is the half the defect
   lands in. The matrix proves the decision is **right**; a real run proves it is
   **reached** — you need both, and the second is the one people skip.
+- **A number in prose is either asserted from the code, or not written.** Every count
+  typed by hand into a document is a thing that ages, and ageing turns it into a finding
+  one round later: it is the single most prolific generator in this cycle. If a guard
+  already enforces the correspondence, the number in the sentence adds nothing but
+  something to keep aligned — and if no guard enforces it, the guard is the work, not
+  the sentence.
 - **A guard on a guard is worth one level, not four.** The two rules above apply also —
   and especially — when what you are fixing is the *test net* rather than the product:
   that is where they are easiest to forget, because every fix looks small and justified.
@@ -143,6 +156,18 @@ A finding has **one home for its whole life**. It is never copied, and never mov
   *to the same entry*. Give each an `<a id="m4-r19">` anchor so the ledger can link it.
 - **Closing a finding** = flip the box in the ledger + append the closure note to its
   entry in the record. That's it.
+- **A finding on the test net is registrable only if it demonstrates a product defect.**
+  It needs a **mutation in `src/` that stays green** beside it: that is what proves
+  something real could get through. "This guard could be narrowed", without that
+  mutation, is not a finding — it is a line in `docs/TESTING.md` under what is not
+  covered. A hole in the net that no product defect fits through costs nothing; chasing
+  it costs a round.
+- **The lowest severity does not enter the ledger.** A finding that by its own label
+  does not change what the software does — a stale number, a sentence the code has moved
+  past, a malformed checkbox — is **fixed in the same commit** and noted in one DEVLOG
+  line. No ledger row, no record entry. The ledger exists to answer "what's open?", and
+  with 42% of rows at the lowest severity that question no longer had a readable answer.
+  From medium up, everything as above.
 - **Never** paste a finding's text into ROADMAP, and never leave both an "original
   finding" and a closure note side by side — that double-recording is what bloated this
   file to 1000+ lines once already.
