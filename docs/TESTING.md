@@ -416,6 +416,23 @@ two *other* always-on tiers already claim that shape.
   **Its first form was the instance-shaped fix wearing the chokepoint's words, and M11-R11 is that being found.** A nine-row hand-written `const` promised that "a new letter-bearing recognizer cannot ship without an entry here" while deriving nothing from the recognizer table, so **four** letter-bearing recognizers were outside it — `Secret`, `Email`, the GB NINO and the CN resident id. Measured: narrowing NINO to uppercase-only left the whole library suite green at **154 / 1**, the single red being a temporary probe, while `ab123456c` went from masked to forwarded in clear; the same held for the CN id and for `Secret`. Adding four rows would have closed four instances and left the class open.
   So the **set** now comes from `StructuredRecognizers::shipped_patterns()` — every recognizer the scan is actually built from — filtered by `pattern_can_match_a_letter`, which parses the pattern to the same HIR `regex` compiles and asks each literal and class whether it covers `A-Za-z`. A textual scan cannot answer this: a word boundary and a digit class are both spelled with letters that match none. `CASE_ANSWERS` then says only *what* the answer is, and it can say **`Fixed`** — deliberately does not fold — which is what makes M11-R10's decision 3 (`Secret`'s `sk-`/`AKIA` are formats, not conventions) expressible at all. For a `Folds` answer a known positive is checked uppercase, lowercase **and with exactly one letter flipped**, the last being the sharpest case and the one a corpus of lowercase strings would miss (`IT60x0542811101000000123456` was forwarded in clear).
   **Two decided limits, both measured rather than assumed.** (1) The axis is **ASCII** case, so a recognizer whose letters were non-ASCII would not be asked — the guard asserts every shipped pattern is itself ASCII, which makes that residue **0 patterns** today and turns the day it is not into a red test rather than a silent skip. (2) An empty *unanswered* list is also what a derivation that stopped seeing letters would produce, so every recorded answer must itself be about a pattern the derivation calls letter-bearing; the two lists are therefore an equality — the letter-bearing recognizers this build ships are precisely the ones the answers name — with **no count for anyone to keep current**.
+- **The E.164 row (M11-R41), and why `RENDER-01` did not ask for it.** The universal `Phone`
+  recognizer's `+CC` family is two hand-enumerated groupings, both needing **two** separators — so
+  `+393471234567` proposed no candidate at all and was forwarded in clear at **every tag from
+  `v0.4.0`**. Measured over 13 000 numbers libphonenumber confirms valid, in its own three
+  renderings: **E.164 0.918 missed · International 0.154 · National 0.000**; and
+  `+55 11 91234 5678` came back `[PHONE_1] 5678` — four digits in clear, M10-R1's shape. Of the 35
+  phone positives in this repo's corpus, **not one** is E.164.
+  **`RENDER-01` had a row for that recognizer and it passed**, because a row lists the renderings
+  somebody wrote down: the compact `+CC` form was in neither `detected` nor `not_detected`, so
+  nothing asked about it. *An unasked question looks exactly like an answered one* — which is the
+  registry's structural limit and is now stated on it. The fix is a **separate recognizer** with its
+  own validator: `\+\d{8,15}` gated by `phonenumber::parse(None, ..)`, which needs no region hint
+  because the country code is in the value. Measured over 358.4 MB: **5 masked spans → 83, all 83
+  real numbers**; unvalidated it is 273, the extra 190 expanded-year ISO dates and floats — so the
+  arm is validated, not merely widened. It is a separate recognizer because the existing one has
+  `validate: None` and gating it would also narrow the US 3-3-4 arm, which masks `555-867-5309`
+  (`is_valid`-false) on purpose.
 - **RENDER-01 (M11-R30 / M11-R31) — `every_recognizer_records_the_renderings_it_detects`: the
   second coordinate of a rendering, and the first guard here whose scope is *every* recognizer.**
   A rendering has two coordinates: **which character** sits between a value's groups, and **where

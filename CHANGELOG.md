@@ -107,6 +107,15 @@ Milestone [M11](https://github.com/francesco-stimola/llm-proxy-pii-rust/blob/mai
     having: a country code the ISO 13616 length table does not know is checked by mod-97 alone, so
     roughly one such string in 97 is still masked — measured at **1 in 936** over 304.9 MB of
     third-party source. It is masked, not leaked, and restored byte-identically on the way back.
+- **A phone number written the way every API stores it — `+393471234567` — is now masked.** The
+  `+CC` form was detected only when it was written with spaces (`+39 347 1234567`); the compact
+  **E.164** rendering, which is what an address book, a CRM export or a JSON payload contains,
+  matched nothing and went to the provider **in clear**. Measured over 13 000 numbers confirmed
+  valid: 0.918 of the E.164 renderings were missed. Some were worse than missed —
+  `+55 11 91234 5678` came back as `[PHONE_1] 5678`, four digits of a real mobile forwarded. The
+  compact form is now checked against the country's real numbering plan, which the country code in
+  the value itself makes possible: measured over 358.4 MB of third-party source, it adds **83
+  masked spans, all 83 real phone numbers**.
 - **Credit cards written the way the issuer prints them are now masked.** Only two renderings were
   detected — compact, and four groups of four — so an American Express number in its own 4-6-5
   grouping (`3782 822463 10005`) and a Diners 4-6-4 went to the provider **in clear**, while the

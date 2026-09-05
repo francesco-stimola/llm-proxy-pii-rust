@@ -367,6 +367,46 @@ fn universal_recognizers() -> Vec<Recognizer> {
             // the recognizer whose doc said checksum recognizers must not shrink.
             shrink_on_reject: true,
         },
+        // **The `+CC` form written compactly — E.164, the rendering every API and address book
+        // stores (M11-R41).** The two hand-enumerated `+CC` groupings below need **two**
+        // separators, so `+393471234567` proposed no candidate at all and went upstream in clear
+        // for eleven milestones: byte-identical at every tag from `v0.4.0`, and of the 35 phone
+        // positives in this repo's corpus **not one** is E.164. Measured over 13 000 numbers
+        // libphonenumber confirms valid, in its own three renderings: **E.164 0.918 detected,
+        // International 0.154, National 0.000**. `+55 11 91234 5678` was worse than missed —
+        // `[PHONE_1] 5678`, four digits of a real mobile in clear.
+        //
+        // **This is the chokepoint rather than a third grouping**, and the reason is that a `+CC`
+        // number carries its own country code: `phonenumber::parse(None, ..)` needs no region hint,
+        // so this is the *easiest* case for the check the nine domestic families already run, and
+        // this was the only phone family with no validator at all. Measured on the repo's own
+        // methodology over 358.4 MB of third-party source: 5 masked spans today → **83 with the
+        // validated arm, all 83 real phone numbers**. Without the validator it is 273, the extra
+        // 190 being expanded-year ISO dates and floats — which is why the arm is validated and not
+        // merely widened.
+        //
+        // A **separate recognizer** rather than a third alternation in the one below, deliberately:
+        // that one has `validate: None`, and giving it a validator would also gate the US 3-3-4 arm
+        // — which today masks `555-867-5309`, `is_valid`-false and masked on purpose (M11-R42).
+        // Narrowing that is a coverage decision and not this fix's to take.
+        Recognizer {
+            kind: PiiKind::Phone,
+            // No `\b` before `+`: it is not a word character, so a boundary there would never
+            // match. The trailing one stops the span inside a longer digit run.
+            regex: Regex::new(r"\+\d{8,15}(?-u:\b)").unwrap(),
+            validate: Some(Box::new(|matched: &str, budget: &Budget| {
+                // Charged like every other `parse()` (M10-R29): one unit, because that is the
+                // ~6.5 µs the allowance was sized from. One parse per candidate here rather than
+                // up to nine, since the country code is in the value.
+                budget.spend();
+                phonenumber::parse(None, matched).is_ok_and(|number| number.is_valid())
+            })),
+            scan: Scan::Overlapping, // bounded: ≤ 16 chars
+            // Nothing to cut: the span is one unbroken digit run, so there is no separator for
+            // `shrink_to_a_valid_prefix` to walk back to, and the trailing `\b` already prevents
+            // the over-reach that obliges a shrink elsewhere (M11-R13 / M11-R33).
+            shrink_on_reject: false,
+        },
         Recognizer {
             kind: PiiKind::Email,
             regex: Regex::new(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}").unwrap(),
@@ -4353,6 +4393,13 @@ mod tests {
             ],
             not_detected: &["4155552671"],
             why: "the US 3-3-4 renderings and the `+CC` arm. The compact `4155552671` is not \n                  this recognizer's — the US arm requires a separator, for the same reason the \n                  domestic `Groups` family does — and the US has no domestic trunk form to fall \n                  back on, so it is a real gap, listed rather than left to prose (M11-R34)",
+        },
+        RenderingAnswer {
+            kind: PiiKind::Phone,
+            pattern: r"\+\d{8,15}(?-u:\b)",
+            detected: &["+393471234567", "+442079460958", "+14155552671"],
+            not_detected: &[],
+            why: "E.164 is one unbroken run by definition — that is what the format is for. Its                   spaced renderings belong to the `+CC` groupings row above, and this row exists                   because for eleven milestones neither owned the compact one (M11-R41)",
         },
         RenderingAnswer {
             kind: PiiKind::Ssn,

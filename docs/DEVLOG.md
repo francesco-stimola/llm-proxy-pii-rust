@@ -3,6 +3,60 @@
 Newest first. One entry per meaningful change — note *what* and *why*, not just
 *what*. This is the running history so context is never lost between sessions.
 
+## 2026-09-05 — M11 round 11: the rendering nobody wrote down
+
+### M11-R41 — a phone number in the form every API stores it
+
+    client sends : Chiamami al +393471234567 oppure scrivi a mario.rossi@example.com
+    upstream sees: Chiamami al +393471234567 oppure scrivi a [EMAIL_1]
+    CONTROL      : Chiamami al +39 347 1234567 ...  ->  Chiamami al [PHONE_1] ...
+
+The `+CC` family is two hand-enumerated groupings, both needing **two** separators, so the compact
+**E.164** rendering — what an address book, a CRM export or a JSON payload contains — proposed no
+candidate at all. Measured over 13 000 numbers libphonenumber confirms valid, in its own three
+renderings: **E.164 0.918 missed, International 0.154, National 0.000**. `+55 11 91234 5678` was
+worse than missed: `[PHONE_1] 5678`, four digits of a real mobile in clear. **Not a regression** —
+byte-identical at every tag from `v0.4.0`, and of the 35 phone positives in this repo's corpus **not
+one** is E.164.
+
+The fix is a chokepoint rather than a third grouping: a `+CC` number carries its own country code, so
+`phonenumber::parse(None, ..)` needs no region hint. It is the *easiest* case for the check the nine
+domestic families already run, on the only phone family that had no validator. Measured over
+358.4 MB: **5 masked spans → 83, all 83 real numbers**; unvalidated, 273, the extra 190 expanded-year
+ISO dates and floats — which is why the arm is validated and not merely widened.
+
+A **separate** recognizer, because the existing one has `validate: None` and gating it would narrow
+the US 3-3-4 arm too, which masks `555-867-5309` on purpose. `RENDER-01` refused to go green until
+the new recognizer had a rendering answer, which is the registry doing its job.
+
+**And the structural limit it exposes matters more than the fix.** `RENDER-01` had a row for the
+`+CC` recognizer, and it passed — because a row lists the renderings *somebody wrote down*, and the
+compact form was in neither list. **An unasked question looks exactly like an answered one.** No
+further guard closes that, because the missing entry is by definition the one nobody thought of; it
+is now stated on the guard rather than left to be rediscovered.
+
+### M11-R42 — and the README credited two arms with a check they do not run
+
+*"The country's real numbering plan says the number is assigned"* is true of the nine domestic
+families and now of E.164; it is **not** true of the spaced `+CC` groupings or the US 3-3-4 arm,
+which mask on shape alone — `+99 999 999 9999` is masked though country code 99 belongs to nobody.
+Both README tables now split the claim and name the direction: over-mask, never a miss.
+
+### Numbers
+
+**254 / 0 / 5** over 24 binaries, twice, identical; `cargo test-onnx` **290 / 0 / 22**; `fmt` and
+`clippy --all-targets -D warnings` clean. The count does not move: the fix added a recognizer and a
+registry row, and `RENDER-01` covers it — which is what a registry is for.
+
+**Tally**, by the ledger's severity cell: round 11 is **2 in the product** — R41 `leak` and R42
+`precision/docs`, whose leading term is `precision`, so it counts as product under the rule stated in
+round 4's entry. Running total, recomputed from the ledger rather than carried forward: **26 on the net or
+the docs, 17 in the product**, 43 rows. *(Earlier entries' running totals were
+incremented by hand and drifted; this one is counted.)*
+
+**Open: [M11-R18](reviews/M11.md#m11-r18) and [M11-R38](reviews/M11.md#m11-r38)** — both maintainer
+decisions, both about the same thing: what the budget's unit costs and what to do about it.
+
 ## 2026-09-05 — M11 round 10: no leak, and two guards that were asking someone else's question
 
 Round 10 could not break round 9's fix — 93 600 generated cards x published groupings x 18 following
