@@ -2675,6 +2675,31 @@ Round 14 ran on 255/0/5 twice and 291/0/22, `fmt` and `clippy --all-targets --al
 warnings` clean; six mutations, four red, **two green** (both findings), each restored from the `HEAD`
 blob with the sha256 re-compared. **No fail-open, no new over-mask class, no raw value in a log.**
 
+**Round 15 (2026-09-05) asked what round 14's widening *refuses*, and nothing had.** The fix itself is
+sound and this is the first round on this family where it is: a 3 150-rendering differential against the
+pre-round-14 binary, under M10-R1's predicate, finds **0 new leaks and 1 270 renderings newly masked** —
+no relocation. What it cost was never measured. `{PGAP}` gave the three domestic phone families `.` `/`
+`(` `)` and `SEPARATOR_RUN` gave every family a run of four, and the two shapes that fall out are the
+commonest digit shapes in a coding agent's `tool_result`: a **dotted-decimal IPv4 address**
+(0.000 → **0.517** public, **0.623** on `10.x`) and a **column-aligned numeric table**
+(0.000 → **0.872** at 2–4 spaces), plus dotted and slashed dates (0.000 → **0.440**)
+([M11-R55](reviews/M11.md#m11-r55)). The project's own `phone_eval` agrees — union `dates` **0.270**
+against the **0.180** `ARCHITECTURE.md` publishes — and it is `#[ignore]`d, so no round has run it since
+M10. Through the real `.exe` a tool call arrives as `ssh deploy@[PHONE_1] … grep [PHONE_2] …` and a
+`psql` row as `rows [PHONE_3]`, on a conversation carrying no PII; the round trip stays byte-exact, so
+this is fidelity, not a leak. **Two of round 14's own three fixes are watched by nothing**: deleting
+`(` and `)` from `PHONE_SEPARATORS` — the whole of M11-R52 — is **green at 255/0/5** because
+`PHONE_ALPHABET` is a hand-copied twin two characters behind it
+([M11-R56](reviews/M11.md#m11-r56)), and `SEPARATOR_RUN` can be narrowed `{1,4}` → `{1,3}` green,
+because the matrix runs `1..=3` ([M11-R57](reviews/M11.md#m11-r57)). Both fixes were verified by
+mutation: green alone, red against the narrowing. And the round's published cost is on the wrong term —
+`DOS-BUD` prints **8.00 units/row before and after**, not 8 → 9.8, while the unbudgeted `free()` work
+[M11-R18](reviews/M11.md#m11-r18) is open on grew **4.7–6.5×** on a column-aligned body
+([M11-R58](reviews/M11.md#m11-r58)). Round 15 ran on 255/0/5 twice (24 binaries, 0 warnings), `fmt` and
+`clippy --all-targets -- -D warnings` clean; ten mutations, six red, **four green** (two of them
+findings, two of them the proposed fixes proving free), each restored from the `HEAD` blob with the
+sha256 re-compared and `git status` asserted empty. **No leak, no fail-open, no raw value in a log.**
+
 | ID | Title | Sev | Status |
 |---|---|---|---|
 | [M11-R0](reviews/M11.md#m11-r0) | `cargo fmt --check` red on `main` across four files the M11 commits touched — CI gates on it, so M11 as committed would fail on push | build | [x] |
@@ -2732,6 +2757,11 @@ blob with the sha256 re-compared. **No fail-open, no new over-mask class, no raw
 | [M11-R52](reviews/M11.md#m11-r52) | A parenthesised phone rendering goes upstream in clear — `+49 (0)30 12345678` **0.714**, `(020) 7946 0958` **0.923**; `(` and `)` are named in `PHONE_SEPARATORS`' own doc comment and absent from the constant | **leak** | [x] |
 | [M11-R53](reviews/M11.md#m11-r53) | The separator guards can express neither coordinate: `SEPARATOR-01`'s matrix is a 1:1 char substitution, `looks_like_a_rendering` rejects `.` `/` `(` `)`, and deleting `/` from the shipped `+CC` class at both its sites is green at 255/0/5 | guard | [x] |
 | [M11-R54](reviews/M11.md#m11-r54) | Round 13's closure did not reach the docs: `TESTING.md` publishes a mutation that is now **red**, `ARCHITECTURE.md` still says *"any grouping"*, and the README `+CC` coverage cell is on its fourth round | docs | [x] |
+| [M11-R55](reviews/M11.md#m11-r55) | Round 14's separator widening masks an IPv4 address, a dotted or slashed date and a column-aligned table row — 0.000 -> 0.517 / 0.440 / 0.872 against the pre-round-14 binary, and `phone_eval`'s union `dates` is 0.270 against a published 0.180 | precision | [ ] |
+| [M11-R56](reviews/M11.md#m11-r56) | M11-R52's fix is pinned by nothing: `PHONE_ALPHABET` is a hand-copied twin of `PHONE_SEPARATORS` two characters behind it, so deleting `(` and `)` is green at 255/0/5 while three real renderings become misses and one a truncation | guard | [ ] |
+| [M11-R57](reviews/M11.md#m11-r57) | `SEPARATOR-01`'s matrix substitutes runs of `1..=3` against a pattern declaring `{1,4}`, so the bound can be narrowed to `{1,3}` with the suite green — the one value the constant chose is the one the guard never tries | guard | [ ] |
+| [M11-R58](reviews/M11.md#m11-r58) | Round 14's published cost does not reproduce on `DOS-BUD`, the harness its closure names (8.00 units/row before and after, not 8 -> 9.8), while the unbudgeted term M11-R18 is open on grew 4.7-6.5x on a column-aligned body | hardening | [ ] |
+| [M11-R59](reviews/M11.md#m11-r59) | The round's own docs: `SEPARATOR_RUN`'s residue note names column alignment as what it excludes when 2-4 spaces is what it admits; `dates 0.180`, the slash-date claim, `Scan::Overlapping`'s length bounds and the `+CC` units/row are all stale, and `[Unreleased]` carries no entry | docs | [ ] |
 
 <a id="m11-b"></a>
 ### Track B — the intra-op thread base: physical cores, not logical threads ✅

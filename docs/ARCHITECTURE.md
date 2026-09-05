@@ -181,12 +181,39 @@ space-separated **numeric tables** (`512 105 205` is a real Suzhou landline shap
 was generated *from the families' own structure* to reach them, which is what makes its 0.375 a
 ceiling rather than an expectation.
 
+> **Two sentences above are contradicted at HEAD, and the whole table is a measurement of the
+> pre-M11 separator alphabet ([M11-R55](reviews/M11.md#m11-r55)).** The slash clause is no longer
+> true — `{PGAP}` gave the domestic families `/` and `.`, so `28/01/2026` and `28.01.2026` are
+> candidates and `phone_eval` reports the union's `dates` at **0.270**, not the 0.180 printed above.
+> The ISO half of the same clause still holds. Two categories the pool does not contain are now the
+> largest exposure: a **dotted-decimal IPv4 address** (0.517 of random public addresses, 0.623 of
+> `10.x`) and a **column-aligned numeric row** (0.872 at 2–4 spaces, where a single space was already
+> 0.872 and a run of five is out). Left as measured rather than quietly restated, because what to do
+> about it is an open maintainer decision — M11-R55 lists three options with what each costs.
+>
+> **The rule this earns, and it is about the guards rather than the numbers: widening what a
+> recognizer *matches* is a precision change, and this axis has no precision guard that can fail.**
+> Every guard on the separator axis — `SEPARATOR-01`'s matrix, `RENDER-01`'s span assertion — asserts
+> that a recorded rendering **is** detected. Not one asserts that something is **not**, so four
+> consecutive widenings (M11-R25 → R48 → R51/R52) landed against assertions that can only go red when
+> coverage *shrinks*. The precision measurement exists (`phone_eval`) and is `#[ignore]`d, so
+> `cargo test` never runs it. *A change that widens a pattern must re-run the harness that measures
+> what the pattern refuses, and a widening whose only guard is a coverage assertion is unmeasured by
+> construction.*
+
 **Three things this trade rests on.**
 1. **On real agent traffic the cost is zero.** Over the M7 fixture — a genuine 22 KiB Claude
    Code turn already in the repo, written for a different purpose and so not curated for this
    one — the shipped default yields **no `Phone` spans at all**. Pinned as PHONE-OM
    (`tests/phone_overmask.rs`) with one positive control **per shape family**, so "found
    nothing" can never be "that family is switched off".
+   > **That fixture has a shape, and it is the shape the two newest over-masks are outside of
+   > (M11-R55).** The M7 turn contains **no IPv4 address** and **no digit run separated by 2–4
+   > spaces**, so PHONE-OM is structurally unable to see either class round 14 admitted — it stayed
+   > green through both. This is M4-R13's lesson landing on the guard written to defeat it: *a
+   > corpus has a shape, and that shape is a blind spot* — including when the corpus is real
+   > traffic. A real-traffic guard bounds the claim to *that* traffic, and this one holds no
+   > `tool_result` carrying command output.
 2. **The union produces no *emergent* false positives** — a candidate the union masks is always
    one some enabled region masks alone, so a region's measured cost is also its marginal cost.
    That is a **structural property of the dispatch**, not a discovered fact (the validator is
@@ -695,6 +722,16 @@ in the ledger and link it, never in prose.**
 > **An axis is not decided until its alphabet, its cardinality and its shape are.** Derive the
 > separator class **per recognizer, from that recognizer's validator** — one class for
 > everyone is how a closed axis keeps leaking.
+>
+> **…and "from the validator" is not the whole rule, because it is silent about the *anchor*
+> ([M11-R55](reviews/M11.md#m11-r55)).** `phonenumber::parse` validates all four phone
+> recognizers, so by the letter of the rule they share `{PGAP}`. But the `+CC` and US arms begin
+> at a `+` or a `(NNN)`, while `Groups` and `LongBlock` begin at any 2–3-digit token: widening an
+> **un-anchored** pattern's separator class widens its *candidate space over ordinary punctuated
+> prose*, and widening an anchored one does not. Applying one alphabet to all four gave the
+> un-anchored families `.` and `/`, and that alone is what turned `62.30.40.50` and `28/01/2026`
+> into `[PHONE_n]`. **The alphabet is the validator's; the *reach* is the anchor's, and the second
+> question has to be asked separately.** The measured cost is in the domestic-phone table above.
 
 **A validator that rejects must not be able to delete a value (M11-R13).** The corollary, learned
 immediately and the hard way. `iban_case_gate` was added to a recognizer that had previously
