@@ -150,10 +150,13 @@ fn with_gaps(template: &str) -> String {
     template
         .replace(
             "{PGAP}",
-            &format!("{}{SEPARATOR_RUN}", class_with(PHONE_SEPARATORS)),
+            &format!("{}{}", class_with(PHONE_SEPARATORS), separator_run()),
         )
-        .replace("{CGAP}", &format!("{}{SEPARATOR_RUN}", class_with(&['-'])))
-        .replace("{GAP}", &format!("{}{SEPARATOR_RUN}", class_with(&[])))
+        .replace(
+            "{CGAP}",
+            &format!("{}{}", class_with(&['-']), separator_run()),
+        )
+        .replace("{GAP}", &format!("{}{}", class_with(&[]), separator_run()))
 }
 
 /// **A separator is a *run*, not a character** (M11-R51), and the run is **bounded**.
@@ -174,7 +177,15 @@ fn with_gaps(template: &str) -> String {
 /// rendering the round measured (` / ` and ` - ` are three); the residue is a separator run of five
 /// or more, which is column alignment rather than a rendering, and it is named in `TESTING.md`
 /// beside `SEPARATOR-01` rather than left to be rediscovered.
-const SEPARATOR_RUN: &str = "{1,4}";
+const SEPARATOR_RUN_MAX: usize = 4;
+
+/// [`SEPARATOR_RUN_MAX`] as the regex repetition the patterns carry. **One constant, so a guard
+/// asserting the bound takes it from the declaration rather than from a number somebody typed
+/// twice** (M11-R57): `SEPARATOR-01`'s matrix ran runs of 1..=3 against a bound of 4, so narrowing
+/// the bound to 3 was invisible.
+fn separator_run() -> String {
+    format!("{{1,{SEPARATOR_RUN_MAX}}}")
+}
 
 /// A validator whose cost is negligible — a checksum over at most 18 bytes — adapted to the
 /// [`Validator`] shape without charging the request's budget (M10-R29).
@@ -4501,6 +4512,19 @@ mod tests {
                 "+39/347/1234567",
                 "+39-347-1234567",
                 "+39  347  1234567",
+                // **Parenthesised, and it has to be a *behavioural* row** (M11-R56). Deriving the
+                // matrix alphabet from `PHONE_SEPARATORS` stops the guard drifting *ahead* of the
+                // code — but it cannot catch the code being *narrowed*, because the matrix then
+                // stops substituting the character that was removed. Only a rendering asserted to
+                // be masked can: deleting `(` and `)` was green at 255/0/5 with the derived
+                // alphabet, and is red against this line.
+                "+49 (0)30 12345678",
+                // A run of **exactly `SEPARATOR_RUN_MAX`** (M11-R57). Same reason as the
+                // line above: the matrix now takes its bound from the constant, so
+                // narrowing the constant narrows the matrix with it and the change is
+                // invisible. Only a rendering asserted at the bound can see it — narrowing
+                // 4 to 3 was green at 255/0/5, and is red against this line.
+                "+39    347 1234567",
             ],
             not_detected: &[],
             why: "E.164 is one unbroken run by definition — that is what the format is for. Its \
@@ -4696,7 +4720,10 @@ mod tests {
                 // completeness the registry had no way to contradict. Hand-listing the four
                 // would have fixed those four; taking the set from `PHONE_ALPHABET` means the
                 // filter can never again be narrower than the code it is asked about.
-                c.is_ascii_alphanumeric() || c == '+' || PHONE_ALPHABET.contains(&c)
+                c.is_ascii_alphanumeric()
+                    || c == '+'
+                    || GAP_CHARS.contains(&c)
+                    || PHONE_SEPARATORS.contains(&c)
             })
     }
 
@@ -4915,25 +4942,38 @@ mod tests {
         /// **validator**: `iban_mod97` ignores whitespace, `phonenumber::parse` also discards
         /// `-` `.` `/`. *Deciding an axis is not deciding its alphabet* — which is the sentence
         /// M11-R48 cost, one round after the axis was closed.
-        alphabet: &'static [char],
+        alphabet: Alphabet,
     }
 
-    /// The whitespace-only alphabet: IBAN, the card's grouped arms, the NINO.
-    const SPACE_ONLY: &[char] = GAP_CHARS;
+    /// Which separator alphabet a recognizer takes — **the production constant itself, never a
+    /// transcription of it** (M11-R56).
+    ///
+    /// The three alphabets used to be `const`s in this module listing the characters again. They
+    /// were a **hand-copied twin two characters behind**: deleting `(` and `)` from
+    /// `PHONE_SEPARATORS` — the production constant — left the suite **green at 255/0/5**, because
+    /// the matrix went on substituting the copy. A guard whose alphabet is a transcription asserts
+    /// the transcription.
+    #[derive(Clone, Copy)]
+    enum Alphabet {
+        /// Whitespace only — what `iban_mod97` and `nino_prefix_valid` ignore.
+        Space,
+        /// ...plus the `-` a card is printed with, which `luhn_valid` skips.
+        Card,
+        /// ...plus everything `phonenumber::parse` discards.
+        Phone,
+    }
 
-    /// Whitespace plus the `-` the card and three trunk families spell explicitly.
-    const WITH_HYPHEN: &[char] = &[
-        '\u{0009}', '\u{0020}', '\u{00A0}', '\u{1680}', '\u{2000}', '\u{2001}', '\u{2002}',
-        '\u{2003}', '\u{2004}', '\u{2005}', '\u{2006}', '\u{2007}', '\u{2008}', '\u{2009}',
-        '\u{200A}', '\u{202F}', '\u{205F}', '\u{3000}', '-',
-    ];
-    /// The `+CC` arm's alphabet: everything `phonenumber::parse` discards, `/` included (M11-R48).
-    /// It is the widest because its validator is the most permissive — which is the whole rule.
-    const PHONE_ALPHABET: &[char] = &[
-        '\u{0009}', '\u{0020}', '\u{00A0}', '\u{1680}', '\u{2000}', '\u{2001}', '\u{2002}',
-        '\u{2003}', '\u{2004}', '\u{2005}', '\u{2006}', '\u{2007}', '\u{2008}', '\u{2009}',
-        '\u{200A}', '\u{202F}', '\u{205F}', '\u{3000}', '-', '.', '/',
-    ];
+    impl Alphabet {
+        /// The characters, taken from the constants the patterns are built from.
+        fn chars(self) -> Vec<char> {
+            let extra: &[char] = match self {
+                Alphabet::Space => &[],
+                Alphabet::Card => &['-'],
+                Alphabet::Phone => PHONE_SEPARATORS,
+            };
+            GAP_CHARS.iter().chain(extra).copied().collect()
+        }
+    }
 
     /// Every gap-bearing recognizer's recorded answer. Nine rows over eight patterns — the
     /// universal `Phone` carries two, for its US and `+CC` arms, which are separate alternations
@@ -4943,61 +4983,61 @@ mod tests {
             kind: PiiKind::Iban,
             pattern: r"(?-u:\b)[A-Za-z]{2}\d{2}(?:[A-Za-z0-9]{11,30}|(?:{GAP}[A-Za-z0-9]{4}){2,7}(?:{GAP}[A-Za-z0-9]{1,4})?)(?-u:\b)",
             positive: "DE89 3704 0044 0532 0130 00",
-            alphabet: SPACE_ONLY,
+            alphabet: Alphabet::Space,
         },
         SeparatorAnswer {
             kind: PiiKind::CreditCard,
             pattern: r"(?-u:\b)(?:\d{4}{CGAP}\d{4}{CGAP}\d{4}{CGAP}\d{4}(?:{CGAP}\d{1,3})?|\d{4}{CGAP}\d{6}{CGAP}\d{4,5}|\d{13,19})(?-u:\b)",
             positive: "4111 1111 1111 1111",
-            alphabet: WITH_HYPHEN,
+            alphabet: Alphabet::Card,
         },
         SeparatorAnswer {
             kind: PiiKind::Phone,
             pattern: r"(?:\+1{PGAP}?)?(?:\(\d{3}\){PGAP}?|\d{3}{PGAP})\d{3}{PGAP}\d{4}|\+\d{1,3}{PGAP}\d{2,4}{PGAP}\d{2,4}{PGAP}\d{3,4}|\+\d{1,3}{PGAP}\d{2,4}{PGAP}\d{5,8}",
             positive: "415 555 2671",
-            alphabet: PHONE_ALPHABET, // the US 3-3-4 arm
+            alphabet: Alphabet::Phone, // the US 3-3-4 arm
         },
         SeparatorAnswer {
             kind: PiiKind::Phone,
             pattern: r"(?:\+1{PGAP}?)?(?:\(\d{3}\){PGAP}?|\d{3}{PGAP})\d{3}{PGAP}\d{4}|\+\d{1,3}{PGAP}\d{2,4}{PGAP}\d{2,4}{PGAP}\d{3,4}|\+\d{1,3}{PGAP}\d{2,4}{PGAP}\d{5,8}",
             positive: "+39 333 000 0001",
-            alphabet: PHONE_ALPHABET, // the `+CC` arm, a different alternation
+            alphabet: Alphabet::Phone, // the `+CC` arm, a different alternation
         },
         SeparatorAnswer {
             kind: PiiKind::Phone,
             pattern: r"\+\d{1,3}(?:{PGAP}\d{1,8}){1,6}(?-u:\b)|\+\d{8,15}(?-u:\b)",
             positive: "+39 347 1234567",
-            alphabet: PHONE_ALPHABET, // the `+CC` arm gained a gap in M11-R43
+            alphabet: Alphabet::Phone, // the `+CC` arm gained a gap in M11-R43
         },
         SeparatorAnswer {
             kind: PiiKind::NationalId,
             pattern: r"(?-u:\b)[A-Za-z]{2}\d{6}[A-Da-d](?-u:\b)|(?-u:\b)[A-Za-z]{2}{GAP}\d{2}{GAP}\d{2}{GAP}\d{2}{GAP}[A-Da-d](?-u:\b)",
             positive: "AB 12 34 56 C",
-            alphabet: SPACE_ONLY, // the GB NINO's spaced rendering
+            alphabet: Alphabet::Space, // the GB NINO's spaced rendering
         },
         SeparatorAnswer {
             kind: PiiKind::Phone,
             pattern: r"(?-u:\b)0\d{1,4}{PGAP}\d{3,4}{PGAP}\d{3,4}(?-u:\b)|(?-u:\b)0\d{1,4}{PGAP}\d{4,8}(?-u:\b)|(?-u:\b)0\d{6,11}(?-u:\b)",
             positive: "020 7946 0958",
-            alphabet: PHONE_ALPHABET,
+            alphabet: Alphabet::Phone,
         },
         SeparatorAnswer {
             kind: PiiKind::Phone,
             pattern: r"(?-u:\b)0\d{PGAP}\d{2}{PGAP}\d{2}{PGAP}\d{2}{PGAP}\d{2}(?-u:\b)",
             positive: "01 23 45 67 89",
-            alphabet: PHONE_ALPHABET,
+            alphabet: Alphabet::Phone,
         },
         SeparatorAnswer {
             kind: PiiKind::Phone,
             pattern: r"(?-u:\b)[1-9]\d{1,2}(?:{PGAP}\d{2,4}){1,3}(?-u:\b)",
             positive: "91 123 45 67",
-            alphabet: PHONE_ALPHABET,
+            alphabet: Alphabet::Phone,
         },
         SeparatorAnswer {
             kind: PiiKind::Phone,
             pattern: r"(?-u:\b)[1-9]\d{2}{PGAP}\d{6,8}(?-u:\b)",
             positive: "347 1234567",
-            alphabet: PHONE_ALPHABET,
+            alphabet: Alphabet::Phone,
         },
     ];
 
@@ -5087,14 +5127,15 @@ mod tests {
             // **The recognizer's own alphabet, not one class for everyone** (M11-R49). Taking
             // the matrix from `GAP_CHARS` meant every substitution was whitespace-for-space, so
             // deleting hyphen support from a shipped phone shape left the suite green at 255/0/5.
-            for separator in answer.alphabet {
+            for separator in answer.alphabet.chars() {
                 // **Both coordinates: the character AND how many of them** (M11-R51). A 1:1
                 // substitution could only ever ask about the alphabet, and every recorded positive
                 // leaked on a *doubled* separator drawn from its own alphabet — `+39  347 1234567`
                 // with two spaces, `030 / 12345678` with three characters. The validators normalise
                 // a run; the patterns spelled exactly one.
-                for count in 1..=3usize {
-                    let run: String = std::iter::repeat_n(*separator, count).collect();
+                // The bound comes from the constant that declares it (M11-R57).
+                for count in 1..=SEPARATOR_RUN_MAX {
+                    let run: String = std::iter::repeat_n(separator, count).collect();
                     let rendered = answer.positive.replace(' ', &run);
                     assert_eq!(
                     kinds(&rendered),
@@ -5104,7 +5145,7 @@ mod tests {
                      every pattern spelled its gap ` ` while every validator behind it filtered on \
                      `char::is_whitespace`.",
                     answer.positive,
-                    *separator as u32
+                    separator as u32
                 );
                 }
             }

@@ -107,6 +107,20 @@ Milestone [M11](https://github.com/francesco-stimola/llm-proxy-pii-rust/blob/mai
     having: a country code the ISO 13616 length table does not know is checked by mod-97 alone, so
     roughly one such string in 97 is still masked — measured at **1 in 936** over 304.9 MB of
     third-party source. It is masked, not leaked, and restored byte-identically on the way back.
+- **Values separated the way people actually write them are now masked.** A phone number, IBAN,
+  card or UK NINO written with a **no-break space**, a narrow no-break space, a figure space, an
+  ideographic space or a tab went upstream in clear; so did a `+CC` number written with `-`, `.`,
+  `/` or parentheses — `tel:+1-201-555-0123` is RFC 3966's own example, and `+49 (0)30 12345678` is
+  how a German number is printed. So did **any** of them written with more than one separator
+  character between groups: `+39  347  1234567` with two spaces, or `030 / 12345678`. Each of those
+  renderings was masked in some other form, so the value was recognised — what was not recognised
+  was how it was written.
+  - **One thing to know if you send digit-dense text.** Accepting `.` and `/` between groups, and
+    runs of up to four separator characters, means some things that are *not* phone numbers now
+    come back as `[PHONE_n]` — IP addresses, `dd.mm.yyyy` dates, and numeric columns aligned with
+    several spaces. They are masked, never leaked, and restored byte-identically on the way back, so
+    the round trip is exact; what changes is that the model sees a placeholder where it wanted the
+    value. Measured rates are in `docs/reviews/M11.md` → M11-R55.
 - **A phone number written the way every API stores it — `+393471234567` — is now masked.** The
   `+CC` form was detected only when it was written with spaces (`+39 347 1234567`); the compact
   **E.164** rendering, which is what an address book, a CRM export or a JSON payload contains,

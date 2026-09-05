@@ -3,6 +3,78 @@
 Newest first. One entry per meaningful change — note *what* and *why*, not just
 *what*. This is the running history so context is never lost between sessions.
 
+## 2026-09-05 — M11 round 15: the first round that found no leak, and what round 14 cost
+
+**Round 14's fix is correct and does not leak.** A 3 150-rendering differential against the
+pre-round-14 binary under M10-R1's predicate: **0 new leaks, 1 270 renderings newly masked**, nothing
+relocated. First round on this family where that is true — rounds 11, 12, 13 and 14 each found the
+previous round's fix leaking somewhere.
+
+### M11-R55 — and the first round that found what a fix *cost*
+
+Through the real `.exe`, default configuration, on a conversation containing **no PII at all**:
+
+    assistant -> {"cmd": "ssh deploy@[PHONE_1] -p 22 && grep [PHONE_2] /var/log/app.log"}
+    tool      -> "PID   RSS\n420   1024\nrows [PHONE_3]"
+
+`{PGAP}` gave the three *un-anchored* domestic families `.` `/` `(` `)`, and `SEPARATOR_RUN` gave
+every family a run of four. Measured against `ed5214b` on an identical probe: random public IPv4
+**0.000 → 0.517**, `10.x` **0.623**, dotted and slashed dates **0.440**, a 2–4-space-aligned numeric
+row **0.872**. The repo's own `phone_eval` agrees — union `dates` **0.270** against the **0.180**
+`ARCHITECTURE.md` publishes.
+
+Not a leak; the round trip is byte-exact. It is exactly the model-facing harm M10 spent nine rounds
+bounding, and nothing could see it: `phone_eval` is `#[ignore]`d, and `PHONE-OM`'s M7 fixture holds
+**zero** IPv4 addresses and zero space-aligned digit runs.
+
+**All three remedies are product-visible, so I took none of them**, and the reason is worth stating
+rather than leaving quiet: the fix that caused this closed a leak, so undoing part of it trades a
+miss against an over-mask on a tier whose false-positive rate is a published promise. There is a
+fourth option in the record — keep `(`/`)` for the un-anchored families and drop `.`/`/` — and a
+second, separate number to pick, because the aligned-table row is `SEPARATOR_RUN_MAX` rather than the
+alphabet.
+
+### M11-R56 / R57 — deriving a guard's constants fixes drift in one direction only
+
+Both findings are the same shape and so is the fix, and **the first version of that fix was green**.
+
+`Alphabet::{Space, Card, Phone}` now returns `GAP_CHARS` chained with the same slice the patterns
+are built from, and the matrix takes its run bound from `SEPARATOR_RUN_MAX` — so neither can drift
+*ahead* of the code. But deleting `(` and `)` from `PHONE_SEPARATORS` was **still green at 255/0/5**,
+and narrowing the bound to 3 likewise: **a derived guard cannot see its own source being narrowed**,
+because the matrix stops exercising exactly what was removed.
+
+What sees a narrowing is a **behaviour**. `+49 (0)30 12345678` and `+39    347 1234567` — a run of
+exactly `SEPARATOR_RUN_MAX` — are now `detected` renderings, and both mutations are red on the span
+assertion.
+
+**The rule, which is M11-R53's sentence arriving from the other side:** *derive a guard's constants
+so they cannot drift ahead of the code, and assert a value at the edge so they cannot be narrowed.*
+Neither half is sufficient alone.
+
+### M11-R58 — a published number I could not reconcile, reported as such
+
+The `+22%` per row **reproduces here, three times**: `DOS-BUD`'s verdict grid spends **49 000** units
+for 5 000 rows at HEAD against round 10's **40 000** before the separator run — 8.0 → 9.8 units/row.
+Round 15 reports **8.00 on both builds**, which I cannot reproduce and will not explain away.
+
+What is not in dispute is round 15's own probe: **4.7–6.5×** growth on M11-R18's term, an order of
+magnitude larger and on a different shape. Both numbers are carried into R18 and R38, because the
+decision has to be taken against both. The closure note is **amended, not withdrawn** — and saying
+which of the two I could not reproduce is the whole point of writing it down.
+
+### Numbers
+
+**255 / 0 / 5** over 24 binaries, twice, identical; `cargo test-onnx` **291 / 0 / 22**; `fmt` and
+`clippy --all-targets -D warnings` clean. No test count moved — both fixes derived constants and
+added registry rows.
+
+**Tally**, counted from the ledger: **35 on the net or the docs, 25 in the product**, 60 rows.
+
+**Open, and all three are the maintainer's:** [M11-R18](reviews/M11.md#m11-r18),
+[M11-R38](reviews/M11.md#m11-r38) — one decision about the budget's unit in two rows — and
+[M11-R55](reviews/M11.md#m11-r55), the over-mask round 14's fix bought.
+
 ## 2026-09-05 — M11 round 14: the axis had a cardinality, and a constant contradicted its own doc
 
 ### M11-R51 — a separator is a run, and every pattern spelled exactly one
