@@ -2432,13 +2432,27 @@ nothing:
 
 ### Review ledger — M11 → [`reviews/M11.md`](reviews/M11.md)
 
-> **Where the loop stands (2026-09-06).** 60 findings; **six were leaks**, every one in the
-> *deterministic* tier and every one a rendering the recognizers could not match while their
-> validators could. **Round 15 was the first to find no leak**, and it verified round 14's fix
-> differentially (3 150 renderings: 0 new leaks, 1 270 newly masked).
+> **Where the loop stands (2026-09-06, after round 16).** 62 findings; **60 are closed and two are
+> open**, both raised by round 16 against the three commits that implemented the maintainer's last
+> three decisions. Round 16 found **one defect in the product**, so the loop does not terminate here:
+> - [M11-R60](reviews/M11.md#m11-r60) — **in `src/`.** `iban_case_gate` leaving `free()` reopens
+>   [M10-R29](reviews/M10.md#m10-r29), whose three consequences all return on a new shape: an
+>   ordinary `xxd` hex dump is refused at 8 MiB where the same build without the charge forwards
+>   12 MiB, the 400 body still names only the domestic-phone tier, and the gate spends the allowance
+>   before any phone family is reached. The headroom the decision was taken against was measured on
+>   a sample layout that spends **0** units. Four options, all product-visible, in the entry.
+> - [M11-R61](reviews/M11.md#m11-r61) — on the net, with the green `src/` mutation the filter
+>   requires: `SEPARATOR_RUN_MAX` 4 -> 5 leaves the whole suite green at 258/0/4, so the over-mask
+>   R55 accepted on purpose has a published floor and no ceiling.
 >
-> **All 60 rows are closed**, and the last three were the maintainer's to decide rather than the
-> builder's:
+> **Ten of the 60 closed rows carry the `**leak**` label** — R10, R13, R25, R30, R33, R41, R43, R48,
+> R51, R52 — every one in the *deterministic* tier. (This sentence used to say *six*; round 16 could
+> not reconcile that with the ledger and did not guess which grouping it meant. If the intended count
+> is distinct leaks rather than rows, say which rows are the re-finds.) **Round 15 was the first to
+> find no leak**, and it verified round 14's fix differentially (3 150 renderings: 0 new leaks,
+> 1 270 newly masked); round 16 found none either.
+>
+> The last three closures were the maintainer's to decide rather than the builder's:
 > - [M11-R55](reviews/M11.md#m11-r55) — **accepted and published.** The over-mask round 14's
 >   leak-fix bought is the trade this tier now makes on purpose: both alternatives cost a leak, and
 >   an over-mask is restored byte-identically where a miss is not. `phone_eval` stopped being
@@ -2750,6 +2764,36 @@ in a worktree, the delta is **+9 000 units flat** at three row counts and on bot
 and deleting the body's `NNN.50` money column at HEAD reproduces the old figure exactly. `cargo test`
 258/0/4; `fmt` and both `clippy` passes clean.
 
+**Round 16 (2026-09-06) took those three implementations as its target, and one of them reopens a
+closed finding from the previous milestone.** Charging `iban_case_gate` is the right diagnosis of a
+real problem — `shrink_on_reject` genuinely made an exempt validator's *call rate* unbounded — but
+`free()` exists because of [M10-R29](reviews/M10.md#m10-r29), which measured what happens when a
+validator far cheaper than a `phonenumber::parse()` spends the same allowance: legal traffic is
+refused, and the refusal blames the wrong tier. Both consequences are back. Through the real release
+`.exe`, an ordinary `xxd` hex dump is **400 at 8 MiB and at 12 MiB**, where the byte-identical build
+with `budget.spend()` removed answers **200 at both** (4 and 6 MiB pass on either); in process the
+same body spends **262 709 units at 4 MiB, 418 260 at 6**, against 123 317 and 208 675 before. The
+sample the decision was taken against — *"4 MiB of lowercase hex (`abcd 1234 …`) spends ~38 000"* —
+is a pure-letter group beside a pure-digit one, which cannot spell `[A-Za-z]{2}\d{2}` at all: I
+measure that exact layout at **0 units**, so the headroom `CHANGELOG.md` promises for *"a lowercase
+hex dump"* was measured on a string no hex dump resembles ([M11-R60](reviews/M11.md#m11-r60)).
+The other finding is on the net and carries the green `src/` mutation the filter requires:
+`SEPARATOR_RUN_MAX` **4 → 5** leaves the whole suite green at 258/0/4, so the over-mask
+[M11-R55](reviews/M11.md#m11-r55) accepted on purpose is pinned from below and not from above —
+while `phone_overmask`, `TESTING.md` and R55's own closure all claim *"both directions are red"*
+([M11-R61](reviews/M11.md#m11-r61)). **What round 16 could not break is the larger half of it:**
+`phone_eval`'s marker-block assertion binds (red on an emptied block, on a removed marker and on a
+recognizer narrowing); the memo hole it went looking for is not one (a repeated lowercase body
+spends 15 units and costs the same 0.33 s as the uppercase control); `DOS-BUD`'s grid reproduces
+exactly on every count, and its dearest shape at **15.7–17.3 µs/unit** is an *accepting* column, so
+R38's refusal to add a verdict multiplier is right; and the record checks out — 62 rows, 62 unique
+anchors, no dangling link either way, every closed entry carrying its note, and the five relocated
+notes moved rather than dropped. Round 16 ran on 258/0/4 twice, `fmt` and
+`clippy --all-targets -- -D warnings` clean; eight mutations, six red, **two green** (one of them a
+finding, one of them the proof that the alphabet coordinate *is* pinned), each written as bytes with
+its sha256 compared against the `HEAD` blob and `git status` asserted empty afterwards.
+**No leak, no fail-open, no over-mask regression, no raw value in a log.**
+
 | ID | Title | Sev | Status |
 |---|---|---|---|
 | [M11-R0](reviews/M11.md#m11-r0) | `cargo fmt --check` red on `main` across four files the M11 commits touched — CI gates on it, so M11 as committed would fail on push | build | [x] |
@@ -2812,6 +2856,8 @@ and deleting the body's `NNN.50` money column at HEAD reproduces the old figure 
 | [M11-R57](reviews/M11.md#m11-r57) | `SEPARATOR-01`'s matrix substitutes runs of `1..=3` against a pattern declaring `{1,4}`, so the bound can be narrowed to `{1,3}` with the suite green — the one value the constant chose is the one the guard never tries | guard | [x] |
 | [M11-R58](reviews/M11.md#m11-r58) | Round 14's published cost does not reproduce on `DOS-BUD`, the harness its closure names (8.00 units/row before and after, not 8 -> 9.8), while the unbudgeted term M11-R18 is open on grew 4.7-6.5x on a column-aligned body | hardening | [x] |
 | [M11-R59](reviews/M11.md#m11-r59) | The round's own docs: `SEPARATOR_RUN`'s residue note names column alignment as what it excludes when 2-4 spaces is what it admits; `dates 0.180`, the slash-date claim, `Scan::Overlapping`'s length bounds and the `+CC` units/row are all stale, and `[Unreleased]` carries no entry | docs | [x] |
+| [M11-R60](reviews/M11.md#m11-r60) | Charging `iban_case_gate` reopens M10-R29: an ordinary `xxd` hex dump is refused at 8 MiB where the same build without the charge forwards 12 MiB, the 400 still blames the domestic-phone tier and prescribes a SQL `LIMIT`, and the headroom published for "a lowercase hex dump" was measured on a layout that spends 0 units | correctness | [ ] |
+| [M11-R61](reviews/M11.md#m11-r61) | `SEPARATOR_RUN_MAX` can be widened 4 -> 5 with the whole suite green at 258/0/4 — the accepted over-mask has no upper pin, and `phone_overmask`, `TESTING.md` and R55's closure all claim both directions are red | guard | [ ] |
 
 <a id="m11-b"></a>
 ### Track B — the intra-op thread base: physical cores, not logical threads ✅
