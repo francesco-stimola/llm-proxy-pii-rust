@@ -685,9 +685,14 @@ in the ledger and link it, never in prose.**
 > `{GAP}` is whitespace, derived from `iban_mod97`; `phonenumber::parse` also discards `-` `.`
 > `/`, so RFC 3966's own `tel:+1-201-555-0123` was forwarded in clear at **0.385**, and the
 > dotted international rendering at **0.846**. The arm now takes `{PGAP}`, its own validator's
-> alphabet.
+> alphabet — **and one round after that, the wrong cardinality and an incomplete set (M11-R51,
+> M11-R52)**. Every pattern spelled its separator as exactly one character while every
+> validator normalises a *run*: `+39  347  1234567` with two spaces leaked at 0.923
+> international and 1.000 domestic, and `030 / 12345678` is three separator characters in a
+> row. And `(` `)` stood in `PHONE_SEPARATORS`' own doc comment while not being in the array,
+> so `+49 (0)30 12345678` leaked at 0.714 — next to a US arm that spells `\(\d{3}\)` itself.
 >
-> **An axis has an alphabet, and deciding the axis is not deciding the alphabet.** Derive the
+> **An axis is not decided until its alphabet, its cardinality and its shape are.** Derive the
 > separator class **per recognizer, from that recognizer's validator** — one class for
 > everyone is how a closed axis keeps leaking.
 

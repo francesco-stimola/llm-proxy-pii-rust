@@ -102,7 +102,12 @@ const GAP_CHARS: &[char] = &[
 /// So the class is **per recognizer, derived from that recognizer's validator** — which is the rule
 /// this constant exists to make structural rather than remembered.
 const PHONE_SEPARATORS: &[char] = &[
-    '-', '.', '/', // what `phonenumber::parse` strips beside whitespace
+    // What `phonenumber::parse` strips beside whitespace. **`(` and `)` were in this comment and
+    // not in this array for a round (M11-R52)** — `+49 (0)30 12345678` leaked at 0.714 and
+    // `(020) 7946 0958` at 0.923, while `+1 (415) 555-2671` was masked because the US arm spells
+    // `\(\d{3}\)` itself. The repository held the answer and three of the four phone recognizers
+    // did not have it.
+    '-', '.', '/', '(', ')',
 ];
 
 /// Every character any shipped recognizer may have between a value's groups — the union of the
@@ -118,21 +123,18 @@ fn is_gap(c: char) -> bool {
     GAP_CHARS.contains(&c)
 }
 
-/// [`GAP_CHARS`] **and** [`PHONE_SEPARATORS`] as a regex class — the `{PGAP}` placeholder.
-fn phone_gap_class() -> String {
+/// [`GAP_CHARS`] plus `extra`, as a regex class. `\x{..}`-escaped so **the pattern string
+/// stays ASCII**, which `CASE-01` asserts and which keeps `pattern_can_match_a_letter` able to
+/// speak for it.
+///
+/// **Three placeholders, three validators** (M11-R48 / M11-R51). `{GAP}` is whitespace, which is
+/// what `iban_mod97` and `nino_prefix_valid` ignore; `{CGAP}` adds the `-` a card is printed with
+/// and `luhn_valid` skips; `{PGAP}` adds everything `phonenumber::parse` discards. *An axis has
+/// an alphabet, and the alphabet belongs to the validator* — one class for everyone is exactly
+/// what M11-R48 was.
+fn class_with(extra: &[char]) -> String {
     let mut class = String::from("[");
-    for c in GAP_CHARS.iter().chain(PHONE_SEPARATORS) {
-        class.push_str(&format!("\\x{{{:X}}}", *c as u32));
-    }
-    class.push(']');
-    class
-}
-
-/// [`GAP_CHARS`] as a regex character class, `\x{..}`-escaped so **the pattern string stays ASCII**
-/// — which `CASE-01` asserts, and which keeps `pattern_can_match_a_letter` able to speak for it.
-fn gap_class() -> String {
-    let mut class = String::from("[");
-    for c in GAP_CHARS {
+    for c in GAP_CHARS.iter().chain(extra) {
         class.push_str(&format!("\\x{{{:X}}}", *c as u32));
     }
     class.push(']');
@@ -146,9 +148,33 @@ fn gap_class() -> String {
 /// pattern for any other reason.
 fn with_gaps(template: &str) -> String {
     template
-        .replace("{PGAP}", &phone_gap_class())
-        .replace("{GAP}", &gap_class())
+        .replace(
+            "{PGAP}",
+            &format!("{}{SEPARATOR_RUN}", class_with(PHONE_SEPARATORS)),
+        )
+        .replace("{CGAP}", &format!("{}{SEPARATOR_RUN}", class_with(&['-'])))
+        .replace("{GAP}", &format!("{}{SEPARATOR_RUN}", class_with(&[])))
 }
+
+/// **A separator is a *run*, not a character** (M11-R51), and the run is **bounded**.
+///
+/// Every pattern spelled its separator as exactly one character while every validator behind it
+/// normalises a run: `phonenumber::parse` discards each ignorable character independently, and
+/// `iban_mod97` filters `char::is_whitespace()` over the whole string. So the same sentence as the
+/// case, digit-script and separator axes, on a coordinate none of them named — **cardinality**. The
+/// proof needed no new character: `+39 347 1234567` was masked and `+39  347  1234567`, with two
+/// spaces, was not; `030 / 12345678`, the ordinary German business rendering, is three separator
+/// characters in a row. Measured over 13 000 valid numbers: international **0.923**, domestic
+/// **1.000**, and all ten recorded positives leaked on a doubled separator drawn from their own
+/// alphabet.
+///
+/// **Bounded at four because `Scan::Overlapping` is only linear while a pattern's match length is**
+/// (M4-R19). An unbounded `+` would make every one of these patterns unbounded and take the
+/// rescan to O(n²) — the exact algorithmic-complexity DoS that finding is about. Four covers every
+/// rendering the round measured (` / ` and ` - ` are three); the residue is a separator run of five
+/// or more, which is column alignment rather than a rendering, and it is named in `TESTING.md`
+/// beside `SEPARATOR-01` rather than left to be rediscovered.
+const SEPARATOR_RUN: &str = "{1,4}";
 
 /// A validator whose cost is negligible — a checksum over at most 18 bytes — adapted to the
 /// [`Validator`] shape without charging the request's budget (M10-R29).
@@ -389,7 +415,7 @@ fn universal_recognizers() -> Vec<Recognizer> {
         Recognizer {
             kind: PiiKind::CreditCard,
             regex: Regex::new(&with_gaps(
-                r"(?-u:\b)(?:\d{4}(?:-|{GAP})\d{4}(?:-|{GAP})\d{4}(?:-|{GAP})\d{4}(?:(?:-|{GAP})\d{1,3})?|\d{4}(?:-|{GAP})\d{6}(?:-|{GAP})\d{4,5}|\d{13,19})(?-u:\b)",
+                r"(?-u:\b)(?:\d{4}{CGAP}\d{4}{CGAP}\d{4}{CGAP}\d{4}(?:{CGAP}\d{1,3})?|\d{4}{CGAP}\d{6}{CGAP}\d{4,5}|\d{13,19})(?-u:\b)",
             ))
             .unwrap(),
             validate: Some(free(credit_card_valid)),
@@ -476,7 +502,7 @@ fn universal_recognizers() -> Vec<Recognizer> {
         Recognizer {
             kind: PiiKind::Phone,
             regex: Regex::new(&with_gaps(
-                r"(?:\+1(?:[.-]|{GAP})?)?(?:\(\d{3}\)(?:[.-]|{GAP})?|\d{3}(?:[.-]|{GAP}))\d{3}(?:[.-]|{GAP})\d{4}|\+\d{1,3}{GAP}\d{2,4}{GAP}\d{2,4}{GAP}\d{3,4}|\+\d{1,3}{GAP}\d{2,4}{GAP}\d{5,8}",
+                r"(?:\+1{PGAP}?)?(?:\(\d{3}\){PGAP}?|\d{3}{PGAP})\d{3}{PGAP}\d{4}|\+\d{1,3}{PGAP}\d{2,4}{PGAP}\d{2,4}{PGAP}\d{3,4}|\+\d{1,3}{PGAP}\d{2,4}{PGAP}\d{5,8}",
             ))
             .unwrap(),
             validate: None,
@@ -902,13 +928,13 @@ const PHONE_SHAPE_TEMPLATES: &[(PhoneShape, &str)] = &[
     // GB and DE must keep exactly the behaviour that milestone measured.
     (
         PhoneShape::Trunk,
-        r"(?-u:\b)0\d{1,4}(?:-|{GAP})\d{3,4}(?:-|{GAP})\d{3,4}(?-u:\b)|(?-u:\b)0\d{1,4}(?:-|{GAP})\d{4,8}(?-u:\b)|(?-u:\b)0\d{6,11}(?-u:\b)",
+        r"(?-u:\b)0\d{1,4}{PGAP}\d{3,4}{PGAP}\d{3,4}(?-u:\b)|(?-u:\b)0\d{1,4}{PGAP}\d{4,8}(?-u:\b)|(?-u:\b)0\d{6,11}(?-u:\b)",
     ),
     // Trunk `0`, five 2-digit pairs — the standard French rendering (`01 23 45 67 89`,
     // also written with `.` or `-`). No arm above matches it: they top out at three groups.
     (
         PhoneShape::TrunkPairs,
-        r"(?-u:\b)0\d(?:[.-]|{GAP})\d{2}(?:[.-]|{GAP})\d{2}(?:[.-]|{GAP})\d{2}(?:[.-]|{GAP})\d{2}(?-u:\b)",
+        r"(?-u:\b)0\d{PGAP}\d{2}{PGAP}\d{2}{PGAP}\d{2}{PGAP}\d{2}(?-u:\b)",
     ),
     // **No trunk prefix**, 2–4 groups — ES `91 123 45 67`, PT `912 345 678`,
     // LV `67 22 33 44`, CN mobiles `138 0013 8000`. The leading digit is non-zero: a `0`
@@ -930,13 +956,13 @@ const PHONE_SHAPE_TEMPLATES: &[(PhoneShape, &str)] = &[
     // `67 22 33 44` and `67 123 456` forms.
     (
         PhoneShape::Groups,
-        r"(?-u:\b)[1-9]\d{1,2}(?:(?:-|{GAP})\d{2,4}){1,3}(?-u:\b)",
+        r"(?-u:\b)[1-9]\d{1,2}(?:{PGAP}\d{2,4}){1,3}(?-u:\b)",
     ),
     // **No trunk prefix**, prefix + one long block — the usual Italian mobile rendering
     // (`347 1234567`), which the arm above cannot reach: its groups top out at 4 digits.
     (
         PhoneShape::LongBlock,
-        r"(?-u:\b)[1-9]\d{2}(?:-|{GAP})\d{6,8}(?-u:\b)",
+        r"(?-u:\b)[1-9]\d{2}{PGAP}\d{6,8}(?-u:\b)",
     ),
 ];
 
@@ -4420,7 +4446,7 @@ mod tests {
         },
         RenderingAnswer {
             kind: PiiKind::CreditCard,
-            pattern: r"(?-u:\b)(?:\d{4}(?:-|{GAP})\d{4}(?:-|{GAP})\d{4}(?:-|{GAP})\d{4}(?:(?:-|{GAP})\d{1,3})?|\d{4}(?:-|{GAP})\d{6}(?:-|{GAP})\d{4,5}|\d{13,19})(?-u:\b)",
+            pattern: r"(?-u:\b)(?:\d{4}{CGAP}\d{4}{CGAP}\d{4}{CGAP}\d{4}(?:{CGAP}\d{1,3})?|\d{4}{CGAP}\d{6}{CGAP}\d{4,5}|\d{13,19})(?-u:\b)",
             detected: &[
                 "4111111111111111",
                 "4111 1111 1111 1111", // 4-4-4-4, the only one that shipped before M11-R30
@@ -4442,7 +4468,7 @@ mod tests {
         },
         RenderingAnswer {
             kind: PiiKind::Phone,
-            pattern: r"(?:\+1(?:[.-]|{GAP})?)?(?:\(\d{3}\)(?:[.-]|{GAP})?|\d{3}(?:[.-]|{GAP}))\d{3}(?:[.-]|{GAP})\d{4}|\+\d{1,3}{GAP}\d{2,4}{GAP}\d{2,4}{GAP}\d{3,4}|\+\d{1,3}{GAP}\d{2,4}{GAP}\d{5,8}",
+            pattern: r"(?:\+1{PGAP}?)?(?:\(\d{3}\){PGAP}?|\d{3}{PGAP})\d{3}{PGAP}\d{4}|\+\d{1,3}{PGAP}\d{2,4}{PGAP}\d{2,4}{PGAP}\d{3,4}|\+\d{1,3}{PGAP}\d{2,4}{PGAP}\d{5,8}",
             detected: &[
                 "415 555 2671",
                 "415-555-2671",
@@ -4450,7 +4476,10 @@ mod tests {
                 "+39 333 000 0001",
             ],
             not_detected: &["4155552671"],
-            why: "the US 3-3-4 renderings and the `+CC` arm. The compact `4155552671` is not \n                  this recognizer's — the US arm requires a separator, for the same reason the \n                  domestic `Groups` family does — and the US has no domestic trunk form to fall \n                  back on, so it is a real gap, listed rather than left to prose (M11-R34)",
+            why: "the US 3-3-4 renderings and the `+CC` arm. The compact `4155552671` is not this \
+                  recognizer's — the US arm requires a separator, for the same reason the domestic \
+                  `Groups` family does — and the US has no domestic trunk form to fall back on, so \
+                  it is a real gap, listed rather than left to prose (M11-R34)",
         },
         RenderingAnswer {
             kind: PiiKind::Phone,
@@ -4459,20 +4488,39 @@ mod tests {
                 "+393471234567",
                 "+442079460958",
                 "+14155552671",
-                "+33 6 12 34 56 78",   // FR: 0 of 250 clean before M11-R43
-                "+55 11 91234 5678",   // BR: came back `[PHONE_1] 5678`, four digits in clear
+                "+33 6 12 34 56 78", // FR: 0 of 250 clean before M11-R43
+                "+55 11 91234 5678", // BR: came back `[PHONE_1] 5678`, four digits in clear
                 "+31 6 12345678",
                 "+39 347 1234567",
+                // **Punctuated and run-separated renderings** (M11-R51 / R52 / R53). Removing `/`
+                // from the two separator constants used to be green at 255/0/5, because the only
+                // registry that asserts *behaviour* carried no rendering that used one. A decision
+                // recorded in two lists that check each other is bookkeeping; it becomes a guard
+                // the moment one of them is a behaviour.
+                "+39.347.1234567",
+                "+39/347/1234567",
+                "+39-347-1234567",
+                "+39  347  1234567",
             ],
             not_detected: &[],
-            why: "E.164 is one unbroken run by definition — that is what the format is for. Its                   spaced renderings belong to the `+CC` groupings row above, and this row exists                   because for eleven milestones neither owned the compact one (M11-R41)",
+            why: "E.164 is one unbroken run by definition — that is what the format is for. Its \
+                  spaced renderings belong to the `+CC` groupings row above, and this row exists \
+                  because for eleven milestones neither owned the compact one (M11-R41)",
         },
         RenderingAnswer {
             kind: PiiKind::Ssn,
             pattern: r"(?-u:\b)\d{3}-\d{2}-\d{4}(?-u:\b)",
             detected: &["123-45-6789"],
             not_detected: &["123456789"],
-            why: "an SSN is printed 3-2-4, and this recognizer detects only that. **The reason \n                  this row used to give was false, and M11-R35 measured it:** it said the \n                  compact form `123456789` is covered by the always-on 9-digit national-ID \n                  recognizer. That recognizer is checksum-gated (NL 11-proef or PT mod-11), so \n                  it accepts only about 2 in 11 arbitrary nine-digit runs — a compact SSN is \n                  masked when it happens to satisfy a Dutch or Portuguese checksum and \n                  forwarded in clear otherwise. A real coverage gap on a headline PII type; \n                  closing it means masking every bare nine-digit run, which is a coverage \n                  decision escalated with M11-R30's national-identifier rows",
+            why: "an SSN is printed 3-2-4, and this recognizer detects only that. **The reason \
+                  this row used to give was false, and M11-R35 measured it:** it said the compact \
+                  form `123456789` is covered by the always-on 9-digit national-ID recognizer. \
+                  That recognizer is checksum-gated (NL 11-proef or PT mod-11), so it accepts only \
+                  about 2 in 11 arbitrary nine-digit runs — a compact SSN is masked when it \
+                  happens to satisfy a Dutch or Portuguese checksum and forwarded in clear \
+                  otherwise. A real coverage gap on a headline PII type; closing it means masking \
+                  every bare nine-digit run, which is a coverage decision escalated with M11-R30's \
+                  national-identifier rows",
         },
         RenderingAnswer {
             kind: PiiKind::NationalId,
@@ -4522,7 +4570,11 @@ mod tests {
             pattern: r"(?-u:\b)\d{11}(?-u:\b)",
             detected: &["86095742719"],
             not_detected: &["86 095 742 719"],
-            why: "a DE Steuer-ID is printed `86 095 742 719` and an LV personal code compact. \n                  The spaced form is worse than undetected and this row says so because M11-R34 \n                  measured it: a sentence carrying `86 095 742 719` reaches the provider as \n                  `86 [PHONE_1]` — two digits in clear and the remaining nine announced as a \n                  phone number. Admitting it is the same escalation as the 9-digit row (M11-R30)",
+            why: "a DE Steuer-ID is printed `86 095 742 719` and an LV personal code compact. The \
+                  spaced form is worse than undetected and this row says so because M11-R34 \
+                  measured it: a sentence carrying `86 095 742 719` reaches the provider as `86 \
+                  [PHONE_1]` — two digits in clear and the remaining nine announced as a phone \
+                  number. Admitting it is the same escalation as the 9-digit row (M11-R30)",
         },
         RenderingAnswer {
             kind: PiiKind::NationalId,
@@ -4588,28 +4640,32 @@ mod tests {
         },
         RenderingAnswer {
             kind: PiiKind::Phone,
-            pattern: r"(?-u:\b)0\d{1,4}(?:-|{GAP})\d{3,4}(?:-|{GAP})\d{3,4}(?-u:\b)|(?-u:\b)0\d{1,4}(?:-|{GAP})\d{4,8}(?-u:\b)|(?-u:\b)0\d{6,11}(?-u:\b)",
+            pattern: r"(?-u:\b)0\d{1,4}{PGAP}\d{3,4}{PGAP}\d{3,4}(?-u:\b)|(?-u:\b)0\d{1,4}{PGAP}\d{4,8}(?-u:\b)|(?-u:\b)0\d{6,11}(?-u:\b)",
             detected: &["020 7946 0958", "020-7946-0958", "0201234567"],
             not_detected: &[],
             why: "the trunk families' two- and three-group renderings plus the separator-free arm",
         },
         RenderingAnswer {
             kind: PiiKind::Phone,
-            pattern: r"(?-u:\b)0\d(?:[.-]|{GAP})\d{2}(?:[.-]|{GAP})\d{2}(?:[.-]|{GAP})\d{2}(?:[.-]|{GAP})\d{2}(?-u:\b)",
+            pattern: r"(?-u:\b)0\d{PGAP}\d{2}{PGAP}\d{2}{PGAP}\d{2}{PGAP}\d{2}(?-u:\b)",
             detected: &["01 23 45 67 89", "01.23.45.67.89"],
             not_detected: &[],
             why: "the French five-pair rendering, in both separators it is printed with",
         },
         RenderingAnswer {
             kind: PiiKind::Phone,
-            pattern: r"(?-u:\b)[1-9]\d{1,2}(?:(?:-|{GAP})\d{2,4}){1,3}(?-u:\b)",
+            pattern: r"(?-u:\b)[1-9]\d{1,2}(?:{PGAP}\d{2,4}){1,3}(?-u:\b)",
             detected: &["91 123 45 67"],
             not_detected: &["911234567"],
-            why: "the un-anchored 2-4 group family. The compact rendering `911234567` is a \n                  documented recall gap (DEVLOG M10) — separators are required here on purpose, \n                  since a bare digit run is indistinguishable from an order number or a \n                  timestamp, and that trade is what made this tier shippable on by default. \n                  Listed rather than described, so the refusal is asserted (M11-R34)",
+            why: "the un-anchored 2-4 group family. The compact rendering `911234567` is a \
+                  documented recall gap (DEVLOG M10) — separators are required here on purpose, \
+                  since a bare digit run is indistinguishable from an order number or a timestamp, \
+                  and that trade is what made this tier shippable on by default. Listed rather \
+                  than described, so the refusal is asserted (M11-R34)",
         },
         RenderingAnswer {
             kind: PiiKind::Phone,
-            pattern: r"(?-u:\b)[1-9]\d{2}(?:-|{GAP})\d{6,8}(?-u:\b)",
+            pattern: r"(?-u:\b)[1-9]\d{2}{PGAP}\d{6,8}(?-u:\b)",
             detected: &["347 1234567"],
             not_detected: &[],
             why: "the Italian mobile prefix-plus-block rendering",
@@ -4632,9 +4688,16 @@ mod tests {
     fn looks_like_a_rendering(token: &str) -> bool {
         token.len() >= 6
             && token.chars().filter(char::is_ascii_digit).count() >= 4
-            && token
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == ' ' || c == '-' || c == '+')
+            && token.chars().all(|c| {
+                // **Derived from the recorded separator alphabets, not hand-listed**
+                // (M11-R53). It was `[A-Za-z0-9 +-]`, so `.` `/` `(` `)` could not bind — a
+                // `+CC` rendering carrying one could not even be *written down* as a limit, let
+                // alone asserted, and a row whose `not_detected` was empty asserted a
+                // completeness the registry had no way to contradict. Hand-listing the four
+                // would have fixed those four; taking the set from `PHONE_ALPHABET` means the
+                // filter can never again be narrower than the code it is asked about.
+                c.is_ascii_alphanumeric() || c == '+' || PHONE_ALPHABET.contains(&c)
+            })
     }
 
     /// **The matrix for [`looks_like_a_rendering`], and M11-R44 is why it exists.**
@@ -4864,12 +4927,6 @@ mod tests {
         '\u{2003}', '\u{2004}', '\u{2005}', '\u{2006}', '\u{2007}', '\u{2008}', '\u{2009}',
         '\u{200A}', '\u{202F}', '\u{205F}', '\u{3000}', '-',
     ];
-    /// ...and the `.` the French five-pair rendering and the US arm also take.
-    const WITH_HYPHEN_DOT: &[char] = &[
-        '\u{0009}', '\u{0020}', '\u{00A0}', '\u{1680}', '\u{2000}', '\u{2001}', '\u{2002}',
-        '\u{2003}', '\u{2004}', '\u{2005}', '\u{2006}', '\u{2007}', '\u{2008}', '\u{2009}',
-        '\u{200A}', '\u{202F}', '\u{205F}', '\u{3000}', '-', '.',
-    ];
     /// The `+CC` arm's alphabet: everything `phonenumber::parse` discards, `/` included (M11-R48).
     /// It is the widest because its validator is the most permissive — which is the whole rule.
     const PHONE_ALPHABET: &[char] = &[
@@ -4890,21 +4947,21 @@ mod tests {
         },
         SeparatorAnswer {
             kind: PiiKind::CreditCard,
-            pattern: r"(?-u:\b)(?:\d{4}(?:-|{GAP})\d{4}(?:-|{GAP})\d{4}(?:-|{GAP})\d{4}(?:(?:-|{GAP})\d{1,3})?|\d{4}(?:-|{GAP})\d{6}(?:-|{GAP})\d{4,5}|\d{13,19})(?-u:\b)",
+            pattern: r"(?-u:\b)(?:\d{4}{CGAP}\d{4}{CGAP}\d{4}{CGAP}\d{4}(?:{CGAP}\d{1,3})?|\d{4}{CGAP}\d{6}{CGAP}\d{4,5}|\d{13,19})(?-u:\b)",
             positive: "4111 1111 1111 1111",
             alphabet: WITH_HYPHEN,
         },
         SeparatorAnswer {
             kind: PiiKind::Phone,
-            pattern: r"(?:\+1(?:[.-]|{GAP})?)?(?:\(\d{3}\)(?:[.-]|{GAP})?|\d{3}(?:[.-]|{GAP}))\d{3}(?:[.-]|{GAP})\d{4}|\+\d{1,3}{GAP}\d{2,4}{GAP}\d{2,4}{GAP}\d{3,4}|\+\d{1,3}{GAP}\d{2,4}{GAP}\d{5,8}",
+            pattern: r"(?:\+1{PGAP}?)?(?:\(\d{3}\){PGAP}?|\d{3}{PGAP})\d{3}{PGAP}\d{4}|\+\d{1,3}{PGAP}\d{2,4}{PGAP}\d{2,4}{PGAP}\d{3,4}|\+\d{1,3}{PGAP}\d{2,4}{PGAP}\d{5,8}",
             positive: "415 555 2671",
-            alphabet: WITH_HYPHEN_DOT, // the US 3-3-4 arm
+            alphabet: PHONE_ALPHABET, // the US 3-3-4 arm
         },
         SeparatorAnswer {
             kind: PiiKind::Phone,
-            pattern: r"(?:\+1(?:[.-]|{GAP})?)?(?:\(\d{3}\)(?:[.-]|{GAP})?|\d{3}(?:[.-]|{GAP}))\d{3}(?:[.-]|{GAP})\d{4}|\+\d{1,3}{GAP}\d{2,4}{GAP}\d{2,4}{GAP}\d{3,4}|\+\d{1,3}{GAP}\d{2,4}{GAP}\d{5,8}",
+            pattern: r"(?:\+1{PGAP}?)?(?:\(\d{3}\){PGAP}?|\d{3}{PGAP})\d{3}{PGAP}\d{4}|\+\d{1,3}{PGAP}\d{2,4}{PGAP}\d{2,4}{PGAP}\d{3,4}|\+\d{1,3}{PGAP}\d{2,4}{PGAP}\d{5,8}",
             positive: "+39 333 000 0001",
-            alphabet: WITH_HYPHEN_DOT, // the `+CC` arm, a different alternation
+            alphabet: PHONE_ALPHABET, // the `+CC` arm, a different alternation
         },
         SeparatorAnswer {
             kind: PiiKind::Phone,
@@ -4920,27 +4977,27 @@ mod tests {
         },
         SeparatorAnswer {
             kind: PiiKind::Phone,
-            pattern: r"(?-u:\b)0\d{1,4}(?:-|{GAP})\d{3,4}(?:-|{GAP})\d{3,4}(?-u:\b)|(?-u:\b)0\d{1,4}(?:-|{GAP})\d{4,8}(?-u:\b)|(?-u:\b)0\d{6,11}(?-u:\b)",
+            pattern: r"(?-u:\b)0\d{1,4}{PGAP}\d{3,4}{PGAP}\d{3,4}(?-u:\b)|(?-u:\b)0\d{1,4}{PGAP}\d{4,8}(?-u:\b)|(?-u:\b)0\d{6,11}(?-u:\b)",
             positive: "020 7946 0958",
-            alphabet: WITH_HYPHEN,
+            alphabet: PHONE_ALPHABET,
         },
         SeparatorAnswer {
             kind: PiiKind::Phone,
-            pattern: r"(?-u:\b)0\d(?:[.-]|{GAP})\d{2}(?:[.-]|{GAP})\d{2}(?:[.-]|{GAP})\d{2}(?:[.-]|{GAP})\d{2}(?-u:\b)",
+            pattern: r"(?-u:\b)0\d{PGAP}\d{2}{PGAP}\d{2}{PGAP}\d{2}{PGAP}\d{2}(?-u:\b)",
             positive: "01 23 45 67 89",
-            alphabet: WITH_HYPHEN_DOT,
+            alphabet: PHONE_ALPHABET,
         },
         SeparatorAnswer {
             kind: PiiKind::Phone,
-            pattern: r"(?-u:\b)[1-9]\d{1,2}(?:(?:-|{GAP})\d{2,4}){1,3}(?-u:\b)",
+            pattern: r"(?-u:\b)[1-9]\d{1,2}(?:{PGAP}\d{2,4}){1,3}(?-u:\b)",
             positive: "91 123 45 67",
-            alphabet: WITH_HYPHEN,
+            alphabet: PHONE_ALPHABET,
         },
         SeparatorAnswer {
             kind: PiiKind::Phone,
-            pattern: r"(?-u:\b)[1-9]\d{2}(?:-|{GAP})\d{6,8}(?-u:\b)",
+            pattern: r"(?-u:\b)[1-9]\d{2}{PGAP}\d{6,8}(?-u:\b)",
             positive: "347 1234567",
-            alphabet: WITH_HYPHEN,
+            alphabet: PHONE_ALPHABET,
         },
     ];
 
@@ -5031,8 +5088,15 @@ mod tests {
             // the matrix from `GAP_CHARS` meant every substitution was whitespace-for-space, so
             // deleting hyphen support from a shipped phone shape left the suite green at 255/0/5.
             for separator in answer.alphabet {
-                let rendered = answer.positive.replace(' ', &separator.to_string());
-                assert_eq!(
+                // **Both coordinates: the character AND how many of them** (M11-R51). A 1:1
+                // substitution could only ever ask about the alphabet, and every recorded positive
+                // leaked on a *doubled* separator drawn from its own alphabet — `+39  347 1234567`
+                // with two spaces, `030 / 12345678` with three characters. The validators normalise
+                // a run; the patterns spelled exactly one.
+                for count in 1..=3usize {
+                    let run: String = std::iter::repeat_n(*separator, count).collect();
+                    let rendered = answer.positive.replace(' ', &run);
+                    assert_eq!(
                     kinds(&rendered),
                     vec![(answer.kind, rendered.clone())],
                     "{:?} written with U+{:04X} between its groups must be detected exactly as it \
@@ -5042,6 +5106,7 @@ mod tests {
                     answer.positive,
                     *separator as u32
                 );
+                }
             }
         }
 

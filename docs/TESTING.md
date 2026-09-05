@@ -646,14 +646,16 @@ two *other* always-on tiers already claim that shape.
   asserting a completeness the registry has **no way to contradict**. The filter's alphabet must be
   **derived from the union of the recorded separator alphabets**, and its own matrix must carry a
   `true` row per member, so it can never again be narrower than the code it is asked about.
-  **And a third mutation says what none of the above is watching.** Removing `/` from
+  **And a third mutation said what none of the above was watching.** Removing `/` from
   `PHONE_SEPARATORS` **and** from `PHONE_ALPHABET` — the two sites one narrowing commit would touch —
-  leaves the suite **green at 255/0/5**: nothing in this repository asserts *behaviourally* that
-  `+39.347.1234567` or `+49 30/12345678` is masked. `RENDERING_ANSWERS` is the registry that does
-  assert behaviour (`detected` must be one span covering the whole value), and the `+CC` row's
-  `detected` list carries no punctuated rendering — because the filter above makes it unwritable.
-  *A decision recorded in two lists that only check each other is bookkeeping; it becomes a guard the
-  moment one of them is a behaviour.*
+  left the suite **green at 255/0/5**: nothing asserted *behaviourally* that `+39.347.1234567` or
+  `+49 30/12345678` is masked. `RENDERING_ANSWERS` is the registry that does assert behaviour
+  (`detected` must be one span covering the whole value), and the `+CC` row's `detected` list carried
+  no punctuated rendering — because the filter above made it unwritable.
+  **Closed:** that row now carries `+39.347.1234567`, `+39/347/1234567`, `+39-347-1234567` and
+  `+39  347  1234567`, so the same mutation is red on the span assertion. *A decision recorded in two
+  lists that only check each other is bookkeeping; it becomes a guard the moment one of them is a
+  behaviour.*
 - **SHRINK-01 (M11-R22) — `a_shrunk_span_is_still_a_match_of_its_own_pattern`: the shrink must not
   widen what a recognizer can emit.** `shrink_on_reject` (the M11-R13 fix) was justified by an
   argument about the *validator's verdict on a prefix*, and on that set the argument holds. It

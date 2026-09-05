@@ -3,6 +3,75 @@
 Newest first. One entry per meaningful change — note *what* and *why*, not just
 *what*. This is the running history so context is never lost between sessions.
 
+## 2026-09-05 — M11 round 14: the axis had a cardinality, and a constant contradicted its own doc
+
+### M11-R51 — a separator is a run, and every pattern spelled exactly one
+
+Every gap-bearing pattern spelled its separator as **one character** while every validator behind it
+normalises a **run**: `phonenumber::parse` discards each ignorable character independently,
+`iban_mod97` filters `char::is_whitespace()` over the whole string. The proof needed no new
+character at all — `+39 347 1234567` was masked and `+39  347  1234567`, with two spaces, was not;
+`030 / 12345678`, the ordinary German business rendering, is three separator characters in a row.
+Measured over 13 000 valid numbers: international **0.923**, domestic **1.000**, and **all ten**
+recorded positives leaked on a doubled separator drawn from their own alphabet.
+
+The placeholders now expand to `[...]{1,4}`. **Bounded, and not out of timidity:**
+`Scan::Overlapping` is linear only while a match length is (M4-R19), and an unbounded `+` would take
+the rescan to O(n²) — the DoS that finding exists for. Four covers every rendering measured; the
+residue, a run of five or more, is column alignment rather than a rendering and is named beside the
+guard.
+
+**And the cost is measured, because M11-R38 is open on exactly it.** Against round 10's grid:
+`3XX XXX XXXX` goes **8 → 9.8** units/row, the rejected id column **12 → 13.8** — **+22%**, so the
+allowance is reached ~18% sooner, wall-clock per row unchanged. That number is added to R38 rather
+than left in a commit message: fixing a leak widened the term that decision is about.
+
+### M11-R52 — `(` and `)` were in the constant's doc comment and not in the constant
+
+`+49 (0)30 12345678` leaked at **0.714**, `(020) 7946 0958` at **0.923** — while `+1 (415) 555-2671`
+was masked, because the US arm spells `\(\d{3}\)` itself. **The repository held the answer and
+three of the four phone recognizers did not have it.** All four take `{PGAP}` now, and there are
+three classes, each named for its validator: `{GAP}` for `iban_mod97`, `{CGAP}` for `luhn_valid`,
+`{PGAP}` for `phonenumber::parse`. The card gained `{CGAP}` because the widened matrix demanded
+it: `4111--1111--1111--1111` failed an arm that spelled *one hyphen or a whitespace run*, while
+`luhn_valid` filters to digits and accepts any run.
+
+### M11-R53 — and the guards could express neither coordinate
+
+Three parts, all closed. The matrix varies **cardinality** as well as the character.
+`looks_like_a_rendering`'s alphabet is **derived** from `PHONE_ALPHABET` — hand-listing the four
+missing characters would have fixed those four; deriving it means the filter can never again be
+narrower than the code it is asked about, which is the defect, since a row whose `not_detected` is
+empty was asserting a completeness the registry had **no way to contradict**. And the `+CC` row now
+carries punctuated and doubled renderings, so removing `/` from both constants — **green at
+255/0/5** — is red on the span assertion.
+
+That third part is the durable one: *a decision recorded in two lists that only check each other is
+bookkeeping; it becomes a guard the moment one of them is a behaviour.* The first two are the third
+and fourth instances of M11-R31's shape — **scope, alphabet and cardinality are three separate
+decisions, and each must come from the thing it is about.**
+
+### M11-R54 — and the fifth consecutive overstatement in one README cell
+
+Same cause every time: the sentence was written from the fix's *intent* rather than its measurement.
+It now enumerates what the code enumerates.
+
+### Numbers
+
+**255 / 0 / 5** over 24 binaries, twice, identical; `cargo test-onnx` **291 / 0 / 22**; `fmt` and
+`clippy --all-targets -D warnings` clean. The lib suite's wall time roughly **doubled** (38 s → 74 s)
+— the same widening R51 priced, visible in the harness.
+
+Also fixed on the way, and mine: five `why:` literals I had written as single 280–830-character
+lines carrying literal `
+` escapes. Rewrapped to the file's own style; `cargo fmt` cannot see inside
+a string literal, so nothing had complained.
+
+**Tally**, counted from the ledger: **32 on the net or the docs, 23 in the product**, 55 rows.
+
+**Open: [M11-R18](reviews/M11.md#m11-r18) and [M11-R38](reviews/M11.md#m11-r38)** — the same
+maintainer decision in two rows, now re-priced by R51.
+
 ## 2026-09-05 — M11 round 13: the axis was decided, the alphabet was not
 
 ### M11-R48 — a `+CC` number written with `-`, `.` or `/` goes upstream in clear
