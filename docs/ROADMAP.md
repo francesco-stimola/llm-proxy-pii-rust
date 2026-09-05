@@ -2610,6 +2610,29 @@ own `PHONE-01`, is `is_valid`-false. Round 11 ran on 254/0/5 twice and 290/0/22,
 back **0 leaks, 0 round-trip breaks**. All three mutations turned red.
 
 
+**Round 12 (2026-09-05) took round 11's own fix as its target, and it closes one of the three renderings
+the finding measured.** The compact `+CC` arm works completely — **0 of 3 250** generated valid numbers
+leak in `Mode::E164`, against the pre-fix 0.918, and `RENDER-01` goes red when its validator is negated.
+But the shipped pattern is `\+\d{8,15}` — *one unbroken digit run* — while M11-R41 also measured
+`Mode::International` at 0.154 and quoted `+55 11 91234 5678` -> `[PHONE_1] 5678` as worse than a miss.
+Those are **byte-identical to the pre-fix build**: re-measured on the finding's own methodology,
+**973 of 3 250 international-spaced renderings carry digits to the provider (0.299)** — 613 forwarded
+whole, 360 truncated; both French templates are **0 of 250 clean** and every Brazilian mobile is
+truncated. Reproduced through the real `.exe` on eight renderings with an E.164 control, a domestic
+control and an email in every request ([M11-R43](reviews/M11.md#m11-r43)). Under it, the guard that
+[M11-R34](reviews/M11.md#m11-r34) built so an admitted gap must become a red test cannot see this family
+at all: `looks_like_a_rendering` allows only `[A-Za-z0-9 -]`, so a `+` rendering quoted in `why` leaves
+the suite **green at 157/0** while the same string in `detected` is red at once
+([M11-R44](reviews/M11.md#m11-r44)). Two on the published numbers: the README cell
+[M11-R42](reviews/M11.md#m11-r42)'s fix rewrote now calls the spaced `+CC` arm *"over-mask, never a
+miss"* and still claims `+CC` coverage always ([M11-R45](reviews/M11.md#m11-r45)), and a 25th recognizer
+ships while six places still say 24 ([M11-R46](reviews/M11.md#m11-r46)). Round 12 ran on 254/0/5 twice
+and 290/0/22 twice, `fmt` and `clippy --all-targets --all-features -D warnings` clean; five mutations,
+one of which was **green by design** and is the proof for R44, one refused by the anchor check before it
+could report a false green. A fifth finding is that `ARCHITECTURE.md` was not updated by the fix for the
+**fourth consecutive round** ([M11-R47](reviews/M11.md#m11-r47)). **No fail-open, no new over-mask class,
+no raw value in a log, and no panic when the new validator is fed non-ASCII decimal digits.**
+
 | ID | Title | Sev | Status |
 |---|---|---|---|
 | [M11-R0](reviews/M11.md#m11-r0) | `cargo fmt --check` red on `main` across four files the M11 commits touched — CI gates on it, so M11 as committed would fail on push | build | [x] |
@@ -2655,6 +2678,11 @@ back **0 leaks, 0 round-trip breaks**. All three mutations turned red.
 | [M11-R40](reviews/M11.md#m11-r40) | `UTF8-01` inherits `CASE_ANSWERS`' letter-bearing scope, so 12 of 24 recognizers — the digit-only half — are outside the digit-script guard; `ARCHITECTURE.md` claims the opposite | guard | [x] |
 | [M11-R41](reviews/M11.md#m11-r41) | A phone number in its **international** rendering goes upstream in clear — E.164 **0.918**, spaced **0.154**, national 0.000 — or is *truncated* (`+55 11 91234 5678` -> `[PHONE_1] 5678`); the `+CC` family is two hand-written groupings with no validator and no right anchor | **leak** | [x] |
 | [M11-R42](reviews/M11.md#m11-r42) | The README coverage table credits the `+CC` and US phone arms with the numbering-plan check they do not run — `+99 999 999 9999` is masked, and `555-867-5309` is `is_valid`-false | precision/docs | [x] |
+| [M11-R43](reviews/M11.md#m11-r43) | M11-R41 is marked closed on **one** of the three renderings it measured: the shipped arm is one unbroken digit run, so the spaced international form (0.299 of 3 250 carry digits upstream) and `+55 11 91234 5678` -> `[PHONE_1] 5678` are byte-identical to the pre-fix build | **leak** | [ ] |
+| [M11-R44](reviews/M11.md#m11-r44) | `looks_like_a_rendering` allows only `[A-Za-z0-9 -]`, so **no** international phone rendering can bind through M11-R34's prose-to-list audit — quoting one in `why` leaves the suite green at 157/0 | guard | [ ] |
+| [M11-R45](reviews/M11.md#m11-r45) | The README Phone cell M11-R42's fix rewrote now says the spaced `+CC` arm is *"over-mask, never a miss"* — the opposite of M11-R43 — and its coverage cell still claims `+CC` always, which R42's own closure said it would stop | precision/docs | [ ] |
+| [M11-R46](reviews/M11.md#m11-r46) | A 25th recognizer ships while six places still say 24 — including `RENDERING_ANSWERS`' *"24 rows for 24 pairs"* and `UTF8-01`'s *"2 168 today"*, measured 2 320 | docs | [ ] |
+| [M11-R47](reviews/M11.md#m11-r47) | The round-11 fix did not reach `ARCHITECTURE.md` — **fourth consecutive round** — so it still calls `+CC` *"the one phone family with no validator whatsoever"* and prices a `+CC` candidate at **0** budget units; measured, the compact form is **1** and the spaced ones were never 0 | docs | [ ] |
 
 <a id="m11-b"></a>
 ### Track B — the intra-op thread base: physical cores, not logical threads ✅

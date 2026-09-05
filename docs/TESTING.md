@@ -433,6 +433,11 @@ two *other* always-on tiers already claim that shape.
   arm is validated, not merely widened. It is a separate recognizer because the existing one has
   `validate: None` and gating it would also narrow the US 3-3-4 arm, which masks `555-867-5309`
   (`is_valid`-false) on purpose.
+  **Its scope is the *compact* rendering, and that is narrower than the finding it closes.**
+  `\+\d{8,15}` is one unbroken digit run by construction, so it reaches E.164 and no spaced
+  rendering; round 12 re-measured the other two modes at HEAD — **0 of 3 250** in `Mode::E164`,
+  **973 of 3 250** still carrying digits in `Mode::International`. Where that stands is in the
+  ledger, [`ROADMAP.md`](ROADMAP.md#m11) — a status does not belong in this sentence.
 - **RENDER-01 (M11-R30 / M11-R31) — `every_recognizer_records_the_renderings_it_detects`: the
   second coordinate of a rendering, and the first guard here whose scope is *every* recognizer.**
   A rendering has two coordinates: **which character** sits between a value's groups, and **where
@@ -497,6 +502,16 @@ two *other* always-on tiers already claim that shape.
   cannot be audited; a list can. `looks_like_a_rendering` is deliberately narrow (six characters,
   four digits, alphanumerics/space/hyphen only) so `\d{9}`, `M4-R6` and `[PHONE_1]` are not mistaken
   for values.
+  **…and *narrow* is how that assertion fails, because its failure mode is silence (M11-R44).** The
+  character class was drawn around the renderings in the registry at the time — digits, spaces and
+  hyphens — so a token carrying **`+`** is skipped, and no international phone rendering can bind to
+  either list however it is written in `why`. Round 12 proved it by mutation: quoting one in `why`
+  leaves the whole library suite green at 157/0, while putting the same string in `detected` is red at
+  once. That is *"a corpus has a shape, and that shape is a blind spot"* (M4-R13) arriving on a
+  three-line predicate. **The rule: a filter that decides *whether* to assert must be proved by a token
+  it MUST accept, never by the tokens it happens to see** — so its own must-accept / must-reject matrix
+  is part of it, exactly as a recognizer's positives and negatives are. Where that stands is in the
+  ledger, [`ROADMAP.md`](ROADMAP.md#m11).
   **One recorded reason was measurably false (M11-R35)** and is corrected: the `Ssn` row said a
   compact SSN is covered by the always-on 9-digit recognizer. That recognizer is checksum-gated, so
   it accepts only ~2 in 11 arbitrary nine-digit runs — a compact SSN is masked when it happens to
