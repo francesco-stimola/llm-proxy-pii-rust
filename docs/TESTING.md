@@ -598,6 +598,28 @@ two *other* always-on tiers already claim that shape.
   `src/`. `IBAN-05` varies five axes and the separator is not one of them; round 6's 400 000-input
   fuzz had NBSP in its alphabet and used it to **glue fragments together**, never to replace the
   space *inside* a value. *A quantity a test never varies is a quantity the test cannot see.*
+  **And this guard decides the axis on its whitespace half only — the alphabet is `GAP_CHARS` on
+  both ends (M11-R48 / M11-R49).** Its scope filter is
+  `pattern_can_match_any_of(pattern, GAP_CHARS)` and its matrix is
+  `positive.replace(' ', separator)` over `GAP_CHARS`, so every substitution it will ever make is
+  whitespace-for-space. It has no arm that can ask *"and is this value also published with a
+  hyphen?"* — a recognizer missing `-` and `.` is fully *"answered"* by it. Proved by mutation
+  rather than by reading: delete `-` from the shipped `Groups` phone shape, consistently at all
+  three sites (`PHONE_SHAPE_TEMPLATES` and its `SEPARATOR_ANSWERS` and `RENDERING_ANSWERS` rows, so
+  that only **behaviour** changes), and the whole suite stays **green at 255 / 0 / 5**. Nothing in
+  this repository asserts that a hyphen works as a separator, for any kind. *(Change the template
+  alone and two tests do go red — but on the registries' **pattern-string** correspondence, which
+  fires for any edit to any pattern and says nothing about separators. A red that does not test what
+  you think is the mirror of a green that does not mutate.)*
+  **The rule, and it is the same one three guards have now needed:** *a guard that varies an axis
+  must take its alphabet from what the **validator** accepts, not from the nearest named set.*
+  `GAP_CHARS` is right for `iban_mod97`; `phonenumber::parse` also discards `-`, `.`, `(`, `)` and
+  `/`, and the renderings in that difference reach the provider in clear — measured at **0.385** for
+  `Mode::Rfc3966` and **0.846** for the dot rendering, over 13 000 valid numbers. This is
+  M11-R31 (scope taken from the pattern) and M11-R40 (`UTF8-01`'s corpus taken from `CASE_ANSWERS`)
+  a third time, now on the alphabet. When it is widened, non-vacuity must assert that the alphabet
+  actually varied contains a **non-whitespace** member, or the widened guard can silently narrow
+  back. Status lives in the ledger in [`ROADMAP.md`](ROADMAP.md#m11), not here.
 - **SHRINK-01 (M11-R22) — `a_shrunk_span_is_still_a_match_of_its_own_pattern`: the shrink must not
   widen what a recognizer can emit.** `shrink_on_reject` (the M11-R13 fix) was justified by an
   argument about the *validator's verdict on a prefix*, and on that set the argument holds. It

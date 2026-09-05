@@ -2633,6 +2633,26 @@ could report a false green. A fifth finding is that `ARCHITECTURE.md` was not up
 **fourth consecutive round** ([M11-R47](reviews/M11.md#m11-r47)). **No fail-open, no new over-mask class,
 no raw value in a log, and no panic when the new validator is fed non-ASCII decimal digits.**
 
+**Round 13 (2026-09-05) asked what rounds 11 and 12 never sampled, and found the axis decided on half
+its alphabet.** Round 12's fix is real: over **13 000** libphonenumber-valid numbers, `Mode::E164`,
+`Mode::International` and `Mode::National` all leak **0**, and removing either the grouped arm or its
+shrink turns the suite red. But `phonenumber::Mode` has a **fourth** variant that no round has swept —
+`Mode::Rfc3966`, the hyphenated one, whose normative RFC 3966 example is `tel:+1-201-555-0123` — and it
+leaks **0.385**, the dot rendering **0.846** ([M11-R48](reviews/M11.md#m11-r48)). The cause is that
+`{GAP}` is whitespace, derived from what `iban_mod97` accepts, while the arm's own validator
+`phonenumber::parse` discards `-`, `.`, `(`, `)` and `/` — so `06.12.34.56.78` is masked and
+`+33.6.12.34.56.78`, the same number, is not. Proved through the real `.exe`: four valid numbers
+byte-identical upstream beside a masked control. Not a regression — it predates M11 — but round 12
+newly claims it closed. The guard cannot see it: `SEPARATOR-01` takes both its scope and its matrix
+alphabet from `GAP_CHARS`, and deleting hyphen support from a shipped recognizer leaves the suite
+**green at 255/0/5** ([M11-R49](reviews/M11.md#m11-r49)) — M11-R31 and M11-R40 a third time. And both
+READMEs plus `ARCHITECTURE.md` now claim *"every `+CC` rendering — any grouping"*, written in the
+round-12 commit and false in it, the third consecutive round that cell overstates
+([M11-R50](reviews/M11.md#m11-r50)). Round 13 ran on 255/0/5 twice and 291/0/22, `fmt` and `clippy
+--all-targets --all-features` clean; five mutations, three red, one **green** (the finding) and one a
+**red in disguise** that is recorded because it would have closed the question falsely. **No fail-open,
+no new over-mask class, and no raw value in a log.**
+
 | ID | Title | Sev | Status |
 |---|---|---|---|
 | [M11-R0](reviews/M11.md#m11-r0) | `cargo fmt --check` red on `main` across four files the M11 commits touched — CI gates on it, so M11 as committed would fail on push | build | [x] |
@@ -2683,6 +2703,9 @@ no raw value in a log, and no panic when the new validator is fed non-ASCII deci
 | [M11-R45](reviews/M11.md#m11-r45) | The README Phone cell M11-R42's fix rewrote now says the spaced `+CC` arm is *"over-mask, never a miss"* — the opposite of M11-R43 — and its coverage cell still claims `+CC` always, which R42's own closure said it would stop | precision/docs | [x] |
 | [M11-R46](reviews/M11.md#m11-r46) | A 25th recognizer ships while six places still say 24 — including `RENDERING_ANSWERS`' *"24 rows for 24 pairs"* and `UTF8-01`'s *"2 168 today"*, measured 2 320 | docs | [x] |
 | [M11-R47](reviews/M11.md#m11-r47) | The round-11 fix did not reach `ARCHITECTURE.md` — **fourth consecutive round** — so it still calls `+CC` *"the one phone family with no validator whatsoever"* and prices a `+CC` candidate at **0** budget units; measured, the compact form is **1** and the spaced ones were never 0 | docs | [x] |
+| [M11-R48](reviews/M11.md#m11-r48) | A `+CC` phone written with `-`, `.` or `/` between its groups goes upstream **in clear** — `Mode::Rfc3966`, the hyphenated format mode no round sampled, leaks **0.385** of 13 000 valid numbers and the dot rendering **0.846**; the arm spells `{GAP}` while its own validator normalises punctuation away | **leak** | [ ] |
+| [M11-R49](reviews/M11.md#m11-r49) | `SEPARATOR-01` takes both its scope and its matrix alphabet from `GAP_CHARS`, so the `-`/`.` half of the axis is unguarded: hyphen support can be deleted from a shipped recognizer with the suite green at 255/0/5 | guard | [ ] |
+| [M11-R50](reviews/M11.md#m11-r50) | Both READMEs and `ARCHITECTURE.md` claim *"every `+CC` rendering — any grouping"*, written in the round-12 commit and false in it — third consecutive round the `+CC` coverage cell overstates | precision/docs | [ ] |
 
 <a id="m11-b"></a>
 ### Track B — the intra-op thread base: physical cores, not logical threads ✅

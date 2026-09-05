@@ -578,6 +578,31 @@ rather than a miss. The separator axis is the third (M11-R25): the patterns spel
 space while `iban_mod97` filters `char::is_whitespace()`, so an IBAN, card, phone or NINO written
 with a no-break space went upstream in clear.
 
+> **An axis has an *alphabet*, and deciding the axis is not the same as deciding the alphabet
+> (M11-R48).** `GAP_CHARS` is the separator axis's answer and it is a good one — a **named class
+> derived from what a validator accepts**, `char::is_whitespace()`, which is precisely what
+> `iban_mod97` folds. The trap is that there is one such class and several validators. Every
+> recognizer written since has spelled `{GAP}` because it was the nearest named class, not because
+> anyone asked what **its own** validator normalises away — and the answers differ: `phonenumber::parse`
+> discards `-`, `.`, `(`, `)` and `/` as well as whitespace. So the `+CC` phone arm proposes a
+> strictly narrower rendering set than its validator accepts, and the paragraph above says what that
+> is: renderings that reach the provider in clear. Measured, `Mode::Rfc3966` — libphonenumber's own
+> hyphenated mode, whose normative RFC 3966 example is `tel:+1-201-555-0123` — leaks **0.385** of
+> 13 000 valid numbers and the dot rendering **0.846**, while `E164`, `International` and `National`
+> are all 0.000.
+>
+> The same repository already holds the contradiction: four recognizers of the **one** kind `Phone`
+> spell four different separator alphabets by hand (`(?:[.-]|{GAP})`, `(?:-|{GAP})`, `{GAP}`), so
+> `06.12.34.56.78` is masked and `+33.6.12.34.56.78` — the same number — is not.
+>
+> **The rule: derive the separator class per recognizer from what *its* validator normalises, the way
+> `GAP_CHARS` was derived from `iban_mod97`, and never inherit a class because it is the one already
+> in scope.** Its companion is on the testing side, in [TESTING](TESTING.md): a guard that varies an
+> axis must vary the **alphabet the validator accepts**, not the nearest named set — `SEPARATOR-01`
+> substitutes only `GAP_CHARS` members for the ASCII space, so the `-`/`.` half of the axis it is
+> named for is unguarded. Which recognizers currently answer which alphabet is a status, so it lives
+> in the ledger in [`ROADMAP.md`](ROADMAP.md#m11) and is deliberately not restated here.
+
 **And a rendering has two coordinates, which is the fourth question (M11-R30).** *Which character*
 sits between a value's groups is one; *where the groups fall* is the other, and closing the first
 left the second open — Amex's own `3782 822463 10005` was forwarded while the same digits compact
