@@ -330,7 +330,21 @@ exactly the reason above.
 
 **What the budget costs, and the number is chosen against a legal payload.** One unit is one
 `phonenumber::parse()`, measured at **~3 µs** on the shipped release build, so **500,000** bounds a
-request's domestic-phone *validation* at **~1.5 s** of CPU. Every row below is printed by `DOS-BUD`
+request's domestic-phone *validation* at **~1.5 s** of CPU.
+
+> **That `~3 µs` is the cheapest corner of the grid it was read off, and the ceiling built on it is
+> understated by up to ~9× ([M11-R38](reviews/M11.md#m11-r38)).** A `parse()`
+> costs what the candidate makes it cost, and this file already says which way — *`.any()`
+> short-circuits only on accept, so a rejection is the expensive verdict.* Every row below is built
+> from **valid** numbers, so all of them sample the cheap branch. Measured in one process with the
+> phone-free floor subtracted, the same **500,000 units** cost **3.9–4.9 s** on a random
+> `3XX XXX XXXX` column and **13.0–15.3 s** on a column of zero-padded four-digit ids — a shape a
+> `LPAD`-ed id column produces without trying — and a 4 MiB body of the latter is refused by the real
+> binary only after **14.6 s**. Fail-closed throughout: nothing is forwarded, and the path stays
+> linear. **What to do about it is an open maintainer decision** — M11-R38 lists four options with
+> what each costs — so the figures here are left as they were measured rather than quietly restated.
+
+Every row below is printed by `DOS-BUD`
 (`cargo test --release --test complexity -- --ignored --nocapture budget_refusal_line`) — *a number a
 reader must trust goes stale; a number they can re-run is a fact*:
 
@@ -395,7 +409,10 @@ pinned by `PHONE-BUD`.
 > **The budget bounds validation, not the whole request — and saying otherwise would be M10-R30 in a
 > new place.** **Three** terms make up a request's CPU, and the third was found by M11-R18 rather
 > than designed:
-> 1. `units x ~3 µs`, which the allowance caps at ~1.5 s.
+> 1. `units x ~3 µs`, which the allowance caps at ~1.5 s — **on accepting traffic only. The unit is
+>    not a constant** (M11-R38): the same 500,000 units measure ~1.7 s on a column of valid numbers
+>    and **13–15 s** on one of phone-shaped non-numbers, because `.any()` short-circuits only on
+>    accept. So term 1 is a *band*, ~3 µs to ~30 µs, and the cap above is its floor.
 > 2. Regex scanning and the mask rewrite, linear in body size and entity count and bounded only by
 >    `MAX_BODY_BYTES` — **229 ms** for 16 MiB with the tier off.
 > 3. **`free()` validator work, which is per *candidate* and charged to nothing.** The wrapper's own
@@ -500,9 +517,19 @@ non-ASCII **letter** as part of a number. (`Email` / `Phone` are anchored by cha
 > pre-`831f916` body left the whole suite green, because every corpus in the repo is ASCII — the
 > `non_ascii_scripts` cases carry non-ASCII *letters* around ASCII values, never a non-ASCII *digit
 > inside* one. The guard substitutes four `\p{Nd}` digits of 2, 3, 3 and 4 bytes into every character
-> position of every positive in `CASE_ANSWERS` — the same registry the case axis derives from, so a
-> new recognizer joins both guards at once — and asserts that no validator panics and that the
+> position of every positive in `CASE_ANSWERS`, and asserts that no validator panics and that the
 > round trip stays byte-exact. See [M11-R21](reviews/M11.md#m11-r21).
+>
+> **Its scope is `CASE_ANSWERS`, and that registry is scoped to *letter-bearing* patterns — so it is
+> not the whole recognizer set (M11-R40).** This line used to say a new recognizer joined both guards
+> at once. A new **letter-bearing** one does; a digit-only one — the bare P.IVA is the most recent —
+> joins neither `CASE-01` nor `UTF8-01`, because `audit_case_axis` skips any pattern that cannot match
+> `A-Za-z`. That is right on the *case* axis and inverted on the *digit-script* one: 12 of the 24
+> shipped recognizers sit outside this guard, and they are precisely the ones whose patterns are
+> nothing but the Unicode `\d` it exists for. Measured, the exemption is benign today (2 168
+> substitutions over all 24 renderings: no panic, every round trip byte-exact) — it is the guard's
+> reach that is short, not the code that is broken. The ledger in [`ROADMAP.md`](ROADMAP.md#m11)
+> carries where that stands.
 >
 > **What `\d` being Unicode does *not* buy, stated because this file claimed otherwise (M11-R27).**
 > It does not make a value written in `\p{Nd}` digits *detected*: the pattern matches, and then

@@ -2558,6 +2558,31 @@ READMEs were rewritten for it ([M11-R37](reviews/M11.md#m11-r37)). Round 9 ran o
 identical, `fmt` and `clippy --all-targets --all-features -D warnings` clean, and both mutations it ran
 behaved as written down. **No fail-open, no over-mask regression, no raw value in a log.**
 
+**Round 10 (2026-09-05) tried to break round 9's fix and could not — that is the first result.** The
+card's shrink was driven over **93 600** generated Luhn-valid cards in their published groupings, each
+followed by one of 18 tokens, and over **15 120** cells of the 40 recorded renderings against a matrix
+that varies the token *before* the value as well as the one after — the axis every earlier round holds
+constant. **0 leaks at HEAD, 8 672 of 93 600 with the flag flipped back**, and `RENDER-01` goes red on
+that mutation, so the guard R33 added does watch its fix. No leak in `src/`. What the round found is on
+the **number the milestone is quoting at the maintainer**: `ARCHITECTURE.md`'s availability model reads
+`units × ~3 µs ⇒ ~1.5 s`, and that multiplicand is one corner of `DOS-BUD`'s grid. A `parse()` costs what
+the candidate makes it cost, and the same file says which way — *a rejection is the expensive verdict*.
+Measured in one process with the phone-free floor subtracted, the same **500 000 units** cost **3.9–4.9 s**
+on a random `3XX XXX XXXX` column and **13.0–15.3 s** on a column of zero-padded four-digit ids; through
+the real `.exe` a 4 MiB body of that shape is refused with **HTTP 400 after 14.6 s**
+([M11-R38](reviews/M11.md#m11-r38)). Fail-closed, nothing forwarded, and **not a regression** — `v1.2.1`
+measures 12.2 s on the identical body — but it makes a published ceiling false by ~9× and it re-prices
+[M11-R18](reviews/M11.md#m11-r18)'s open decision, whose worst shape is no longer the worst shape.
+`DOS-BUD` cannot see it because every row it builds is made of **valid** numbers, so the branch
+`.any()` short-circuits on is the only one sampled ([M11-R39](reviews/M11.md#m11-r39)); and `UTF8-01`
+inherits `CASE_ANSWERS`' letter-bearing scope, leaving 12 of 24 recognizers — the digit-only half, whose
+patterns are nothing but the Unicode `\d` the guard exists for — outside it, with `ARCHITECTURE.md`
+asserting the opposite ([M11-R40](reviews/M11.md#m11-r40)); 2 168 substitutions over all 24 renderings
+found **no live defect** behind that exemption. Round 10 ran on 254/0/5 twice and 290/0/22, `fmt` and
+`clippy --all-targets --all-features -D warnings` clean, five mutations — one of which **refuted its own
+hypothesis** (the card shrink is not a measurable cost) and one of which was refused by the
+non-empty-substitution check before it could report a false green.
+
 | ID | Title | Sev | Status |
 |---|---|---|---|
 | [M11-R0](reviews/M11.md#m11-r0) | `cargo fmt --check` red on `main` across four files the M11 commits touched — CI gates on it, so M11 as committed would fail on push | build | [x] |
@@ -2598,6 +2623,9 @@ behaved as written down. **No fail-open, no over-mask regression, no raw value i
 | [M11-R35](reviews/M11.md#m11-r35) | The `Ssn` row's recorded reason is measurably false — the 9-digit national-ID recognizer is mod-11-gated, so 2 of 4 realistic compact SSNs are forwarded in clear | precision | [x] |
 | [M11-R36](reviews/M11.md#m11-r36) | The comment above the card recognizer describes the chokepoint arm that was deliberately **not** taken — "any grouping or none", "+24 matches", a 34-char bound: all four claims belong to the rejected option | docs | [x] |
 | [M11-R37](reviews/M11.md#m11-r37) | `CHANGELOG.md`'s `[Unreleased]` says nothing about the card grouping change, though it fixes a leak (Amex/Diners in clear, a 19-digit card truncated) and both READMEs were rewritten for it | docs | [x] |
+| [M11-R38](reviews/M11.md#m11-r38) | The budget's published ceiling multiplies its count by the **cheapest** verdict: 500,000 units cost ~1.7 s on accepting traffic and **13–15 s** on a zero-padded id column, which the real `.exe` refuses only after **14.6 s** | hardening | [ ] |
+| [M11-R39](reviews/M11.md#m11-r39) | `DOS-BUD` varies rendering, layout and size but never the **verdict** — every row is built from valid numbers, so the grid samples only the branch `.any()` short-circuits on | guard | [ ] |
+| [M11-R40](reviews/M11.md#m11-r40) | `UTF8-01` inherits `CASE_ANSWERS`' letter-bearing scope, so 12 of 24 recognizers — the digit-only half — are outside the digit-script guard; `ARCHITECTURE.md` claims the opposite | guard | [ ] |
 
 <a id="m11-b"></a>
 ### Track B — the intra-op thread base: physical cores, not logical threads ✅
