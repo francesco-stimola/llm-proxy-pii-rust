@@ -630,6 +630,88 @@ fn budget_refusal_line_and_cost() {
         }
     }
 
+    // **The axis this grid held constant for four rounds: the VERDICT (M11-R39).** Every row above
+    // is built from *valid* numbers, so `applicable.iter().any(..)` short-circuits on the first
+    // region that accepts and only the **cheapest** branch is ever sampled. This file's own text
+    // says a rejection is the expensive verdict — `.any()` short-circuits on accept, so a rejected
+    // candidate is charged once per enabled region, up to nine — and the published `~3 µs` unit was
+    // taken from the accepting corner regardless. Measured, the unit spans roughly **3.4 µs to
+    // 30 µs**, and the worst *legal* shape is not the adversarial one: a zero-padded four-digit key
+    // column (`LPAD`-ed ids, which every ORM emits) is phone-shaped enough to be a candidate in
+    // every region and valid in none.
+    //
+    // A grid that varies size, rendering and layout but never the verdict cannot see that factor in
+    // the quantity it exists to publish. That is DOS-05's lesson — *the axis a test never varies is
+    // the one it cannot see* — landing on the measurement rather than on a guard.
+    //
+    // **Measured here, on this box (`--release`), and the shape of the answer is the point:**
+    //
+    //     3XX XXX XXXX (valid)     5 000 rows   40 000 spent   8 units/row   5 000 masked
+    //     0NNNN NNNN id column     5 000 rows   60 000 spent  12 units/row       0 masked
+    //
+    // The rejecting shape costs **half again as much per row and masks nothing**, so it reaches the
+    // allowance on a **smaller** body: the valid column is refused at 100 000 rows / 7.5 MB, the id
+    // column at **50 000 rows / 3.6 MB**. The worst *legal* body is therefore one whose candidates
+    // are all rejected — which is the opposite of the intuition the grid used to encourage, and it
+    // is why M11-R38 re-prices M11-R18's open decision.
+    println!("\n--- the same column, by VERDICT: accepted vs rejected candidates (M11-R39) ---");
+    println!(
+        "{:>22}  {:>10}  {:>7}  {:>12}  {:>8}  {:>7}",
+        "shape", "bytes", "rows", "verdict", "ms", "spent"
+    );
+    for (label, valid) in [
+        ("3XX XXX XXXX (valid)", true),
+        ("0NNNN NNNN id column", false),
+    ] {
+        for rows in [5_000usize, 20_000, 50_000, 100_000] {
+            let mut dump = String::from("id,customer,city,ref,email,total\n");
+            for r in 0..rows as u64 {
+                let token = if valid {
+                    format!(
+                        "3{:02} {:03} {:04}",
+                        20 + (r / 10_000_000) % 80,
+                        (r / 10_000) % 1000,
+                        r % 10_000
+                    )
+                } else {
+                    // A zero-padded key column — `LPAD`-ed ids, which every ORM emits. It is
+                    // phone-shaped enough to be a candidate in every enabled region, and the
+                    // **accept rate is what the run reports** rather than what this comment
+                    // asserts: the first version of this row claimed "rejected in all of them"
+                    // and measured 4 145 of 5 000 *masked*, on an odometer that repeated every
+                    // 10 000 rows so the memo served most of it for free. Distinct now, and
+                    // labelled by shape rather than by a verdict nobody had measured.
+                    format!("0{:04} {:04}", (r / 10_000) % 10_000, r % 10_000)
+                };
+                dump.push_str(&format!(
+                    "{},Customer Name {},Milano,{},user{}@example.com,{}.50\n",
+                    10_000 + r,
+                    r,
+                    token,
+                    r,
+                    100 + r % 900
+                ));
+            }
+            let budget = llm_proxy_pii_rust::pii::Budget::new(
+                llm_proxy_pii_rust::pii::recognizers::MAX_PHONE_VALIDATIONS_PER_REQUEST,
+            );
+            let started = Instant::now();
+            let mut vault = Vault::new();
+            let verdict = match vault.mask_all(&dump, &detector, &budget) {
+                Ok(masked) => format!("{} masked", masked.matches("[PHONE_").count()),
+                Err(_) => "REFUSED".to_string(),
+            };
+            println!(
+                "{label:>22}  {:>10}  {:>7}  {:>12}  {:>8.0}  {:>7}",
+                dump.len(),
+                rows,
+                verdict,
+                started.elapsed().as_secs_f64() * 1000.0,
+                budget.spent()
+            );
+        }
+    }
+
     // **The allowance is a count of numbers, not a count of bytes — and publishing it in bytes is
     // what went wrong four times (M10-R56).** At a given rendering the cost per phone number is
     // flat, so the *row* limit is fixed; the *byte* limit is whatever surrounds the column. Three

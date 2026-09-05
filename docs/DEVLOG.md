@@ -3,6 +3,69 @@
 Newest first. One entry per meaningful change — note *what* and *why*, not just
 *what*. This is the running history so context is never lost between sessions.
 
+## 2026-09-05 — M11 round 10: no leak, and two guards that were asking someone else's question
+
+Round 10 could not break round 9's fix — 93 600 generated cards x published groupings x 18 following
+tokens, 0 leaks; 15 120 cells varying the *preceding* token as well, 0. **No leak in `src/`.** Three
+findings, one in the product and escalated.
+
+### M11-R38 — the budget's unit is not a constant, and the worst legal body is the one that masks nothing
+
+`ARCHITECTURE.md` published `units x ~3 µs => ~1.5 s`, taking its multiplicand from the cheapest
+corner of `DOS-BUD`'s grid — while the same file says *a rejection is the expensive verdict*, because
+`.any()` short-circuits on **accept**. Measured, the unit spans roughly **3.4 µs to 30 µs**, and a
+zero-padded key column — `LPAD`-ed ids, which every ORM emits — is refused by the real binary only
+after **14.6 s**. Fail-closed, not a regression, and *not* an M11 regression either: `v1.2.1` answers
+the same body in 12.2 s.
+
+All four remedies change product-visible behaviour, so the finding is **escalated**, and it does not
+join M11-R18 so much as **re-price** it: the worst legal shape is no longer the lowercase-IBAN body
+in term 3, it is this one in term 1.
+
+### M11-R39 — the axis `DOS-BUD` never varied was the verdict
+
+Every row of that grid was built from **valid** numbers. Adding the axis, on `--release`:
+
+    3XX XXX XXXX (valid)     5 000 rows   40 000 spent    8 units/row   5 000 masked
+    0NNNN NNNN id column     5 000 rows   60 000 spent   12 units/row       0 masked
+
+The rejecting shape costs half again as much per row and **masks nothing**, so it reaches the
+allowance on a *smaller* body — refused at 50 000 rows / 3.6 MB against the valid column's 100 000
+rows / 7.5 MB. **The worst legal body is one whose candidates are all rejected.** That is the
+opposite of what a grid of valid numbers encourages you to think, and it is why R38 re-prices R18.
+
+**Two traps this file already names caught its author on the way.** My first version of the row
+asserted *"rejected in all regions"* in a comment and measured **4 145 of 5 000 masked** — the shape
+was mostly valid — on an odometer that repeated every 10 000 rows, so the memo served most of it free
+and the cost read as sub-linear. Distinct now, and the label states the **shape** rather than a
+verdict nobody had measured: the same correction M11-R34 made to prose, one file and one day over.
+
+### M11-R40 — a guard scoped by the wrong registry
+
+`UTF8-01` asks about **digits** and took its corpus from `CASE_ANSWERS`, which is scoped by
+`pattern_can_match_a_letter` because letter case is *its* axis. So **12 of 24** recognizers were
+outside it — the card, the universal phone, the SSN, the FR NIR, the 9- and 11-digit ids, the LV
+dashed code, the bare P.IVA and all four domestic-phone families: precisely the patterns made of
+nothing but the Unicode `\d` the guard exists for. No live defect behind it, and now derived from
+`RENDERING_ANSWERS`: **932 substitutions became 2 168**, matching the round's own probe exactly, with
+the floor moved from 500 to 1 500 so the widening cannot be undone silently.
+
+M11-R31 one axis over, and the two together are the rule: **a guard takes its scope from the registry
+whose question it asks, not from whichever registry is nearest.** There is now one registry per axis
+and one all-recognizers registry underneath them.
+
+### Numbers
+
+**254 / 0 / 5** over 24 binaries; `fmt` and `clippy --all-targets -D warnings` clean. No test count
+moved — both fixes widened existing guards rather than adding siblings.
+
+**Tally**, by the ledger's severity cell: round 10 is **1 in the product** (R38 `hardening`, open) and
+**2 on the net or the docs**. Running total: **27 on the net or the docs, 14 in the product**, 41
+rows.
+
+**Open: [M11-R18](reviews/M11.md#m11-r18) and [M11-R38](reviews/M11.md#m11-r38)** — one decision in
+two rows, now with the coverage questions that accumulated beside them (R23, R27, R30, R35).
+
 ## 2026-09-05 — M11 round 9: my own fix leaked, and nothing could tell the two builds apart
 
 Round 8 closed the card's 19-digit truncation by giving the `4-4-4-4` arm an optional 1-3-digit

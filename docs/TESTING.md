@@ -577,6 +577,20 @@ two *other* always-on tiers already claim that shape.
   to catch a *truncating* shrink, which `IBAN-05` and `PHONE-NAT-09` cover from the other side.
   Non-vacuity floor **10, measured at 14** — the 20 that felt right before it was counted was
   already too high on the day it was written (M11-R7's lesson, applied to its own author).
+- **DOS-BUD gains the verdict axis (M11-R39).** The grid varies field size, rendering, layout and
+  field count — and every row was built from **valid** numbers, so `applicable.iter().any(..)`
+  short-circuits on the first region that accepts and only the cheapest branch was ever sampled.
+  This file's own text says a rejection is the expensive verdict, and the published `~3 µs` unit was
+  taken from the accepting corner anyway. Measured on `--release` with the axis added:
+  a valid `3XX XXX XXXX` column costs **8 units/row** and masks every row; a zero-padded
+  `0NNNN NNNN` key column — `LPAD`-ed ids, which every ORM emits — costs **12 units/row** and masks
+  **none**, so it reaches the allowance on a **smaller** body: refused at 50 000 rows / 3.6 MB
+  against the valid column's 100 000 rows / 7.5 MB. *The worst legal body is one whose candidates are
+  all rejected*, which is the opposite of what the grid used to encourage. The first version of this
+  row asserted "rejected in all regions" in a comment and measured 4 145 of 5 000 **masked**, on an
+  odometer that repeated every 10 000 rows so the memo served most of it free — both traps this file
+  already names, met again by its own author; the shape is now distinct and the label states the
+  shape rather than a verdict nobody had measured.
 - **UTF8-01 (M11-R21) — `a_non_ascii_digit_inside_a_value_never_panics_a_validator`: `\d` is
   Unicode and a matched span is text, not bytes.** M4-R13 de-Unicoded the word *boundary* and
   left `\d` alone. **What that buys is smaller than this entry used to claim (M11-R27):** it said
@@ -598,7 +612,7 @@ two *other* always-on tiers already claim that shape.
   new letter-bearing recognizer is exercised on this axis the moment its case answer is recorded —
   one registry, two guards — substituting each of four `\p{Nd}` digits of 2, 3, 3 and 4 bytes into
   every character position of every positive, and asserting both that no validator panics and that
-  the `mask_all` -> `demask` round trip stays byte-exact. **932 substitutions** measured, floor 500.
+  the `mask_all` -> `demask` round trip stays byte-exact. **2 168 substitutions** measured, floor 1 500 — it was 932 against a `CASE_ANSWERS` corpus that left the digit-only half of the tier outside a guard about digits (M11-R40).
   **The residue this measures, stated because it is the reason the panic lived ten milestones:**
   every corpus in this repo is ASCII, `non_ascii_scripts` included — it puts non-ASCII letters
   *around* an ASCII value, never a non-ASCII digit *inside* one.
@@ -608,10 +622,12 @@ two *other* always-on tiers already claim that shape.
   the universal phone, the SSN, the FR NIR, the 9- and 11-digit ids, the LV dashed code, the bare
   IT P.IVA and all four domestic-phone families. They are exactly the patterns made of nothing but
   the Unicode `\d` this guard exists for, which is `SEPARATOR-01`'s M11-R31 defect one axis over.
-  Probed at HEAD over **all 24** renderings — 2 168 substitutions against this guard's 932 — there
-  is **no live defect**: every digit-only validator filters to ASCII or folds `chars()`. The fix is
-  to derive the corpus from `RENDERING_ANSWERS`, which M11-R31 already made the all-recognizers
-  registry. Status in the [ledger](ROADMAP.md#m11).
+  Probed over **all 24** renderings before the fix — 2 168 substitutions against the guard's 932 —
+  there was **no live defect**: every digit-only validator filters to ASCII or folds `chars()`.
+  **Closed by deriving the corpus from `RENDERING_ANSWERS`**, which M11-R31 had already made the
+  all-recognizers registry, so the guard now runs all 2 168 and the floor moved from 500 to 1 500.
+  What the finding leaves behind is the rule: a guard takes its scope from the registry whose
+  *question* it asks, not from whichever registry is nearest.
 - **CASE-02 (M11-R10) — `a_lowercase_iban_is_masked_only_when_it_verifies`: folding case on IBAN without opening the door it was keeping shut.** The IBAN half could not simply be folded. An IBAN has **no hard checksum gate** — M4 decided that a structurally valid one is masked even when mod-97 fails — so widening `[A-Z]` to `[A-Za-z]` sweeps in hex digests and base64 blobs. **Measured over 341.1 MB / 16 380 files of third-party source: 1 match uppercase, 150 case-folded**, and masking a hex digest inside a `tool_use.input` is the functional harm M10 spent nine rounds bounding. So `iban_case_gate` splits the rule by rendering: canonical uppercase keeps M4's behaviour untouched, while a rendering carrying **any** lowercase letter must be fully verifiable — mod-97 *and* the ISO 13616 length. Measured residue: **1 of 936** added matches, over 304.9 MB / 13 998 files (`ab22 ab23 ab44 ab45 ab66 ab67`, a matrix kernel's SIMD register list, masked as `[IBAN_1]`). **Not zero, and it was never going to be:** `iban_length_ok` answers `true` for a country code it does not know, so a span prefixed `ab` is gated by mod-97 **alone** and one arbitrary span in 97 passes it. The expected residue is therefore `added / 97` — here ~9.6 — and the earlier rounds' published **0** was a corpus artefact nobody checked against that expectation (M11-R19). The direction is safe (over-mask, restored byte-identically) and the rate is ~1 per 300 MB, but the *bound* is the mod-97 rate, not zero. Both halves of the split are pinned here, because getting either wrong is silent.
 - **CASE-03 (M11-R11) — `the_case_axis_audit_notices_a_recognizer_with_no_answer`: the half that gets skipped.** `CASE-01` proves the recorded answers are **right**; this proves the question is **reached**, and it exists because skipping this half is exactly how a nine-row `const` came to be documented as a chokepoint and survived a full review round. Both pure decisions are driven directly. The derivation gets a matrix of eleven patterns including the readings a substring scan gets wrong — a word boundary and `\d` (no), letters in a *literal* rather than a class (yes), one letter at the end of a digit run (yes), a byte class (yes, the walker arm no shipped pattern reaches), and `\p{Greek}` (no — the measured ASCII residue above). The audit gets the **real shipped registry plus a stand-in recognizer**, not a synthetic list, because a synthetic registry would only prove the function works on invented input; a digits-only stand-in must *not* be asked, and an answer naming no shipped recognizer must be reported **stale**, so a deleted recognizer cannot leave its answer behind asserting a closed question.
 - **VAT-06 — `vat_is_always_on_regardless_of_locales`: the posture, and the guard against a config

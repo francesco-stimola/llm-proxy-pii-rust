@@ -4193,9 +4193,16 @@ mod tests {
     /// to its pre-`831f916` body leaves the suite at 250/0/5. Nothing pinned the property; this
     /// does.
     ///
-    /// The corpus is **derived from [`CASE_ANSWERS`]** rather than hand-written, so a new
-    /// letter-bearing recognizer is exercised on this axis the moment its case answer is recorded —
-    /// one registry, two guards.
+    /// The corpus is **derived from [`RENDERING_ANSWERS`]** rather than hand-written, so a new
+    /// recognizer is exercised on this axis the moment its rendering answer is recorded.
+    ///
+    /// **It was `CASE_ANSWERS` until M11-R40, and that was the wrong registry for this question.**
+    /// `CASE_ANSWERS` scopes itself to *letter-bearing* recognizers, because letter case is its
+    /// axis; this guard asks about **digits**, and inherited a scope that excluded 12 of the 24 —
+    /// the digit-only half, which is exactly where a `\p{Nd}` substitution is most relevant.
+    /// M11-R31 is the same mistake one axis over: a guard taking its scope from whichever registry
+    /// was nearest rather than from the one whose question it asks. Measured on the way in: 932
+    /// substitutions became **2 168**, and none of the new ones panics.
     #[test]
     fn a_non_ascii_digit_inside_a_value_never_panics_a_validator() {
         // One per encoded length that is not one byte, so a byte index into a matched span lands
@@ -4210,42 +4217,54 @@ mod tests {
         let detector = StructuredRecognizers::new();
         let mut substitutions = 0usize;
 
-        for answer in CASE_ANSWERS {
-            for digit in DIGITS {
-                // Every character position, so the substitution lands in the country code, the
-                // check digits, the body and the final character in turn.
-                for cut in 0..answer.positive.chars().count() {
-                    let mutated: String = answer
-                        .positive
-                        .chars()
-                        .enumerate()
-                        .map(|(i, c)| if i == cut { *digit } else { c })
-                        .collect();
-                    let input = format!("Account {mutated} please");
-                    substitutions += 1;
+        // **The corpus is `RENDERING_ANSWERS`, not `CASE_ANSWERS`** (M11-R40). It was the latter,
+        // which is the registry for the *letter-case* axis — so its scope is letter-bearing
+        // recognizers, and this guard inherited that scope for a question about **digits**,
+        // leaving 12 of the 24 recognizers (the digit-only half, exactly the ones a `\p{Nd}`
+        // substitution is most relevant to) outside it. That is M11-R31 one axis over: a guard
+        // taking its scope from whichever registry was nearest rather than from the one whose
+        // question it is asking. `RENDERING_ANSWERS` has a row per shipped recognizer, so the
+        // scope is now all of them.
+        for answer in RENDERING_ANSWERS {
+            for rendering in answer.detected {
+                for digit in DIGITS {
+                    // Every character position, so the substitution lands in the country code, the
+                    // check digits, the body and the final character in turn.
+                    for cut in 0..rendering.chars().count() {
+                        let mutated: String = rendering
+                            .chars()
+                            .enumerate()
+                            .map(|(i, c)| if i == cut { *digit } else { c })
+                            .collect();
+                        let input = format!("Account {mutated} please");
+                        substitutions += 1;
 
-                    // The panic is the assertion: `detect` runs every validator in the tier.
-                    let found = detector.detect(&input);
+                        // The panic is the assertion: `detect` runs every validator in the tier.
+                        let found = detector.detect(&input);
 
-                    // And the round trip must survive it — masking a span whose bytes and
-                    // characters disagree is where an index would go wrong a second time.
-                    let mut vault = crate::pii::anonymizer::Vault::new();
-                    let masked = vault
-                        .mask_all(&input, &detector, &Budget::per_call())
-                        .expect("an ordinary sentence must not be refused");
-                    assert_eq!(
-                        vault.demask(&masked),
-                        input,
-                        "the round trip must be byte-exact for {input:?} (found {found:?})"
-                    );
+                        // And the round trip must survive it — masking a span whose bytes and
+                        // characters disagree is where an index would go wrong a second time.
+                        let mut vault = crate::pii::anonymizer::Vault::new();
+                        let masked = vault
+                            .mask_all(&input, &detector, &Budget::per_call())
+                            .expect("an ordinary sentence must not be refused");
+                        assert_eq!(
+                            vault.demask(&masked),
+                            input,
+                            "the round trip must be byte-exact for {input:?} (found {found:?})"
+                        );
+                    }
                 }
             }
         }
 
         // Non-vacuity, and the number is read off a run rather than reasoned about (M11-R19):
-        // the answers x 4 digits x their character counts come to **932** today.
+        // every recognizer's recorded renderings x 4 digits x their character counts come to
+        // **2 168** today — up from 932 when the corpus was `CASE_ANSWERS` and half the tier was
+        // outside it (M11-R40). The floor moves with the scope; leaving it at 500 would have let
+        // the widening be undone without a word.
         assert!(
-            substitutions >= 500,
+            substitutions >= 1_500,
             "only {substitutions} substitutions were built — the corpus is not exercising the axis"
         );
     }

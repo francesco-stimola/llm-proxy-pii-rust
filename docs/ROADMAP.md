@@ -2624,8 +2624,8 @@ non-empty-substitution check before it could report a false green.
 | [M11-R36](reviews/M11.md#m11-r36) | The comment above the card recognizer describes the chokepoint arm that was deliberately **not** taken — "any grouping or none", "+24 matches", a 34-char bound: all four claims belong to the rejected option | docs | [x] |
 | [M11-R37](reviews/M11.md#m11-r37) | `CHANGELOG.md`'s `[Unreleased]` says nothing about the card grouping change, though it fixes a leak (Amex/Diners in clear, a 19-digit card truncated) and both READMEs were rewritten for it | docs | [x] |
 | [M11-R38](reviews/M11.md#m11-r38) | The budget's published ceiling multiplies its count by the **cheapest** verdict: 500,000 units cost ~1.7 s on accepting traffic and **13–15 s** on a zero-padded id column, which the real `.exe` refuses only after **14.6 s** | hardening | [ ] |
-| [M11-R39](reviews/M11.md#m11-r39) | `DOS-BUD` varies rendering, layout and size but never the **verdict** — every row is built from valid numbers, so the grid samples only the branch `.any()` short-circuits on | guard | [ ] |
-| [M11-R40](reviews/M11.md#m11-r40) | `UTF8-01` inherits `CASE_ANSWERS`' letter-bearing scope, so 12 of 24 recognizers — the digit-only half — are outside the digit-script guard; `ARCHITECTURE.md` claims the opposite | guard | [ ] |
+| [M11-R39](reviews/M11.md#m11-r39) | `DOS-BUD` varies rendering, layout and size but never the **verdict** — every row is built from valid numbers, so the grid samples only the branch `.any()` short-circuits on | guard | [x] |
+| [M11-R40](reviews/M11.md#m11-r40) | `UTF8-01` inherits `CASE_ANSWERS`' letter-bearing scope, so 12 of 24 recognizers — the digit-only half — are outside the digit-script guard; `ARCHITECTURE.md` claims the opposite | guard | [x] |
 
 <a id="m11-b"></a>
 ### Track B — the intra-op thread base: physical cores, not logical threads ✅
