@@ -3,6 +3,76 @@
 Newest first. One entry per meaningful change — note *what* and *why*, not just
 *what*. This is the running history so context is never lost between sessions.
 
+## 2026-09-05 — M11 round 12: a fix that answered the headline number, not the finding
+
+### M11-R43 — round 11 closed one rendering of the three its own finding measured
+
+M11-R41 measured E.164 at 0.918 missed, `Mode::International` at 0.154, and quoted
+`+55 11 91234 5678 -> [PHONE_1] 5678` as **worse** than a miss. The fix I shipped was
+`\+\d{8,15}` — **one unbroken digit run**, which cannot match a spaced rendering by construction.
+So `+33 6 12 34 56 78` was untouched, the Brazilian truncation was untouched, and the ledger row,
+the closure note, `TESTING.md` and `CHANGELOG.md` all read as closed — the changelog quoting the
+Brazilian case *inside a bullet headed "is now masked"*. Re-measured on the finding's own
+methodology: **973 of 3 250** international renderings still carried digits upstream, 613 whole and
+360 truncated; both French templates 0 of 250 clean.
+
+The arm now spans the gap class — `\+\d{1,3}(?:{GAP}\d{1,8}){1,6}` beside the compact one —
+still gated by `parse(None, ..).is_valid()`, and with **`shrink_on_reject: true`**, which the
+unbroken version did not need and this one does: a grouped arm is greedy across separators and
+over-reaches into what follows. That is the M11-R13 / M11-R33 pair, stated as a rule two rounds ago
+and applied here without being rediscovered — the first time this milestone that has happened.
+
+**The group cap is 8 because `RENDER-01` refused 5.** `+31 6 12345678` has an eight-digit second
+group; a cap chosen from the renderings one happens to think of is the same defect one level down,
+caught in the minute it was written.
+
+**What generalises, and no guard catches it:** *a fix that answers a finding's headline number is not
+the same as a fix that answers the finding.* The guard was green and the box was ticked; only
+re-running the finding's own methodology showed it. So: **when a finding measures N renderings, the
+closure reports N numbers.**
+
+### M11-R44 — a filter that fails by silence, on the family that had just leaked twice
+
+`looks_like_a_rendering` allowed only `[A-Za-z0-9 -]`, so **no `+CC` rendering could ever bind** to
+`RENDER-01`'s `why` audit. It decides *whether* to assert, so a token it wrongly rejects is never
+checked and everything stays green — round 12 proved it by quoting `+33 6 12 34 56 78` in a `why`
+with both lists empty: **157/0**.
+
+`+` is in the set now, and the function has a **matrix** — which failed on its first run, on
+`4-4-4-4`: the doc beside the filter claimed that was excluded and it never was. The matrix corrected
+the documentation of the function it was written to check, in the same minute. The rule, and its
+corollary, are both on the function now: *prove such a filter by a token it MUST accept*, and *where
+acceptance and rejection pull against each other, the tie goes to accepting* — over-acceptance costs
+a list entry, under-acceptance costs an assertion nobody notices is missing.
+
+### M11-R45 / R46 / R47 — and the fourth consecutive round of stale prose
+
+- Both READMEs called the spaced `+CC` arm *"over-mask, never a miss"* — written in the round-11
+  commit and false in it. With R43 closed the sentence is obsolete rather than merely wrong: only the
+  **US 3-3-4** arm is shape-only now, and both tables say so.
+- `RENDERING_ANSWERS` said *"24 rows for 24 pairs"* and a 25th recognizer shipped a round later. The
+  number is **deleted, not incremented**: the audit enforces the correspondence both ways, so prose
+  restating it adds only something to go stale. `UTF8-01`'s count is re-measured at **2 572**, floor
+  2 000.
+- `ARCHITECTURE.md` had two false `+CC` claims and this is the **fourth** round to find that file
+  stale (R17, R26, R32, R47). Four rounds is not four oversights; it is one rule stated too narrowly.
+  R32 wrote *"a status belongs in the ledger, never in prose"* — and this round found a **measurement**
+  asserted in prose right beside it. The general form now stands in both files: **if something is
+  enforced or measured elsewhere, prose links it and does not restate it.**
+
+### Numbers
+
+**255 / 0 / 5** over 24 binaries, twice, identical (round 12 measured 254; the +1 is the filter
+matrix); `cargo test-onnx` **291 / 0 / 22**; `fmt` and `clippy --all-targets -D warnings` clean.
+`national_phone_does_not_swallow_an_adjacent_number` stayed green — that is the failure mode the
+card's general arm hit in M11-R30, and it was checked here first for that reason.
+
+**Tally**, counted from the ledger: **29 on the net or the docs, 19 in the product**, 48 rows.
+
+**Open: [M11-R18](reviews/M11.md#m11-r18) and [M11-R38](reviews/M11.md#m11-r38)** — both maintainer
+decisions about the budget's unit, plus the coverage questions recorded beside them (R23, R27, R30,
+R35).
+
 ## 2026-09-05 — M11 round 11: the rendering nobody wrote down
 
 ### M11-R41 — a phone number in the form every API stores it

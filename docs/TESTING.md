@@ -464,7 +464,7 @@ two *other* always-on tiers already claim that shape.
   **Its scope is every shipped recognizer, and that is M11-R31's fix.** `SEPARATOR-01` derives its
   scope from the pattern — *can this pattern match a gap?* — which exempted **16 of 24** recognizers
   by construction, and a recognizer that offers no grouping is exactly the one whose missing
-  grouping cannot be noticed that way. Grouping is a property of the **value**, so all 24 must
+  grouping cannot be noticed that way. Grouping is a property of the **value**, so every one must
   answer; the audit names any that does not.
   **`not_detected` is the way to say no**, which the separator registry had no field for. A row
   lists renderings the value *is* published in and this build deliberately does not detect — the

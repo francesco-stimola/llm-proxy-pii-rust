@@ -384,9 +384,9 @@ reader must trust goes stale; a number they can re-run is a fact*:
 > 5,000-row export spends **8%** of the allowance; a real 22 KiB Claude Code turn spends **0**.
 >
 > **Per candidate in isolation the numbers are different, and the difference is the memo.** One
-> `06 12 34 56 78` costs **46** units on its own — against 1 for `347 1234567`, 0 for a `+CC` form
-> (that recognizer has no validator at all) and 65 for the most expensive candidate found, which no
-> plan accepts. In a *column* those collapse, because the per-scan memo absorbs the repeated
+> `06 12 34 56 78` costs **46** units on its own — against 1 for `347 1234567`, **1 for a `+CC`
+> form** (0 until M11-R41: that family had no validator at all, which is what let E.164 leak) and 65
+> for the most expensive candidate found, which no plan accepts. In a *column* those collapse, because the per-scan memo absorbs the repeated
 > sub-candidate prefixes: FR drops from 46 to 3.27. *Isolation measures how a rendering behaves; the
 > column measures what a body costs, and only the second one answers "can real traffic reach this?".*
 >
@@ -615,9 +615,17 @@ in the ledger and link it, never in prose.**
 > Its corollary is about validators rather than patterns: **the strongest check available should reach
 > the easiest case first.** The nine domestic families need a region hint and a loose candidate, and
 > they got `phonenumber::is_valid()`; the `+CC` form carries its own country code, so
-> `parse(None, ..)` is decisive for it with no hint at all — and it is the one phone family with **no
-> validator whatsoever**. When a tier's hardest case is validated and its easiest is not, that is a
-> sign the seam was drawn around the code that was being written rather than around the question.
+> `parse(None, ..)` is decisive for it with no hint at all — and it was the one phone family with
+> **no validator whatsoever**. When a tier's hardest case is validated and its easiest is not, that
+> is a sign the seam was drawn around the code that was being written rather than around the
+> question. It now has one, over every rendering: compact E.164 and any grouping.
+>
+> **And the first fix for it closed one rendering of the three the finding measured (M11-R43).** It
+> was `\+\d{8,15}` — an unbroken digit run, which cannot match a spaced rendering **by
+> construction**, so `+33 6 12 34 56 78` was untouched and `+55 11 91234 5678` still came back
+> `[PHONE_1] 5678`. A fix that answers the headline number of a finding is not the same as a fix
+> that answers the finding; the arm now spans the gap class, with the shrink the M11-R13/R33 pair
+> obliges.
 
 **A validator that rejects must not be able to delete a value (M11-R13).** The corollary, learned
 immediately and the hard way. `iban_case_gate` was added to a recognizer that had previously

@@ -61,7 +61,7 @@ request — so a masked conversation still makes sense to the model.
 | **Credit card** | `[CARD_1]` | deterministic · always on | **Luhn** checksum + 13–19 digits, compact or in the groupings issuers print (4-4-4-4, Amex 4-6-5, Diners 4-6-4, 19-digit 4-4-4-4-3) | universal |
 | **IBAN** | `[IBAN_1]` | deterministic · always on | **mod-97** + that country's length | universal |
 | **Secret / API key** | `[SECRET_1]` | deterministic · always on | issuer prefix — `sk-…`, `sk-ant-…`, `AKIA…` | universal |
-| **Phone** | `[PHONE_1]` | deterministic · always on | **9 domestic plans** and compact `+CC` (E.164): the country's real numbering plan says the number is *assigned*. The **spaced `+CC` and US 3-3-4 forms are shape-only** — they mask on grouping alone, so an unassigned-looking number in those renderings is masked too (over-mask, never a miss) | `+CC` and US always · **9 domestic plans** |
+| **Phone** | `[PHONE_1]` | deterministic · always on | **9 domestic plans** and every `+CC` rendering — compact E.164 and any grouping — checked against the country's real numbering plan. The **US 3-3-4 form is shape-only**: it masks on grouping alone, so `555-867-5309` is masked though no plan assigns it (over-mask, never a miss) | `+CC` in any rendering, US always · **9 domestic plans** |
 | **US SSN** | `[SSN_1]` | deterministic · always on | area / group / serial rules | 🇺🇸 |
 | **National ID** | `[NATID_1]` | deterministic · always on | that scheme's own checksum — mod-23, mod-97, mod-11, ISO 7064, NINO rules | **10 countries** |
 | **VAT / tax ID** | `[TAXID_1]` | deterministic · always on | that country's VAT checksum — mod-10, ISO 7064, mod-97, mod-11 (🇳🇱 by format: its scheme has none) | **5 countries** |

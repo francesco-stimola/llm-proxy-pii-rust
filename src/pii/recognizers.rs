@@ -367,8 +367,8 @@ fn universal_recognizers() -> Vec<Recognizer> {
             // the recognizer whose doc said checksum recognizers must not shrink.
             shrink_on_reject: true,
         },
-        // **The `+CC` form written compactly — E.164, the rendering every API and address book
-        // stores (M11-R41).** The two hand-enumerated `+CC` groupings below need **two**
+        // **The `+CC` form in every rendering — compact E.164 and any grouping (M11-R41 /
+        // M11-R43).** The two hand-enumerated `+CC` groupings below need **two**
         // separators, so `+393471234567` proposed no candidate at all and went upstream in clear
         // for eleven milestones: byte-identical at every tag from `v0.4.0`, and of the 35 phone
         // positives in this repo's corpus **not one** is E.164. Measured over 13 000 numbers
@@ -389,11 +389,22 @@ fn universal_recognizers() -> Vec<Recognizer> {
         // that one has `validate: None`, and giving it a validator would also gate the US 3-3-4 arm
         // — which today masks `555-867-5309`, `is_valid`-false and masked on purpose (M11-R42).
         // Narrowing that is a coverage decision and not this fix's to take.
+        //
+        // **It shipped as `\+\d{8,15}` first, and that closed one rendering of three (M11-R43).**
+        // The finding it answered measured E.164 at 0.918 missed, `Mode::International` at 0.154 —
+        // and an unbroken digit run cannot match a spaced rendering **by construction**, so
+        // `+33 6 12 34 56 78` was untouched and `+55 11 91234 5678` still came back
+        // `[PHONE_1] 5678`. Re-measured after that fix: 973 of 3 250 international renderings still
+        // carried digits upstream, 613 whole and 360 truncated. The grouped arm below is the class;
+        // the compact one is now the second alternative rather than the whole answer.
         Recognizer {
             kind: PiiKind::Phone,
             // No `\b` before `+`: it is not a word character, so a boundary there would never
             // match. The trailing one stops the span inside a longer digit run.
-            regex: Regex::new(r"\+\d{8,15}(?-u:\b)").unwrap(),
+            regex: Regex::new(&with_gaps(
+                r"\+\d{1,3}(?:{GAP}\d{1,8}){1,6}(?-u:\b)|\+\d{8,15}(?-u:\b)",
+            ))
+            .unwrap(),
             validate: Some(Box::new(|matched: &str, budget: &Budget| {
                 // Charged like every other `parse()` (M10-R29): one unit, because that is the
                 // ~6.5 µs the allowance was sized from. One parse per candidate here rather than
@@ -401,11 +412,15 @@ fn universal_recognizers() -> Vec<Recognizer> {
                 budget.spend();
                 phonenumber::parse(None, matched).is_ok_and(|number| number.is_valid())
             })),
-            scan: Scan::Overlapping, // bounded: ≤ 16 chars
-            // Nothing to cut: the span is one unbroken digit run, so there is no separator for
-            // `shrink_to_a_valid_prefix` to walk back to, and the trailing `\b` already prevents
-            // the over-reach that obliges a shrink elsewhere (M11-R13 / M11-R33).
-            shrink_on_reject: false,
+            scan: Scan::Overlapping, // bounded: ≤ 3 + 6x5 digits + 6 separators
+            // **Obliged by the grouped arm, and M11-R43 is what leaving it off cost** — the pair
+            // M11-R13 established and M11-R33 met again: a pattern whose reach exceeds what its
+            // validator accepts **must** shrink, or a rejected span takes a real value with it.
+            // The grouped arm is greedy across separators, so it over-reaches into whatever
+            // follows; `is_valid()` then refuses the longer run, and without a shrink the whole
+            // candidate is discarded. `+55 11 91234 5678` is the shape that proves it: before this,
+            // it came back `[PHONE_1] 5678` — four digits of a real mobile in clear.
+            shrink_on_reject: true,
         },
         Recognizer {
             kind: PiiKind::Email,
@@ -4260,7 +4275,7 @@ mod tests {
         // **The corpus is `RENDERING_ANSWERS`, not `CASE_ANSWERS`** (M11-R40). It was the latter,
         // which is the registry for the *letter-case* axis — so its scope is letter-bearing
         // recognizers, and this guard inherited that scope for a question about **digits**,
-        // leaving 12 of the 24 recognizers (the digit-only half, exactly the ones a `\p{Nd}`
+        // leaving the digit-only half of the tier outside it — exactly the ones a `\p{Nd}`
         // substitution is most relevant to) outside it. That is M11-R31 one axis over: a guard
         // taking its scope from whichever registry was nearest rather than from the one whose
         // question it is asking. `RENDERING_ANSWERS` has a row per shipped recognizer, so the
@@ -4300,11 +4315,12 @@ mod tests {
 
         // Non-vacuity, and the number is read off a run rather than reasoned about (M11-R19):
         // every recognizer's recorded renderings x 4 digits x their character counts come to
-        // **2 168** today — up from 932 when the corpus was `CASE_ANSWERS` and half the tier was
-        // outside it (M11-R40). The floor moves with the scope; leaving it at 500 would have let
-        // the widening be undone without a word.
+        // **2 572** today — 932 when the corpus was `CASE_ANSWERS` and half the tier was outside
+        // it (M11-R40), 2 320 once it was every recognizer, and 2 572 now that the `+CC` row
+        // records seven renderings rather than three (M11-R43). The floor moves with the scope;
+        // leaving it at 500 would have let the widening be undone without a word.
         assert!(
-            substitutions >= 1_500,
+            substitutions >= 2_000,
             "only {substitutions} substitutions were built — the corpus is not exercising the axis"
         );
     }
@@ -4321,7 +4337,7 @@ mod tests {
     ///
     /// **Every shipped recognizer must appear here, and that is M11-R31's fix.** `SEPARATOR-01`
     /// derives its scope from the *pattern* — "can this pattern match a gap?" — which exempted 16
-    /// of 24 recognizers **by construction**: a recognizer that offers no grouping is exactly the
+    /// two-thirds of the recognizers **by construction**: one that offers no grouping is exactly the
     /// one whose missing grouping cannot be noticed. Grouping is a property of the **value**, not
     /// of the pattern, so the only sound scope is *all of them*, and a recognizer with nothing to
     /// say must say so in `why`.
@@ -4342,8 +4358,13 @@ mod tests {
         why: &'static str,
     }
 
-    /// Every shipped recognizer's rendering answer — **24 rows for 24 `(kind, pattern)` pairs**,
+    /// Every shipped recognizer's rendering answer — **one row per `(kind, pattern)` pair**,
     /// checked against the registry rather than counted by hand.
+    ///
+    /// **No number here, deliberately (M11-R46).** This said *"24 rows for 24 pairs"* and a 25th
+    /// recognizer shipped one round later, leaving six places asserting a count the code had moved
+    /// past. The audit already enforces the correspondence in both directions, so a number in the
+    /// prose adds nothing but something to go stale — the same lesson M11-R32 wrote about status.
     const RENDERING_ANSWERS: &[RenderingAnswer] = &[
         RenderingAnswer {
             kind: PiiKind::Secret,
@@ -4396,8 +4417,16 @@ mod tests {
         },
         RenderingAnswer {
             kind: PiiKind::Phone,
-            pattern: r"\+\d{8,15}(?-u:\b)",
-            detected: &["+393471234567", "+442079460958", "+14155552671"],
+            pattern: r"\+\d{1,3}(?:{GAP}\d{1,8}){1,6}(?-u:\b)|\+\d{8,15}(?-u:\b)",
+            detected: &[
+                "+393471234567",
+                "+442079460958",
+                "+14155552671",
+                "+33 6 12 34 56 78",   // FR: 0 of 250 clean before M11-R43
+                "+55 11 91234 5678",   // BR: came back `[PHONE_1] 5678`, four digits in clear
+                "+31 6 12345678",
+                "+39 347 1234567",
+            ],
             not_detected: &[],
             why: "E.164 is one unbroken run by definition — that is what the format is for. Its                   spaced renderings belong to the `+CC` groupings row above, and this row exists                   because for eleven milestones neither owned the compact one (M11-R41)",
         },
@@ -4555,15 +4584,73 @@ mod tests {
     ///
     /// Deliberately narrow, and the residue is stated: at least six characters, at least four
     /// ASCII digits, and nothing but digits, ASCII letters, spaces and hyphens. That admits
-    /// `86 095 742 719` and `524 287 244` and excludes `\d{9}` (braces, backslash), `M4-R6` (two
-    /// digits), `[PHONE_1]` (brackets) and `4-4-4-4` (four digits but no group of a real value —
-    /// it is a *shape*, and the row that quotes one also quotes the value it belongs to).
+    /// `86 095 742 719`, `524 287 244` and `+33 6 12 34 56 78`, and excludes `\d{9}` (braces,
+    /// backslash), `M4-R6` (two digits) and `[PHONE_1]` (brackets).
+    ///
+    /// **Where the two pull against each other the tie goes to accepting.** An over-accepted token
+    /// costs somebody a list entry; an under-accepted one costs an assertion nobody notices is
+    /// missing — which is exactly what M11-R44 was: `+` was not in the set, so **no `+CC` rendering
+    /// could ever bind**, on the family that had just leaked twice. `4-4-4-4` is accepted for the
+    /// same reason, and the matrix below records it rather than the doc asserting otherwise.
     fn looks_like_a_rendering(token: &str) -> bool {
         token.len() >= 6
             && token.chars().filter(char::is_ascii_digit).count() >= 4
             && token
                 .chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == ' ' || c == '-')
+                .all(|c| c.is_ascii_alphanumeric() || c == ' ' || c == '-' || c == '+')
+    }
+
+    /// **The matrix for [`looks_like_a_rendering`], and M11-R44 is why it exists.**
+    ///
+    /// The filter decides *whether* to assert, so **it fails by silence**: a token it wrongly
+    /// rejects is simply never checked, and every test stays green. It rejected `+` — so **no
+    /// `+CC` rendering could ever bind**, which is exactly the family that had just leaked twice
+    /// (M11-R41, M11-R43), and the proof was a mutation that quoted `+33 6 12 34 56 78` in a row's
+    /// `why` and left both lists empty: **green, 157/0**.
+    ///
+    /// The rule this leaves behind, and it generalises past this function: *a filter that decides
+    /// whether to assert must be proved by a token it MUST accept, never by the tokens it happens
+    /// to see.* The `false` rows matter too — they are what stops the filter widening until it
+    /// demands that `[PHONE_1]` be a listed rendering.
+    #[test]
+    fn the_rendering_filter_accepts_what_it_must() {
+        const TOKENS: &[(&str, bool, &str)] = &[
+            (
+                "+33 6 12 34 56 78",
+                true,
+                "a `+CC` rendering — rejected until M11-R44",
+            ),
+            ("+393471234567", true, "E.164, likewise"),
+            (
+                "86 095 742 719",
+                true,
+                "the DE Steuer-ID that M11-R34 found unasserted",
+            ),
+            ("524 287 244", true, "the PT NIF grouping"),
+            ("4111 1111 1111 1111", true, "a card grouping"),
+            ("12345678-Z", true, "the hyphenated ES DNI"),
+            (r"\d{9}", false, "a pattern fragment, not a value"),
+            ("M4-R6", false, "a finding id: only two digits"),
+            ("[PHONE_1]", false, "a placeholder: brackets"),
+            // Accepted, and this matrix is how that was found: the doc beside the filter claimed
+            // `4-4-4-4` was excluded, and it is not — seven characters, four digits, nothing but
+            // digits and hyphens. Left accepted on purpose. **Over-acceptance costs somebody a
+            // list entry; under-acceptance is silent**, and silence is the whole of M11-R44.
+            (
+                "4-4-4-4",
+                true,
+                "a shape — accepted, so a `why` that backticks it must list it",
+            ),
+            ("11-proef", false, "an algorithm's name"),
+            ("2/11", false, "a rate"),
+        ];
+        for (token, expected, why) in TOKENS {
+            assert_eq!(
+                looks_like_a_rendering(token),
+                *expected,
+                "{token:?} — {why}"
+            );
+        }
     }
 
     /// **RENDER-01 (M11-R30 / M11-R31) — every shipped recognizer records which renderings of its
@@ -4744,6 +4831,11 @@ mod tests {
             kind: PiiKind::Phone,
             pattern: r"(?:\+1(?:[.-]|{GAP})?)?(?:\(\d{3}\)(?:[.-]|{GAP})?|\d{3}(?:[.-]|{GAP}))\d{3}(?:[.-]|{GAP})\d{4}|\+\d{1,3}{GAP}\d{2,4}{GAP}\d{2,4}{GAP}\d{3,4}|\+\d{1,3}{GAP}\d{2,4}{GAP}\d{5,8}",
             positive: "+39 333 000 0001", // the `+CC` arm, a different alternation
+        },
+        SeparatorAnswer {
+            kind: PiiKind::Phone,
+            pattern: r"\+\d{1,3}(?:{GAP}\d{1,8}){1,6}(?-u:\b)|\+\d{8,15}(?-u:\b)",
+            positive: "+39 347 1234567", // the `+CC` arm gained a gap in M11-R43
         },
         SeparatorAnswer {
             kind: PiiKind::NationalId,
