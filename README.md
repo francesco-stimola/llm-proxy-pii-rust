@@ -125,14 +125,19 @@ written with **no `+CC`** (`020 7946 0958`, `06 69821234`, `347 1234567`, `91 12
 the one tier `PII_LOCALES` narrows. A bare domestic number collides with ordinary digit sequences,
 so what makes it safe is not the pattern but the check: the pure-Rust
 [`phonenumber`](https://crates.io/crates/phonenumber) library confirms the candidate is a real
-**assigned** number for that region. Measured over 35 real renderings and 453 digit-shaped
-non-phones: **recall 1.000**, zero false positives on ports, amounts and reference numbers, and
-**zero `Phone` spans at all** on a real 22 KiB Claude Code turn.
+**assigned** number for that region. Recall over the corpus of real renderings is **1.000**, and
+ports, amounts and reference numbers are untouched.
 
-> The costs are published rather than rounded off: a space-separated date (`28 01 2026` is a valid
-> Latvian number) or a numeric table column (`512 105 205` is a real Suzhou landline shape) can be
-> masked. The full per-category matrix, and why that trade was taken, is in
-> [ARCHITECTURE → *Domestic phone coverage*](docs/ARCHITECTURE.md#domestic-phone-coverage--re-measured-2026-07-29-m10).
+> **This tier over-masks, the rates are measured, and they are worth reading before you turn it
+> on.** A **dotted-decimal IPv4 address** and a **column-aligned numeric row** are both valid
+> numbers somewhere — `170.75.154.131` is `17075154131`, a Chinese mobile — so an IP address in
+> an `ssh` argument and a row of a `psql` result reach the model as `[PHONE_1]`. So can a
+> space-, dash-, dot- or slash-separated **date**. The client always gets its own bytes back:
+> the harm is that the *model* sees a placeholder, never that a value escapes. The full
+> per-category matrix — printed by the test that asserts it, not typed — and why the trade was
+> taken are in
+> [ARCHITECTURE → *Domestic phone coverage*](docs/ARCHITECTURE.md#domestic-phone-coverage).
+> Set `PII_LOCALES` empty to switch the tier off.
 
 ---
 

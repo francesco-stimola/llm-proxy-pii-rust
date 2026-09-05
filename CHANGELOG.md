@@ -83,6 +83,30 @@ Milestone [M11](https://github.com/francesco-stimola/llm-proxy-pii-rust/blob/mai
     stays the logical count — exactly the previous behaviour.
   - `GLINER_INTRA_THREADS` derives from the same base, the same way.
 
+- **Digit-dense text is masked more often — IP addresses and aligned numeric columns now come back
+  as `[PHONE_n]`. This is the second one to read before upgrading.** Closing the separator leaks
+  below meant accepting `.` `/` `(` `)` between a phone number's groups and separator **runs** of up
+  to four characters, and both are how ordinary command output is written. So a dotted-decimal IPv4
+  address, a `dd.mm.yyyy` or `dd/mm/yyyy` date, and a `psql` / `df` / `ls -l` column aligned with two
+  to four spaces are now candidates — and a fair share of them are a real assigned number in one of
+  the nine enabled plans. `170.75.154.131` is `17075154131`, a valid Chinese mobile.
+  - **The rates are measured, and they live in one place because that is the only place a guard
+    keeps them true:** `docs/ARCHITECTURE.md` → *Domestic phone coverage*, where the per-category
+    matrix is printed by `tests/phone_eval.rs` and asserted against that file on every test run.
+    Read it before enabling this on command-output traffic — the aligned-column and IPv4 rates are
+    the two largest in the table, and `cn` is the single biggest contributor to them.
+  - **Nothing leaks, and the round trip is exact.** Every masked value is restored byte-identically
+    on the response path, so the client sees what it sent. The cost is that the **model** sees
+    `[PHONE_1]` where it needed the value — an IP address inside an `ssh` argument, a row of a query
+    result inside a `tool_result`. If your traffic is command output and your agent acts on the
+    numbers in it, that is a functional cost worth weighing.
+  - **The trade, in one line:** the alternative was leaving `(020) 7946 0958` and `+39  347
+    1234567` reaching the provider **in clear** — measured at 0.923 and 1.000 of their renderings.
+    An over-mask is recoverable; a miss is not.
+  - **Two ways to bound it.** `PII_LOCALES` narrows the enabled plans (the `cn` plan is the largest
+    single contributor to the IP rates), and setting it **empty** switches the domestic tier off
+    entirely. Neither affects `+CC` numbers, the always-on national IDs, or any other tier.
+
 ### Fixed
 
 - **A lower- or mixed-case IBAN or VAT number was forwarded in clear. It is now masked.** This is a
@@ -115,12 +139,8 @@ Milestone [M11](https://github.com/francesco-stimola/llm-proxy-pii-rust/blob/mai
   character between groups: `+39  347  1234567` with two spaces, or `030 / 12345678`. Each of those
   renderings was masked in some other form, so the value was recognised — what was not recognised
   was how it was written.
-  - **One thing to know if you send digit-dense text.** Accepting `.` and `/` between groups, and
-    runs of up to four separator characters, means some things that are *not* phone numbers now
-    come back as `[PHONE_n]` — IP addresses, `dd.mm.yyyy` dates, and numeric columns aligned with
-    several spaces. They are masked, never leaked, and restored byte-identically on the way back, so
-    the round trip is exact; what changes is that the model sees a placeholder where it wanted the
-    value. Measured rates are in `docs/reviews/M11.md` → M11-R55.
+  - **What it costs is a first-class entry under *Changed* above**, not a footnote here: some
+    things that are not phone numbers are now masked too.
 - **A phone number written the way every API stores it — `+393471234567` — is now masked.** The
   `+CC` form was detected only when it was written with spaces (`+39 347 1234567`); the compact
   **E.164** rendering, which is what an address book, a CRM export or a JSON payload contains,

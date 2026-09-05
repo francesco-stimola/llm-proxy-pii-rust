@@ -132,15 +132,19 @@ scritti **senza `+CC`** (`020 7946 0958`, `06 69821234`, `347 1234567`, `91 123 
 livello che `PII_LOCALES` restringe. Un numero nazionale nudo collide con qualunque sequenza di
 cifre, quindi ciò che lo rende sicuro non è il pattern ma il controllo: la libreria Rust
 [`phonenumber`](https://crates.io/crates/phonenumber) conferma che il candidato è un numero
-realmente **assegnato** per quella regione. Misurato su 35 rese reali e 453 non-telefoni a forma
-di cifre: **recall 1.000**, zero falsi positivi su porte, importi e numeri di riferimento, e
-**zero span `Phone`** su un turno reale di Claude Code da 22 KiB.
+realmente **assegnato** per quella regione. Il recall sul corpus di rese reali è **1.000**, e
+porte, importi e numeri di riferimento restano intatti.
 
-> I costi sono pubblicati, non arrotondati: una data separata da spazi (`28 01 2026` è un numero
-> lettone valido) o la colonna di una tabella numerica (`512 105 205` è la forma di un fisso di
-> Suzhou) possono essere mascherate. La matrice completa per categoria, e perché il compromesso è
-> stato preso, sono in
-> [ARCHITECTURE → *Domestic phone coverage*](docs/ARCHITECTURE.md#domestic-phone-coverage--re-measured-2026-07-29-m10).
+> **Questo livello fa over-mask, i tassi sono misurati, e vanno letti prima di attivarlo.** Un
+> **indirizzo IPv4 in notazione puntata** e la **riga di una tabella allineata a colonne** sono
+> entrambi un numero valido da qualche parte — `170.75.154.131` è `17075154131`, un mobile
+> cinese — quindi un indirizzo IP dentro un argomento `ssh` e una riga di un risultato `psql`
+> arrivano al modello come `[PHONE_1]`. Lo stesso vale per una **data** separata da spazi,
+> trattini, punti o barre. Il client riceve sempre indietro i propri byte: il danno è che il
+> *modello* vede un segnaposto, mai che un valore esca. La matrice completa per categoria —
+> stampata dal test che la asserisce, non trascritta — e il perché del compromesso sono in
+> [ARCHITECTURE → *Domestic phone coverage*](docs/ARCHITECTURE.md#domestic-phone-coverage).
+> Imposta `PII_LOCALES` vuoto per disattivare il livello.
 
 ---
 

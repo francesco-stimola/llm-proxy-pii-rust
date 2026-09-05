@@ -3,6 +3,55 @@
 Newest first. One entry per meaningful change — note *what* and *why*, not just
 *what*. This is the running history so context is never lost between sessions.
 
+## 2026-09-06 — M11-R55 decided: the over-mask is accepted, and the measurement stops being optional
+
+**The maintainer took option 3 — accept and publish.** No change to the recognizers: the R48, R51
+and R52 fixes stay whole, and no leak is re-opened. The reason belongs next to the decision, because
+both alternatives cost a leak. Returning the narrower alphabet to the un-anchored families re-opens
+`(020) 7946 0958` at 0.923; tightening the run re-opens the domestic half of `+39  347  1234567` at
+1.000. An over-mask is restored byte for byte on the response path — a miss is not. *Between harm
+aimed at the model and harm aimed at the data, keep the data and declare the harm.*
+
+Accepting is the easy half. The decision moves the weight onto the numbers, so it moves it onto the
+things that measure them.
+
+**`phone_eval` is no longer `#[ignore]`d, and its output *is* the published table.**
+`phone_precision_per_region_and_for_the_union` runs on every `cargo test` (~13 s, debug), and
+`docs/ARCHITECTURE.md` carries the measurement between `<!-- PHONE-EVAL:BEGIN -->` and
+`<!-- PHONE-EVAL:END -->` markers that the test renders and asserts byte for byte. This is not two
+lists checking each other (M11-R53): one side is a measurement of the product, the other is what an
+operator reads, and there is no third copy. Four consecutive widenings landed against a
+hand-transcribed table under which `dates 0.180` had become `0.270` with nothing to say so.
+
+**The pool gained the shapes the families can now reach** — `ips` (public IPv4), `ips10`, `ips192`,
+`ips172` and `aligned` (2–4-space columns) — generated from a seeded LCG rather than `rand`, because
+a rate asserted against a document has to be byte-identical on every box. Union, measured: `aligned`
+**0.785**, `ips` **0.500**, `ips10` **0.656**, `ips192` **0.422**, `ips172` **0.438**, `dates`
+**0.270**. The independent probe in the M11-R55 record read 0.872 / 0.517 / 0.623 / 0.416 / 0.374 on
+its own pools; the published figures are the harness's, because those are the ones a guard keeps
+true.
+
+**`PHONE-OM` gained a second fixture, and its expectation is a number rather than a zero.** The M7
+turn has a shape — no IPv4 address, no digit run separated by 2–4 spaces — so it was structurally
+unable to see either class round 14 admitted. `tests/common/tool_output_turn.rs` is `ls -l`, `df -h`,
+a `psql` result, journal lines and an `ssh` `tool_use.input`; `PHONE-OM-TOOL` asserts the **11**
+spans it yields, exactly. Narrow the alphabet or the run and entries vanish; widen either and
+entries appear — **both directions red**, which is what no coverage assertion on this axis could do.
+
+**The three places that said something false now say what is measured.** `ARCHITECTURE.md`'s *"ISO
+and slash dates cannot collide at all"* (the ISO half survives, the slash half does not), the
+generator comment at `tests/phone_eval.rs`, and the READMEs in both languages, which now describe
+the over-mask as a cost to weigh and defer every rate to the one asserted place. `SEPARATOR_RUN_MAX`'s
+own doc comment said the residue *was* column alignment; column alignment is what the bound
+**admits**, and the residue is a run of five or more. `CHANGELOG.md` carries it under `### Changed`
+as a first-class entry — the same treatment Track B's halved thread count got — because an IP address
+inside a tool argument arriving as `[PHONE_1]` is a behaviour change, not a technical note.
+
+*Method note, from the new rule that a number in prose is either asserted or not written:* the
+changelog deliberately carries **no** rates. It points at the matrix instead, because a released
+section is history and a live figure inside one would age into a lie the moment the next widening
+lands.
+
 ## 2026-09-05 — M11 round 15: the first round that found no leak, and what round 14 cost
 
 **Round 14's fix is correct and does not leak.** A 3 150-rendering differential against the

@@ -16,9 +16,20 @@
 //! `tool_use.input` hands the model `[PHONE_1]` where it needed `8080`, and the agent then
 //! does the wrong thing. No corpus test shows you that, because a corpus contains only the
 //! false positives we imagined.
+//!
+//! **Two fixtures, because one had a shape (M11-R55).** The M7 turn holds no IPv4 address and
+//! no digit run separated by 2-4 spaces, so it could not see either class the round-14
+//! separator widening admitted and stayed green through both. `PHONE-OM-TOOL` runs the same
+//! construction over `tests/common/tool_output_turn.rs` — `ls -l`, `df -h`, a `psql` result,
+//! journal lines with IP addresses — and its expectation is **the measured set, not an empty
+//! one**: M11-R55 accepted this over-mask and published it, so a guard asserting zero here
+//! would assert the opposite of what ships. What it guards is that the set cannot move
+//! without somebody moving it on purpose.
 
 #[path = "common/m7_turn.rs"]
 mod m7_turn;
+#[path = "common/tool_output_turn.rs"]
+mod tool_output_turn;
 
 use llm_proxy_pii_rust::pii::recognizers::{vetted_phone_regions, StructuredRecognizers};
 use llm_proxy_pii_rust::pii::{PiiDetector, PiiKind};
@@ -159,6 +170,95 @@ fn the_shared_fixture_keeps_its_shape() {
             .count(),
         1,
         "one user message, and it is where all the PII is"
+    );
+}
+
+/// **PHONE-OM-TOOL (M11-R55) — the same construction over the shape the M7 turn does not have.**
+///
+/// Every `Phone` span the tool-output fixture is expected to produce, as `(field, text)`.
+///
+/// **A measured expectation, not an empty one, and that is the finding's decision showing up in
+/// the suite.** M11-R55 measured what round 14's separator widening admitted — dotted-quad IPv4
+/// addresses and column-aligned numeric rows — and the maintainer accepted it: an over-mask is
+/// restored byte-identically on the response path, a miss is not. So the honest expectation here
+/// is the set that ships, and the guard is that it cannot **move** silently. Narrow the alphabet
+/// or the separator run and entries disappear; widen either and entries appear. Both are red.
+const EXPECTED_TOOL_OUTPUT_PHONE_SPANS: &[(&str, &str)] = &[
+    // A `psql` result: six rows, six spans. Five of the six are *truncated* rather than whole —
+    // `318   120   3499` stops before the fourth column — which is the same coalescing the
+    // resolver does everywhere; the response path restores the bytes either way.
+    ("tool_result[psql]", "101   250   1999   140"),
+    ("tool_result[psql]", "205   310   2499   140"),
+    ("tool_result[psql]", "318   120   3499"),
+    ("tool_result[psql]", "90   1299   318"),
+    ("tool_result[psql]", "512   105   205"),
+    ("tool_result[psql]", "913   107   207"),
+    // Dotted quads. `10.55.120.7` and `172.16.31.9` are NOT here and that is not an oversight:
+    // no enabled plan assigns their digit runs, so the rate is a rate and not a certainty.
+    ("tool_result[journal]", "62.30.40.50"),
+    ("tool_result[journal]", "170.75.154.131"),
+    ("tool_result[journal]", "192.168.14.203"),
+    // The one that costs an agent a turn: a host in an `ssh` argument, and a literal the
+    // command greps for.
+    ("tool_use[ssh].input", "62.30.40.50"),
+    ("tool_use[ssh].input", "512 105 205"),
+];
+
+#[test]
+fn the_tool_output_turn_yields_exactly_the_expected_phone_spans() {
+    let detector = StructuredRecognizers::new();
+    assert_eq!(
+        vetted_phone_regions().len(),
+        9,
+        "this guard is written for the full shipped region set"
+    );
+
+    let mut found: Vec<(String, String)> = Vec::new();
+    let mut bytes = 0usize;
+    for field in tool_output_turn::tool_output_turn() {
+        bytes += field.text.len();
+        for entity in detector.detect(&field.text) {
+            if entity.kind == PiiKind::Phone {
+                found.push((field.name.clone(), entity.text));
+            }
+        }
+    }
+
+    // Non-vacuity, two ways. The byte floor is the M4-R13 rule; the *shape* floor is M11-R55's,
+    // because this fixture exists for two specific shapes and a rewrite that dropped them would
+    // leave a green guard measuring nothing at all.
+    assert!(
+        bytes > 1_500,
+        "the tool-output fixture is only {bytes} bytes — a shrunken fixture would pass this \
+         guard for the wrong reason"
+    );
+    let all: String = tool_output_turn::tool_output_turn()
+        .iter()
+        .map(|f| f.text.clone())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let occurrences = |pattern: &str| regex::Regex::new(pattern).unwrap().find_iter(&all).count();
+    assert!(
+        occurrences(r"(?-u:\b)\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}(?-u:\b)") >= 5,
+        "the fixture must carry dotted-quad IPv4 addresses — that is half of what it exists for"
+    );
+    assert!(
+        occurrences(r"[0-9]{2,3}[ ]{2,4}[0-9]{2,4}") >= 5,
+        "the fixture must carry digit runs separated by 2-4 spaces — the other half. The M7 turn \
+         has zero of these, which is exactly why a second fixture exists (M11-R55)"
+    );
+
+    let expected: Vec<(String, String)> = EXPECTED_TOOL_OUTPUT_PHONE_SPANS
+        .iter()
+        .map(|(f, t)| (f.to_string(), t.to_string()))
+        .collect();
+    assert_eq!(
+        found, expected,
+        "the `Phone` spans found in a turn of ordinary command output changed. Each one is a \
+         value the model receives as `[PHONE_N]` — an IP address in an `ssh` argument, a row of \
+         a `psql` result — and the client still gets its bytes back byte-for-byte. This set is \
+         published in ARCHITECTURE.md and CHANGELOG.md as an accepted cost, so a change here \
+         moves a published promise, in either direction."
     );
 }
 

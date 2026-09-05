@@ -358,36 +358,64 @@ Default build, no model. A loose regex proposes candidates and `is_valid()` deci
 ### M10 — domestic phone coverage, over-mask and measurement
 - **PHONE-COV — `phone_regions_all_have_corpus_cases` (`tests/pii_corpus.rs`): a region cannot be switched on silently.** Enumerates the regions the **code** enables (`PHONE_REGIONS`) and fails if any lacks a positive *and* a negative corpus case — coverage derived from the enabled set, not from a list in the test. Checks the other direction too: a case whose `locale` names a region the code does not enable runs, matches nothing in particular, and reads as coverage it isn't. The corpus itself (`national_phone`, 35 positives / 20 negatives) carries per region every area-code length that country really uses, plus mobile and toll-free, and that country's own look-alikes.
 - **PHONE-OM — `the_realistic_turn_yields_exactly_the_expected_phone_spans` (`tests/phone_overmask.rs`): the over-mask guard, on text nobody curated.** The negative corpus contains only the false positives *we thought of*, and M10 widened the candidate set twice over. So this runs the shipped default over the **M7 latency fixture** — a real ~22 KiB Claude Code turn already in the repo, written for a different purpose — and asserts the `Phone` spans are exactly the expected set (today: **empty**). The fixture moved to `tests/common/m7_turn.rs` so both this (default build) and `m7_latency.rs` (`onnx`-only) use *one* copy. Non-vacuity is asserted three ways: the fixture must still be >20 KB, its **shape** is pinned here (M10-R12 — `m7_latency.rs`'s full shape assertion is `#[ignore]`d *and* `onnx`-gated, so it never runs in CI), and a sibling positive control splices in **one number per shape family**. That last part is the M10-R7 fix and it is load-bearing: with a single trunk-anchored control, deleting both un-anchored families left every assertion green — fewer recognizers cannot find more, so the empty expectation still held — while the two families the guard exists to bound were gone.
-  - **Its fixture has a shape, and two over-mask classes now live outside it
+  - **Its fixture had a shape, and `PHONE-OM-TOOL` is the second fixture that closes it
     ([M11-R55](reviews/M11.md#m11-r55)).** The M7 turn holds **no IPv4 address** and **no digit run
     separated by 2-4 spaces** (`grep -cE "[0-9]{2,3}( ){2,4}[0-9]{2,4}" tests/common/m7_turn.rs` ->
     0), so when M11 round 14 widened the domestic families' separator class to `. / ( )` and their
     cardinality to a run of four, this guard stayed green while `62.30.40.50` and `101   250   1999`
-    both became `[PHONE_n]` — measured 0.000 -> 0.517 and 0.000 -> 0.872 against the pre-round-14
-    binary, and confirmed through the real `.exe` inside `tool_calls[].function.arguments`.
-    *A real-traffic guard bounds its claim to that traffic*: this turn is instruction boilerplate,
-    tool schemas and prose, and carries no `tool_result` holding command output — which is where a
-    coding agent's digit-shaped text actually lives. Non-vacuity checks cannot repair this; only a
-    second fixture can, and M11-R55 asks for one carrying `ls -l`, `df -h`, a `psql` table and an
-    IP address.
+    both became `[PHONE_n]`. *A real-traffic guard bounds its claim to that traffic*: this turn is
+    instruction boilerplate, tool schemas and prose, and carries no `tool_result` holding command
+    output — which is where a coding agent's digit-shaped text actually lives. Non-vacuity checks
+    cannot repair that; only a second fixture can.
+- **PHONE-OM-TOOL (M11-R55) — `the_tool_output_turn_yields_exactly_the_expected_phone_spans`
+  (`tests/phone_overmask.rs`): the same construction over the shape the M7 turn does not have.**
+  `tests/common/tool_output_turn.rs` is six fields of ordinary agent traffic — `ls -l`, `df -h`, a
+  `psql` result, `journalctl` lines with public and RFC 1918 addresses, an `ssh` `tool_use.input`,
+  and a user message — and **every number in it is a real quantity of its own kind, none of them a
+  phone number**, so any `Phone` span it yields is an over-mask by construction.
+  **Its expectation is the measured set, not zero, and that is the decision showing up in the
+  suite:** M11-R55 accepted this over-mask and published it, so a guard asserting zero here would
+  assert the opposite of what ships. Today the set is **11 spans** — six `psql` rows, three dotted
+  quads, and two inside the `ssh` argument, which is the case that costs an agent a turn. Narrow
+  the alphabet or the separator run and entries vanish; widen either and entries appear: **both
+  directions are red**, which is what no coverage assertion on this axis can do. Non-vacuity is
+  two-sided: a byte floor, plus a **shape** floor asserting the fixture still contains ≥5 dotted
+  quads and ≥5 runs of 2-4 spaces, because a rewrite that dropped them would leave a green guard
+  measuring nothing.
 - **PHONE-BUD (M10-R28 / M10-R30) — `a_real_claude_code_turn_spends_almost_none_of_the_request_budget` (`tests/phone_overmask.rs`): the headroom the threshold rests on, measured instead of asserted.** `MAX_PHONE_VALIDATIONS_PER_REQUEST` is defended by the claim that ordinary traffic cannot come near it, and M10 made that claim without being able to show it — the allowance was per *call*, `mask_all` re-minted it up to five times per field, so "the budget" was not a number any single quantity had, and nobody noticed for three rounds. This charges **every field of the 22 KiB turn against one budget**, exactly as the request path does, and pins the total under 1% of the allowance. Measured: **0 units** — the fixture has no phone-shaped candidate at all. The assertion is an order of magnitude rather than the digit, because what must never regress is the *margin*; a fixture-exact constant would fail on any fixture edit and teach nothing.
-- **PHONE-EVAL *(`tests/phone_eval.rs`, `#[ignore]`d)* — the measurement that *is* M10's deliverable.** `phone_precision_per_region_and_for_the_union` scores recall and false positives per region and for the union, over 20 curated negatives plus ~433 generated digit-shaped non-phones. **FP is reported per category (dates · tables · ports · sizes · offsets · money · codes · refs), never blended** — one rate over a pool whose composition you chose is a number about the pool. `phone_latency_per_enabled_region` measures ms/turn for 0…9 enabled regions over the same 22 KiB turn. Run it `--release --test-threads=1` (M7-R12: precision is build-independent, milliseconds are not). Results and the decision they drove: DEVLOG 2026-07-29 and ARCHITECTURE → *Domestic phone coverage*.
-  - **`#[ignore]`d is the whole finding of [M11-R55](reviews/M11.md#m11-r55), not a footnote about
+- **PHONE-EVAL *(`tests/phone_eval.rs`)* — the measurement that *is* M10's deliverable, and since
+  M11-R55 a guard that runs on every `cargo test`.** `phone_precision_per_region_and_for_the_union`
+  scores recall and false positives per region and for the union, over 35 corpus positives, 20
+  curated negatives and 897 generated digit-shaped non-phones. **FP is reported per category
+  (dates · ports · sizes · offsets · money · codes · refs · tables · ips · ips10 · ips192 · ips172 ·
+  aligned), never blended** — one rate over a pool whose composition you chose is a number about the
+  pool. `phone_latency_per_enabled_region` measures ms/turn for 0…9 enabled regions over the same
+  22 KiB turn; **it** stays `#[ignore]`d and wants `--release --test-threads=1` (M7-R12: precision is
+  build-independent, milliseconds are not).
+  - **The published table is the harness's own output, asserted (M11-R55).** `docs/ARCHITECTURE.md`
+    carries the measurement between `<!-- PHONE-EVAL:BEGIN -->` and `<!-- PHONE-EVAL:END -->`, and
+    the test renders the same block from a live run and requires equality — printing the new block
+    to paste when it differs. **This is not two lists checking each other** (M11-R53's bookkeeping):
+    one side is a measurement of the product, the other is the sentence the operator reads, and
+    there is no third copy to drift. It replaces a hand-transcribed table under which `dates 0.180`
+    survived four widenings that had made it 0.270.
+  - **`#[ignore]`d was the whole finding of [M11-R55](reviews/M11.md#m11-r55), not a footnote about
     it.** This is the **only** precision harness the domestic-phone tier has, and `cargo test` never
-    runs it — so the four consecutive M11 widenings of the separator axis (R25 -> R48 -> R51/R52)
+    ran it — so the four consecutive M11 widenings of the separator axis (R25 -> R48 -> R51/R52)
     each landed against *coverage* assertions alone. `SEPARATOR-01`'s matrix and `RENDER-01`'s span
     assertion both say a recorded rendering **is** detected; **neither can express "and this is
-    not"**, so a widening's cost is invisible to the suite by construction. When round 15 finally
-    ran this harness, the union's `dates` rate was **0.270** against the **0.180** `ARCHITECTURE.md`
-    publishes, and the slash rendering it reports as a hit is the one both that file and this
-    harness's own comment at `tests/phone_eval.rs:109` call impossible.
+    not"**, so a widening's cost was invisible to the suite by construction.
     **The rule: a change that widens what a recognizer matches must re-run the harness that measures
-    what it refuses** — and a measurement that is only ever run by hand is one nobody runs on the
-    round that needed it. The pool also needs `ips` and `aligned` categories: its own first assertion
-    is that a pool must reach every shape family before it reports on one, and dotted-quad and
-    multi-space-aligned text are now shapes the families reach.
+    what it refuses** — which is now enforced rather than remembered. Cost of enforcing it: ~13 s in
+    the debug profile, paid once per suite run.
+  - **The pool gained `ips`, `ips10`, `ips192`, `ips172` and `aligned`**, the shapes round 14
+    admitted, and the harness's own first assertion now covers them: a pool must be able to *reach*
+    a shape family before its 0.000 means "clean" rather than "unmeasured", and dotted-quad and
+    2-4-space-aligned text are reachable shapes. They are generated from a **seeded LCG, not
+    `rand`** — the rates are asserted against a document, so the pool has to be byte-identical on
+    every box. The three private ranges are separate categories rather than one blended "private
+    IP" rate, for the same reason the whole table is per-category.
   - **Two assertions inside the harness, both from M10 round 1.** (i) The pool must **reach every shape family** before the harness reports on one — the first version's non-date entries almost never began with a 2–3-digit token, so half of what M10 added was structurally untestable and its `0.000` meant *unmeasured*, not *clean*. (ii) `union_hits == ∪ singles` is asserted, not printed: under this dispatch it is a **structural identity** (the validator is `.any()` over a superset), so a number that can only be zero belongs in an assertion — it was being read as evidence that adding a region is marginally free, which it is not.
-
 
 ### M11 Track A — VAT / tax identifiers (`src/pii/recognizers.rs`, default build, no model)
 Always-on, checksum-gated, and modelled on the `PHONE-NAT` corpus rule unchanged: **a category
@@ -682,6 +710,17 @@ two *other* always-on tiers already claim that shape.
   `+39  347  1234567`, so the same mutation is red on the span assertion. *A decision recorded in two
   lists that only check each other is bookkeeping; it becomes a guard the moment one of them is a
   behaviour.*
+  **The decided limit of this axis, measured and written where it is read (M11-R55).**
+  `SEPARATOR_RUN_MAX = 4` and the alphabet `- . / ( )` are both *coverage* choices, and their cost
+  is an over-mask this project has **accepted on purpose**: a run of two to four spaces is how
+  `psql`, `df` and `ls -l` lay out numeric columns, and a dotted quad is four groups separated by a
+  character `phonenumber::parse` discards. Union rates, asserted against `ARCHITECTURE.md` by
+  PHONE-EVAL on every `cargo test`: **`aligned` 0.785 · `ips` 0.500 · `ips10` 0.656 · `ips192`
+  0.422 · `ips172` 0.438**. What the bound genuinely excludes is a run of **five or more**. Both
+  alternatives were priced and both cost a leak — the narrower alphabet re-opens `(020) 7946 0958`
+  at 0.923, the tighter run re-opens the domestic half of `+39  347  1234567` — and an over-mask is
+  restored byte-identically on the response path where a miss is not. *This is not a residue to
+  close later: it is the trade, and the number is what makes it a trade rather than an accident.*
   **A guard's alphabet must be the production constant, not a transcription of it
   ([M11-R56](reviews/M11.md#m11-r56)).** The derivation above stops one link short of the code: it
   takes `looks_like_a_rendering`'s alphabet from `PHONE_ALPHABET`, and `PHONE_ALPHABET` is itself a

@@ -116,7 +116,7 @@ off. The
 ar/de/en/es/fr/it/lv/nl/pt/zh — validated, see `docs/DEVLOG.md`); structured PII is
 language-independent.
 
-### Domestic phone coverage — re-measured 2026-07-29 (M10)
+### Domestic phone coverage
 
 **Nine regions, chosen by a principle rather than by taste: exactly the countries the tool
 already claims** — the ten national-ID packs plus the NER's language set. `de es fr gb it lv nl
@@ -148,18 +148,34 @@ offsets pool, 0.156 of sizes**. Declaring shapes per region takes those to 0 wit
 still covered. `every_declared_shape_is_needed_by_a_real_rendering` fails if a row lists a shape no
 rendering of that country needs.
 
-**Measured, per region and for the union** (`tests/phone_eval.rs`, `--release`; 35 corpus
-positives, 20 curated negatives, 433 generated digit-shaped non-phones):
+**Measured, per region and for the union.** The block below is **not typed by hand: it is
+`tests/phone_eval.rs`'s output, and that test asserts it byte for byte on every `cargo test`**
+(M11-R55). A recognizer change that moves any rate here turns the suite red and prints the block
+to paste. Before M11-R55 this table was a transcription and the harness that produced it was
+`#[ignore]`d, which is how `dates 0.180` survived four widenings that made it 0.270.
 
-| | recall | curated FP | dates | tables | codes | offsets | sizes | ports · money · refs |
-|---|---|---|---|---|---|---|---|---|
-| de · fr · gb · nl | **1.000** | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 |
-| es | **1.000** | 0.000 | 0.000 | 0.188 | 0.000 | 0.000 | 0.000 | 0.000 |
-| it | **1.000** | 0.000 | 0.080 | 0.062 | 0.000 | 0.000 | 0.000 | 0.000 |
-| lv | **1.000** | 0.000 | 0.120 | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 |
-| pt | **1.000** | 0.000 | 0.000 | 0.188 | 0.091 | 0.050 | 0.000 | 0.000 |
-| cn | **1.000** | 0.000 | 0.000 | 0.188 | 0.000 | 0.000 | 0.031 | 0.000 |
-| **union (the shipped default)** | **1.000** | 0.000 | **0.180** | **0.375** | 0.091 | 0.050 | 0.031 | 0.000 |
+<!-- PHONE-EVAL:BEGIN -->
+```text
+pool: 35 corpus positives · 20 curated negatives · 897 generated
+generated: dates 200 · ports 16 · sizes 32 · offsets 20 · money 10 · codes 11 · refs 128 · tables 16 · ips 128 · ips10 64 · ips192 64 · ips172 64 · aligned 144
+region          de     es     fr     gb     it     lv     nl     pt     cn  UNION
+recall       1.000  1.000  1.000  1.000  1.000  1.000  1.000  1.000  1.000  1.000
+curatedFP    0.000  0.000  0.000  0.000  0.000  0.000  0.000  0.000  0.000  0.000
+dates        0.000  0.000  0.000  0.000  0.120  0.180  0.000  0.000  0.000  0.270
+ports        0.000  0.000  0.000  0.000  0.000  0.000  0.000  0.000  0.000  0.000
+sizes        0.000  0.000  0.000  0.000  0.000  0.000  0.000  0.000  0.031  0.031
+offsets      0.000  0.000  0.000  0.000  0.000  0.000  0.000  0.050  0.000  0.050
+money        0.000  0.000  0.000  0.000  0.000  0.000  0.000  0.000  0.000  0.000
+codes        0.000  0.000  0.000  0.000  0.000  0.000  0.000  0.091  0.000  0.091
+refs         0.000  0.000  0.000  0.000  0.000  0.000  0.000  0.000  0.000  0.000
+tables       0.000  0.188  0.000  0.000  0.062  0.000  0.000  0.188  0.188  0.375
+ips          0.000  0.047  0.000  0.000  0.039  0.180  0.000  0.117  0.273  0.500
+ips10        0.000  0.000  0.000  0.000  0.016  0.125  0.000  0.078  0.656  0.656
+ips192       0.000  0.000  0.000  0.000  0.000  0.000  0.000  0.000  0.422  0.422
+ips172       0.000  0.000  0.000  0.000  0.000  0.266  0.000  0.000  0.438  0.438
+aligned      0.000  0.590  0.000  0.000  0.194  0.000  0.000  0.243  0.069  0.785
+```
+<!-- PHONE-EVAL:END -->
 
 > **These numbers replace an earlier, rosier set, and the correction is the more useful half.**
 > The first pool reported 0.000 for `sizes`, `offsets` and `refs` and concluded "the whole
@@ -173,47 +189,61 @@ positives, 20 curated negatives, 433 generated digit-shaped non-phones):
 
 **Read the FP figures per category, never blended.** A single rate over a pool whose composition
 you chose is a number about the pool. What they say: **ports, money amounts and reference numbers
-are untouched.** The cost is concentrated in two shapes — space- or dash-separated **dates**
-(`28 01 2026` is a valid Latvian mobile; `01 02 2026` contains Milan's `02` prefix) and
-space-separated **numeric tables** (`512 105 205` is a real Suzhou landline shape). ISO
-(`2026-07-29`) and slash (`29/07/2026`) dates cannot collide at all — no family accepts `/`, and a
-4-digit leading group is not a candidate. The `tables` category is adversarial by construction: it
-was generated *from the families' own structure* to reach them, which is what makes its 0.375 a
-ceiling rather than an expectation.
+are untouched**, and the cost is concentrated in four shapes.
 
-> **Two sentences above are contradicted at HEAD, and the whole table is a measurement of the
-> pre-M11 separator alphabet ([M11-R55](reviews/M11.md#m11-r55)).** The slash clause is no longer
-> true — `{PGAP}` gave the domestic families `/` and `.`, so `28/01/2026` and `28.01.2026` are
-> candidates and `phone_eval` reports the union's `dates` at **0.270**, not the 0.180 printed above.
-> The ISO half of the same clause still holds. Two categories the pool does not contain are now the
-> largest exposure: a **dotted-decimal IPv4 address** (0.517 of random public addresses, 0.623 of
-> `10.x`) and a **column-aligned numeric row** (0.872 at 2–4 spaces, where a single space was already
-> 0.872 and a run of five is out). Left as measured rather than quietly restated, because what to do
-> about it is an open maintainer decision — M11-R55 lists three options with what each costs.
+| shape | union rate | why the digits are a real number somewhere |
+|---|---|---|
+| **column-aligned numeric rows**, 2–4 spaces | `aligned` **0.785** | `862  428  791  971` → `862428791971`; the `Groups` family takes 2–4 groups and the separator run admits the alignment |
+| **dotted-decimal IPv4** | `ips` **0.500** · `ips10` **0.656** · `ips192` **0.422** · `ips172` **0.438** | `170.75.154.131` → `17075154131`, and a CN mobile is 11 digits beginning `1` — which is exactly what a dotted quad with a `1xx` octet spells. `10.x` is the highest for the same reason |
+| **space-, dash-, dot- or slash-separated dates** | `dates` **0.270** | `28 01 2026` is a valid Latvian mobile; `01 02 2026` carries Milan's `02` prefix. ISO (`2026-07-29`) **is** out: a 4-digit leading group is not a candidate for any family |
+| **space-separated numeric tables** | `tables` **0.375** | `512 105 205` is a real Suzhou landline shape |
+
+The `tables` and `aligned` categories are adversarial by construction — generated *from the
+families' own structure* to reach them — which makes their rates a ceiling rather than an
+expectation. The `ips` pools are not: they are uniformly-drawn addresses in an ordinary sentence.
+
+> **This over-mask is accepted on purpose, and M11-R55 is the decision.** Round 14 closed two
+> leaks by giving the domestic families the separator alphabet their validator already
+> normalises away (`-` `.` `/` `(` `)`) and a separator **run** of up to four. The rates above
+> are what that cost. Both alternatives cost a **leak**: returning the narrower alphabet to the
+> un-anchored families re-opens `(020) 7946 0958` at 0.923, and tightening the run re-opens the
+> domestic half of `+39  347  1234567`. An over-mask is restored **byte-identically** on the
+> response path — the client sees exactly what it sent — while a miss puts a real number in
+> front of the provider. Between harm aimed at the model and harm aimed at the data, this
+> project keeps the data and declares the harm.
+>
+> **What it costs in practice, stated where an operator will read it:** an IPv4 address inside a
+> `tool_use.input` reaches the model as `[PHONE_1]`, and so does a row of a `psql` result. That
+> is pinned, on real command output rather than on look-alikes, by `PHONE-OM-TOOL`
+> (`tests/phone_overmask.rs`) — **11 spans over six fields of `ls -l`, `df -h`, a `psql` table
+> and journal lines**, asserted exactly, so the set cannot move in either direction without
+> somebody moving it.
 >
 > **The rule this earns, and it is about the guards rather than the numbers: widening what a
-> recognizer *matches* is a precision change, and this axis has no precision guard that can fail.**
-> Every guard on the separator axis — `SEPARATOR-01`'s matrix, `RENDER-01`'s span assertion — asserts
-> that a recorded rendering **is** detected. Not one asserts that something is **not**, so four
-> consecutive widenings (M11-R25 → R48 → R51/R52) landed against assertions that can only go red when
-> coverage *shrinks*. The precision measurement exists (`phone_eval`) and is `#[ignore]`d, so
-> `cargo test` never runs it. *A change that widens a pattern must re-run the harness that measures
-> what the pattern refuses, and a widening whose only guard is a coverage assertion is unmeasured by
-> construction.*
+> recognizer *matches* is a precision change, and until M11-R55 this axis had no precision guard
+> that could fail.** Every guard on the separator axis — `SEPARATOR-01`'s matrix, `RENDER-01`'s
+> span assertion — asserts that a recorded rendering **is** detected. Not one asserts that
+> something is **not**, so four consecutive widenings (M11-R25 → R48 → R51/R52) landed against
+> assertions that can only go red when coverage *shrinks*. The precision measurement existed and
+> was `#[ignore]`d, so `cargo test` never ran it. *A change that widens a pattern must re-run the
+> harness that measures what the pattern refuses* — which is now not a discipline but a test.
 
 **Three things this trade rests on.**
-1. **On real agent traffic the cost is zero.** Over the M7 fixture — a genuine 22 KiB Claude
-   Code turn already in the repo, written for a different purpose and so not curated for this
-   one — the shipped default yields **no `Phone` spans at all**. Pinned as PHONE-OM
-   (`tests/phone_overmask.rs`) with one positive control **per shape family**, so "found
+1. **The cost depends on what the traffic is made of, and both halves are pinned.** Over the M7
+   fixture — a genuine 22 KiB Claude Code turn already in the repo, instruction boilerplate and
+   tool schemas — the shipped default yields **no `Phone` spans at all**. Over a turn of ordinary
+   **command output** it yields **11**. Both are PHONE-OM (`tests/phone_overmask.rs`), both assert
+   an exact span set, and the first keeps one positive control **per shape family** so "found
    nothing" can never be "that family is switched off".
-   > **That fixture has a shape, and it is the shape the two newest over-masks are outside of
-   > (M11-R55).** The M7 turn contains **no IPv4 address** and **no digit run separated by 2–4
-   > spaces**, so PHONE-OM is structurally unable to see either class round 14 admitted — it stayed
-   > green through both. This is M4-R13's lesson landing on the guard written to defeat it: *a
-   > corpus has a shape, and that shape is a blind spot* — including when the corpus is real
-   > traffic. A real-traffic guard bounds the claim to *that* traffic, and this one holds no
-   > `tool_result` carrying command output.
+   > **The second fixture exists because the first had a shape (M11-R55).** The M7 turn contains
+   > **no IPv4 address** and **no digit run separated by 2–4 spaces**, so it was structurally
+   > unable to see either class round 14 admitted and stayed green through both. This is M4-R13's
+   > lesson landing on the guard written to defeat it: *a corpus has a shape, and that shape is a
+   > blind spot* — including when the corpus is real traffic. A real-traffic guard bounds the
+   > claim to *that* traffic, and the M7 turn carries no `tool_result` of command output.
+   > `tests/common/tool_output_turn.rs` is that traffic, and its expectation is the **measured**
+   > set rather than a zero: this over-mask is accepted and published, so a guard asserting zero
+   > would assert the opposite of what ships.
 2. **The union produces no *emergent* false positives** — a candidate the union masks is always
    one some enabled region masks alone, so a region's measured cost is also its marginal cost.
    That is a **structural property of the dispatch**, not a discovered fact (the validator is

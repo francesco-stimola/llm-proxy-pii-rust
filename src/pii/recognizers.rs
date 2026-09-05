@@ -174,9 +174,15 @@ fn with_gaps(template: &str) -> String {
 /// **Bounded at four because `Scan::Overlapping` is only linear while a pattern's match length is**
 /// (M4-R19). An unbounded `+` would make every one of these patterns unbounded and take the
 /// rescan to O(n²) — the exact algorithmic-complexity DoS that finding is about. Four covers every
-/// rendering the round measured (` / ` and ` - ` are three); the residue is a separator run of five
-/// or more, which is column alignment rather than a rendering, and it is named in `TESTING.md`
-/// beside `SEPARATOR-01` rather than left to be rediscovered.
+/// rendering the round measured (` / ` and ` - ` are three).
+///
+/// **What four *admits* is column alignment, and that is the accepted cost rather than the
+/// residue** (M11-R55, correcting a sentence that stood here and said the opposite). A run of two
+/// to four spaces is exactly how `psql`, `df` and `ls -l` lay out numeric columns, so a table row
+/// is now a candidate: `phone_eval`'s `aligned` category measures the union at **0.785**, and that
+/// number is asserted against `ARCHITECTURE.md` on every `cargo test`. The genuine residue — what
+/// the bound excludes — is a run of **five or more**, and it is named in `TESTING.md` beside
+/// `SEPARATOR-01` rather than left to be rediscovered.
 const SEPARATOR_RUN_MAX: usize = 4;
 
 /// [`SEPARATOR_RUN_MAX`] as the regex repetition the patterns carry. **One constant, so a guard

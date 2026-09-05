@@ -1,5 +1,4 @@
-//! **M10 · step 8 — the domestic-phone measurement.** `#[ignore]`d: it prints numbers, it
-//! does not assert a product bar.
+//! **PHONE-EVAL — the domestic-phone precision measurement, and since M11-R55 a *guard*.**
 //!
 //! The deliverable of M10 is this measurement, not the code change. Widening the candidate
 //! set without it would trade a *documented* gap (the `it,us` default masking nothing) for
@@ -17,13 +16,39 @@
 //!    (~20 ms for a whole turn) — measured over the same real 22 KiB turn the over-mask
 //!    guard uses.
 //!
+//! ## What M11-R55 changed, and why it is the durable half of that finding
+//!
+//! Until then the precision test was `#[ignore]`d — *"it prints numbers, it does not assert a
+//! product bar"*. That sentence was true and the consequence was not survivable: this is the
+//! **only** precision harness the domestic-phone tier has, `cargo test` never ran it, and four
+//! consecutive widenings of the separator axis (M11-R25 → R48 → R51/R52) each landed against
+//! *coverage* assertions alone. `SEPARATOR-01`'s matrix and `RENDER-01`'s span assertion both
+//! say a recorded rendering **is** detected; neither can express *"and this is not a phone
+//! number"*, so the cost of a widening was invisible to the suite **by construction**. When
+//! round 15 finally ran this file by hand, the union's `dates` rate was 0.270 against the 0.180
+//! `ARCHITECTURE.md` published, and the slash rendering it reported as a hit was the one both
+//! that file and this file's own comment called impossible.
+//!
+//! So the numbers stopped being printed and started being **asserted, against the document that
+//! publishes them**. `docs/ARCHITECTURE.md` carries the measurement between
+//! `<!-- PHONE-EVAL:BEGIN -->` and `<!-- PHONE-EVAL:END -->`, and this test renders the same
+//! block from a live run and requires them to be equal. That is the chokepoint rather than a
+//! list of expected constants: one side is a measurement of the product, the other is what the
+//! operator reads, and no third place can drift because there is no third place. **A number in
+//! prose is either asserted from the code, or not written.**
+//!
+//! It costs ~5 s in the debug profile, which is why it can simply run.
+//!
 //! ## Running
+//!
+//! `phone_precision_per_region_and_for_the_union` runs in a plain `cargo test`. The **latency**
+//! test stays `#[ignore]`d — it is milliseconds, and milliseconds are not build-independent:
 //!
 //! ```text
 //! cargo test --release --test phone_eval -- --ignored --nocapture --test-threads=1
 //! ```
 //!
-//! **`--release` and `--test-threads=1` are both part of the contract** (M7-R12): a debug
+//! **`--release` and `--test-threads=1` are both part of that contract** (M7-R12): a debug
 //! build measures the wrong constant factor, and cargo's default concurrency measures the
 //! product against other copies of itself. The precision figures are build-independent; the
 //! milliseconds are not.
@@ -32,6 +57,8 @@
 mod m7_turn;
 
 use std::collections::HashMap;
+use std::fs;
+use std::path::Path;
 use std::time::Instant;
 
 use serde::Deserialize;
@@ -40,6 +67,10 @@ use llm_proxy_pii_rust::pii::recognizers::{StructuredRecognizers, PHONE_REGIONS}
 use llm_proxy_pii_rust::pii::{PiiDetector, PiiKind};
 
 const CORPUS_JSON: &str = include_str!("corpus/pii_cases.json");
+
+/// The markers in `docs/ARCHITECTURE.md` that fence the published measurement.
+const BLOCK_BEGIN: &str = "<!-- PHONE-EVAL:BEGIN -->";
+const BLOCK_END: &str = "<!-- PHONE-EVAL:END -->";
 
 #[derive(Deserialize)]
 struct Corpus {
@@ -106,10 +137,13 @@ fn phones(detector: &StructuredRecognizers, input: &str) -> Vec<String> {
 fn generated_negatives() -> Vec<(&'static str, String)> {
     let mut out: Vec<(&'static str, String)> = Vec::new();
 
-    // Dates. Note which renderings can collide at all: ISO (`2026-07-29`) and
-    // slash-separated (`29/07/2026`) cannot — no family accepts `/`, and a 4-digit leading
-    // group is not a candidate. The exposure is specifically space- and dash-separated
-    // day-month-year, which is why they are the ones generated here.
+    // Dates, in the four renderings a document actually carries. **The comment that stood
+    // here was false at HEAD and is the reason M11-R55 exists:** it said ISO (`2026-07-29`)
+    // *and* slash (`29/07/2026`) renderings "cannot collide at all — no family accepts `/`".
+    // Round 14 gave the domestic families `/` and `.`, so `28/01/2026` became a candidate in
+    // the same commit that made the sentence false, and this harness went on generating the
+    // string while its comment explained why the string could not matter. The ISO half still
+    // holds — a 4-digit leading group is not a candidate for any family.
     for month in 1..=12u32 {
         for day in [1u32, 9, 15, 28] {
             out.push((
@@ -210,13 +244,129 @@ fn generated_negatives() -> Vec<(&'static str, String)> {
         ));
         out.push(("tables", format!("row {lead} {} {} totals", 10 + k, 20 + k)));
     }
+
+    ip_and_alignment_negatives(&mut out);
     out
+}
+
+/// A deterministic 64-bit LCG. **Not `rand`**: the pool has to be byte-identical on every box
+/// and every run, because its rates are now asserted against a published document. A seeded
+/// generator in the test is the whole reproducibility argument.
+fn next(state: &mut u64) -> u64 {
+    *state = state
+        .wrapping_mul(6_364_136_223_846_793_005)
+        .wrapping_add(1_442_695_040_888_963_407);
+    *state >> 33
+}
+
+/// **The shapes round 14's separator widening admitted** — a dotted-decimal IPv4 address and a
+/// column-aligned numeric row (M11-R55).
+///
+/// Neither existed in this pool, and neither could: before round 14 no domestic family accepted
+/// `.` and every gap was exactly one character, so both were structurally impossible candidates.
+/// After it, `62.30.40.50` is the digit run `62304050` — a valid Latvian landline — and
+/// `170.75.154.131` is `17075154131`, a valid Chinese mobile, which is why the rate is high
+/// rather than incidental: CN mobiles are 11 digits beginning `1`, exactly what a dotted quad
+/// with a `1xx` first octet spells.
+///
+/// The private ranges are reported **separately from the public one and from each other**. They
+/// are the addresses agent traffic actually carries, their leading octets are fixed, and a
+/// blended "IP" rate over a mixture somebody chose would be a number about the mixture — this
+/// harness's own first rule.
+fn ip_and_alignment_negatives(out: &mut Vec<(&'static str, String)>) {
+    let mut state = 0x5EED_1CE5_A11A_B1E5u64;
+
+    // Public: anything that is not loopback, link-local, private, multicast or reserved.
+    let mut made = 0;
+    while made < 128 {
+        let (a, b, c, d) = (
+            (next(&mut state) % 224) as u32,
+            (next(&mut state) % 256) as u32,
+            (next(&mut state) % 256) as u32,
+            (next(&mut state) % 256) as u32,
+        );
+        let private = a == 0
+            || a == 10
+            || a == 127
+            || (a == 169 && b == 254)
+            || (a == 172 && (16..32).contains(&b))
+            || (a == 192 && b == 168)
+            || a >= 224;
+        if private {
+            continue;
+        }
+        out.push((
+            "ips",
+            format!("peer {a}.{b}.{c}.{d} timed out after 3 retries"),
+        ));
+        made += 1;
+    }
+    for _ in 0..64 {
+        let (b, c, d) = (
+            next(&mut state) % 256,
+            next(&mut state) % 256,
+            next(&mut state) % 256,
+        );
+        out.push((
+            "ips10",
+            format!("peer 10.{b}.{c}.{d} timed out after 3 retries"),
+        ));
+    }
+    for _ in 0..64 {
+        let (c, d) = (next(&mut state) % 256, next(&mut state) % 256);
+        out.push((
+            "ips192",
+            format!("peer 192.168.{c}.{d} timed out after 3 retries"),
+        ));
+    }
+    for _ in 0..64 {
+        let (b, c, d) = (
+            16 + next(&mut state) % 16,
+            next(&mut state) % 256,
+            next(&mut state) % 256,
+        );
+        out.push((
+            "ips172",
+            format!("peer 172.{b}.{c}.{d} timed out after 3 retries"),
+        ));
+    }
+
+    // Column alignment: four numeric columns at a gap of 2, 3 and 4 spaces — the run
+    // `SEPARATOR_RUN_MAX` admits. A gap of 1 was already a candidate before round 14, and a gap
+    // of 5 is outside the bound; both are covered by `SEPARATOR-01`'s matrix rather than here.
+    for gap in 2..=4usize {
+        let spaces = " ".repeat(gap);
+        for _ in 0..48 {
+            let cols: Vec<u64> = (0..4).map(|_| 100 + next(&mut state) % 900).collect();
+            out.push((
+                "aligned",
+                cols.iter()
+                    .map(|c| c.to_string())
+                    .collect::<Vec<_>>()
+                    .join(&spaces),
+            ));
+        }
+    }
 }
 
 /// The category names in the generated pool, in report order.
 const NEGATIVE_CATEGORIES: &[&str] = &[
-    "dates", "ports", "sizes", "offsets", "money", "codes", "refs", "tables",
+    "dates", "ports", "sizes", "offsets", "money", "codes", "refs", "tables", "ips", "ips10",
+    "ips192", "ips172", "aligned",
 ];
+
+/// One region set's measurement: recall over the positives it owns, the curated false-positive
+/// rate, the per-category generated rate, and **which** generated strings it flagged.
+///
+/// The last field exists so the dispatch invariant below can be checked without a second pass
+/// over the pool — ten more `detect` sweeps was most of this test's runtime, and the test now
+/// runs on every `cargo test`.
+struct Measured {
+    recall: f64,
+    fp_curated: f64,
+    per_category: Vec<f64>,
+    flagged: Vec<bool>,
+}
 
 /// Score one region set: recall over the positives whose `locale` is in `owned`, plus the
 /// false positives it produces on the curated and the generated pools.
@@ -226,7 +376,7 @@ fn report(
     cases: &Category,
     owned: &[&str],
     generated: &[(&'static str, String)],
-) {
+) -> Measured {
     let mut hits = 0;
     let mut total = 0;
     let mut misses = Vec::new();
@@ -259,31 +409,44 @@ fn report(
     } else {
         hits as f64 / total as f64
     };
+
+    // One sweep of the generated pool, kept as a mask: every rate below is counted off it, and
+    // so is the dispatch invariant.
+    let flagged: Vec<bool> = generated
+        .iter()
+        .map(|(_, s)| !phones(detector, s).is_empty())
+        .collect();
+
+    let mut per_category = Vec::with_capacity(NEGATIVE_CATEGORIES.len());
+    let mut worst: Option<(String, Vec<String>)> = None;
+    for category in NEGATIVE_CATEGORIES {
+        let idx: Vec<usize> = generated
+            .iter()
+            .enumerate()
+            .filter(|(_, (c, _))| c == category)
+            .map(|(i, _)| i)
+            .collect();
+        let bad: Vec<usize> = idx.iter().copied().filter(|i| flagged[*i]).collect();
+        per_category.push(bad.len() as f64 / idx.len() as f64);
+        if worst.as_ref().is_none_or(|(_, w)| w.len() < bad.len()) {
+            worst = Some((
+                (*category).to_string(),
+                bad.iter()
+                    .take(3)
+                    .map(|i| generated[*i].1.clone())
+                    .collect(),
+            ));
+        }
+    }
+
     print!(
         "{label:<7} recall {recall:>5.3} ({hits:>2}/{total:<2})  FPcur {:>5.3} ({}/{})  ",
         fp_curated as f64 / cases.negative.len() as f64,
         fp_curated,
         cases.negative.len()
     );
-
-    let mut worst: Option<(String, Vec<String>)> = None;
-    for category in NEGATIVE_CATEGORIES {
-        let pool: Vec<&String> = generated
-            .iter()
-            .filter(|(c, _)| c == category)
-            .map(|(_, s)| s)
-            .collect();
-        let bad: Vec<&&String> = pool
-            .iter()
-            .filter(|s| !phones(detector, s).is_empty())
-            .collect();
-        print!("{category} {:>5.3} ", bad.len() as f64 / pool.len() as f64);
-        if worst.as_ref().is_none_or(|(_, w)| w.len() < bad.len()) {
-            worst = Some((
-                (*category).to_string(),
-                bad.iter().take(3).map(|s| (**s).clone()).collect(),
-            ));
-        }
+    for (category, rate) in NEGATIVE_CATEGORIES.iter().zip(&per_category) {
+        print!("{category} {rate:>5.3} ");
     }
     println!();
     for m in &misses {
@@ -296,12 +459,92 @@ fn report(
             println!("        fp[{category}] {e:?} -> {:?}", phones(detector, &e));
         }
     }
+
+    Measured {
+        recall,
+        fp_curated: fp_curated as f64 / cases.negative.len() as f64,
+        per_category,
+        flagged,
+    }
+}
+
+/// Render the measurement exactly as `docs/ARCHITECTURE.md` publishes it.
+///
+/// **Transposed on purpose** — one row per quantity, one column per region set. Categories are
+/// rows because rows are cheap: a new over-mask class can be measured and published without
+/// reflowing a table, which is the friction that let `dates 0.180` stand for four rounds.
+fn render_block(
+    positives: usize,
+    curated: usize,
+    generated: &[(&'static str, String)],
+    columns: &[(String, Measured)],
+) -> String {
+    let mut out = String::new();
+    out.push_str(&format!(
+        "pool: {positives} corpus positives · {curated} curated negatives · {} generated\n",
+        generated.len()
+    ));
+    let sizes: Vec<String> = NEGATIVE_CATEGORIES
+        .iter()
+        .map(|c| format!("{c} {}", generated.iter().filter(|(g, _)| g == c).count()))
+        .collect();
+    out.push_str(&format!("generated: {}\n", sizes.join(" · ")));
+    out.push_str(&format!("{:<11}", "region"));
+    for (label, _) in columns {
+        out.push_str(&format!("{label:>7}"));
+    }
+    out.push('\n');
+    let mut row = |name: &str, values: Vec<f64>| {
+        out.push_str(&format!("{name:<11}"));
+        for v in values {
+            out.push_str(&format!("{v:>7.3}"));
+        }
+        out.push('\n');
+    };
+    row(
+        "recall",
+        columns.iter().map(|(_, m)| m.recall).collect::<Vec<_>>(),
+    );
+    row(
+        "curatedFP",
+        columns
+            .iter()
+            .map(|(_, m)| m.fp_curated)
+            .collect::<Vec<_>>(),
+    );
+    for (i, category) in NEGATIVE_CATEGORIES.iter().enumerate() {
+        row(
+            category,
+            columns
+                .iter()
+                .map(|(_, m)| m.per_category[i])
+                .collect::<Vec<_>>(),
+        );
+    }
+    out
+}
+
+/// The block `docs/ARCHITECTURE.md` publishes, normalised for comparison: the fence lines and
+/// any blank edges dropped, every line right-trimmed.
+fn normalise(block: &str) -> String {
+    block
+        .lines()
+        .map(str::trim_end)
+        .filter(|l| !l.trim_start().starts_with("```"))
+        .skip_while(|l| l.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim_end()
+        .to_string()
 }
 
 /// **Per region, then the union.** The second is not predicted by the first — enabling N
 /// regions unions their accepted sets, so the compound rate is ≥ the worst single one.
+///
+/// **Not `#[ignore]`d since M11-R55**, and that is the finding rather than a note about it: the
+/// four widenings this milestone shipped were each measured by nobody, because the only harness
+/// that could measure them was one a human had to remember to run.
 #[test]
-#[ignore]
 fn phone_precision_per_region_and_for_the_union() {
     let cases = national_phone_cases();
     let generated = generated_negatives();
@@ -337,17 +580,27 @@ fn phone_precision_per_region_and_for_the_union() {
     reach("un-anchored long block", &|s: &str| {
         regex_lite_contains(s, r"(?-u:\b)[1-9]\d{2}[ -]\d{6,8}(?-u:\b)")
     });
+    // **The two shapes M11-R55 admitted have to be reachable too**, and by the same rule: the
+    // pool's `ips` and `aligned` zeros would otherwise mean "not in the pool".
+    reach("dotted quad", &|s: &str| {
+        regex_lite_contains(s, r"(?-u:\b)\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}(?-u:\b)")
+    });
+    reach("column alignment", &|s: &str| {
+        regex_lite_contains(s, r"[0-9]{2,3}[ ]{2,4}[0-9]{2,4}")
+    });
     println!();
 
+    let mut columns: Vec<(String, Measured)> = Vec::new();
     for region in PHONE_REGIONS {
         let detector = StructuredRecognizers::with_regions(&[region.id]);
-        report(region.code, &detector, &cases, &[region.code], &generated);
+        let m = report(region.code, &detector, &cases, &[region.code], &generated);
+        columns.push((region.code.to_string(), m));
     }
 
     let all: Vec<&str> = PHONE_REGIONS.iter().map(|r| r.code).collect();
     let detector = StructuredRecognizers::new();
     println!();
-    report("UNION", &detector, &cases, &all, &generated);
+    let union = report("UNION", &detector, &cases, &all, &generated);
 
     // **A dispatch invariant, asserted — not a result reported (M10-R6).**
     //
@@ -363,17 +616,9 @@ fn phone_precision_per_region_and_for_the_union() {
     // is also its marginal cost. What it does **not** mean is that adding a region is free:
     // the union's FP set still grows by set-union, which is what the per-category table above
     // shows and what decides the default.
-    let singles: Vec<StructuredRecognizers> = PHONE_REGIONS
-        .iter()
-        .map(|r| StructuredRecognizers::with_regions(&[r.id]))
-        .collect();
-    let union_hits = generated
-        .iter()
-        .filter(|(_, s)| !phones(&detector, s).is_empty())
-        .count();
-    let any_single_hits = generated
-        .iter()
-        .filter(|(_, s)| singles.iter().any(|d| !phones(d, s).is_empty()))
+    let union_hits = union.flagged.iter().filter(|f| **f).count();
+    let any_single_hits = (0..generated.len())
+        .filter(|i| columns.iter().any(|(_, m)| m.flagged[*i]))
         .count();
     assert_eq!(
         union_hits, any_single_hits,
@@ -383,6 +628,53 @@ fn phone_precision_per_region_and_for_the_union() {
          can no longer predict."
     );
     println!("\ndispatch invariant holds: union hits {union_hits} == ∪ singles {any_single_hits}");
+
+    // ---------------------------------------------------------------------------------
+    // **The published table is this run's output, or the test is red** (M11-R55).
+    //
+    // Not "assert each rate against a constant here, and separately write the same constants
+    // into the document" — that is two lists checking each other, which M11-R53 named as
+    // bookkeeping. One side of this comparison is a measurement of the product and the other is
+    // the sentence an operator reads before upgrading. There is no third copy to drift.
+    // ---------------------------------------------------------------------------------
+    columns.push(("UNION".to_string(), union));
+    let rendered = render_block(
+        cases
+            .positive
+            .iter()
+            .filter(|c| all.contains(&c.locale.as_deref().unwrap_or("")))
+            .count(),
+        cases.negative.len(),
+        &generated,
+        &columns,
+    );
+
+    let doc_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/ARCHITECTURE.md");
+    let doc = fs::read_to_string(&doc_path).expect("docs/ARCHITECTURE.md is readable");
+    let begin = doc.find(BLOCK_BEGIN).unwrap_or_else(|| {
+        panic!(
+            "docs/ARCHITECTURE.md has lost its {BLOCK_BEGIN} marker — the \
+             domestic-phone rates it publishes are asserted from this test, and without the \
+             marker nothing checks them"
+        )
+    });
+    let end = doc
+        .find(BLOCK_END)
+        .unwrap_or_else(|| panic!("docs/ARCHITECTURE.md has lost its {BLOCK_END} marker"));
+    assert!(begin < end, "the PHONE-EVAL markers are in the wrong order");
+    let published = normalise(&doc[begin + BLOCK_BEGIN.len()..end]);
+
+    assert_eq!(
+        published,
+        normalise(&rendered),
+        "\n\nthe domestic-phone precision measurement no longer matches what \
+         `docs/ARCHITECTURE.md` publishes.\n\nIf a recognizer was widened or narrowed on \
+         purpose, that is a **product-visible precision change**: say so in CHANGELOG.md's \
+         `[Unreleased]`, and paste the block below between the PHONE-EVAL markers.\n\n\
+         ------------------------------ measured now ------------------------------\n\
+         {rendered}\
+         --------------------------------------------------------------------------\n"
+    );
 }
 
 /// **Latency per enabled region**, over the same real 22 KiB turn.
