@@ -111,21 +111,20 @@ Milestone [M11](https://github.com/francesco-stimola/llm-proxy-pii-rust/blob/mai
   the published CPU ceiling has been rewritten upward.** The request's validation allowance
   (500,000 units, not configurable) used to charge only the phone validator. It missed a second
   expensive check entirely: the IBAN case gate, whose mod-97 arithmetic runs once per candidate *and
-  once per retry* — measured at **708,648 calls on a single 4 MiB field, charged nothing**. It is
-  charged now.
+  once per retry* — on one 4 MiB field it ran hundreds of thousands of times and was charged
+  nothing. It is charged now.
   - **What changes for you:** a request carrying megabytes of text shaped like `ab12 cd34 ef56 …`
     may come back `400` (*"exhausted the validation budget"*) instead of being masked and forwarded.
-    Fail-closed, as always: nothing is sent to the provider. Measured on ordinary payloads, the
-    headroom is wide — 4 MiB of lowercase hex spends ~38,000 of the 500,000 units, a JSON export
-    ~4,500, base64 and source code **zero**, and a 22 KiB Claude Code turn zero. Only the dense
-    two-letters-two-digits shape comes near it.
+    Fail-closed, as always: nothing is sent to the provider. The shape has to be dense to matter —
+    two letters then two digits, repeated. Measured, a lowercase hex dump, a JSON export, base64 and
+    source code all stay far below the allowance, and a 22 KiB Claude Code turn spends nothing at
+    all.
   - **The ceiling itself was understated and the correction is upward.** It was published as *"about
-    3 s"*, read off the cheapest corner of a grid that never varied the candidate's shape. Measured
-    across four shapes, one unit costs **1.3–21.7 µs**, so the same 500,000 units are ~0.6 s of
-    validation on one body and **~8.5 s** on another — and the dearest is *legal* traffic (a
-    zero-padded three-group key column), not an attack. The old figure is withdrawn rather than
-    adjusted; `docs/ARCHITECTURE.md` → *What the budget costs* publishes the band, and the harness
-    that prints it is named there.
+    3 s"*, read off the cheapest corner of a grid that never varied the candidate's shape. One unit
+    turns out to span more than an order of magnitude depending on what the candidate looks like,
+    and the dearest shape is *legal* traffic (a zero-padded three-group key column), not an attack.
+    The old figure is withdrawn rather than adjusted. The measured band, and the harness that
+    re-derives it, are in `docs/ARCHITECTURE.md` → *What the budget costs*.
   - **The bound stays a count, not a time limit**, deliberately: a wall-clock limit would make the
     same body pass on an idle machine and fail on a busy one, and a fail-closed layer whose verdict
     depends on load is not one an operator can reason about.
