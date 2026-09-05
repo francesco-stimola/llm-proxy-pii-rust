@@ -203,6 +203,23 @@ fn free<F: Fn(&str) -> bool + Send + Sync + 'static>(check: F) -> Validator {
     Box::new(move |matched: &str, _budget: &Budget| check(matched))
 }
 
+/// The counterpart of [`free`]: a validator whose cost is comparable to a `phonenumber::parse()`
+/// and which therefore **charges the request's budget itself** (M11-R18).
+///
+/// It exists for the same reason `free` does — so that charging, like not charging, is a *named*
+/// decision a reader and `grep` can both find, rather than an anonymous `Box::new` at four call
+/// sites. Between the two there is no third way to build a [`Validator`], so a tenth recognizer
+/// cannot join the cheap tier by omission: it has to pick a word.
+///
+/// **The gap this closed.** `iban_case_gate` was `free`, on a doc comment that read *"a checksum
+/// over at most 18 bytes"* — true when the validator ran once per match, and false from the moment
+/// `shrink_on_reject` (M11-R13) started retrying a rejected span at every interior separator.
+/// Measured on 4 MiB of distinct lowercase `[a-z]{2}[0-9]{2}` groups: **708 648 calls to its
+/// arithmetic branch, charged nothing**, against a whole-request allowance of 500 000 units.
+fn metered<F: Fn(&str, &Budget) -> bool + Send + Sync + 'static>(check: F) -> Validator {
+    Box::new(check)
+}
+
 /// One compiled recognizer: a category, its pattern, an optional validator applied to
 /// each raw match, and how the scan advances after one. Overlap priority comes from the
 /// kind ([`PiiKind::priority`]).
@@ -402,7 +419,7 @@ fn universal_recognizers() -> Vec<Recognizer> {
                 r"(?-u:\b)[A-Za-z]{2}\d{2}(?:[A-Za-z0-9]{11,30}|(?:{GAP}[A-Za-z0-9]{4}){2,7}(?:{GAP}[A-Za-z0-9]{1,4})?)(?-u:\b)",
             ))
             .unwrap(),
-            validate: Some(free(iban_case_gate)),
+            validate: Some(metered(iban_case_gate)),
             scan: Scan::Overlapping, // bounded: ≤ 44 chars
             shrink_on_reject: true,
         },
@@ -485,7 +502,7 @@ fn universal_recognizers() -> Vec<Recognizer> {
                 r"\+\d{1,3}(?:{PGAP}\d{1,8}){1,6}(?-u:\b)|\+\d{8,15}(?-u:\b)",
             ))
             .unwrap(),
-            validate: Some(Box::new(|matched: &str, budget: &Budget| {
+            validate: Some(metered(|matched: &str, budget: &Budget| {
                 // Charged like every other `parse()` (M10-R29): one unit, because that is the
                 // ~6.5 µs the allowance was sized from. One parse per candidate here rather than
                 // up to nine, since the country code is in the value.
@@ -1042,7 +1059,7 @@ fn national_phone_recognizers(regions: &[(Id, &[PhoneShape])]) -> Vec<Recognizer
             Some(Recognizer {
                 kind: PiiKind::Phone,
                 regex: Regex::new(&with_gaps(pattern)).unwrap(),
-                validate: Some(Box::new(move |matched: &str, budget: &Budget| {
+                validate: Some(metered(move |matched: &str, budget: &Budget| {
                     // **No cheap pre-filter here, and that is a decision with a measurement
                     // behind it (M10-R13).** A digit-count gate derived from libphonenumber's
                     // `possible_length` metadata was added to make rejection cheap — the
@@ -1453,9 +1470,25 @@ fn next_char_boundary(input: &str, i: usize) -> usize {
 /// to an optional sibling of theirs (M10-R35), is what makes the name honest.
 ///
 /// **The number is a CPU ceiling on validation, and it was chosen against a legal payload rather
-/// than an adversarial one.** One unit is one `parse()`, measured at **~3 µs** on the shipped release
-/// build (not the ~6.5 µs the library's own docs suggest), so 500,000 bounds a request's
-/// domestic-phone *validation* at **~1.5 s**.
+/// than an adversarial one.** One unit is one **metered** validator call — a `phonenumber::parse()`,
+/// or the arithmetic branch of [`iban_case_gate`]. The cheap checksums are [`free`] and charge
+/// nothing.
+///
+/// **A unit is not a constant, and the ceiling is published as the band rather than as its floor**
+/// (M11-R38). Two things move the cost and only one of them is countable:
+///
+/// - the **verdict** moves how many units a candidate spends — a rejection pays every enabled
+///   region because `.any()` short-circuits only on accept — and the count already tracks that;
+/// - the candidate's **shape** moves what a unit costs, and nothing tracks it. `DOS-BUD`'s
+///   verdict-and-shape grid prints µs/unit at three row counts: a valid `3XX XXX XXXX` column
+///   **3.2–4.3**, a rejected `0NNNN NNNN` id column **2.9–3.5**, lowercase `ab12 cd34` groups
+///   **1.3–1.8**, and a three-group `0NNN NNNN NNNN` key column **15.1–21.7**.
+///
+/// So 500,000 units is **~0.6 s of validation on the cheapest shape and ~8.5 s on the dearest
+/// measured** — where an earlier draft of this comment published `~1.5 s` full stop, read off the
+/// cheapest corner of a grid that never varied the shape. The bound stays a **count** rather than a
+/// wall clock precisely so a refusal is the same on every box; a time limit would make the same body
+/// pass on an idle machine and fail on a busy one.
 ///
 /// The **legal** payload it is measured against is a database tool result with one phone column,
 /// which is what an agent produces by accident. These are `DOS-BUD`'s printed rows, through the whole
@@ -1463,10 +1496,11 @@ fn next_char_boundary(input: &str, i: usize) -> usize {
 ///
 /// | tool result | rows | units | verdict |
 /// |---|---|---|---|
-/// | 357 KB, `347 XXXXXXX` column | 5,000 | 5,000 | masked |
-/// | 3.7 MB, same rendering | 50,000 | 50,000 | masked |
-/// | **16 MiB** (`MAX_BODY_BYTES`), same rendering | 221,941 | 221,941 | masked |
+/// | 358 KB, `347 XXXXXXX` column | 5,000 | 14,000 | masked |
+/// | 3.7 MB, same rendering | 50,000 | 59,000 | masked |
+/// | **16 MiB** (`MAX_BODY_BYTES`), same rendering | 221,941 | 230,941 | masked |
 /// | **16 MiB, the same numbers written `3XX XXX XXXX`** | 219,095 | **500,000** | **refused** |
+/// | 3.8 MB, **three-group** `0NNN NNNN NNNN` — the dearest shape | 50,000 | 487,214 | masked, **10.6 s** |
 ///
 /// **The allowance is a count of numbers, and how many depends on how they are written (M10-R56).**
 /// `national_phone_valid` is `.any()` over the regions whose plans use that candidate's *shape
@@ -1475,18 +1509,18 @@ fn next_char_boundary(input: &str, i: usize) -> usize {
 /// itself, and each of those is rejected and pays its family's whole region list.
 ///
 /// Measured per row in a column of 20,000 — the figure a real payload meets: `347 XXXXXXX` **1.00**,
-/// any `+CC` form 1.02, `0X XX XX XX XX` (FR) 3.27, `6XX XX XX XX` (ES) 3.27, `3XX XXX XXXX`
+/// any `+CC` form 2.02, `0X XX XX XX XX` (FR) 3.25, `6XX XX XX XX` (ES) 3.25, `3XX XXX XXXX`
 /// (**IT grouped**) **8.00**. So 500,000 units is ≈**62,500 phone numbers per request** at the most
 /// expensive column rendering and ≈500,000 at the cheapest.
 ///
 /// **The bytes are a property of the layout, not of the limit.** The same 62,500 grouped numbers are
-/// refused at **793 KB** as a bare column, **2.0 MB** as `name,phone` and **4.45 MB** as a six-column
-/// export. An ordinary 5,000-row export spends 8%; the M7 22 KiB turn spends 0.
+/// refused at **813 KB** as a bare column, **2.1 MB** as `name,phone` and **4.7 MB** as a six-column
+/// export. An ordinary 5,000-row export spends 3–10%; the M7 22 KiB turn spends 0.
 ///
-/// *(Per candidate **in isolation** the numbers differ — `06 12 34 56 78` costs 46 on its own, a
-/// `+CC` form costs 0 because that recognizer has no validator — and the difference is the per-scan
-/// memo, which absorbs repeated sub-candidate prefixes in a column. Isolation measures how a
-/// rendering behaves; the column measures what a body costs.)*
+/// *(Per candidate **in isolation** the numbers differ — `01 23 45 67 89` costs 19 on its own, the
+/// dearest rendering in the shipped set — and the difference is the per-scan memo, which absorbs
+/// repeated sub-candidate prefixes in a column. Isolation measures how a rendering behaves; the
+/// column measures what a body costs.)*
 ///
 /// *(Four published versions of this band were wrong, all optimistic: an eleven-digit column that
 /// masked nothing (M10-R49); `347 XXXXXXX` alone, the cheapest legal phone in the shipped set
@@ -1502,10 +1536,11 @@ fn next_char_boundary(input: &str, i: usize) -> usize {
 ///
 /// **What this does not bound, stated because leaving it out was a finding twice.** The allowance
 /// caps *validator calls*. Regex scanning and the mask rewrite are linear in body size and entity
-/// count, bounded only by `MAX_BODY_BYTES` — 229 ms for 16 MiB with the tier off. Across every shape
-/// measured a request costs at most about **3 s**, against **57 s** before the allowance became
-/// per-request. The DoS is closed by removing a multiplier the client chose, not by making the ceiling
-/// small. See `docs/ARCHITECTURE.md` for the full table.
+/// count, bounded only by `MAX_BODY_BYTES` — 362 ms for 16 MiB with the tier off. The old
+/// *"at most about 3 s"* claim is **withdrawn, not adjusted** (M11-R38): the dearest legal shape
+/// measured is 10.6 s, and a ceiling may only ever be wrong in the direction of caution. What the
+/// per-request allowance did fix stands — **57 s -> 1.9 s** on the same 78-field body, because the
+/// multiplier the *client* chose is gone. See `docs/ARCHITECTURE.md` for the full table.
 ///
 /// (`cargo test` builds unoptimized, where the same calls take far longer — which is why DOS-06's
 /// refusal case is not wrapped in a wall-clock budget. The number must come from the product, not
@@ -2094,10 +2129,18 @@ pub fn luhn_valid(input: &str) -> bool {
 /// a country code it does not know, so a span prefixed `ab` is gated by mod-97 alone and one in 97
 /// passes. The bound is that rate; the zero was a corpus artefact, and the comment that once stood
 /// here reasoned about exactly this hole and concluded the zero survived it.
-fn iban_case_gate(matched: &str) -> bool {
+fn iban_case_gate(matched: &str, budget: &Budget) -> bool {
     if !matched.bytes().any(|b| b.is_ascii_lowercase()) {
         return true;
     }
+    // **Charged, and charged on this branch only** (M11-R18). The short-circuit above is a byte
+    // scan of at most 44 characters and genuinely free; the arithmetic below is not, and it is not
+    // run once per match either — `shrink_on_reject` retries at every interior separator, so one
+    // rejected candidate can reach it eight times. Measured on a 4 MiB field of lowercase
+    // `[a-z]{2}[0-9]{2}` groups: **708 648 calls to this branch**, against a whole-request
+    // allowance of 500 000 units, charged **nothing**. That is the third term
+    // `ARCHITECTURE.md`'s cost model did not have.
+    budget.spend();
     iban_mod97(matched) && iban_length_ok(matched)
 }
 

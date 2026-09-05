@@ -386,39 +386,77 @@ exactly the reason above.
 > function. *Correlating with a global state is not the same as distinguishing a kind.*
 
 **What the budget costs, and the number is chosen against a legal payload.** One unit is one
-`phonenumber::parse()`, measured at **~3 µs** on the shipped release build, so **500,000** bounds a
-request's domestic-phone *validation* at **~1.5 s** of CPU.
+**metered validator call** — a `phonenumber::parse()`, or the arithmetic branch of
+`iban_case_gate`. The count is 500,000 per request.
 
-> **That `~3 µs` is the cheapest corner of the grid it was read off, and the ceiling built on it is
-> understated by up to ~9× ([M11-R38](reviews/M11.md#m11-r38)).** A `parse()`
-> costs what the candidate makes it cost, and this file already says which way — *`.any()`
-> short-circuits only on accept, so a rejection is the expensive verdict.* Every row below is built
-> from **valid** numbers, so all of them sample the cheap branch. Measured in one process with the
-> phone-free floor subtracted, the same **500,000 units** cost **3.9–4.9 s** on a random
-> `3XX XXX XXXX` column and **13.0–15.3 s** on a column of zero-padded four-digit ids — a shape a
-> `LPAD`-ed id column produces without trying — and a 4 MiB body of the latter is refused by the real
-> binary only after **14.6 s**. Fail-closed throughout: nothing is forwarded, and the path stays
-> linear. **What to do about it is an open maintainer decision** — M11-R38 lists four options with
-> what each costs — so the figures here are left as they were measured rather than quietly restated.
+> **A unit is not a constant, and since M11-R18 / M11-R38 the ceiling is published as the band it
+> measured rather than as its floor.** The two findings are one sentence from two sides: *the
+> allowance counts calls, and calls do not all cost the same.*
+>
+> - **What moves the *number* of units is the verdict**, and the budget already tracks it: a
+>   rejected candidate is charged once per enabled region (up to nine) because `.any()`
+>   short-circuits only on accept; an accepted one stops at the first region that says yes.
+> - **What moves the *price* of a unit is the candidate's shape**, and nothing tracks that. Printed
+>   by `DOS-BUD`'s verdict-and-shape grid, `--release`, three row counts each: a valid
+>   `3XX XXX XXXX` column **4.0–4.3 µs/unit**, a rejected `0NNNN NNNN` id column **2.5–3.4**,
+>   lowercase `ab12 cd34` groups **1.1–1.6**, and a **three-group** zero-padded key column
+>   (`0NNN NNNN NNNN`) **16.1–20.7**. That is a spread of roughly **18×**, and the `~3 µs` this
+>   paragraph used to publish was near its bottom.
+>
+> **So the ceiling, stated on the worst shape measured rather than the cheapest:** 500,000 units is
+> **~0.6 s** of validation on the cheapest column and **~8.5 s** on the dearest — measured at
+> 487,214 units in 8.3 s on the three-group shape. Fail-closed throughout: nothing is forwarded, the
+> path stays linear, and a refusal is a refusal on every box because the *count* is deterministic.
+> That determinism is why the bound is a count and not a wall clock: a time limit would make the
+> same body pass on an idle machine and fail on a busy one, which is the one thing a fail-closed
+> layer must not do.
+>
+> **And term 3 is now inside the count** (M11-R18). `iban_case_gate` was `free()` — uncharged — on a
+> doc comment that read *"a checksum over at most 18 bytes"*. That was true while a validator ran
+> once per match and false from the moment `shrink_on_reject` (M11-R13) began retrying a rejected
+> span at every interior separator: measured on 4 MiB of distinct lowercase `[a-z]{2}[0-9]{2}`
+> groups, **708,648 calls to its arithmetic branch, charged nothing**, against a whole-request
+> allowance of 500,000 units. It is charged now, on that branch only — the short-circuit for a span
+> with no lowercase byte does no arithmetic and pays nothing, so an uppercase body of the same bytes
+> still spends zero. `DOS-10` asserts both halves, and putting the gate back inside `free()` turns
+> it red.
+>
+> **What that costs, plainly: a body dense in lowercase alphanumeric groups can now be refused where
+> it used to be masked.** Measured, the shapes that come near the allowance are the dense ones —
+> 4 MiB of `[a-z]{2}[0-9]{2}` groups spends 708,648 units, so it is refused; 4 MiB of lowercase hex
+> (`abcd 1234 …`) spends ~38,000, an ordinary JSON export ~4,500, base64 and source code **zero**.
+> The charge is conservative by design: at 1.1–1.6 µs a unit it over-prices that work by about
+> 2–3× against the nominal, which for a fail-closed bound is the safe direction.
 
 Every row below is printed by `DOS-BUD`
 (`cargo test --release --test complexity -- --ignored --nocapture budget_refusal_line`) — *a number a
-reader must trust goes stale; a number they can re-run is a fact*:
+reader must trust goes stale; a number they can re-run is a fact*. It is one of the two measurement
+commands `TESTING.md` declares as **run before every tag**, which is what keeps "can re-run" from
+meaning "nobody did".
 
 | body | verdict | units | wall clock |
 |---|---|---|---|
 | M7 22 KiB Claude Code turn | masked | **0** | — |
-| 357 KB SQL result, 5,000 rows, one phone column | masked | 5,000 | 46 ms |
-| 3.7 MB SQL result, 50,000 rows | masked | 50,000 | 514 ms |
-| **16 MiB SQL result, `347 XXXXXXX` column** | masked | 221,941 | 2.4 s |
-| **16 MiB SQL result, same numbers written `3XX XXX XXXX`** | **refused** | 500,000 | 1.6 s |
-| 62,500 grouped numbers — bare column (793 KB) · `name,phone` (2.0 MB) · 6-column (4.45 MB) | **refused** | 500,000 | — |
-| 2 MiB field, *nothing but* phone-shaped groups | masked | 499,380 | 1.36 s |
-| 3 MiB+ field, same shape | **refused** | 500,000 | 1.44 s |
-| 1 x 200 KB field | masked | — | 151 ms |
-| 5 x 200 KB fields (1 MB) | masked | — | 814 ms |
-| **15.6 MiB across 78 x 200 KB fields** | **refused** | 500,000 | **1.61 s** |
-| 16 MiB, phone tier **off** - the unbudgeted floor | masked | 0 | 229 ms |
+| 358 KB SQL result, 5,000 rows, `347 XXXXXXX` column | masked | 14,000 | 80 ms |
+| 3.7 MB SQL result, 50,000 rows, same column | masked | 59,000 | 748 ms |
+| **16 MiB SQL result, `347 XXXXXXX` column** (221,941 rows) | masked | 230,941 | 3.4 s |
+| **16 MiB SQL result, same numbers written `3XX XXX XXXX`** | **refused** | 500,000 | 1.8 s |
+| 62,500 grouped numbers — bare column (813 KB) · `name,phone` (2.1 MB) · 6-column (4.7 MB) | **refused** | 500,000 | — |
+| 2 MiB field, *nothing but* phone-shaped groups | masked | 499,375 | 1.35 s |
+| 3 MiB+ field, same shape | **refused** | 500,000 | 1.65 s |
+| 1 × 200 KB field | masked | — | 240 ms |
+| 5 × 200 KB fields (1 MB) | masked | — | 1.15 s |
+| **15.6 MiB across 78 × 200 KB fields** | **refused** | 500,000 | **1.89 s** |
+| 3.8 MB SQL result, 50,000 rows, **three-group** `0NNN NNNN NNNN` | masked | 487,214 | **10.6 s** |
+| 4.3 MB SQL result, 50,000 rows, lowercase `ab12 cd34` groups | masked | 333,609 | 592 ms |
+| 16 MiB, phone tier **off** — the unbudgeted floor | masked | 0 | 362 ms |
+
+> **The last two rows are the ones M11-R38 and M11-R18 added, and they are the interesting ones.**
+> The three-group column is the dearest shape measured — 487,214 units for **10.6 s**, where the
+> same unit count on a `3XX XXX XXXX` column costs under two — and it is *masked*, not refused: it
+> is legal traffic, so it is the shape the published ceiling has to be true of. The lowercase
+> alphanumeric column is term 3 arriving inside the count: before M11-R18 it spent **0** units for
+> the same work.
 
 > **The allowance is a count of *numbers*, and how many depends on how they are written.**
 > `national_phone_valid` is `.any()` over the regions whose plans use that candidate's **shape
@@ -430,22 +468,24 @@ reader must trust goes stale; a number they can re-run is a fact*:
 >
 > | column of | units/row | | column of | units/row |
 > |---|---|---|---|---|
-> | `347 XXXXXXX` (IT `LongBlock`) | **1.00** | | `0X XX XX XX XX` (FR pairs) | 3.27 |
-> | `+39 3XX XXXXXXX` (any `+CC`) | 1.02 | | `6XX XX XX XX` (ES grouped) | 3.27 |
+> | `347 XXXXXXX` (IT `LongBlock`) | **1.00** | | `0X XX XX XX XX` (FR pairs) | 3.25 |
+> | `+39 3XX XXXXXXX` (any `+CC`) | 2.02 | | `6XX XX XX XX` (ES grouped) | 3.25 |
 > | | | | `3XX XXX XXXX` (**IT grouped**) | **8.00** |
 >
 > So **500,000 units is ~62,500 phone numbers per request** at the most expensive column rendering
 > measured, and ~500,000 at the cheapest. The **bytes** at which that lands are a property of the
-> payload's layout, not of the limit — the same 62,500 grouped numbers are refused at **793 KB** as a
-> bare `phone` column, **2.0 MB** as `name,phone`, and **4.45 MB** as a six-column export. An ordinary
-> 5,000-row export spends **8%** of the allowance; a real 22 KiB Claude Code turn spends **0**.
+> payload's layout, not of the limit — the same 62,500 grouped numbers are refused at **813 KB** as a
+> bare `phone` column, **2.1 MB** as `name,phone`, and **4.7 MB** as a six-column export. An ordinary
+> 5,000-row export spends **3%** of the allowance at the cheapest rendering and **10%** at the
+> dearest; a real 22 KiB Claude Code turn spends **0**.
 >
-> **Per candidate in isolation the numbers are different, and the difference is the memo.** One
-> `06 12 34 56 78` costs **46** units on its own — against 1 for `347 1234567`, **1 for a `+CC`
-> form** (0 until M11-R41: that family had no validator at all, which is what let E.164 leak) and 65
-> for the most expensive candidate found, which no plan accepts. In a *column* those collapse, because the per-scan memo absorbs the repeated
-> sub-candidate prefixes: FR drops from 46 to 3.27. *Isolation measures how a rendering behaves; the
-> column measures what a body costs, and only the second one answers "can real traffic reach this?".*
+> **Per candidate in isolation the numbers are different, and the difference is the memo.** A single
+> `01 23 45 67 89` costs **19** units on its own — the most expensive rendering in the shipped set —
+> against **1** for `347 1234567`, 1 for `030 12345678`, and 11 for a CN mobile. `+39 3XX XXXXXXX`
+> costs 1 (it cost **0** until M11-R41: that family had no validator at all, which is what let E.164
+> leak). In a *column* those collapse, because the per-scan memo absorbs the repeated sub-candidate
+> prefixes: FR drops from 19 to 3.25. *Isolation measures how a rendering behaves; the column
+> measures what a body costs, and only the second one answers "can real traffic reach this?".*
 >
 > **Four published versions of this band were wrong, all in the optimistic direction, and the shape of
 > the error never changed (M10-R49 · R53 · R56).** An eleven-digit column that masked nothing; then
@@ -466,33 +506,28 @@ pinned by `PHONE-BUD`.
 > **The budget bounds validation, not the whole request — and saying otherwise would be M10-R30 in a
 > new place.** **Three** terms make up a request's CPU, and the third was found by M11-R18 rather
 > than designed:
-> 1. `units x ~3 µs`, which the allowance caps at ~1.5 s — **on accepting traffic only. The unit is
->    not a constant** (M11-R38): the same 500,000 units measure ~1.7 s on a column of valid numbers
->    and **13–15 s** on one of phone-shaped non-numbers, because `.any()` short-circuits only on
->    accept. So term 1 is a *band*, ~3 µs to ~30 µs, and the cap above is its floor.
+> 1. `units × the measured band`, where the band is **1.1–20.7 µs** and the allowance therefore caps
+>    validation at **~0.6 s on the cheapest shape and ~8.5 s on the dearest measured** (M11-R38).
+>    The verdict moves how many units a candidate spends; the candidate's shape moves what a unit
+>    costs, and only the first is something the count can track.
 > 2. Regex scanning and the mask rewrite, linear in body size and entity count and bounded only by
 >    `MAX_BODY_BYTES` — **229 ms** for 16 MiB with the tier off.
-> 3. **`free()` validator work, which is per *candidate* and charged to nothing.** The wrapper's own
->    doc justifies the exemption as *"a checksum over at most 18 bytes"*, and that was true while
->    each validator ran once per match. `shrink_on_reject` (M11-R13) retries a rejected IBAN at every
->    interior separator — up to eight `iban_case_gate` calls per match, on spans up to 44 characters
->    — and on a body of *distinct* alphanumeric groups the per-scan memo is inert, so every one is a
->    miss.
+> 3. **Metered validator work that used to be `free()`** (M11-R18) — now inside term 1, which is the
+>    change rather than a note about it. `iban_case_gate` is charged on its arithmetic branch, so
+>    the retry loop `shrink_on_reject` drives is bounded by the same allowance as everything else.
+>    Before that it was bounded by nothing: 708,648 calls on one 4 MiB field, against a 500,000-unit
+>    request.
 >
-> **The old two-term model published "at most about 3 s" and that no longer holds.** On the shape
-> term 3 is sensitive to — 4 MiB of distinct lowercase `[a-z]{2}[0-9]{2}` groups — the library
-> measures a **median of 2.1 s** against a **671 ms** uppercase control of identical size, and a
-> 14.6 MiB request through the real binary takes **8–10 s** against 2–3 s for the same body
-> uppercased (M11-R18). A masked 16 MiB body of ordinary content still takes 2.4 s and a refused one
-> 1.3–2.9 s; what changed is that those are no longer the worst shapes measured.
+> **The old two-term model published "at most about 3 s" and that number is withdrawn, not adjusted.**
+> Its successor is the band above, and it is stated on the worst shape rather than the cheapest
+> because that is the only direction a ceiling may be wrong in. *(An earlier version of this line
+> said "every refusal lands at ~1.4–1.9 s". That band came only from DOS-BUD's adversarial rows,
+> whose candidates are rejected and whose scan therefore stops early; a **legal** refused body runs
+> further and costs more — M10-R53.)*
 >
 > **This is a constant factor on a linear path, not a blow-up, and not a leak** — but availability is
-> a privacy property here, so the number matters. **How to bound term 3 is an open maintainer
-> decision** ([M11-R18](reviews/M11.md#m11-r18) lists four options with what each costs); the
-> allocation-free rewrite of `iban_mod97`/`iban_length_ok` took ~18% off it and does not close it.
-> *(An earlier version of this line said "every refusal lands at ~1.4–1.9 s". That band came only from
-> DOS-BUD's adversarial rows, whose candidates are rejected and whose scan therefore stops early; a
-> **legal** refused body runs further and costs more — M10-R53.)*
+> a privacy property here, so the number matters, and it is now a number a guard keeps: `DOS-BUD`
+> prints every figure in this section and `DOS-10` fails if term 3 leaves the count again.
 >
 > What changed is not that the ceiling vanished; it is that it stopped being **multiplied by a factor
 > the client picks**. 57 s -> 1.61 s on the same 78-field body, and what remains is linear in bytes.

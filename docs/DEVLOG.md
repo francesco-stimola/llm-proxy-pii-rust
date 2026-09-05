@@ -3,6 +3,66 @@
 Newest first. One entry per meaningful change — note *what* and *why*, not just
 *what*. This is the running history so context is never lost between sessions.
 
+## 2026-09-06 — M11-R18 + M11-R38 decided: the budget counts the cost, and the ceiling is republished
+
+**One decision for two rows, because they are the same sentence from two sides:** the published
+ceiling does not describe the worst case, and it fails to for two different reasons. The answer is
+that **the budget counts the real cost, not the calls** — and getting there meant contradicting one
+of the two findings on its own mechanism, which is the part worth writing down.
+
+**M11-R18, option 1 — `iban_case_gate` leaves `free()` and is charged.** Measured on 4 MiB of
+distinct lowercase `[a-z]{2}[0-9]{2}` groups: **708 648 calls to its arithmetic branch, charged
+nothing**, against a whole-request allowance of 500 000 units. The exemption's own doc read *"a
+checksum over at most 18 bytes"* — true while a validator ran once per match, false from the moment
+`shrink_on_reject` (M11-R13) began retrying at every interior separator. It is charged now, **on that
+branch only**: the short-circuit for a span with no lowercase byte does no arithmetic and pays
+nothing, so an uppercase body of identical bytes still spends zero. `free` gained a named
+counterpart, `metered`, so charging is a word a reader and `grep` can both find and a tenth
+recognizer cannot join the cheap tier by omission.
+
+**M11-R38, option 3 — and the measurement does not support the mechanism the finding states.** The
+record says *"a rejection costs more units than an acceptance"*, so charge more for one. Measured on
+4 MiB bodies, three reps, `--release`:
+
+    3XX XXX XXXX  (accepted)      3.2-4.3 us/unit
+    0NNNN NNNN    (rejected)      2.9-3.5 us/unit
+    ab12 cd34     (IBAN gate)     1.3-1.8 us/unit
+    0NNN NNNN NNNN (3 groups)    15.1-21.7 us/unit
+
+The rejecting column is **cheaper** per unit than the accepting one. What R38 measured as a 9× band
+is real, and it is not the verdict: it is the candidate's **shape**. The budget already charges a
+rejection more than an acceptance — it pays every enabled region, up to nine, because `.any()`
+short-circuits only on accept — so option 3 was, in effect, already implemented. What is not
+countable is the *price* of a unit, and there is no deterministic pre-call proxy for it: the cost
+does not track digit count, group count or verdict.
+
+So the ceiling is **republished as the band, stated on the worst shape**: 500 000 units is ~0.6 s of
+validation on the cheapest column and **~8.5 s** on the dearest measured (487 214 units in 8.3 s, and
+10.6 s on a slower rep) — and the dearest is *legal* traffic, a zero-padded three-group key column.
+The old *"at most about 3 s"* is **withdrawn, not adjusted**. The bound stays a count and not a wall
+clock, deliberately: a time limit makes the same body pass on an idle box and fail on a busy one.
+
+**Two guards, because a re-pricing that nobody re-runs goes stale in one round.** `DOS-10` asserts
+the case-gate term is *inside* the count — the alphabet no other case in `complexity.rs` has, and
+putting the gate back inside `free()` turns it red at 0 units. `DOS-BUD`'s grid now varies the
+**shape** as well as the verdict and prints **µs per unit** beside ms per row, which is the only way
+to tell "more units" from "dearer units".
+
+### M11-R58 — the disagreement, closed by measuring against the old build
+
+Round 14 published `3XX XXX XXXX` at *8 -> 9.8 units/row, +22%*; round 15 measured **8.00 on both
+builds** and could not reproduce it. Both were reading their own row. Re-measured in a worktree at
+`ed5214b`, the verdict grid's spend is **+9 000 units flat** at 5 000 / 20 000 / 50 000 rows and on
+both shapes — five rows of five — so the per-row ratio is a constant divided by the row count: 1.8 at
+5 000 rows, 0.45 at 20 000, and 0.00 in the bare column grid that carries no non-phone text.
+Attributed: deleting the `NNN.50` money column at HEAD reproduces `ed5214b` **exactly** (40 000 at
+5 000 rows, 160 000 at 20 000), because round 14's alphabet made `123.50` a `Groups` candidate — and
+the offset is constant because the per-scan memo collapses its 900 distinct values. **Neither number
+was a per-row cost**, and the phone column's own per-row cost did not move.
+
+*A conclusion drawn from one point of a grid is a fact about that point* — M10-R49 / R53 / R56 for
+the fourth time, now landing on a disagreement between two reviewers rather than on a published band.
+
 ## 2026-09-06 — M11-R55 decided: the over-mask is accepted, and the measurement stops being optional
 
 **The maintainer took option 3 — accept and publish.** No change to the recognizers: the R48, R51

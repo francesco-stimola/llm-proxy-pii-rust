@@ -492,6 +492,105 @@ fn a_digit_dense_field_is_masked_not_refused_when_no_phone_region_is_enabled() {
     );
 }
 
+/// **DOS-10 (M11-R18) — the alphabet every other case in this file holds constant: *letters
+/// mixed with digits*, in lower case.**
+///
+/// DOS-01…03 vary field size, DOS-04 entity count, DOS-05 the alphabet — and its bytes are digit
+/// groups; DOS-06 periodicity, DOS-07 field count. **Every one of them is digits, `sk-` runs or
+/// `a@b.co`.** Not one produces a body of mixed alphanumeric groups, which is the only shape that
+/// makes the IBAN pattern match at *every* position and reject at every position — and therefore
+/// the only shape that runs `iban_case_gate` millions of times.
+///
+/// That gap is what M11-R18 is. The case fold (M11-R10) made a lowercase span matchable, the
+/// shrink (M11-R13) made a rejected one retry at every interior separator, and `free()` made all
+/// of it cost **nothing**: measured on 4 MiB of distinct lowercase `[a-z]{2}[0-9]{2}` groups,
+/// **708 648 calls to the gate's arithmetic branch against a whole-request allowance of 500 000
+/// units, charged zero.** `MAX_PHONE_VALIDATIONS_PER_REQUEST` could not bound it — it is spent by
+/// the phone validator alone — so the guarantee `ARCHITECTURE.md` derives from the budget did not
+/// cover the term at all.
+///
+/// **So this guard asserts that the work is *charged*, not that it is fast.** A wall-clock
+/// assertion here would be a claim about this box; `within_budget` already carries that job for
+/// the rest of the file. What must never come back is the term being **invisible to the budget**,
+/// and that is a property of the code: put `iban_case_gate` back inside `free()` and the
+/// lowercase body's spend drops to **0** while the uppercase control's stays 0 too — the two
+/// become indistinguishable, which is exactly the state M11-R18 found.
+///
+/// The uppercase control is the other half and it is doing real work: it is the same bytes with
+/// the same candidate count, and it must stay near-free, because the gate short-circuits on a
+/// span with no lowercase byte *without arithmetic*. A charge that fired on both would be a
+/// charge on candidate count rather than on the expensive path, and it would refuse legal
+/// uppercase bodies for nothing.
+#[test]
+fn a_field_of_lowercase_alphanumeric_groups_is_charged_for_the_case_gate() {
+    /// `bytes` of distinct four-character `[a-z]{2}[0-9]{2}` groups, seven to a line.
+    ///
+    /// **Distinct on purpose** (DOS-06's lesson): the per-scan memo keys on the matched bytes, so
+    /// a repeating body measures the generator's period rather than the code.
+    fn alnum_groups(bytes: usize, upper: bool) -> String {
+        let mut out = String::with_capacity(bytes + 64);
+        let mut r = 0u64;
+        while out.len() < bytes {
+            for k in 0..7u32 {
+                let a = (b'a' + ((r / 26u64.pow(k)) % 26) as u8) as char;
+                let b = (b'a' + ((r / 26u64.pow(k + 1)) % 26) as u8) as char;
+                let group = format!("{a}{b}{:02}", (r / (7 * (k as u64 + 1))) % 100);
+                out.push_str(&if upper { group.to_uppercase() } else { group });
+                out.push(' ');
+            }
+            out.push('\n');
+            r += 1;
+        }
+        out
+    }
+
+    let detector = StructuredRecognizers::new();
+    let spend = |body: &str| {
+        let budget = llm_proxy_pii_rust::pii::Budget::new(usize::MAX / 2);
+        detector
+            .try_detect(body, &budget)
+            .expect("an unlimited allowance must not be exhausted");
+        budget.spent()
+    };
+
+    // Non-vacuity first: the body has to actually reach the IBAN recognizer, or a charge of zero
+    // would mean "nothing to charge" rather than "not charged" (M4-R13).
+    let lower = alnum_groups(200 * 1024, false);
+    let upper = alnum_groups(200 * 1024, true);
+    let detected = detector.detect(&upper).len();
+    assert!(
+        detected > 100,
+        "only {detected} spans on the uppercase body — this guard is not reaching the IBAN \
+         recognizer at all, so what it measures about charging is meaningless"
+    );
+
+    let lower_spend = spend(&lower);
+    let upper_spend = spend(&upper);
+    assert!(
+        lower_spend > 10_000,
+        "a 200 KB field of lowercase alphanumeric groups spent {lower_spend} validation units. \
+         `iban_case_gate` runs its mod-97 arithmetic on every one of these candidates, once per \
+         shrink retry, and this asserts the request is charged for it — M11-R18 is that work \
+         being wrapped in `free()` and therefore bounded by nothing at all"
+    );
+    assert!(
+        upper_spend * 10 < lower_spend,
+        "the uppercase control spent {upper_spend} against {lower_spend} for the same bytes in \
+         lower case. The gate short-circuits on a span with no lowercase byte without doing any \
+         arithmetic, so a charge that fires on both is a charge on candidate count — it would \
+         refuse legal uppercase bodies for work nobody did"
+    );
+
+    // And the charge is linear in the body, not quadratic: twice the bytes, about twice the units.
+    let half = spend(&alnum_groups(100 * 1024, false));
+    let ratio = lower_spend as f64 / half.max(1) as f64;
+    assert!(
+        (1.5..3.0).contains(&ratio),
+        "doubling the field multiplied the charge by {ratio:.2} — the case-gate term must be \
+         linear in the body, like every other term this file bounds"
+    );
+}
+
 /// **DOS-BUD (M10-R30) — where the refusal line actually falls, on the shipped profile.**
 ///
 /// `#[ignore]`d and run on demand:
@@ -630,58 +729,74 @@ fn budget_refusal_line_and_cost() {
         }
     }
 
-    // **The axis this grid held constant for four rounds: the VERDICT (M11-R39).** Every row above
-    // is built from *valid* numbers, so `applicable.iter().any(..)` short-circuits on the first
-    // region that accepts and only the **cheapest** branch is ever sampled. This file's own text
-    // says a rejection is the expensive verdict — `.any()` short-circuits on accept, so a rejected
-    // candidate is charged once per enabled region, up to nine — and the published `~3 µs` unit was
-    // taken from the accepting corner regardless. Measured, the unit spans roughly **3.4 µs to
-    // 30 µs**, and the worst *legal* shape is not the adversarial one: a zero-padded four-digit key
-    // column (`LPAD`-ed ids, which every ORM emits) is phone-shaped enough to be a candidate in
-    // every region and valid in none.
+    // **The axis this grid held constant for four rounds: the VERDICT (M11-R39), and the axis
+    // *that* fix still held constant: the candidate's SHAPE (M11-R38).** Every row in the grids
+    // above is built from *valid* numbers, so `applicable.iter().any(..)` short-circuits on the
+    // first region that accepts and only the cheapest branch is ever sampled. This file's own text
+    // says a rejection is the expensive verdict — a rejected candidate is charged once per enabled
+    // region, up to nine — and the published `~3 µs` unit was read off the accepting corner anyway.
     //
-    // A grid that varies size, rendering and layout but never the verdict cannot see that factor in
-    // the quantity it exists to publish. That is DOS-05's lesson — *the axis a test never varies is
-    // the one it cannot see* — landing on the measurement rather than on a guard.
+    // **So this grid prints µs/unit, not only ms/row**, because the per-row figure cannot separate
+    // "more units" from "dearer units" and the whole of M11-R38 lives in that difference.
+    // Measured on this box, `--release`, and the shape of the answer is the point:
     //
-    // **Measured here, on this box (`--release`), and the shape of the answer is the point:**
+    // - The **verdict** moves the *unit count* and the budget already tracks it: a rejected
+    //   candidate pays all nine regions, an accepted one stops at the first that says yes.
+    // - The **shape** moves the *price of a unit*, and nothing tracks that: a three-group
+    //   trunk-anchored candidate (`0NNN NNNN NNNN`, a zero-padded key column with three fields)
+    //   measures several times the µs/unit of every other row here. That is the factor
+    //   `ARCHITECTURE.md` publishes as a band rather than as a constant.
     //
-    //     3XX XXX XXXX (valid)     5 000 rows   40 000 spent   8 units/row   5 000 masked
-    //     0NNNN NNNN id column     5 000 rows   60 000 spent  12 units/row       0 masked
-    //
-    // The rejecting shape costs **half again as much per row and masks nothing**, so it reaches the
-    // allowance on a **smaller** body: the valid column is refused at 100 000 rows / 7.5 MB, the id
-    // column at **50 000 rows / 3.6 MB**. The worst *legal* body is therefore one whose candidates
-    // are all rejected — which is the opposite of the intuition the grid used to encourage, and it
-    // is why M11-R38 re-prices M11-R18's open decision.
-    println!("\n--- the same column, by VERDICT: accepted vs rejected candidates (M11-R39) ---");
+    // A grid that varies size, rendering and layout but never the verdict cannot see the first;
+    // one that varies the verdict but not the group count cannot see the second. That is DOS-05's
+    // lesson — *the axis a test never varies is the one it cannot see* — twice on the same grid.
+    println!("\n--- the same column, by VERDICT and by SHAPE: what a unit costs (M11-R38/R39) ---");
     println!(
-        "{:>22}  {:>10}  {:>7}  {:>12}  {:>8}  {:>7}",
-        "shape", "bytes", "rows", "verdict", "ms", "spent"
+        "{:>24}  {:>10}  {:>7}  {:>12}  {:>8}  {:>9}  {:>9}",
+        "shape", "bytes", "rows", "verdict", "ms", "spent", "us/unit"
     );
-    for (label, valid) in [
-        ("3XX XXX XXXX (valid)", true),
-        ("0NNNN NNNN id column", false),
+    for (label, kind) in [
+        ("3XX XXX XXXX (accept)", 0),
+        ("0NNNN NNNN (reject)", 1),
+        ("0NNN NNNN NNNN (3 grp)", 2),
+        ("ab12 cd34 .. (lowercase)", 3),
     ] {
-        for rows in [5_000usize, 20_000, 50_000, 100_000] {
+        for rows in [5_000usize, 20_000, 50_000] {
             let mut dump = String::from("id,customer,city,ref,email,total\n");
             for r in 0..rows as u64 {
-                let token = if valid {
-                    format!(
+                let token = match kind {
+                    0 => format!(
                         "3{:02} {:03} {:04}",
                         20 + (r / 10_000_000) % 80,
                         (r / 10_000) % 1000,
                         r % 10_000
-                    )
-                } else {
-                    // A zero-padded key column — `LPAD`-ed ids, which every ORM emits. It is
-                    // phone-shaped enough to be a candidate in every enabled region, and the
-                    // **accept rate is what the run reports** rather than what this comment
-                    // asserts: the first version of this row claimed "rejected in all of them"
-                    // and measured 4 145 of 5 000 *masked*, on an odometer that repeated every
-                    // 10 000 rows so the memo served most of it for free. Distinct now, and
-                    // labelled by shape rather than by a verdict nobody had measured.
-                    format!("0{:04} {:04}", (r / 10_000) % 10_000, r % 10_000)
+                    ),
+                    // A zero-padded key column — `LPAD`-ed ids, which every ORM emits. Phone-shaped
+                    // enough to be a candidate in every enabled region, and the **accept rate is
+                    // what the run reports** rather than what this comment asserts: the first
+                    // version of this row claimed "rejected in all of them" and measured 4 145 of
+                    // 5 000 *masked*, on an odometer that repeated every 10 000 rows so the memo
+                    // served most of it for free. Distinct now, and labelled by shape.
+                    1 => format!("0{:04} {:04}", (r / 10_000) % 10_000, r % 10_000),
+                    // The same key column with a third field — the shape M11-R38 measured and the
+                    // one that moves the *price* of a unit rather than their number.
+                    2 => format!(
+                        "0{:03} {:04} {:04}",
+                        r % 1000,
+                        (r / 1000) % 10_000,
+                        r % 10_000
+                    ),
+                    // Lowercase alphanumeric groups: the IBAN case gate's shape (M11-R18), charged
+                    // since this milestone and previously `free()`. Not a phone shape at all, which
+                    // is the point — it reaches the allowance through a different validator.
+                    _ => {
+                        let g = |k: u64| {
+                            let a = (b'a' + ((r / 26u64.pow(k as u32)) % 26) as u8) as char;
+                            let b = (b'a' + ((r / 26u64.pow(k as u32 + 1)) % 26) as u8) as char;
+                            format!("{a}{b}{:02}", (r / (7 * (k + 1))) % 100)
+                        };
+                        (0..5).map(g).collect::<Vec<_>>().join(" ")
+                    }
                 };
                 dump.push_str(&format!(
                     "{},Customer Name {},Milano,{},user{}@example.com,{}.50\n",
@@ -701,13 +816,20 @@ fn budget_refusal_line_and_cost() {
                 Ok(masked) => format!("{} masked", masked.matches("[PHONE_").count()),
                 Err(_) => "REFUSED".to_string(),
             };
+            let ms = started.elapsed().as_secs_f64() * 1000.0;
+            let spent = budget.spent();
             println!(
-                "{label:>22}  {:>10}  {:>7}  {:>12}  {:>8.0}  {:>7}",
+                "{label:>24}  {:>10}  {:>7}  {:>12}  {:>8.0}  {:>9}  {:>9.2}",
                 dump.len(),
                 rows,
                 verdict,
-                started.elapsed().as_secs_f64() * 1000.0,
-                budget.spent()
+                ms,
+                spent,
+                if spent == 0 {
+                    0.0
+                } else {
+                    ms * 1000.0 / spent as f64
+                }
             );
         }
     }
