@@ -87,10 +87,45 @@ const GAP_CHARS: &[char] = &[
     '\u{205F}', '\u{3000}', // ideographic space — the CJK rendering M4-R13 is about
 ];
 
+/// The separators a **phone** number's groups may be written with — [`GAP_CHARS`] plus the
+/// punctuation `phonenumber::parse` discards (M11-R48).
+///
+/// **An axis has an alphabet, and deciding the axis is not deciding the alphabet.** M11-R25 closed
+/// the separator axis and derived one class from `iban_mod97`, which ignores *whitespace* — so
+/// `{GAP}` became whitespace for every recognizer that used it, including the `+CC` phone arm whose
+/// own validator also discards `-` `.` `/` `(` `)`. The consequence is the same sentence the case
+/// and digit-script axes wrote: the validator accepts renderings the pattern cannot deliver.
+/// `06.12.34.56.78` was masked and `+33.6.12.34.56.78` — the same number — was not, and RFC 3966's
+/// own normative example is `tel:+1-201-555-0123`. Measured over 13 000 valid numbers:
+/// `Mode::Rfc3966` **0.385** carried digits upstream, `International` rendered with `.` **0.846**.
+///
+/// So the class is **per recognizer, derived from that recognizer's validator** — which is the rule
+/// this constant exists to make structural rather than remembered.
+const PHONE_SEPARATORS: &[char] = &[
+    '-', '.', '/', // what `phonenumber::parse` strips beside whitespace
+];
+
+/// Every character any shipped recognizer may have between a value's groups — the union of the
+/// alphabets, and the set `SEPARATOR-01`'s **scope filter** asks about. A recognizer whose
+/// separators were entirely punctuation would otherwise fall outside a guard about separators.
+fn is_any_separator(c: char) -> bool {
+    is_gap(c) || PHONE_SEPARATORS.contains(&c)
+}
+
 /// Is `c` a separator a value's groups may be written with? The shrink's cut rule and
 /// [`gap_class`] are the same set by construction.
 fn is_gap(c: char) -> bool {
     GAP_CHARS.contains(&c)
+}
+
+/// [`GAP_CHARS`] **and** [`PHONE_SEPARATORS`] as a regex class — the `{PGAP}` placeholder.
+fn phone_gap_class() -> String {
+    let mut class = String::from("[");
+    for c in GAP_CHARS.iter().chain(PHONE_SEPARATORS) {
+        class.push_str(&format!("\\x{{{:X}}}", *c as u32));
+    }
+    class.push(']');
+    class
 }
 
 /// [`GAP_CHARS`] as a regex character class, `\x{..}`-escaped so **the pattern string stays ASCII**
@@ -110,7 +145,9 @@ fn gap_class() -> String {
 /// regexes; `{GAP}` cannot collide with regex repetition syntax (`{4}`, `{2,7}`) and appears in no
 /// pattern for any other reason.
 fn with_gaps(template: &str) -> String {
-    template.replace("{GAP}", &gap_class())
+    template
+        .replace("{PGAP}", &phone_gap_class())
+        .replace("{GAP}", &gap_class())
 }
 
 /// A validator whose cost is negligible — a checksum over at most 18 bytes — adapted to the
@@ -402,7 +439,7 @@ fn universal_recognizers() -> Vec<Recognizer> {
             // No `\b` before `+`: it is not a word character, so a boundary there would never
             // match. The trailing one stops the span inside a longer digit run.
             regex: Regex::new(&with_gaps(
-                r"\+\d{1,3}(?:{GAP}\d{1,8}){1,6}(?-u:\b)|\+\d{8,15}(?-u:\b)",
+                r"\+\d{1,3}(?:{PGAP}\d{1,8}){1,6}(?-u:\b)|\+\d{8,15}(?-u:\b)",
             ))
             .unwrap(),
             validate: Some(Box::new(|matched: &str, budget: &Budget| {
@@ -1285,7 +1322,7 @@ impl Recognizer {
             // by two lists agreeing (M11-R25). An ASCII-only cut rule here would leave a rejected
             // NBSP-separated span with nowhere to shrink to, which is M11-R13 all over again on
             // the axis M11-R25 opened.
-            let cut = input[span.start..end].rfind(|c: char| c == '-' || c == '.' || is_gap(c))?;
+            let cut = input[span.start..end].rfind(|c: char| is_any_separator(c))?;
             end = span.start + cut;
             if end <= span.start {
                 return None;
@@ -4417,7 +4454,7 @@ mod tests {
         },
         RenderingAnswer {
             kind: PiiKind::Phone,
-            pattern: r"\+\d{1,3}(?:{GAP}\d{1,8}){1,6}(?-u:\b)|\+\d{8,15}(?-u:\b)",
+            pattern: r"\+\d{1,3}(?:{PGAP}\d{1,8}){1,6}(?-u:\b)|\+\d{8,15}(?-u:\b)",
             detected: &[
                 "+393471234567",
                 "+442079460958",
@@ -4806,7 +4843,40 @@ mod tests {
         pattern: &'static str,
         /// A value this recognizer detects, written with **ASCII spaces** between its groups.
         positive: &'static str,
+        /// **The separator alphabet this recognizer must accept** (M11-R49). Not `GAP_CHARS` for
+        /// everyone: the guard used to take both its scope *and* its matrix from that one class,
+        /// so every substitution it could make was whitespace-for-space — and deleting hyphen
+        /// support from a shipped phone shape left the suite **green at 255/0/5**.
+        ///
+        /// The alphabet belongs to the recognizer because it is derived from that recognizer's
+        /// **validator**: `iban_mod97` ignores whitespace, `phonenumber::parse` also discards
+        /// `-` `.` `/`. *Deciding an axis is not deciding its alphabet* — which is the sentence
+        /// M11-R48 cost, one round after the axis was closed.
+        alphabet: &'static [char],
     }
+
+    /// The whitespace-only alphabet: IBAN, the card's grouped arms, the NINO.
+    const SPACE_ONLY: &[char] = GAP_CHARS;
+
+    /// Whitespace plus the `-` the card and three trunk families spell explicitly.
+    const WITH_HYPHEN: &[char] = &[
+        '\u{0009}', '\u{0020}', '\u{00A0}', '\u{1680}', '\u{2000}', '\u{2001}', '\u{2002}',
+        '\u{2003}', '\u{2004}', '\u{2005}', '\u{2006}', '\u{2007}', '\u{2008}', '\u{2009}',
+        '\u{200A}', '\u{202F}', '\u{205F}', '\u{3000}', '-',
+    ];
+    /// ...and the `.` the French five-pair rendering and the US arm also take.
+    const WITH_HYPHEN_DOT: &[char] = &[
+        '\u{0009}', '\u{0020}', '\u{00A0}', '\u{1680}', '\u{2000}', '\u{2001}', '\u{2002}',
+        '\u{2003}', '\u{2004}', '\u{2005}', '\u{2006}', '\u{2007}', '\u{2008}', '\u{2009}',
+        '\u{200A}', '\u{202F}', '\u{205F}', '\u{3000}', '-', '.',
+    ];
+    /// The `+CC` arm's alphabet: everything `phonenumber::parse` discards, `/` included (M11-R48).
+    /// It is the widest because its validator is the most permissive — which is the whole rule.
+    const PHONE_ALPHABET: &[char] = &[
+        '\u{0009}', '\u{0020}', '\u{00A0}', '\u{1680}', '\u{2000}', '\u{2001}', '\u{2002}',
+        '\u{2003}', '\u{2004}', '\u{2005}', '\u{2006}', '\u{2007}', '\u{2008}', '\u{2009}',
+        '\u{200A}', '\u{202F}', '\u{205F}', '\u{3000}', '-', '.', '/',
+    ];
 
     /// Every gap-bearing recognizer's recorded answer. Nine rows over eight patterns — the
     /// universal `Phone` carries two, for its US and `+CC` arms, which are separate alternations
@@ -4816,51 +4886,61 @@ mod tests {
             kind: PiiKind::Iban,
             pattern: r"(?-u:\b)[A-Za-z]{2}\d{2}(?:[A-Za-z0-9]{11,30}|(?:{GAP}[A-Za-z0-9]{4}){2,7}(?:{GAP}[A-Za-z0-9]{1,4})?)(?-u:\b)",
             positive: "DE89 3704 0044 0532 0130 00",
+            alphabet: SPACE_ONLY,
         },
         SeparatorAnswer {
             kind: PiiKind::CreditCard,
             pattern: r"(?-u:\b)(?:\d{4}(?:-|{GAP})\d{4}(?:-|{GAP})\d{4}(?:-|{GAP})\d{4}(?:(?:-|{GAP})\d{1,3})?|\d{4}(?:-|{GAP})\d{6}(?:-|{GAP})\d{4,5}|\d{13,19})(?-u:\b)",
             positive: "4111 1111 1111 1111",
+            alphabet: WITH_HYPHEN,
         },
         SeparatorAnswer {
             kind: PiiKind::Phone,
             pattern: r"(?:\+1(?:[.-]|{GAP})?)?(?:\(\d{3}\)(?:[.-]|{GAP})?|\d{3}(?:[.-]|{GAP}))\d{3}(?:[.-]|{GAP})\d{4}|\+\d{1,3}{GAP}\d{2,4}{GAP}\d{2,4}{GAP}\d{3,4}|\+\d{1,3}{GAP}\d{2,4}{GAP}\d{5,8}",
-            positive: "415 555 2671", // the US 3-3-4 arm
+            positive: "415 555 2671",
+            alphabet: WITH_HYPHEN_DOT, // the US 3-3-4 arm
         },
         SeparatorAnswer {
             kind: PiiKind::Phone,
             pattern: r"(?:\+1(?:[.-]|{GAP})?)?(?:\(\d{3}\)(?:[.-]|{GAP})?|\d{3}(?:[.-]|{GAP}))\d{3}(?:[.-]|{GAP})\d{4}|\+\d{1,3}{GAP}\d{2,4}{GAP}\d{2,4}{GAP}\d{3,4}|\+\d{1,3}{GAP}\d{2,4}{GAP}\d{5,8}",
-            positive: "+39 333 000 0001", // the `+CC` arm, a different alternation
+            positive: "+39 333 000 0001",
+            alphabet: WITH_HYPHEN_DOT, // the `+CC` arm, a different alternation
         },
         SeparatorAnswer {
             kind: PiiKind::Phone,
-            pattern: r"\+\d{1,3}(?:{GAP}\d{1,8}){1,6}(?-u:\b)|\+\d{8,15}(?-u:\b)",
-            positive: "+39 347 1234567", // the `+CC` arm gained a gap in M11-R43
+            pattern: r"\+\d{1,3}(?:{PGAP}\d{1,8}){1,6}(?-u:\b)|\+\d{8,15}(?-u:\b)",
+            positive: "+39 347 1234567",
+            alphabet: PHONE_ALPHABET, // the `+CC` arm gained a gap in M11-R43
         },
         SeparatorAnswer {
             kind: PiiKind::NationalId,
             pattern: r"(?-u:\b)[A-Za-z]{2}\d{6}[A-Da-d](?-u:\b)|(?-u:\b)[A-Za-z]{2}{GAP}\d{2}{GAP}\d{2}{GAP}\d{2}{GAP}[A-Da-d](?-u:\b)",
-            positive: "AB 12 34 56 C", // the GB NINO's spaced rendering
+            positive: "AB 12 34 56 C",
+            alphabet: SPACE_ONLY, // the GB NINO's spaced rendering
         },
         SeparatorAnswer {
             kind: PiiKind::Phone,
             pattern: r"(?-u:\b)0\d{1,4}(?:-|{GAP})\d{3,4}(?:-|{GAP})\d{3,4}(?-u:\b)|(?-u:\b)0\d{1,4}(?:-|{GAP})\d{4,8}(?-u:\b)|(?-u:\b)0\d{6,11}(?-u:\b)",
             positive: "020 7946 0958",
+            alphabet: WITH_HYPHEN,
         },
         SeparatorAnswer {
             kind: PiiKind::Phone,
             pattern: r"(?-u:\b)0\d(?:[.-]|{GAP})\d{2}(?:[.-]|{GAP})\d{2}(?:[.-]|{GAP})\d{2}(?:[.-]|{GAP})\d{2}(?-u:\b)",
             positive: "01 23 45 67 89",
+            alphabet: WITH_HYPHEN_DOT,
         },
         SeparatorAnswer {
             kind: PiiKind::Phone,
             pattern: r"(?-u:\b)[1-9]\d{1,2}(?:(?:-|{GAP})\d{2,4}){1,3}(?-u:\b)",
             positive: "91 123 45 67",
+            alphabet: WITH_HYPHEN,
         },
         SeparatorAnswer {
             kind: PiiKind::Phone,
             pattern: r"(?-u:\b)[1-9]\d{2}(?:-|{GAP})\d{6,8}(?-u:\b)",
             positive: "347 1234567",
+            alphabet: WITH_HYPHEN,
         },
     ];
 
@@ -4896,6 +4976,14 @@ mod tests {
         // ——— the audit: no gap-bearing pattern without an answer, no answer without a pattern ———
         let mut unanswered: Vec<String> = Vec::new();
         for (kind, pattern) in &patterns {
+            // **Scope stays whitespace, and the residue is stated rather than left implicit.**
+            // Widening it to `ALL_SEPARATORS` was tried and pulls in `Secret`, `Email` and the SSN
+            // — whose `-` and `.` are part of the **token**, not separators between groups — so it
+            // would demand a separator answer from recognizers that have no separator axis. The
+            // residue that leaves: a recognizer whose groups were separated **only** by punctuation
+            // would fall outside this guard. None exists today (every gap-bearing pattern accepts
+            // whitespace as well), and the day one does, `RENDER-01` still asks it for its
+            // renderings — this guard would merely stop asking about its alphabet.
             if !pattern_can_match_any_of(pattern, GAP_CHARS) {
                 continue;
             }
@@ -4939,7 +5027,10 @@ mod tests {
                 "{:?} has no ASCII space to re-render — it cannot exercise this axis",
                 answer.positive
             );
-            for separator in GAP_CHARS {
+            // **The recognizer's own alphabet, not one class for everyone** (M11-R49). Taking
+            // the matrix from `GAP_CHARS` meant every substitution was whitespace-for-space, so
+            // deleting hyphen support from a shipped phone shape left the suite green at 255/0/5.
+            for separator in answer.alphabet {
                 let rendered = answer.positive.replace(' ', &separator.to_string());
                 assert_eq!(
                     kinds(&rendered),

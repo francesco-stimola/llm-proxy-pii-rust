@@ -3,6 +3,68 @@
 Newest first. One entry per meaningful change — note *what* and *why*, not just
 *what*. This is the running history so context is never lost between sessions.
 
+## 2026-09-05 — M11 round 13: the axis was decided, the alphabet was not
+
+### M11-R48 — a `+CC` number written with `-`, `.` or `/` goes upstream in clear
+
+`phonenumber::Mode` has **four** variants. Rounds 11 and 12 both swept three by name — `E164`,
+`International`, `National`, all now 0.000 — and the fourth is `Mode::Rfc3966`, whose normative RFC
+example is `tel:+1-201-555-0123`. On the same generator and predicate, over 13 000 valid numbers:
+**Rfc3966 0.385**, and `International` rendered with `.` **0.846**.
+
+The cause is a rule this repo states two paragraphs above the arm. `{GAP}` is **whitespace**,
+because M11-R25 derived it from `iban_mod97`; `phonenumber::parse` also discards `-` `.` `/` `(` `)`.
+The shortest proof needs no corpus at all: `06.12.34.56.78` is masked and `+33.6.12.34.56.78` — the
+same number — is not.
+
+**An axis has an alphabet, and deciding the axis is not deciding the alphabet.** The class is now
+**per recognizer, derived from that recognizer's validator**: `{PGAP}` for the `+CC` arm, `{GAP}`
+for the rest, one definition each shared by the pattern, the shrink and the validator. That sentence
+is promoted into `ARCHITECTURE.md`, because one class for everyone is how a closed axis keeps
+leaking.
+
+Not a regression — it predates M11 — but round 12's closure *claimed* every `+CC` rendering, and that
+claim is what made this a finding rather than a gap. **Third time this milestone a fix's claim outran
+its reach** (R41 → R43 → R48), all three on the same family.
+
+The card, IBAN and SSN results on this axis (`4111.1111.1111.1111` in clear;
+`DE89-3704-0044-0532-0130-00` mangled) are **recorded and not fixed**: unlike RFC 3966 those
+renderings are not published by their issuers, so admitting them is a coverage decision.
+
+### M11-R49 — and the guard could not have seen it
+
+`SEPARATOR-01` took **both** its scope and its matrix from `GAP_CHARS`, so every substitution it could
+make was whitespace-for-space. Deleting hyphen support from a shipped phone shape at all three sites
+left the suite **green at 255/0/5**. Each `SeparatorAnswer` now names its own alphabet — `SPACE_ONLY`,
+`WITH_HYPHEN`, `WITH_HYPHEN_DOT`, `PHONE_ALPHABET` — matching what that recognizer's validator
+accepts, and the matrix substitutes over it. The mutation is red now, naming `U+002D`.
+
+**One thing I tried and reverted, stated on the guard.** Widening the *scope* filter to the union
+pulls in `Secret`, `Email` and the SSN, whose `-` and `.` are part of the **token** rather than
+separators between groups. Scope stays whitespace; the residue — a recognizer separated *only* by
+punctuation — is named, and none exists.
+
+Third instance of one shape after M11-R31 and M11-R40. Together they are one rule: **a guard's scope
+and a guard's alphabet are separate decisions, and each must come from the thing it is about.**
+
+### M11-R50 — third consecutive round in which that README cell overstates
+
+*"Every `+CC` rendering — any grouping"*, written in the round-12 commit and false in it. It now names
+the alphabet instead of claiming a universal. R45 corrected *"over-mask, never a miss"*, R47 *"no
+validator whatsoever"*, this one *"any grouping"* — the same shape three times: **the sentence
+described the intent of the fix being written rather than its reach.**
+
+### Numbers
+
+**255 / 0 / 5** over 24 binaries, twice, identical; `cargo test-onnx` **291 / 0 / 22**; `fmt` and
+`clippy --all-targets -D warnings` clean. No test count moved — `SEPARATOR-01` gained an alphabet per
+row rather than a sibling.
+
+**Tally**, counted from the ledger: **30 on the net or the docs, 21 in the product**, 51 rows.
+
+**Open: [M11-R18](reviews/M11.md#m11-r18) and [M11-R38](reviews/M11.md#m11-r38)**, plus the coverage
+questions recorded beside them (R23, R27, R30, R35, and now R48's card/IBAN/SSN punctuation).
+
 ## 2026-09-05 — M11 round 12: a fix that answered the headline number, not the finding
 
 ### M11-R43 — round 11 closed one rendering of the three its own finding measured

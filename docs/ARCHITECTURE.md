@@ -649,8 +649,16 @@ in the ledger and link it, never in prose.**
 > was `\+\d{8,15}` — an unbroken digit run, which cannot match a spaced rendering **by
 > construction**, so `+33 6 12 34 56 78` was untouched and `+55 11 91234 5678` still came back
 > `[PHONE_1] 5678`. A fix that answers the headline number of a finding is not the same as a fix
-> that answers the finding; the arm now spans the gap class, with the shrink the M11-R13/R33 pair
-> obliges.
+> that answers the finding; the arm spans a separator class with the shrink the M11-R13/R33 pair
+> obliges — **and one round later that class turned out to be the wrong alphabet (M11-R48)**.
+> `{GAP}` is whitespace, derived from `iban_mod97`; `phonenumber::parse` also discards `-` `.`
+> `/`, so RFC 3966's own `tel:+1-201-555-0123` was forwarded in clear at **0.385**, and the
+> dotted international rendering at **0.846**. The arm now takes `{PGAP}`, its own validator's
+> alphabet.
+>
+> **An axis has an alphabet, and deciding the axis is not deciding the alphabet.** Derive the
+> separator class **per recognizer, from that recognizer's validator** — one class for
+> everyone is how a closed axis keeps leaking.
 
 **A validator that rejects must not be able to delete a value (M11-R13).** The corollary, learned
 immediately and the hard way. `iban_case_gate` was added to a recognizer that had previously
