@@ -705,6 +705,15 @@ async fn messages(
 ///
 /// `Err(Response)` is a ready-to-return failure: a masking-task panic → 500, or a
 /// stage that refused to mask → 400. In both cases nothing is forwarded.
+///
+/// `result_large_err` fires here from clippy 0.1.98 on, which widened the lint to
+/// `async fn`s (see `docs/TESTING.md` → *The toolchain gap*). Its remedy — box the
+/// `Err` — buys **nothing** on this signature: the `Ok` side is the larger variant,
+/// so `Result` is the same width either way, and boxing would only add a heap
+/// allocation on the fail-closed rejection path, the one path that must stay simple.
+/// `boxing_the_err_variant_would_buy_nothing` asserts exactly that premise, so this
+/// `allow` goes red rather than silently outliving its reason.
+#[allow(clippy::result_large_err)]
 async fn run_privacy_stages(
     state: &AppState,
     body: Value,
@@ -1004,6 +1013,34 @@ fn is_forwardable(name: &str) -> bool {
 mod tests {
     use super::{build_detector, demasking_sse_body, Bytes};
     use crate::pii::anonymizer::Vault;
+
+    /// CI-01 — the `#[allow(clippy::result_large_err)]` on `run_privacy_stages` is
+    /// allowed to stand only while its premise holds: the `Ok` variant is the wider
+    /// one, so boxing the `Err` cannot shrink the `Result` and would only buy a heap
+    /// allocation on the fail-closed rejection path. Clippy 0.1.98 widened
+    /// `result_large_err` to `async fn`s and turned CI red on this signature; the
+    /// answer was to decline the lint's remedy, and this is what makes that decision
+    /// falsifiable instead of a preference. If a dependency bump ever inverts the two
+    /// sizes, this fails and the `allow` gets re-argued rather than inherited.
+    #[test]
+    fn boxing_the_err_variant_would_buy_nothing() {
+        use std::mem::size_of;
+        type Ok_ = (super::ProxyRequest, super::RequestContext);
+        type Err_ = axum::response::Response;
+
+        let (ok, err) = (size_of::<Ok_>(), size_of::<Err_>());
+        assert!(
+            ok >= err,
+            "premise of the allow is gone: Ok is {ok} B, Err is {err} B — the Err is now \
+             the wider variant, so boxing it WOULD shrink the Result. Re-argue the allow \
+             on `run_privacy_stages` (see its doc comment) instead of keeping it."
+        );
+        assert_eq!(
+            size_of::<Result<Ok_, Err_>>(),
+            size_of::<Result<Ok_, Box<Err_>>>(),
+            "boxing the Err must be a no-op on the Result's width (Ok {ok} B, Err {err} B)"
+        );
+    }
 
     #[tokio::test]
     async fn required_ner_is_fatal_when_absent() {
