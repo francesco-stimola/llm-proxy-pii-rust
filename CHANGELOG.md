@@ -113,12 +113,18 @@ Milestone [M11](https://github.com/francesco-stimola/llm-proxy-pii-rust/blob/mai
   expensive check entirely: the IBAN case gate, whose mod-97 arithmetic runs once per candidate *and
   once per retry* — on one 4 MiB field it ran hundreds of thousands of times and was charged
   nothing. It is charged now.
-  - **What changes for you:** a request carrying megabytes of text shaped like `ab12 cd34 ef56 …`
-    may come back `400` (*"exhausted the validation budget"*) instead of being masked and forwarded.
-    Fail-closed, as always: nothing is sent to the provider. The shape has to be dense to matter —
-    two letters then two digits, repeated. Measured, a lowercase hex dump, a JSON export, base64 and
-    source code all stay far below the allowance, and a 22 KiB Claude Code turn spends nothing at
-    all.
+  - **What changes for you: a large hex dump can now come back `400`.** `xxd`, `od -x` and every
+    debugger emit uniform hex per group, and about one group in eighteen reads as two letters
+    followed by two digits — which is what an IBAN starts with. Measured, an `xxd` body is masked
+    and forwarded up to about **11 MiB** and refused above it, where before it went through at the
+    full 16 MiB body limit. Fail-closed, as always: nothing is sent to the provider, and the
+    refusal now says which tier spent the allowance instead of blaming the phone one. Ordinary
+    prose, JSON, base64 and source code are nowhere near the line, and a 22 KiB Claude Code turn
+    spends nothing at all.
+  - **The honest reading is that the line was never where it looked.** With this work uncounted, a
+    16 MiB hex dump already sat at **98.6 %** of the allowance — so a third of its validation cost
+    was simply not being measured. Charging it makes the bound true; it does not make the body
+    slower.
   - **The ceiling itself was understated and the correction is upward.** It was published as *"about
     3 s"*, read off the cheapest corner of a grid that never varied the candidate's shape. One unit
     turns out to span more than an order of magnitude depending on what the candidate looks like,

@@ -156,8 +156,8 @@ to paste. Before M11-R55 this table was a transcription and the harness that pro
 
 <!-- PHONE-EVAL:BEGIN -->
 ```text
-pool: 35 corpus positives · 20 curated negatives · 897 generated
-generated: dates 200 · ports 16 · sizes 32 · offsets 20 · money 10 · codes 11 · refs 128 · tables 16 · ips 128 · ips10 64 · ips192 64 · ips172 64 · aligned 144
+pool: 35 corpus positives · 20 curated negatives · 945 generated
+generated: dates 200 · ports 16 · sizes 32 · offsets 20 · money 10 · codes 11 · refs 128 · tables 16 · ips 128 · ips10 64 · ips192 64 · ips172 64 · aligned 144 · alignedwide 48
 region          de     es     fr     gb     it     lv     nl     pt     cn  UNION
 recall       1.000  1.000  1.000  1.000  1.000  1.000  1.000  1.000  1.000  1.000
 curatedFP    0.000  0.000  0.000  0.000  0.000  0.000  0.000  0.000  0.000  0.000
@@ -174,6 +174,7 @@ ips10        0.000  0.000  0.000  0.000  0.016  0.125  0.000  0.078  0.656  0.65
 ips192       0.000  0.000  0.000  0.000  0.000  0.000  0.000  0.000  0.422  0.422
 ips172       0.000  0.000  0.000  0.000  0.000  0.266  0.000  0.000  0.438  0.438
 aligned      0.000  0.590  0.000  0.000  0.194  0.000  0.000  0.243  0.069  0.785
+alignedwide  0.000  0.000  0.000  0.000  0.000  0.000  0.000  0.000  0.000  0.000
 ```
 <!-- PHONE-EVAL:END -->
 
@@ -189,14 +190,16 @@ aligned      0.000  0.590  0.000  0.000  0.194  0.000  0.000  0.243  0.069  0.78
 
 **Read the FP figures per category, never blended.** A single rate over a pool whose composition
 you chose is a number about the pool. What they say: **ports, money amounts and reference numbers
-are untouched**, and the cost is concentrated in four shapes.
+are untouched**, and the cost is concentrated in four shapes. The rates are the `UNION` column of
+the block above — deliberately **not** repeated here, because a second copy is a thing that ages
+while the first one is asserted:
 
-| shape | union rate | why the digits are a real number somewhere |
+| shape | rows to read | why the digits are a real number somewhere |
 |---|---|---|
-| **column-aligned numeric rows**, 2–4 spaces | `aligned` **0.785** | `862  428  791  971` → `862428791971`; the `Groups` family takes 2–4 groups and the separator run admits the alignment |
-| **dotted-decimal IPv4** | `ips` **0.500** · `ips10` **0.656** · `ips192` **0.422** · `ips172` **0.438** | `170.75.154.131` → `17075154131`, and a CN mobile is 11 digits beginning `1` — which is exactly what a dotted quad with a `1xx` octet spells. `10.x` is the highest for the same reason |
-| **space-, dash-, dot- or slash-separated dates** | `dates` **0.270** | `28 01 2026` is a valid Latvian mobile; `01 02 2026` carries Milan's `02` prefix. ISO (`2026-07-29`) **is** out: a 4-digit leading group is not a candidate for any family |
-| **space-separated numeric tables** | `tables` **0.375** | `512 105 205` is a real Suzhou landline shape |
+| **column-aligned numeric rows**, 2–4 spaces | `aligned` | `862  428  791  971` → `862428791971`; the `Groups` family takes 2–4 groups and the separator run admits the alignment. `alignedwide` is the same shape one space wider and reads **0.000** — the bound's residue published as a number |
+| **dotted-decimal IPv4** | `ips` · `ips10` · `ips192` · `ips172` | `170.75.154.131` → `17075154131`, and a CN mobile is 11 digits beginning `1` — exactly what a dotted quad with a `1xx` octet spells. `10.x` is the highest for the same reason |
+| **space-, dash-, dot- or slash-separated dates** | `dates` | `28 01 2026` is a valid Latvian mobile; `01 02 2026` carries Milan's `02` prefix. ISO (`2026-07-29`) **is** out: a 4-digit leading group is not a candidate for any family |
+| **space-separated numeric tables** | `tables` | `512 105 205` is a real Suzhou landline shape |
 
 The `tables` and `aligned` categories are adversarial by construction — generated *from the
 families' own structure* to reach them — which makes their rates a ceiling rather than an
@@ -414,19 +417,45 @@ exactly the reason above.
 > **And term 3 is now inside the count** (M11-R18). `iban_case_gate` was `free()` — uncharged — on a
 > doc comment that read *"a checksum over at most 18 bytes"*. That was true while a validator ran
 > once per match and false from the moment `shrink_on_reject` (M11-R13) began retrying a rejected
-> span at every interior separator: measured on 4 MiB of distinct lowercase `[a-z]{2}[0-9]{2}`
-> groups, **708,648 calls to its arithmetic branch, charged nothing**, against a whole-request
-> allowance of 500,000 units. It is charged now, on that branch only — the short-circuit for a span
-> with no lowercase byte does no arithmetic and pays nothing, so an uppercase body of the same bytes
-> still spends zero. `DOS-10` asserts both halves, and putting the gate back inside `free()` turns
-> it red.
+> span at every interior separator. It is charged now, on that branch only: the short-circuit for a
+> span with no lowercase byte does no arithmetic and pays nothing, so an uppercase body of the same
+> bytes still spends zero. `DOS-10` asserts both halves, and putting the gate back inside `free()`
+> turns it red.
 >
-> **What that costs, plainly: a body dense in lowercase alphanumeric groups can now be refused where
-> it used to be masked.** Measured, the shapes that come near the allowance are the dense ones —
-> 4 MiB of `[a-z]{2}[0-9]{2}` groups spends 708,648 units, so it is refused; 4 MiB of lowercase hex
-> (`abcd 1234 …`) spends ~38,000, an ordinary JSON export ~4,500, base64 and source code **zero**.
-> The charge is conservative by design: at 1.1–1.6 µs a unit it over-prices that work by about
-> 2–3× against the nominal, which for a fail-closed bound is the safe direction.
+> **At a fraction of a unit, and the fraction is the correction M11-R60 forced.** Charging one full
+> unit per call priced ~1.1–1.8 µs of arithmetic as the ~2.9–4.3 µs a `parse()` costs, and
+> over-pricing cheap work is not a safe direction — it is how M10-R29 refused legal traffic once
+> already. `IBAN_GATE_CALLS_PER_UNIT = 2` takes the **conservative end** of the measured ratio, so
+> the charge never under-prices the work, and `DOS-11` pins the consequence as a ratio: on an
+> ordinary hex dump the gate must not outspend the phone tier.
+>
+> **What it costs, and this is a coverage change an operator can hit.** The shape that reaches both
+> spenders at once is a hex dump — `xxd`, `od -x` and every debugger emit uniform hex per group, so
+> ~5.5 % of groups spell `[A-Za-z]{2}\d{2}` and the gate runs on them while the digit-heavy
+> remainder feeds the phone tier. `DOS-BUD` prints where that lands:
+>
+> | `xxd` body | verdict | units | of which IBAN | phone |
+> |---|---|---|---|---|
+> | 4 MiB | masked | 191,551 | 68,421 | 123,130 |
+> | 8 MiB | masked | 382,290 | 136,073 | 246,217 |
+> | 10 MiB | masked | 490,295 | 170,290 | 320,005 |
+> | **12 MiB** | **refused** | 500,000 | 204,393 | 295,607 |
+> | **16 MiB** | **refused** | 500,000 | 251,013 | 248,987 |
+>
+> **The refusal line for this shape moves from beyond `MAX_BODY_BYTES` to about 11 MiB, and the
+> honest reading is that it was never where it looked.** With the gate uncharged a 16 MiB dump
+> measures 492,911 units — 98.6 % of the allowance — so this payload class was always within 1.4 %
+> of the line while a third of its validation work was not being counted at all. Charging it makes
+> the bound true and makes the cost visible; it does not make the body more expensive. **Whether to
+> restore the previous reach by raising the allowance is a threshold with functional consequences,
+> and it is the maintainer's** — [M11-R60](reviews/M11.md#m11-r60) carries the options and the
+> arithmetic (~800,000 units would put a 16 MiB hex dump back inside, at ~3 s of validation).
+>
+> **And the refusal now names the spender that actually spent it.** `Budget` records units per
+> `PiiKind` and the 400 body quotes the top one, because the moment there were two spenders the old
+> sentence — *"domestic-phone validation budget … add a LIMIT to the query"* — was telling an agent
+> whose hex dump was refused to shrink a SQL query. That is M10-R27's rule landing on M10-R27's own
+> fix; generating the sentence from what was charged is what stops a third spender repeating it.
 
 Every row below is printed by `DOS-BUD`
 (`cargo test --release --test complexity -- --ignored --nocapture budget_refusal_line`) — *a number a
@@ -506,8 +535,9 @@ pinned by `PHONE-BUD`.
 > **The budget bounds validation, not the whole request — and saying otherwise would be M10-R30 in a
 > new place.** **Three** terms make up a request's CPU, and the third was found by M11-R18 rather
 > than designed:
-> 1. `units × the measured band`, where the band is **1.1–20.7 µs** and the allowance therefore caps
->    validation at **~0.6 s on the cheapest shape and ~8.5 s on the dearest measured** (M11-R38).
+> 1. `units × the measured band`, where the band is **~1.1–21 µs** and the allowance therefore caps
+>    validation at **under a second on the cheapest shape and ~8.5 s on the dearest measured**
+>    (M11-R38).
 >    The verdict moves how many units a candidate spends; the candidate's shape moves what a unit
 >    costs, and only the first is something the count can track.
 > 2. Regex scanning and the mask rewrite, linear in body size and entity count and bounded only by
@@ -515,8 +545,8 @@ pinned by `PHONE-BUD`.
 > 3. **Metered validator work that used to be `free()`** (M11-R18) — now inside term 1, which is the
 >    change rather than a note about it. `iban_case_gate` is charged on its arithmetic branch, so
 >    the retry loop `shrink_on_reject` drives is bounded by the same allowance as everything else.
->    Before that it was bounded by nothing: 708,648 calls on one 4 MiB field, against a 500,000-unit
->    request.
+>    Before that it was charged nothing at all — on `DOS-10`'s own generator, hundreds of thousands
+>    of calls on one 4 MiB field against a 500,000-unit request.
 >
 > **The old two-term model published "at most about 3 s" and that number is withdrawn, not adjusted.**
 > Its successor is the band above, and it is stated on the worst shape rather than the cheapest

@@ -183,7 +183,13 @@ fn with_gaps(template: &str) -> String {
 /// number is asserted against `ARCHITECTURE.md` on every `cargo test`. The genuine residue — what
 /// the bound excludes — is a run of **five or more**, and it is named in `TESTING.md` beside
 /// `SEPARATOR-01` rather than left to be rediscovered.
-const SEPARATOR_RUN_MAX: usize = 4;
+///
+/// **Public because a guard has to be able to sample *outside* it** (M11-R61). `SEPARATOR-01`'s
+/// matrix already takes the bound from here so it cannot drift *above* the constant; nothing could
+/// see the constant drifting **up**, because no corpus in the suite held a run of five. `phone_eval`
+/// now derives both its `aligned` and its `alignedwide` pools from this value, so widening it
+/// changes the published measurement block and the assertion is red.
+pub const SEPARATOR_RUN_MAX: usize = 4;
 
 /// [`SEPARATOR_RUN_MAX`] as the regex repetition the patterns carry. **One constant, so a guard
 /// asserting the bound takes it from the declaration rather than from a number somebody typed
@@ -214,7 +220,7 @@ fn free<F: Fn(&str) -> bool + Send + Sync + 'static>(check: F) -> Validator {
 /// **The gap this closed.** `iban_case_gate` was `free`, on a doc comment that read *"a checksum
 /// over at most 18 bytes"* — true when the validator ran once per match, and false from the moment
 /// `shrink_on_reject` (M11-R13) started retrying a rejected span at every interior separator.
-/// Measured on 4 MiB of distinct lowercase `[a-z]{2}[0-9]{2}` groups: **708 648 calls to its
+/// Measured on 4 MiB of distinct lowercase `[a-z]{2}[0-9]{2}` groups: **~0.7 million calls to its
 /// arithmetic branch, charged nothing**, against a whole-request allowance of 500 000 units.
 fn metered<F: Fn(&str, &Budget) -> bool + Send + Sync + 'static>(check: F) -> Validator {
     Box::new(check)
@@ -1279,7 +1285,15 @@ impl Recognizer {
                             // [`Validator`] (M10-R29). The memo is what keeps a *repeating*
                             // candidate from being charged twice; on distinct candidates it does
                             // nothing, which is exactly the case the budget exists for.
+                            // **Attributed to this recognizer's kind, at the two places a
+                            // validator is ever called** (M11-R60). The allowance had one spender
+                            // for two milestones and the refusal message named it in prose; the
+                            // moment a second arrived, the advice was attached to the wrong term.
+                            // Measuring the delta here means the message is generated from what
+                            // was charged, so a third spender cannot repeat it.
+                            let before = budget.spent();
                             let v = check(m.as_str(), budget);
+                            budget.attribute(self.kind, budget.spent() - before);
                             memo.insert(m.as_str(), v);
                             v
                         }
@@ -1416,7 +1430,9 @@ impl Recognizer {
                     if budget.is_exhausted() {
                         return None;
                     }
+                    let before = budget.spent();
                     let v = check(prefix, budget);
+                    budget.attribute(self.kind, budget.spent() - before);
                     memo.insert(prefix, v);
                     v
                 }
@@ -1590,18 +1606,38 @@ impl PiiDetector for StructuredRecognizers {
             // **Constructed as `budget_exhausted`, not as a bare `DetectError` (M10-R41).** This is
             // the one error in the codebase that `FailOpen` must *not* swallow, and it now says so
             // on the value instead of leaving the wrapper to infer it from a global side-condition.
+            // **It names the tier that actually spent the allowance, and that is generated rather
+            // than written (M11-R60).** Until this milestone the budget had one spender and this
+            // sentence said *"domestic-phone validation budget … add a LIMIT to the query"*. The
+            // moment `iban_case_gate` became the second, an agent whose **hex dump** was refused
+            // was told to shrink a SQL query — M10-R27's rule (*a fail-closed threshold is only as
+            // good as the failure it produces*) landing on M10-R27's own fix. `Budget` now records
+            // what each kind was charged, so the advice cannot be attached to the wrong term by
+            // adding a third spender.
+            //
+            // Value-free, as `DetectError` requires: the kind label comes from `PiiKind`, the two
+            // numbers are a byte count and a constant — never input-derived content. E2E-05 pins
+            // that structurally, by checking every digit run in this string against the body.
+            let top = budget.top_spender();
+            let advice = budget_refusal_advice(top.map(|(kind, _)| kind));
+            let spender = match top {
+                Some((kind, units)) => format!(
+                    " Most of it ({units} of {}) went on {} candidates.",
+                    budget.initial(),
+                    kind.label()
+                ),
+                None => String::new(),
+            };
             return Err(DetectError::budget_exhausted(
                 "structured",
                 format!(
-                    "this request exhausted the domestic-phone validation budget of {} number \
-                     checks; the allowance is per request and ran out while scanning a {} byte \
-                     field. The request was blocked rather than forwarded with a partially \
-                     scanned body. Retrying it unchanged will fail identically — send less \
-                     digit-dense text instead: for an oversized tool result, add a LIMIT to the \
-                     query or return fewer rows per call, and drop that turn rather than \
-                     resending it. Note that many medium digit-dense fields exhaust the \
-                     allowance just as one very large field does, so splitting the same content \
-                     across more fields will not help.",
+                    "this request exhausted the PII validation budget of {} checks; the allowance \
+                     is per request and ran out while scanning a {} byte field.{spender} The \
+                     request was blocked rather than forwarded with a partially scanned body. \
+                     Retrying it unchanged will fail identically — {advice}, and drop that turn \
+                     rather than resending it. Note that many medium fields exhaust \
+                     the allowance just as one very large field does, so splitting the same \
+                     content across more fields will not help.",
                     budget.initial(),
                     input.len()
                 ),
@@ -2129,6 +2165,57 @@ pub fn luhn_valid(input: &str) -> bool {
 /// a country code it does not know, so a span prefixed `ab` is gated by mod-97 alone and one in 97
 /// passes. The bound is that rate; the zero was a corpus artefact, and the comment that once stood
 /// here reasoned about exactly this hole and concluded the zero survived it.
+/// The concrete "what to do instead" clause of a budget refusal, chosen by **which tier actually
+/// spent the allowance** (M11-R60).
+///
+/// **A pure function with a matrix behind it, because the half left inline in the `format!` is the
+/// half that goes wrong.** The refusal used to end *"add a LIMIT to the query or return fewer rows
+/// per call"* unconditionally — correct while the domestic-phone tier was the only spender, and
+/// actively misleading from the moment `iban_case_gate` became the second: an agent whose **hex
+/// dump** was refused was told to shrink a SQL query. M10-R27's rule is that a fail-closed
+/// threshold is only as good as the failure it produces, and this is that rule applied to a budget
+/// with more than one spender.
+///
+/// Every kind gets an answer, including the ones that cannot reach the budget today, so that a
+/// tenth spender inherits a sensible sentence rather than an empty one — and `BUDGET-ADVICE`
+/// asserts exactly that over `PiiKind::ALL`.
+fn budget_refusal_advice(top: Option<PiiKind>) -> &'static str {
+    match top {
+        // The phone tier is reached by *columns of numbers* — a database result, a CSV export — so
+        // the move that works is fewer rows. **Both halves are needed, and the second is a
+        // measurement rather than caution:** on a 12 MiB hex dump the top spender is still `Phone`
+        // (293 008 of 500 000), because the digit-heavy remainder of each line feeds it. So the
+        // tier says which validator ran, not what the payload *is*, and advice that assumed a
+        // query would be misdirection on exactly the body M11-R60 is about.
+        Some(PiiKind::Phone) => {
+            "for an oversized tool result, add a LIMIT to the query or return fewer rows per call;              if the field is not a query result, send a shorter excerpt of it"
+        }
+        // The IBAN case gate is reached by *alphanumeric groups* — a hex dump, a base32 blob, a
+        // register listing — where there are no rows to limit and the move is fewer bytes.
+        Some(PiiKind::Iban) => {
+            "for a hex dump or a binary listing, send a shorter excerpt rather than the whole file"
+        }
+        _ => "send a smaller excerpt of whatever is dense here rather than the whole field",
+    }
+}
+
+/// How many `iban_case_gate` arithmetic calls cost one budget unit (M11-R18, re-priced by
+/// M11-R60).
+///
+/// **Derived from the measured ratio, at its conservative end.** `DOS-BUD`'s verdict-and-shape
+/// grid prints µs/unit for both: the gate's shape measures **1.1–1.8 µs** and the phone unit the
+/// allowance was sized from **2.9–4.3 µs**. The ratio therefore spans ~2.1 to ~3.6, and this takes
+/// the **smallest** value in that span, so the charge never *under*-prices the work — a
+/// fail-closed bound may be wrong only in the direction of caution.
+///
+/// **Charging one full unit per call was M10-R29 reopened**, and the measurement that hid it is
+/// worth keeping: the sample layout published beside the decision was `abcd 1234 …`, a pure-letter
+/// group beside a pure-digit one, which cannot spell `[A-Za-z]{2}\d{2}` at all and measures **0
+/// units**. Real hex output — `xxd`, `od -x`, every debugger — is uniform hex per group, where
+/// ~5.5% of groups do match, and at one unit per call an ordinary 8 MiB dump was **refused**.
+/// *A sample that cannot spell the shape it is a sample of measures the sample.*
+const IBAN_GATE_CALLS_PER_UNIT: usize = 2;
+
 fn iban_case_gate(matched: &str, budget: &Budget) -> bool {
     if !matched.bytes().any(|b| b.is_ascii_lowercase()) {
         return true;
@@ -2137,10 +2224,10 @@ fn iban_case_gate(matched: &str, budget: &Budget) -> bool {
     // scan of at most 44 characters and genuinely free; the arithmetic below is not, and it is not
     // run once per match either — `shrink_on_reject` retries at every interior separator, so one
     // rejected candidate can reach it eight times. Measured on a 4 MiB field of lowercase
-    // `[a-z]{2}[0-9]{2}` groups: **708 648 calls to this branch**, against a whole-request
+    // `[a-z]{2}[0-9]{2}` groups: **~0.7 million calls to this branch**, against a whole-request
     // allowance of 500 000 units, charged **nothing**. That is the third term
     // `ARCHITECTURE.md`'s cost model did not have.
-    budget.spend();
+    budget.spend_fraction(IBAN_GATE_CALLS_PER_UNIT);
     iban_mod97(matched) && iban_length_ok(matched)
 }
 
@@ -2195,6 +2282,54 @@ pub fn iban_mod97(iban: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **BUDGET-ADVICE (M11-R60) — every kind that can spend the allowance gets advice that fits
+    /// it, and the decision is a pure function rather than a branch inside a `format!`.**
+    ///
+    /// The refusal used to end *"add a LIMIT to the query"* unconditionally, which was right while
+    /// the domestic-phone tier was the only spender and misdirection from the moment the IBAN case
+    /// gate became the second. E2E-05 proves the sentence is **reached** on a phone-shaped body;
+    /// this proves it is **right** for every kind, including the ones that cannot reach the budget
+    /// yet — because the next spender to arrive will inherit whatever this returns.
+    #[test]
+    fn every_kind_gets_budget_advice_that_names_a_concrete_move() {
+        for kind in PiiKind::ALL {
+            let advice = budget_refusal_advice(Some(*kind));
+            assert!(
+                advice.len() > 30 && advice.contains(' '),
+                "{kind:?} gets no usable advice: {advice:?}"
+            );
+            assert!(
+                !advice.ends_with('.'),
+                "{kind:?}'s advice is spliced mid-sentence, so it must not end a sentence itself: \
+                 {advice:?}"
+            );
+        }
+        // The two that can reach the budget today must give **different** advice, or the function
+        // is a constant wearing a match (M10-R13's shape: an assertion that cannot fail).
+        assert_ne!(
+            budget_refusal_advice(Some(PiiKind::Phone)),
+            budget_refusal_advice(Some(PiiKind::Iban)),
+            "the two spenders that exist must not be told the same thing — the whole of M11-R60 is \
+             that a hex dump was told to add a LIMIT to a SQL query"
+        );
+        // E2E-05 asserts the phone branch's literal on the wire; it is derived from here, so the
+        // two cannot disagree.
+        assert!(budget_refusal_advice(Some(PiiKind::Phone)).contains("LIMIT"));
+        assert!(!budget_refusal_advice(Some(PiiKind::Iban)).contains("LIMIT"));
+        // **And every branch must work when the field is not a query result**, because the top
+        // spender names the validator that ran and not the shape of the payload: a hex dump's
+        // dominant spender is the phone tier, measured. A branch whose only move is "add a LIMIT"
+        // is M11-R60's misdirection wearing an attribution.
+        for kind in PiiKind::ALL {
+            assert!(
+                budget_refusal_advice(Some(*kind)).contains("excerpt"),
+                "{kind:?}'s advice offers nothing for a field that is not a query result"
+            );
+        }
+        // Nothing charged is a real state — an empty body — and it must still say something.
+        assert!(budget_refusal_advice(None).len() > 30);
+    }
 
     /// Detection as `(kind, text, confidence)` — what [`kinds`] returns plus the field it drops.
     ///

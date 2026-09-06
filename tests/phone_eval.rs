@@ -63,7 +63,9 @@ use std::time::Instant;
 
 use serde::Deserialize;
 
-use llm_proxy_pii_rust::pii::recognizers::{StructuredRecognizers, PHONE_REGIONS};
+use llm_proxy_pii_rust::pii::recognizers::{
+    StructuredRecognizers, PHONE_REGIONS, SEPARATOR_RUN_MAX,
+};
 use llm_proxy_pii_rust::pii::{PiiDetector, PiiKind};
 
 const CORPUS_JSON: &str = include_str!("corpus/pii_cases.json");
@@ -331,10 +333,15 @@ fn ip_and_alignment_negatives(out: &mut Vec<(&'static str, String)>) {
         ));
     }
 
-    // Column alignment: four numeric columns at a gap of 2, 3 and 4 spaces — the run
-    // `SEPARATOR_RUN_MAX` admits. A gap of 1 was already a candidate before round 14, and a gap
-    // of 5 is outside the bound; both are covered by `SEPARATOR-01`'s matrix rather than here.
-    for gap in 2..=4usize {
+    // Column alignment: four numeric columns at every gap the separator run **admits**, and one
+    // gap **outside** it. Both pools are derived from `SEPARATOR_RUN_MAX` rather than written as
+    // literals, which is M11-R61's fix: widening the constant from 4 to 5 used to leave the whole
+    // suite green, because no corpus anywhere held a run of five. Now it changes the size of both
+    // pools *and* moves `alignedwide` off 0.000, and the published block is asserted byte for byte.
+    //
+    // `alignedwide`'s **0.000 is the point**: the bound's residue published as a number, the same
+    // way the admission is. It is the one category here whose value is expected to stay at zero.
+    for gap in 2..=SEPARATOR_RUN_MAX {
         let spaces = " ".repeat(gap);
         for _ in 0..48 {
             let cols: Vec<u64> = (0..4).map(|_| 100 + next(&mut state) % 900).collect();
@@ -347,12 +354,35 @@ fn ip_and_alignment_negatives(out: &mut Vec<(&'static str, String)>) {
             ));
         }
     }
+    let wide = " ".repeat(SEPARATOR_RUN_MAX + 1);
+    for _ in 0..48 {
+        let cols: Vec<u64> = (0..4).map(|_| 100 + next(&mut state) % 900).collect();
+        out.push((
+            "alignedwide",
+            cols.iter()
+                .map(|c| c.to_string())
+                .collect::<Vec<_>>()
+                .join(&wide),
+        ));
+    }
 }
 
 /// The category names in the generated pool, in report order.
 const NEGATIVE_CATEGORIES: &[&str] = &[
-    "dates", "ports", "sizes", "offsets", "money", "codes", "refs", "tables", "ips", "ips10",
-    "ips192", "ips172", "aligned",
+    "dates",
+    "ports",
+    "sizes",
+    "offsets",
+    "money",
+    "codes",
+    "refs",
+    "tables",
+    "ips",
+    "ips10",
+    "ips192",
+    "ips172",
+    "aligned",
+    "alignedwide",
 ];
 
 /// One region set's measurement: recall over the positives it owns, the curated false-positive
@@ -587,6 +617,16 @@ fn phone_precision_per_region_and_for_the_union() {
     });
     reach("column alignment", &|s: &str| {
         regex_lite_contains(s, r"[0-9]{2,3}[ ]{2,4}[0-9]{2,4}")
+    });
+    // And **one gap outside the bound**, which is the pool M11-R61 was missing: without it,
+    // widening `SEPARATOR_RUN_MAX` from 4 to 5 left the entire suite green.
+    let wide = format!(
+        r"[0-9]{{2,3}}[ ]{{{},{}}}[0-9]{{2,4}}",
+        SEPARATOR_RUN_MAX + 1,
+        SEPARATOR_RUN_MAX + 1
+    );
+    reach("column alignment beyond the run bound", &|s: &str| {
+        regex_lite_contains(s, &wide)
     });
     println!();
 

@@ -325,6 +325,12 @@ impl std::error::Error for DetectError {}
 pub struct Budget {
     left: std::cell::Cell<usize>,
     initial: usize,
+    /// Calls by a **sub-unit** validator that have not yet added up to a whole unit — see
+    /// [`spend_fraction`](Self::spend_fraction).
+    part: std::cell::Cell<usize>,
+    /// Units charged, per [`PiiKind`], so a refusal can name **which** tier spent the allowance
+    /// (M11-R60). Indexed by position in [`PiiKind::ALL`].
+    by_kind: std::cell::RefCell<[usize; PiiKind::ALL.len()]>,
 }
 
 impl Budget {
@@ -333,6 +339,8 @@ impl Budget {
         Self {
             left: std::cell::Cell::new(calls),
             initial: calls,
+            part: std::cell::Cell::new(0),
+            by_kind: std::cell::RefCell::new([0; PiiKind::ALL.len()]),
         }
     }
 
@@ -355,6 +363,8 @@ impl Budget {
         Self {
             left: std::cell::Cell::new(usize::MAX),
             initial: usize::MAX,
+            part: std::cell::Cell::new(0),
+            by_kind: std::cell::RefCell::new([0; PiiKind::ALL.len()]),
         }
     }
 
@@ -362,6 +372,73 @@ impl Budget {
     /// budget stays exhausted, which is what [`is_exhausted`](Self::is_exhausted) rests on.
     pub fn spend(&self) {
         self.left.set(self.left.get().saturating_sub(1));
+    }
+
+    /// Charge a validator whose cost is a **fraction** of a unit: `calls_per_unit` of them cost
+    /// one (M11-R60).
+    ///
+    /// **A unit is a quantum of work, not a call, and that is the whole of M10-R29.** One unit is
+    /// one `phonenumber::parse()` — the ~3.7 µs the allowance was sized from. A validator that
+    /// costs materially less and is charged a full unit *over-prices* the request, and over-pricing
+    /// cheap work does not make the bound safer: it refuses legal traffic. M10-R29 measured that as
+    /// a defect once (800 KB of 9-digit tokens refused in 45 ms with the phone tier not loaded);
+    /// M11-R60 measured it again, on an ordinary `xxd` hex dump refused at 8 MiB.
+    ///
+    /// **One accumulator, deliberately.** It is shared by every fractional spender, so it is exact
+    /// while there is one denominator in play and conservative — never under-charging by more than
+    /// a unit in total — if a second is ever added. A second *kind* of cheap validator wanting a
+    /// different denominator should get its own field here rather than reuse this one, and this
+    /// sentence is where the next person finds that out.
+    pub fn spend_fraction(&self, calls_per_unit: usize) {
+        debug_assert!(calls_per_unit >= 1);
+        let n = self.part.get() + 1;
+        if n >= calls_per_unit {
+            self.part.set(0);
+            self.spend();
+        } else {
+            self.part.set(n);
+        }
+    }
+
+    /// Record that `units` of the allowance were spent on `kind`'s candidates.
+    ///
+    /// **So a refusal can name the tier that spent it (M11-R60).** The allowance had one spender
+    /// for two milestones and the refusal message said so in as many words; the moment a second
+    /// arrived the advice was attached to the wrong term, and an agent whose hex dump was refused
+    /// was told to add a `LIMIT` to a SQL query. Attribution lives here rather than in the message
+    /// so that a *third* spender cannot repeat it — the sentence is generated from what was
+    /// actually charged.
+    pub fn attribute(&self, kind: PiiKind, units: usize) {
+        if units == 0 {
+            return;
+        }
+        if let Some(i) = PiiKind::ALL.iter().position(|k| *k == kind) {
+            self.by_kind.borrow_mut()[i] += units;
+        }
+    }
+
+    /// How much of the allowance `kind`'s candidates were charged. Exists so a guard can assert
+    /// the **M10-R29 invariant directly** — a validator cheaper than a phone parse must not
+    /// dominate the allowance on ordinary traffic — instead of inferring it from a total.
+    pub fn spent_on(&self, kind: PiiKind) -> usize {
+        PiiKind::ALL
+            .iter()
+            .position(|k| *k == kind)
+            .map(|i| self.by_kind.borrow()[i])
+            .unwrap_or(0)
+    }
+
+    /// The kind that spent the most of the allowance, with its share — `None` if nothing was
+    /// charged. Used only to build the refusal message, and the label comes from the enum, never
+    /// from the input.
+    pub fn top_spender(&self) -> Option<(PiiKind, usize)> {
+        let by_kind = self.by_kind.borrow();
+        by_kind
+            .iter()
+            .enumerate()
+            .max_by_key(|(_, n)| **n)
+            .filter(|(_, n)| **n > 0)
+            .map(|(i, n)| (PiiKind::ALL[i], *n))
     }
 
     /// Whether the allowance is gone. The caller's contract is **fail closed**: stop scanning and

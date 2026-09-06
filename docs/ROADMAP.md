@@ -2432,27 +2432,30 @@ nothing:
 
 ### Review ledger — M11 → [`reviews/M11.md`](reviews/M11.md)
 
-> **Where the loop stands (2026-09-06, after round 16).** 62 findings; **60 are closed and two are
-> open**, both raised by round 16 against the three commits that implemented the maintainer's last
-> three decisions. Round 16 found **one defect in the product**, so the loop does not terminate here:
-> - [M11-R60](reviews/M11.md#m11-r60) — **in `src/`.** `iban_case_gate` leaving `free()` reopens
->   [M10-R29](reviews/M10.md#m10-r29), whose three consequences all return on a new shape: an
->   ordinary `xxd` hex dump is refused at 8 MiB where the same build without the charge forwards
->   12 MiB, the 400 body still names only the domestic-phone tier, and the gate spends the allowance
->   before any phone family is reached. The headroom the decision was taken against was measured on
->   a sample layout that spends **0** units. Four options, all product-visible, in the entry.
-> - [M11-R61](reviews/M11.md#m11-r61) — on the net, with the green `src/` mutation the filter
->   requires: `SEPARATOR_RUN_MAX` 4 -> 5 leaves the whole suite green at 258/0/4, so the over-mask
->   R55 accepted on purpose has a published floor and no ceiling.
+> **Where the loop stands (2026-09-06, after round 16 was closed).** 62 findings, **all closed**.
+> Round 16 found one defect in the product — [M11-R60](reviews/M11.md#m11-r60), the M11-R18 fix
+> pricing a 1.1–1.8 µs check as a 2.9–4.3 µs one and refusing an ordinary hex dump — and it is
+> fixed at the measured price, with `DOS-11` pinning the M10-R29 ratio it violated and the refusal
+> message now naming the tier that actually spent the allowance.
+> [M11-R61](reviews/M11.md#m11-r61) closed with it: `phone_eval`'s alignment pools are derived from
+> `SEPARATOR_RUN_MAX`, so the accepted over-mask has a ceiling as well as a floor.
 >
-> **Ten of the 60 closed rows carry the `**leak**` label** — R10, R13, R25, R30, R33, R41, R43, R48,
-> R51, R52 — every one in the *deterministic* tier. (This sentence used to say *six*; round 16 could
-> not reconcile that with the ledger and did not guess which grouping it meant. If the intended count
-> is distinct leaks rather than rows, say which rows are the re-finds.) **Round 15 was the first to
-> find no leak**, and it verified round 14's fix differentially (3 150 renderings: 0 new leaks,
-> 1 270 newly masked); round 16 found none either.
+> **Ten rows carry the `leak` label** — R10, R13, R25, R30, R33, R41, R43, R48, R51, R52 — every one
+> in the *deterministic* tier and every one a rendering the recognizers could not match while their
+> validators could. Three of the ten are the same leak found a second time after an incomplete fix
+> (R13 after R10, R33 after R30, R43 after R41), which is what an earlier count of *six* was reaching
+> for; the ledger's own cells say ten, and that is the number this sentence now uses. **Round 15 was
+> the first to find no leak**, and it verified round 14's fix differentially (3 150 renderings: 0 new
+> leaks, 1 270 newly masked); round 16 found none either.
 >
-> The last three closures were the maintainer's to decide rather than the builder's:
+> **One threshold is open and it is not a defect**, so it carries no ledger row: charging the IBAN
+> case gate honestly costs reach at the top of the body-size range — an `xxd` hex dump is masked to
+> about **11 MiB** and refused above it, where the uncounted build reached the full 16 MiB at 98.6 %
+> of the allowance. Restoring that reach means raising `MAX_PHONE_VALIDATIONS_PER_REQUEST` to
+> ~800,000; keeping 500,000 means publishing the limit. The arithmetic is in
+> [M11-R60](reviews/M11.md#m11-r60)'s closure and in `ARCHITECTURE.md`, and nothing is blocked on it.
+>
+> The three decisions the maintainer took, and what each became:
 > - [M11-R55](reviews/M11.md#m11-r55) — **accepted and published.** The over-mask round 14's
 >   leak-fix bought is the trade this tier now makes on purpose: both alternatives cost a leak, and
 >   an over-mask is restored byte-identically where a miss is not. `phone_eval` stopped being
@@ -2856,8 +2859,8 @@ its sha256 compared against the `HEAD` blob and `git status` asserted empty afte
 | [M11-R57](reviews/M11.md#m11-r57) | `SEPARATOR-01`'s matrix substitutes runs of `1..=3` against a pattern declaring `{1,4}`, so the bound can be narrowed to `{1,3}` with the suite green — the one value the constant chose is the one the guard never tries | guard | [x] |
 | [M11-R58](reviews/M11.md#m11-r58) | Round 14's published cost does not reproduce on `DOS-BUD`, the harness its closure names (8.00 units/row before and after, not 8 -> 9.8), while the unbudgeted term M11-R18 is open on grew 4.7-6.5x on a column-aligned body | hardening | [x] |
 | [M11-R59](reviews/M11.md#m11-r59) | The round's own docs: `SEPARATOR_RUN`'s residue note names column alignment as what it excludes when 2-4 spaces is what it admits; `dates 0.180`, the slash-date claim, `Scan::Overlapping`'s length bounds and the `+CC` units/row are all stale, and `[Unreleased]` carries no entry | docs | [x] |
-| [M11-R60](reviews/M11.md#m11-r60) | Charging `iban_case_gate` reopens M10-R29: an ordinary `xxd` hex dump is refused at 8 MiB where the same build without the charge forwards 12 MiB, the 400 still blames the domestic-phone tier and prescribes a SQL `LIMIT`, and the headroom published for "a lowercase hex dump" was measured on a layout that spends 0 units | correctness | [ ] |
-| [M11-R61](reviews/M11.md#m11-r61) | `SEPARATOR_RUN_MAX` can be widened 4 -> 5 with the whole suite green at 258/0/4 — the accepted over-mask has no upper pin, and `phone_overmask`, `TESTING.md` and R55's closure all claim both directions are red | guard | [ ] |
+| [M11-R60](reviews/M11.md#m11-r60) | Charging `iban_case_gate` reopens M10-R29: an ordinary `xxd` hex dump is refused at 8 MiB where the same build without the charge forwards 12 MiB, the 400 still blames the domestic-phone tier and prescribes a SQL `LIMIT`, and the headroom published for "a lowercase hex dump" was measured on a layout that spends 0 units | correctness | [x] |
+| [M11-R61](reviews/M11.md#m11-r61) | `SEPARATOR_RUN_MAX` can be widened 4 -> 5 with the whole suite green at 258/0/4 — the accepted over-mask has no upper pin, and `phone_overmask`, `TESTING.md` and R55's closure all claim both directions are red | guard | [x] |
 
 <a id="m11-b"></a>
 ### Track B — the intra-op thread base: physical cores, not logical threads ✅

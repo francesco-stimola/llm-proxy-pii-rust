@@ -504,8 +504,8 @@ fn a_digit_dense_field_is_masked_not_refused_when_no_phone_region_is_enabled() {
 /// That gap is what M11-R18 is. The case fold (M11-R10) made a lowercase span matchable, the
 /// shrink (M11-R13) made a rejected one retry at every interior separator, and `free()` made all
 /// of it cost **nothing**: measured on 4 MiB of distinct lowercase `[a-z]{2}[0-9]{2}` groups,
-/// **708 648 calls to the gate's arithmetic branch against a whole-request allowance of 500 000
-/// units, charged zero.** `MAX_PHONE_VALIDATIONS_PER_REQUEST` could not bound it — it is spent by
+/// **~0.7 million calls to the gate's arithmetic branch against a whole-request allowance of
+/// 500 000 units, charged zero** — this guard's own generator measures 688 964 at 4 MiB. `MAX_PHONE_VALIDATIONS_PER_REQUEST` could not bound it — it is spent by
 /// the phone validator alone — so the guarantee `ARCHITECTURE.md` derives from the budget did not
 /// cover the term at all.
 ///
@@ -588,6 +588,108 @@ fn a_field_of_lowercase_alphanumeric_groups_is_charged_for_the_case_gate() {
         (1.5..3.0).contains(&ratio),
         "doubling the field multiplied the charge by {ratio:.2} — the case-gate term must be \
          linear in the body, like every other term this file bounds"
+    );
+}
+
+/// **DOS-11 (M11-R60) — the axis `DOS-10` does not have: an *ordinary* body must stay **under** the
+/// allowance.**
+///
+/// `DOS-10` asserts that the case-gate term is **charged**. Nothing asserted that charging it
+/// leaves legal traffic alone, and the cost of that gap was a real refusal: at one unit per
+/// arithmetic call an ordinary `xxd` hex dump was blocked with a `400` at **8 MiB**, having been
+/// masked and forwarded at 16 MiB the day before. `PHONE-BUD` is this guard for the M7 turn and
+/// for nothing else — and the M7 turn is instruction prose, which spends zero units and therefore
+/// cannot see a term that only digit-dense text reaches.
+///
+/// **The fixture is `xxd`, and the reason is the whole finding.** The sample published beside the
+/// decision was `abcd 1234 …` — a pure-letter group beside a pure-digit one, which cannot spell
+/// `[A-Za-z]{2}\d{2}` and measures **0 units**. Real hex output is *uniform* hex per group, where
+/// P(two letters then two digits) = (6/16)² · (10/16)² ≈ 5.5% of groups. So this asserts its own
+/// fixture can spell the shape it is a sample of, **before** it asserts anything about cost:
+/// *a sample that cannot spell the shape it samples measures the sample* (M4-R13, on the cost axis).
+///
+/// **Scaled rather than run at `MAX_BODY_BYTES`.** A 16 MiB body is ~80× this one in the debug
+/// profile, and a slow guard is a guard somebody eventually marks `#[ignore]` — which in this
+/// milestone alone has hidden three findings. The extrapolation is legitimate *because* `DOS-10`
+/// asserts the same term is linear in the body; what this adds is the constant.
+#[test]
+fn an_ordinary_hex_dump_stays_inside_the_request_allowance_at_max_body_bytes() {
+    /// `bytes` of `xxd`-format output: an offset column, eight groups of four **uniform** lowercase
+    /// hex digits, and the ASCII gutter.
+    fn xxd(bytes: usize) -> String {
+        let mut out = String::with_capacity(bytes + 96);
+        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+        let mut next = || {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            state >> 33
+        };
+        let mut offset = 0u64;
+        while out.len() < bytes {
+            out.push_str(&format!("{offset:08x}: "));
+            for _ in 0..8 {
+                out.push_str(&format!("{:04x} ", next() % 0x1_0000));
+            }
+            out.push_str(" ................\n");
+            offset += 16;
+        }
+        out
+    }
+
+    const SAMPLE: usize = 512 * 1024;
+    let body = xxd(SAMPLE);
+
+    // **Non-vacuity comes first, and it is the assertion the published sample failed.** A body that
+    // cannot produce an IBAN candidate would pass every cost bar below while measuring nothing.
+    let groups = regex::Regex::new(r"(?-u:\b)[0-9a-f]{4}(?-u:\b)")
+        .unwrap()
+        .find_iter(&body)
+        .count();
+    let ibanish = regex::Regex::new(r"(?-u:\b)[a-f]{2}[0-9]{2}(?-u:\b)")
+        .unwrap()
+        .find_iter(&body)
+        .count();
+    assert!(
+        groups > 10_000 && ibanish * 100 / groups >= 3,
+        "the fixture holds {ibanish} `[a-f]{{2}}[0-9]{{2}}` groups out of {groups} hex groups. \
+         Uniform hex puts that near 5.5%; below 3% this is not a hex dump any more and the cost \
+         bar below would pass for the wrong reason — which is exactly how M11-R60 got published."
+    );
+
+    let detector = StructuredRecognizers::new();
+    let budget = llm_proxy_pii_rust::pii::Budget::new(usize::MAX / 2);
+    let mut vault = Vault::new();
+    vault
+        .mask_all(&body, &detector, &budget)
+        .expect("an unlimited allowance must not be exhausted");
+    let spent = budget.spent();
+    let gate = budget.spent_on(llm_proxy_pii_rust::pii::PiiKind::Iban);
+    let phone = budget.spent_on(llm_proxy_pii_rust::pii::PiiKind::Phone);
+    println!("DOS-11: {SAMPLE} bytes of xxd spend {spent} units — Iban {gate}, Phone {phone}");
+
+    // **The invariant, stated as M10-R29 states it: a validator cheaper than a `parse()` must not
+    // *dominate* the allowance on ordinary traffic.** That is what makes over-pricing visible, and
+    // it is a ratio rather than a wall clock or an absolute count — so it says the same thing on
+    // any box and at any body size. At one full unit per call (M11-R60) the gate outspent the
+    // whole phone tier on this fixture; at the measured price it is a minority share.
+    // **The bar is derived from this fixture, and the bar travels with it.** The gate-to-phone
+    // ratio is *not* scale-free — the per-scan memo saturates the two terms differently, so on
+    // this 512 KiB body it is **0.349** at the shipped price and **0.697** at the one-full-unit
+    // price M11-R60 found, while at 4 MiB the same two prices measure 0.556 and 1.11. A bar of
+    // one half separates them here with a factor of two either way; on a different fixture size
+    // it would mean something else, which is why `SAMPLE` is a constant beside it and not an
+    // argument. The **absolute** refusal line is `DOS-BUD`'s job, and it is a declared pre-tag
+    // measurement rather than a `cargo test` assertion, because it needs `--release` and
+    // multi-megabyte bodies.
+    assert!(
+        gate * 2 <= phone,
+        "on an ordinary hex dump the IBAN case gate was charged {gate} units against the phone \
+         tier's {phone}, so the cheap validator now dominates the allowance the expensive one is \
+         named after. Its arithmetic measures ~1.1-1.8 µs against ~2.9-4.3 for a `parse()`, so \
+         this means it is priced above what it costs — and over-pricing cheap work does not make \
+         the bound safer, it refuses legal traffic (M10-R29, M11-R60). Re-derive \
+         `IBAN_GATE_CALLS_PER_UNIT` from `DOS-BUD`'s µs/unit grid, not from what is convenient."
     );
 }
 
@@ -832,6 +934,54 @@ fn budget_refusal_line_and_cost() {
                 }
             );
         }
+    }
+
+    // **Where an *ordinary* body stops being accepted, by size (M11-R60).** Every other grid here
+    // asks how much a shape costs; this one asks the question a refusal is actually about — *how
+    // big can a legal payload be?* — on the one shape that reaches both spenders at once. `xxd`,
+    // `od -x` and every debugger emit uniform hex per group, so ~5.5% of groups spell
+    // `[A-Za-z]{2}\d{2}` and the IBAN case gate runs on them; the digit-heavy remainder feeds the
+    // phone tier. `DOS-11` pins the *ratio* between the two on every `cargo test`; the **line**
+    // needs `--release` and multi-megabyte bodies, so it lives here and is re-run before a tag.
+    //
+    // The per-kind split is what makes this readable rather than a single number that moved: it
+    // says which spender is responsible at each size, which is the same information the refusal
+    // message now carries to the client.
+    println!("\n--- an ordinary xxd hex dump: where the refusal line falls, by size (M11-R60) ---");
+    println!(
+        "{:>10}  {:>12}  {:>9}  {:>9}  {:>9}",
+        "body", "verdict", "spent", "of which Iban", "Phone"
+    );
+    for mb in [4usize, 8, 10, 12, 16] {
+        let mut dump = String::with_capacity(mb * 1024 * 1024 + 128);
+        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+        let mut offset = 0u64;
+        while dump.len() < mb * 1024 * 1024 {
+            dump.push_str(&format!("{offset:08x}: "));
+            for _ in 0..8 {
+                state = state
+                    .wrapping_mul(6_364_136_223_846_793_005)
+                    .wrapping_add(1_442_695_040_888_963_407);
+                dump.push_str(&format!("{:04x} ", (state >> 33) % 0x1_0000));
+            }
+            dump.push_str(" ................\n");
+            offset += 16;
+        }
+        let budget = llm_proxy_pii_rust::pii::Budget::new(
+            llm_proxy_pii_rust::pii::recognizers::MAX_PHONE_VALIDATIONS_PER_REQUEST,
+        );
+        let mut vault = Vault::new();
+        let verdict = match vault.mask_all(&dump, &detector, &budget) {
+            Ok(_) => "masked",
+            Err(_) => "REFUSED",
+        };
+        println!(
+            "{:>8} MiB  {verdict:>12}  {:>9}  {:>13}  {:>9}",
+            mb,
+            budget.spent(),
+            budget.spent_on(llm_proxy_pii_rust::pii::PiiKind::Iban),
+            budget.spent_on(llm_proxy_pii_rust::pii::PiiKind::Phone)
+        );
     }
 
     // **The allowance is a count of numbers, not a count of bytes — and publishing it in bytes is

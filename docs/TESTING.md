@@ -397,8 +397,11 @@ Default build, no model. A loose regex proposes candidates and `is_valid()` deci
   suite:** M11-R55 accepted this over-mask and published it, so a guard asserting zero here would
   assert the opposite of what ships. Today the set is **11 spans** — six `psql` rows, three dotted
   quads, and two inside the `ssh` argument, which is the case that costs an agent a turn. Narrow
-  the alphabet or the separator run and entries vanish; widen either and entries appear: **both
-  directions are red**, which is what no coverage assertion on this axis can do. Non-vacuity is
+  the alphabet or the separator run and entries move — but **not every coordinate in every
+  direction, and M11-R61 is the measurement of which** (a claim of "both directions" stood here and
+  was false): narrowing the run to 2 is red *here*, narrowing it to 3 is red in `phone_eval`,
+  widening the alphabet is red in `SEPARATOR-01`, and widening the run is red in `phone_eval`'s
+  `alignedwide` pool. *No single guard covers both coordinates both ways; the three together do.* Non-vacuity is
   two-sided: a byte floor, plus a **shape** floor asserting the fixture still contains ≥5 dotted
   quads and ≥5 runs of 2-4 spaces, because a rewrite that dropped them would leave a green guard
   measuring nothing.
@@ -735,8 +738,10 @@ two *other* always-on tiers already claim that shape.
   is an over-mask this project has **accepted on purpose**: a run of two to four spaces is how
   `psql`, `df` and `ls -l` lay out numeric columns, and a dotted quad is four groups separated by a
   character `phonenumber::parse` discards. Union rates, asserted against `ARCHITECTURE.md` by
-  PHONE-EVAL on every `cargo test`: **`aligned` 0.785 · `ips` 0.500 · `ips10` 0.656 · `ips192`
-  0.422 · `ips172` 0.438**. What the bound genuinely excludes is a run of **five or more**. Both
+  PHONE-EVAL on every `cargo test`, in the `UNION` column of the block `ARCHITECTURE.md` publishes:
+  the `aligned`, `ips`, `ips10`, `ips192` and `ips172` rows. **The numbers are not repeated here on
+  purpose** — one copy is asserted and a second is a thing that ages. What the bound genuinely
+  excludes is a run of **five or more**, and that is published too, as `alignedwide`'s **0.000**. Both
   alternatives were priced and both cost a leak — the narrower alphabet re-opens `(020) 7946 0958`
   at 0.923, the tighter run re-opens the domestic half of `+39  347  1234567` — and an over-mask is
   restored byte-identically on the response path where a miss is not. *This is not a residue to
@@ -1119,7 +1124,7 @@ two *other* always-on tiers already claim that shape.
   produces a body of mixed alphanumeric groups, the only shape that makes the IBAN pattern match at
   every position and reject at every position, and therefore the only shape that runs
   `iban_case_gate` millions of times. Measured on 4 MiB of distinct lowercase `[a-z]{2}[0-9]{2}`
-  groups: **708,648 calls to the gate's arithmetic branch, charged nothing**, against a whole-request
+  groups: **hundreds of thousands of calls to the gate's arithmetic branch, charged nothing**, against a whole-request
   allowance of 500,000 units — the third term `ARCHITECTURE.md`'s cost model did not have.
   **It asserts that the work is *charged*, not that it is fast**, and the distinction is the point: a
   wall-clock bar here would be a claim about this box (`within_budget` carries that job for the rest
@@ -1133,7 +1138,29 @@ two *other* always-on tiers already claim that shape.
   **Verified by mutation:** put `iban_case_gate` back inside `free()` and the lowercase body's spend
   drops to **0** — red, naming the finding. That is the state M11-R18 found, and before this guard
   the whole suite was green in it.
-- **DOS-BUD (M10-R30) — the measurement, `#[ignore]`d and run on `--release`.** `budget_refusal_line_and_cost` prints where the refusal line falls and what it costs: one field at increasing sizes, one request at increasing *field counts*, a realistic SQL tool result with one phone column, and the same body with the phone tier off. This exists because the published bound was quoted from a constant for three review rounds and was wrong in three ways at once — the wrong unit, a figure 2–4× optimistic, and a claim about "phone-shaped" text that bare 9-digit tokens also satisfied. The number in `MAX_PHONE_VALIDATIONS_PER_REQUEST` now comes from **here**, and its realistic-payload row is what set it: at 50,000 units an ordinary 367 KB database result was refused. Also the source of the ~3 µs per `parse()` figure. **Two rows exist because of what they cost to omit:** the SQL shape at `MAX_BODY_BYTES` in **two legal renderings** (M10-R53/R54 — `347 XXXXXXX` is masked at 16 MiB, the same numbers as `3XX XXX XXXX` are **refused**), and a per-rendering unit table showing the 1-to-29 spread. Twice this harness generalized an availability claim from a single point of its own grid; varying the rendering is what turns *"can real traffic reach the allowance?"* from a guess into a band. **Its SQL rows go through `Vault::mask_all`, not `try_detect`** — measuring one pass is how the published figure came to be per-pass while claiming to be per-field (M10-R30), and after M10-R35 the later passes are charged, which roughly doubles a masking body's spend. A final row measures what the budget does **not** bound: 16 MiB with the phone tier off, the unbudgeted linear floor, so the per-request ceiling can be published as *validation + linear work* instead of the validation term alone wearing the word "ceiling".
+- **DOS-11 (M11-R60) — the axis `DOS-10` does not have: an *ordinary* body must stay **under** the
+  allowance.** `an_ordinary_hex_dump_stays_inside_the_request_allowance_at_max_body_bytes`. DOS-10
+  asserts the case-gate term is **charged**; nothing asserted that charging it leaves legal traffic
+  alone, and the cost of that gap was a real refusal — at one unit per arithmetic call an ordinary
+  `xxd` hex dump came back `400` at 8 MiB, having been masked and forwarded at 12 the commit before.
+  `PHONE-BUD` is this guard for the M7 turn and for nothing else, and the M7 turn is instruction
+  prose: it spends **0** units, so it cannot see a term only digit-dense text reaches.
+  **The fixture is `xxd`, and the reason is the whole finding.** The sample published beside the
+  decision was `abcd 1234 …` — a pure-letter group beside a pure-digit one, which cannot spell
+  `[A-Za-z]{2}\d{2}` and measures **0 units**. Real hex output is *uniform* hex per group, where
+  P(two letters then two digits) ≈ 5.5%. So the guard's **first** assertion is that its own fixture
+  can spell the shape it samples (≥3% of groups), before it asserts anything about cost: *a sample
+  that cannot spell the shape it samples measures the sample* — M4-R13 arriving on the cost axis
+  after arriving twice on the precision one.
+  **What it asserts is the M10-R29 invariant as a ratio**, not a wall clock and not an absolute
+  count: on an ordinary hex dump the cheap validator must not outspend the tier the allowance is
+  named after. Measured on its 512 KiB fixture, **0.349** at the shipped price and **0.697** at the
+  defect's — a factor of two either side of the bar, verified by mutation in both directions. The
+  ratio is **not** scale-free (0.556 / 1.11 at 4 MiB, because the per-scan memo saturates the two
+  terms differently), so the bar travels with `SAMPLE` and the comment beside it says so. The
+  **absolute** refusal line needs `--release` and multi-megabyte bodies, so it lives in `DOS-BUD` as
+  a declared pre-tag measurement instead.
+- **DOS-BUD (M10-R30) — the measurement, `#[ignore]`d and run on `--release`.** `budget_refusal_line_and_cost` prints where the refusal line falls and what it costs: one field at increasing sizes, one request at increasing *field counts*, a realistic SQL tool result with one phone column, and the same body with the phone tier off. This exists because the published bound was quoted from a constant for three review rounds and was wrong in three ways at once — the wrong unit, a figure 2–4× optimistic, and a claim about "phone-shaped" text that bare 9-digit tokens also satisfied. The number in `MAX_PHONE_VALIDATIONS_PER_REQUEST` now comes from **here**, and its realistic-payload row is what set it: at 50,000 units an ordinary 367 KB database result was refused. Also the source of the ~3 µs per `parse()` figure. **Two rows exist because of what they cost to omit:** the SQL shape at `MAX_BODY_BYTES` in **two legal renderings** (M10-R53/R54 — `347 XXXXXXX` is masked at 16 MiB, the same numbers as `3XX XXX XXXX` are **refused**), and a per-rendering unit table showing the 1-to-29 spread. Twice this harness generalized an availability claim from a single point of its own grid; varying the rendering is what turns *"can real traffic reach the allowance?"* from a guess into a band. **Its SQL rows go through `Vault::mask_all`, not `try_detect`** — measuring one pass is how the published figure came to be per-pass while claiming to be per-field (M10-R30), and after M10-R35 the later passes are charged, which roughly doubles a masking body's spend. **A row added by M11-R60 prints where an *ordinary* body stops being accepted, by size, with the per-kind split** — the `xxd` shape is the one that reaches both spenders at once, and the split says which of them is responsible at each size, which is the same information the refusal message now carries to the client. A final row measures what the budget does **not** bound: 16 MiB with the phone tier off, the unbudgeted linear floor, so the per-request ceiling can be published as *validation + linear work* instead of the validation term alone wearing the word "ceiling".
 
   > **It varies the verdict now, and it varies the *shape*, and the second is M11-R38 (closed 2026-09-06).**
   > For four rounds every column it generated was built from **real, assigned** numbers, so
@@ -1169,6 +1196,20 @@ two *other* always-on tiers already claim that shape.
   > R56, this time landing on a disagreement between two reviewers rather than on a published band.
   > Status in the [ledger](ROADMAP.md#m11).
 
+- **BUDGET-ADVICE (M11-R60) — `every_kind_gets_budget_advice_that_names_a_concrete_move`
+  (`src/pii/recognizers.rs`): the refusal's advice is a pure function of *which tier spent the
+  allowance*, and it is proved by a matrix.** The 400 body used to end *"add a LIMIT to the query"*
+  unconditionally — right while the domestic-phone tier was the only spender, and misdirection from
+  the moment the IBAN case gate became the second: an agent whose **hex dump** was refused was told
+  to shrink a SQL query. `Budget` now records units per `PiiKind`, and `budget_refusal_advice` maps
+  the top spender to the move that works (fewer *rows* for the phone tier, a shorter *excerpt* for
+  the IBAN one). The decision is a function rather than a branch inside the `format!` because *the
+  half left inline is the half the defect lands in*: this asserts every kind in `PiiKind::ALL` gets
+  usable advice — including the ones that cannot reach the budget yet, since the next spender to
+  arrive inherits whatever it returns — that the two live spenders are told **different** things
+  (or the match is a constant in disguise), and that the phone branch carries the `LIMIT` literal
+  **E2E-05 checks on the wire**, so the two cannot disagree. *The matrix proves the decision is
+  right; E2E-05 proves it is reached* — and the second is the one that is usually skipped.
 - **The R29 sibling of CFG-01 — `a_digit_dense_field_is_masked_not_refused_when_no_phone_region_is_enabled`.** CFG-01 pins that `PII_LOCALES=` means *no region*; this pins what that must **cost**: nothing. The budget was decremented by every recognizer with a validator, including the nine always-on national-ID checksums (arithmetic over ≤ 18 bytes), so 800 KB of bare 9-digit tokens was a `400` in 45 ms **with the phone tier not loaded at all** — where the previous release masked and forwarded it in 150 ms. It also asserts the vault is non-empty, because an unrefused but unscanned field would be the same leak wearing a `200`.
 
 > **All three refusal guards cross an explicit *test* allowance, not the shipped one, and that is a deliberate trade (M10).** 500,000 units is ~0.6-8.5 s in `--release`, depending on the candidate's shape (M11-R38), and ~25 s unoptimized; three `cargo test` cases each exhausting it would add over a minute to every run, and a slow guard is a guard somebody eventually marks `#[ignore]` — which in this milestone alone has hidden three findings. What these guards assert is the **unit** of the allowance and the **policy** on exhausting it (refuse, don't truncate); neither claim is about the size of the number. The number is pinned separately by DOS-BUD on the shipped constant. The seam is `PrivacyStage::with_validation_budget` / `Config::pii_max_phone_validations`, which is **not** an environment variable on purpose: a fail-closed CPU bound an operator can raise is not a bound.

@@ -3,6 +3,74 @@
 Newest first. One entry per meaningful change — note *what* and *why*, not just
 *what*. This is the running history so context is never lost between sessions.
 
+## 2026-09-06 — M11 round 16: the budget fix priced a cheap check as an expensive one
+
+**Round 16 found a defect in `src/`, so the loop did not terminate on it.** Both findings are
+closed here.
+
+### M11-R60 — charging the case gate reopened M10-R29, and the sample that was meant to prove otherwise measured nothing
+
+The fix for M11-R18 charged `iban_case_gate` **one full unit per arithmetic call**. Measured, that
+call costs **1.1–1.8 µs** against the **2.9–4.3 µs** of the `phonenumber::parse()` the allowance was
+sized from — a third of a unit charged as one. The commit named the over-pricing and called it safe
+*"for a fail-closed bound"*. For a DoS ceiling that is true; for availability it is the exact
+direction M10-R29 measured as a defect, and all three of its consequences came back. An ordinary
+`xxd` hex dump was refused with a `400` at **8 MiB**, having been masked and forwarded at 12 the
+commit before.
+
+**What hid it is worth more than the fix.** The headroom published beside the decision — *"4 MiB of
+lowercase hex (`abcd 1234 …`) spends ~38,000"* — used a sample that is a pure-letter group beside a
+pure-digit one. The IBAN pattern needs `[A-Za-z]{2}\d{2}` **inside one group**, so that string is not
+a candidate at all: it measures **0 units**. No hex dump is laid out that way; `xxd`, `od -x` and
+every debugger emit uniform hex, where about one group in eighteen matches. *A sample that cannot
+spell the shape it is a sample of measures the sample* — M4-R13, on the cost axis this time, one
+round after the same lesson landed twice on the precision axis.
+
+**The fix is the price, derived and at the conservative end.** `IBAN_GATE_CALLS_PER_UNIT = 2` — the
+measured ratio spans ~2.1 to ~3.6 and this takes its smallest value, so the charge never
+*under*-prices the work. Through the real `.exe`, same generator and seed, three builds: 8 MiB goes
+`400 → 200`, 4 and 6 MiB unchanged.
+
+**The residue is real and it is stated rather than rounded off.** A 12 MiB hex dump is still
+refused, and the honest reading is that the line was never where it looked: with this work
+uncounted, a 16 MiB dump already sat at **98.6%** of the allowance, so a third of its validation
+cost simply was not being measured. Charging it makes the bound true; it does not make the body
+slower. What is a real coverage change is that the reach for this shape falls from beyond
+`MAX_BODY_BYTES` to about **11 MiB**. Restoring it means raising
+`MAX_PHONE_VALIDATIONS_PER_REQUEST` to ~800,000 — a threshold with functional consequences, so it
+goes back to the maintainer with the arithmetic rather than being picked here.
+
+**Two guards, and the second is the one that was missing.** `DOS-11` asserts the M10-R29 invariant
+as a **ratio**: on an ordinary hex dump the cheap validator must not outspend the tier the allowance
+is named after — 0.349 at the shipped price, 0.697 at the defect's, verified by mutation both ways.
+Its *first* assertion is the one the published sample failed: the fixture must contain ≥3% groups
+that spell the shape, so a generator that stops doing so fails loudly instead of passing for the
+wrong reason. `DOS-BUD` gained the refusal line by size, with the per-kind split.
+
+**And the refusal message names the tier that spent the allowance, generated rather than written.**
+`Budget` records units per `PiiKind`; `budget_refusal_advice` is a **pure function** of the top
+spender with a matrix behind it (`BUDGET-ADVICE`), because the half left inline in a `format!` is
+the half the defect lands in. The old sentence told an agent whose hex dump was refused to *"add a
+LIMIT to the query"* — M10-R27's rule landing on M10-R27's own fix. E2E-05 still checks the phone
+branch's literal on the wire, and it is now derived from the same function, so the two cannot
+disagree: *the matrix proves the decision is right, the end-to-end test proves it is reached.*
+
+### M11-R61 — the accepted over-mask had a floor and no ceiling
+
+`SEPARATOR_RUN_MAX` **4 → 5** left the whole suite green. M11-R57 had stopped the guard drifting
+*below* the constant by deriving its matrix from it; nothing could see it drifting **up**, because no
+corpus anywhere held a run of five. `phone_eval` now derives *both* alignment pools from the
+constant — `aligned` over `2..=SEPARATOR_RUN_MAX`, plus an `alignedwide` category at
+`SEPARATOR_RUN_MAX + 1` whose measured **0.000** publishes the bound's residue the same way the
+admission is published. Widening the constant changes the pool sizes, so the byte-for-byte block
+assertion is red before any rate is consulted. One constant, two directions, no new fixture.
+
+**And three sentences claiming "both directions are red" were wrong**, in the commit that wrote
+them. Measured, each mutation is caught by a *different* guard: run 4→2 by `PHONE-OM-TOOL`, 4→3 by
+`phone_eval` only, 4→5 by `alignedwide`, and the alphabet by `SEPARATOR-01`. *No single guard covers
+both coordinates both ways; the three together do* — and the sentence that says which is which is
+the one that tells the next person where the missing case goes.
+
 ## 2026-09-06 — M11-R18 + M11-R38 decided: the budget counts the cost, and the ceiling is republished
 
 **One decision for two rows, because they are the same sentence from two sides:** the published
