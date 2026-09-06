@@ -401,18 +401,25 @@ Default build, no model. A loose regex proposes candidates and `is_valid()` deci
   direction, and M11-R61 is the measurement of which** (a claim of "both directions" stood here and
   was false): narrowing the run to 2 is red *here*, narrowing it to 3 is red in `phone_eval`,
   widening the alphabet is red in `SEPARATOR-01`, and widening the run is red in `phone_eval`'s
-  `alignedwide` pool. *No single guard covers both coordinates both ways; the three together do.* Non-vacuity is
+  `alignedwide` pool. **The alphabet half of that sentence is false and the run half is imprecise —
+  [M11-R62](reviews/M11.md#m11-r62), open.** `SEPARATOR-01` is red only for a character the
+  *validator rejects* (`,` `:`); adding `'*'`, which `phonenumber::parse` already discards, leaves
+  the whole suite green while the shipped binary starts masking `+39*347*1234567`. And widening the
+  run turns `phone_eval` red on the **pool-size line and `aligned`'s own rate** (0.785 → 0.802),
+  not on `alignedwide`, which stays 0.000 as its pool simply moves one space wider. Non-vacuity is
   two-sided: a byte floor, plus a **shape** floor asserting the fixture still contains ≥5 dotted
   quads and ≥5 runs of 2-4 spaces, because a rewrite that dropped them would leave a green guard
   measuring nothing.
 - **PHONE-BUD (M10-R28 / M10-R30) — `a_real_claude_code_turn_spends_almost_none_of_the_request_budget` (`tests/phone_overmask.rs`): the headroom the threshold rests on, measured instead of asserted.** `MAX_PHONE_VALIDATIONS_PER_REQUEST` is defended by the claim that ordinary traffic cannot come near it, and M10 made that claim without being able to show it — the allowance was per *call*, `mask_all` re-minted it up to five times per field, so "the budget" was not a number any single quantity had, and nobody noticed for three rounds. This charges **every field of the 22 KiB turn against one budget**, exactly as the request path does, and pins the total under 1% of the allowance. Measured: **0 units** — the fixture has no phone-shaped candidate at all. The assertion is an order of magnitude rather than the digit, because what must never regress is the *margin*; a fixture-exact constant would fail on any fixture edit and teach nothing.
 - **PHONE-EVAL *(`tests/phone_eval.rs`)* — the measurement that *is* M10's deliverable, and since
   M11-R55 a guard that runs on every `cargo test`.** `phone_precision_per_region_and_for_the_union`
-  scores recall and false positives per region and for the union, over 35 corpus positives, 20
-  curated negatives and 897 generated digit-shaped non-phones. **FP is reported per category
-  (dates · ports · sizes · offsets · money · codes · refs · tables · ips · ips10 · ips192 · ips172 ·
-  aligned), never blended** — one rate over a pool whose composition you chose is a number about the
-  pool. `phone_latency_per_enabled_region` measures ms/turn for 0…9 enabled regions over the same
+  scores recall and false positives per region and for the union, over corpus positives, curated
+  negatives and a generated pool of digit-shaped non-phones — **the sizes are not restated here on
+  purpose**, because the `pool:` line of the block `ARCHITECTURE.md` publishes is asserted byte for
+  byte on every `cargo test` and a second copy is a thing that ages (it did: this sentence said
+  *897* for a pool that had become 945). **FP is reported per category, never blended** — one rate
+  over a pool whose composition you chose is a number about the pool; the category names are the row
+  labels of that same block. `phone_latency_per_enabled_region` measures ms/turn for 0…9 enabled regions over the same
   22 KiB turn; **it** stays `#[ignore]`d and wants `--release --test-threads=1` (M7-R12: precision is
   build-independent, milliseconds are not).
   - **The published table is the harness's own output, asserted (M11-R55).** `docs/ARCHITECTURE.md`
@@ -688,6 +695,21 @@ two *other* always-on tiers already claim that shape.
   alone and two tests do go red — but on the registries' **pattern-string** correspondence, which
   fires for any edit to any pattern and says nothing about separators. A red that does not test what
   you think is the mirror of a green that does not mutate.)*
+  **What this guard is structurally unable to see, and the rule that generalises it (M11-R62).**
+  Its matrix is a **recall** assertion — the recorded positive, re-rendered with each character of
+  the recognizer's own alphabet, must still be detected — and that alphabet is
+  `PHONE_SEPARATORS` *itself* (M11-R56, so it cannot drift *below* the constant). The two together
+  mean a character **added** to the constant is added to the matrix in the same edit, and the
+  assertion then fails only if the **validator rejects it**: `,` and `:` are red because
+  `phonenumber::parse` keeps them, `'*'` is green because `parse` discards it — while the pattern
+  now matches `+39*347*1234567`, which the shipped build forwards in clear. *A recall matrix can
+  see a widening that causes a disagreement; it cannot see one that only enlarges the over-mask,
+  and the second is the one that costs precision.* The rule this is an instance of, and the one to
+  apply to the next constant: **a guard whose fixture is derived from a production constant is
+  blind to that constant growing, and must also sample outside it.** [M11-R61](reviews/M11.md#m11-r61)
+  applied it to `SEPARATOR_RUN_MAX` (`phone_eval`'s `alignedwide` pool, measured 0.000);
+  **the alphabet coordinate has no such pool and is currently unpinned** —
+  [M11-R62](reviews/M11.md#m11-r62), open.
   **The rule, and it is the same one three guards have now needed:** *a guard that varies an axis
   must take its alphabet from what the **validator** accepts, not from the nearest named set.*
   `GAP_CHARS` is right for `iban_mod97`; `phonenumber::parse` also discards `-`, `.`, `(`, `)` and
