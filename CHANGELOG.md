@@ -226,10 +226,20 @@ Milestone [M11](https://github.com/francesco-stimola/llm-proxy-pii-rust/blob/mai
   the lockfile now carries 0.4.19. **The listener you expose is not the exposed side:** `axum`'s
   default features are HTTP/1 only, so `axum::serve` refuses an HTTP/2 preface and a client cannot
   reach `h2` at all — `reqwest`'s `http2` feature, which this project sets deliberately, is what
-  puts it in the graph. Frames from the *provider* were the reachable path. It is the only vulnerability in the dependency graph — all 427
-  locked crates were scanned; the other two findings are `paste` and `atomic-polyfill`, both
-  *unmaintained* rather than vulnerable, and `deny.toml` gates unmaintained crates on this
-  project's own direct dependencies only.
+  puts it in the graph. Frames from the *provider* were the reachable path. It is the only
+  vulnerability in the dependency graph — all 427 locked crates were scanned; the other two
+  findings are `paste` and `atomic-polyfill`, both *unmaintained* rather than vulnerable, and
+  `deny.toml` gates unmaintained crates on this project's own direct dependencies only.
+- **A `user:password@` in `UPSTREAM_BASE_URL` no longer appears in the startup log line.** A URL
+  may carry credentials, and the proxy accepts and forwards them — but it also logs its whole
+  configuration when it starts, and that line printed the base URL whole, immediately above the
+  `upstream_api_key: Some("<redacted>")` that exists so a secret never reaches a log. **If you
+  configure credentials that way, they were written to your logs by every release ever cut.** The
+  startup line now reads `https://<redacted>@api.openai.com/` — marked rather than dropped, so you
+  can still see that a credential is set and where the proxy points. **Nothing else changes:** the
+  value sent upstream is untouched, and a base URL without credentials is still printed exactly as
+  you configured it. The redaction covers the URL's credentials, not a secret written into its
+  query string.
 - **`UPSTREAM_BASE_URL` is validated, which is also what the two Critical CodeQL
   *server-side request forgery* alerts on `src/proxy.rs` were pointing at.** There is no
   exploitable SSRF: no request data ever reaches that URL — it is the process environment plus a

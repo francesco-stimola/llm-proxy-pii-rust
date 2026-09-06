@@ -3,6 +3,82 @@
 Newest first. One entry per meaningful change — note *what* and *why*, not just
 *what*. This is the running history so context is never lost between sessions.
 
+## 2026-09-06 — a password in the startup line: `Config`'s `Debug` redacts a base URL's credentials
+
+[M11-R65](reviews/M11.md#m11-r65), raised by the maintainer's own verification **after** the review
+loop had terminated, while spot-checking the `UPSTREAM_BASE_URL` validation that landed hours
+earlier. `UPSTREAM_BASE_URL="https://alice:hunter2@api.openai.com"` printed
+`upstream_base_url: "https://alice:hunter2@api.openai.com"` in the first line the proxy writes —
+immediately above `upstream_api_key: Some("<redacted>")`.
+
+**The shape of it is the interesting part.** `main` logs the whole configuration at startup, so
+`Config`'s `Debug` *is* a log line, and that impl is hand-written for exactly this reason: its doc
+comment says *"so the API key is never written to logs … this is a privacy tool"*, and it reduces
+`upstream_extra_headers` to their names *because a value may be a secret*. Between those two
+handled fields sat the one that can also carry a secret — a URL is allowed `user:password@` — read
+straight out of `self`. `git log -S` puts the impl at `4ef4859` (M1) and `git tag --contains` finds
+it in **every tag ever cut**, from `v0.4.0`. Not drift: a field that was never in scope of a list
+whose purpose nobody restated when it grew.
+
+**Redacted in `Debug`, never in the value.** `proxy.rs` concatenates the configured path onto
+`upstream_base_url` and the provider still has to receive those credentials — scrubbing the value
+would be an outage wearing the shape of a fix. `base_url_for_debug` renders
+`https://<redacted>@api.openai.com/`: **marked, not dropped**, so an operator still sees that a
+credential is configured and where the proxy points — the same information `Some("<redacted>")`
+gives them for the key.
+
+**The first draft of the fix leaked, and it is worth writing down why.** A userinfo-only check —
+parse, look at `username()`/`password()`, else print the raw value — hands
+`alice:hunter2@not-a-url` straight to the log: that string *parses*, as scheme `alice` with the
+rest a path, so `username()` is empty. The rule is now the shape `CFG-02` admits and can prove
+credential-free (an http/https URL with no userinfo); everything else is withheld as
+`<unprintable>`, and nothing outside that shape can reach `Config` through `from_env` anyway. The
+test caught it on its first run, which is the only reason it is a paragraph here and not a second
+finding.
+
+**`CFG-03`, in two halves.** The unit half asserts the **rendered** `Debug` — not
+`base_url_for_debug`, because a leak can simply stop calling it — for three things: no field's
+secret appears, the marker does, and a credential-free URL appears **verbatim**. That third one is
+the legitimate path, and it is the one a too-eager redaction breaks. The runtime half spawns the
+real `.exe`, waits for it to be healthy and reads what it actually logged, asserting the startup
+line was captured *before* asserting what is not in it (M4-R13's lesson: an absent line contains no
+password either).
+
+| mutation | unit half | runtime half |
+|---|---|---|
+| no redaction (the state before the fix) | **red** — `"hunter2" reached the startup log line` | **red** |
+| redaction written but not wired into `Debug` | **red** | **red** |
+| redact the credential-free URL too | **red** — *"must be printed exactly as configured"* | *green* |
+| `main` logs `upstream = %config.upstream_base_url` beside the redacted `Debug` | *green* | **red** |
+
+**The last two rows point in opposite directions, and that is the argument for two halves.** The
+over-redaction is invisible to the runtime half, which drives only the credential case; a `main`
+that logs the URL a second way is invisible to the unit half, which cannot see `main` at all.
+
+**Every cell was run, and getting there took two corrections.** The first version of this table
+had the two *green* cells inferred from the other rows and printed them red. The first attempt at
+actually running it was worse: the harness resolved its script through an environment variable the
+shell it ran in does not set, so the mutation never applied and all six runs reported green against
+**unmutated source** — a mutation harness whose green means nothing, which is the one failure a
+mutation round cannot survive. It now asserts the mutation is present in the file before any test
+runs, and prints that it did.
+
+**One sentence in `TESTING.md` was true and is now false, and it is the more useful correction.**
+The code-scanning section said the never-log-raw-PII invariant is guarded by `DBG-02`. That is true
+for **PII on the request path**, which is the line `DBG-02` reads — and it is precisely why this
+leak lived where it did, in the *startup* line, green all along. The entry now names both guards
+and the line each one covers: *a guard for an invariant covers the lines it reads, and saying which
+ones is part of stating the invariant.*
+
+**The decided limit, recorded beside `CFG-03` rather than chased:** only userinfo is redacted. A
+secret written into the base URL's **query or path** is still printed, because the rule an operator
+reads the startup line for is that a credential-free URL appears exactly as configured; widening
+further means printing scheme and host only.
+
+**Verified:** `cargo test` **265 passed / 0 failed / 4 ignored**, `cargo test-onnx`
+**301 / 0 / 21** — the two new `CFG-03` halves over the counts in the entry below — zero warnings,
+`cargo fmt --check` and `clippy --all-targets -- -D warnings` clean on both legs, rustc 1.98.1.
+
 ## 2026-09-06 — the red `Security` gate: `h2` bumped, `UPSTREAM_BASE_URL` validated, the CodeQL alerts written down
 
 Three items handed over before the `v1.3.0` tag, and one line of method that is worth more than the

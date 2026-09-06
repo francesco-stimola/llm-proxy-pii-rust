@@ -2451,9 +2451,15 @@ nothing:
 > with it: attribution is pinned by one line in `DOS-11`, and the price constant's derivation is now
 > the band its two guards enforce rather than a recipe denominated in the units it defines.
 >
+> **One row arrived after the loop had terminated, and it is not a round's:**
+> [M11-R65](reviews/M11.md#m11-r65) came from the maintainer's own verification on 2026-09-06, while
+> spot-checking the `UPSTREAM_BASE_URL` validation. So the table holds **66 rows — 65 from the loop,
+> one from after it**, and the paragraph above still describes how the loop ended.
+>
 > **Ten rows carry the `leak` label** — R10, R13, R25, R30, R33, R41, R43, R48, R51, R52 — every one
 > in the *deterministic* tier and every one a rendering the recognizers could not match while their
-> validators could. Three of the ten are the same leak found a second time after an incomplete fix
+> validators could. R65's `leak (log)` is deliberately a different word on a different axis: a secret
+> written to **this machine's own log**, not a value forwarded to the provider. Three of the ten are the same leak found a second time after an incomplete fix
 > (R13 after R10, R33 after R30, R43 after R41), which is what an earlier count of *six* was reaching
 > for; the ledger's own cells say ten, and that is the number this sentence now uses. **Round 15 was
 > the first to find no leak**, and it verified round 14's fix differentially (3 150 renderings: 0 new
@@ -2876,6 +2882,7 @@ its sha256 compared against the `HEAD` blob and `git status` asserted empty afte
 | [M11-R62](reviews/M11.md#m11-r62) | `PHONE_SEPARATORS` gains a character the validator already accepts (`'*'`) with the whole suite green at 260/0/4 and the real binary masking two renderings it forwarded before — `SEPARATOR-01` is red only for a widening that causes a *disagreement*, and three documents claim the alphabet is pinned | guard | [x] |
 | [M11-R63](reviews/M11.md#m11-r63) | Both attribution sites aimed at a constant `PiiKind::Phone` leave the suite green at 260/0/4, and at 16 MiB the measured top spender is `Iban` — M11-R60's misdirected refusal returns unguarded, and `DOS-11`'s ratio is also vacuous at 0 vs 0 | guard | [x] |
 | [M11-R64](reviews/M11.md#m11-r64) | `IBAN_GATE_CALLS_PER_UNIT`'s stated derivation reads a `DOS-BUD` row denominated in the units the constant defines, so the fix moved it 1.1–1.8 -> 2.45–2.99 µs/unit and re-deriving as the doc instructs returns 1 — the value M11-R60 was | hardening | [x] |
+| [M11-R65](reviews/M11.md#m11-r65) | A base URL's `user:password@` is printed whole in the startup log line, immediately above the `upstream_api_key: Some("<redacted>")` that impl exists for — in every tag ever cut | **leak (log)** | [x] |
 
 <a id="m11-b"></a>
 ### Track B — the intra-op thread base: physical cores, not logical threads ✅
