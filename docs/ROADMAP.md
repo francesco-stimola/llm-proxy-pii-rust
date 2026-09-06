@@ -2432,17 +2432,22 @@ nothing:
 
 ### Review ledger — M11 → [`reviews/M11.md`](reviews/M11.md)
 
-> **Where the loop stands (2026-09-06, after round 17).** 65 findings; **62 closed, three open** —
-> all three raised by round 17 against the commit that closed round 16, and **none of them a defect in
-> the product's behaviour**. Round 16's two findings are fixed: [M11-R60](reviews/M11.md#m11-r60) at
-> the measured price with `DOS-11` pinning the M10-R29 ratio, and [M11-R61](reviews/M11.md#m11-r61)
-> by deriving `phone_eval`'s alignment pools from `SEPARATOR_RUN_MAX`. Both were re-verified
-> independently, by mutation and through the real `.exe`.
+> **Where the loop stands (2026-09-06, after round 17 was closed). 65 findings, all closed, and the
+> loop has terminated.** Round 17 found **nothing in `src/`'s behaviour** — a round that brings back
+> only test-net and documentation findings is the signal to stop (`CLAUDE.md`), so its three rows
+> were closed in the same commit rather than by another round.
 >
-> **Round 17 found nothing in `src/`'s behaviour, so the loop terminates here** — a round that brings
-> back only test-net and documentation findings is the signal to stop (`CLAUDE.md`). Its three rows
-> should be closed in the same commit rather than by another round; R62 is the one that matters,
-> because a false coverage claim is what makes the next widening invisible twice.
+> Round 16's two findings were fixed first: [M11-R60](reviews/M11.md#m11-r60) at the measured price,
+> with `DOS-11` pinning the M10-R29 ratio it violated, and [M11-R61](reviews/M11.md#m11-r61) by
+> deriving `phone_eval`'s alignment pools from `SEPARATOR_RUN_MAX`. Round 17 re-verified both
+> independently, by mutation and through the real `.exe`, and then found the class R61 had closed on
+> one coordinate only: [M11-R62](reviews/M11.md#m11-r62) — `SEPARATOR-01` is a *recall* matrix, so a
+> separator the validator already tolerates can be added to `PHONE_SEPARATORS` with the whole suite
+> green while two shipped renderings change from forwarded to masked. `phone_eval` now derives an
+> `outsidealpha` pool from that constant too, so **both** coordinates of the accepted over-mask have a
+> floor and a ceiling. [M11-R63](reviews/M11.md#m11-r63) and [M11-R64](reviews/M11.md#m11-r64) closed
+> with it: attribution is pinned by one line in `DOS-11`, and the price constant's derivation is now
+> the band its two guards enforce rather than a recipe denominated in the units it defines.
 >
 > **Ten rows carry the `leak` label** — R10, R13, R25, R30, R33, R41, R43, R48, R51, R52 — every one
 > in the *deterministic* tier and every one a rendering the recognizers could not match while their
@@ -2865,9 +2870,9 @@ its sha256 compared against the `HEAD` blob and `git status` asserted empty afte
 | [M11-R59](reviews/M11.md#m11-r59) | The round's own docs: `SEPARATOR_RUN`'s residue note names column alignment as what it excludes when 2-4 spaces is what it admits; `dates 0.180`, the slash-date claim, `Scan::Overlapping`'s length bounds and the `+CC` units/row are all stale, and `[Unreleased]` carries no entry | docs | [x] |
 | [M11-R60](reviews/M11.md#m11-r60) | Charging `iban_case_gate` reopens M10-R29: an ordinary `xxd` hex dump is refused at 8 MiB where the same build without the charge forwards 12 MiB, the 400 still blames the domestic-phone tier and prescribes a SQL `LIMIT`, and the headroom published for "a lowercase hex dump" was measured on a layout that spends 0 units | correctness | [x] |
 | [M11-R61](reviews/M11.md#m11-r61) | `SEPARATOR_RUN_MAX` can be widened 4 -> 5 with the whole suite green at 258/0/4 — the accepted over-mask has no upper pin, and `phone_overmask`, `TESTING.md` and R55's closure all claim both directions are red | guard | [x] |
-| [M11-R62](reviews/M11.md#m11-r62) | `PHONE_SEPARATORS` gains a character the validator already accepts (`'*'`) with the whole suite green at 260/0/4 and the real binary masking two renderings it forwarded before — `SEPARATOR-01` is red only for a widening that causes a *disagreement*, and three documents claim the alphabet is pinned | guard | [ ] |
-| [M11-R63](reviews/M11.md#m11-r63) | Both attribution sites aimed at a constant `PiiKind::Phone` leave the suite green at 260/0/4, and at 16 MiB the measured top spender is `Iban` — M11-R60's misdirected refusal returns unguarded, and `DOS-11`'s ratio is also vacuous at 0 vs 0 | guard | [ ] |
-| [M11-R64](reviews/M11.md#m11-r64) | `IBAN_GATE_CALLS_PER_UNIT`'s stated derivation reads a `DOS-BUD` row denominated in the units the constant defines, so the fix moved it 1.1–1.8 -> 2.45–2.99 µs/unit and re-deriving as the doc instructs returns 1 — the value M11-R60 was | hardening | [ ] |
+| [M11-R62](reviews/M11.md#m11-r62) | `PHONE_SEPARATORS` gains a character the validator already accepts (`'*'`) with the whole suite green at 260/0/4 and the real binary masking two renderings it forwarded before — `SEPARATOR-01` is red only for a widening that causes a *disagreement*, and three documents claim the alphabet is pinned | guard | [x] |
+| [M11-R63](reviews/M11.md#m11-r63) | Both attribution sites aimed at a constant `PiiKind::Phone` leave the suite green at 260/0/4, and at 16 MiB the measured top spender is `Iban` — M11-R60's misdirected refusal returns unguarded, and `DOS-11`'s ratio is also vacuous at 0 vs 0 | guard | [x] |
+| [M11-R64](reviews/M11.md#m11-r64) | `IBAN_GATE_CALLS_PER_UNIT`'s stated derivation reads a `DOS-BUD` row denominated in the units the constant defines, so the fix moved it 1.1–1.8 -> 2.45–2.99 µs/unit and re-deriving as the doc instructs returns 1 — the value M11-R60 was | hardening | [x] |
 
 <a id="m11-b"></a>
 ### Track B — the intra-op thread base: physical cores, not logical threads ✅

@@ -946,7 +946,25 @@ async fn e2e05_budget_refusal_reaches_the_client_intact_and_carries_no_input_byt
         !message.contains("row "),
         "the refusal must carry no input-derived text, got: {message}"
     );
-    let allowed = [VALIDATION_UNITS.to_string(), field.len().to_string()];
+    // **Three numbers now, not two** (M11-R60 added the third; the round after it caught this list
+    // still saying two). The refusal names the tier that spent the allowance and how much it spent,
+    // and that share is an **aggregate count derived from the request** — the same class as the
+    // field length already allowed here on purpose, and never a substring of the body. Listing it
+    // keeps the assertion in its "only these appear" form, which is the form that cannot be
+    // satisfied vacuously; re-introducing an exemption is what M10-R13 is about.
+    let top_spender_units = message
+        .split_once("Most of it (")
+        .and_then(|(_, rest)| rest.split_once(" of "))
+        .map(|(units, _)| units.to_string());
+    assert!(
+        top_spender_units.is_some(),
+        "the refusal must name which tier spent the allowance and how much (M11-R60): {message}"
+    );
+    let allowed = [
+        VALIDATION_UNITS.to_string(),
+        field.len().to_string(),
+        top_spender_units.unwrap(),
+    ];
     let digit_runs: Vec<&str> = message
         .split(|c: char| !c.is_ascii_digit())
         .filter(|s| !s.is_empty())
@@ -958,12 +976,13 @@ async fn e2e05_budget_refusal_reaches_the_client_intact_and_carries_no_input_byt
     for run in &digit_runs {
         assert!(
             allowed.iter().any(|a| a == run),
-            "the refusal carries the digit run {run:?}, which is neither the allowance ({}) nor \
-             the field length ({}). Every number in this string must be one the code put there \
-             deliberately — a third one is request-derived text in a message that is both logged \
-             and returned to the client: {message}",
+            "the refusal carries the digit run {run:?}, which is none of the allowance ({}), the \
+             field length ({}) or the top spender's share ({}). Every number in this string must \
+             be one the code put there deliberately — a fourth one is request-derived text in a \
+             message that is both logged and returned to the client: {message}",
             allowed[0],
-            allowed[1]
+            allowed[1],
+            allowed[2]
         );
     }
 

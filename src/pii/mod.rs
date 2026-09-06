@@ -384,11 +384,17 @@ impl Budget {
     /// a defect once (800 KB of 9-digit tokens refused in 45 ms with the phone tier not loaded);
     /// M11-R60 measured it again, on an ordinary `xxd` hex dump refused at 8 MiB.
     ///
-    /// **One accumulator, deliberately.** It is shared by every fractional spender, so it is exact
-    /// while there is one denominator in play and conservative — never under-charging by more than
-    /// a unit in total — if a second is ever added. A second *kind* of cheap validator wanting a
-    /// different denominator should get its own field here rather than reuse this one, and this
-    /// sentence is where the next person finds that out.
+    /// **One accumulator, deliberately — and the bound it gives is exact for one denominator and
+    /// nothing at all for two.** With a single `calls_per_unit` the charge is exactly
+    /// `floor(calls / calls_per_unit)`. With two sharing this field the mischarge is unbounded in
+    /// **either** direction, and the counterexample is short: a spender at `d = 1000` calls 999
+    /// times and charges nothing, then a spender at `d = 2` calls once, `part` reaches 1000 ≥ 2 and
+    /// **one** unit is charged for a thousand calls — and the cycle repeats. (An earlier version of
+    /// this paragraph claimed it was "conservative, never under-charging by more than a unit in
+    /// total"; that is false, and it is the kind of safety claim that gets believed.) So the
+    /// guidance is the load-bearing half: **a second kind of cheap validator wanting a different
+    /// denominator gets its own field here**, never this one. Today there is exactly one, which is
+    /// why nothing fits through the hole.
     pub fn spend_fraction(&self, calls_per_unit: usize) {
         debug_assert!(calls_per_unit >= 1);
         let n = self.part.get() + 1;

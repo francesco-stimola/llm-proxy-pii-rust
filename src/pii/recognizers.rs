@@ -101,7 +101,16 @@ const GAP_CHARS: &[char] = &[
 ///
 /// So the class is **per recognizer, derived from that recognizer's validator** — which is the rule
 /// this constant exists to make structural rather than remembered.
-const PHONE_SEPARATORS: &[char] = &[
+///
+/// **Public because a guard has to be able to sample *outside* it** (M11-R62, the same sentence
+/// M11-R61 wrote about [`SEPARATOR_RUN_MAX`] one coordinate over). `SEPARATOR-01` takes its matrix
+/// alphabet from here, which stops the guard drifting *behind* the constant — and makes it
+/// structurally unable to see the constant **grow**: adding a character adds it to the matrix in
+/// the same edit, so the assertion only fails if `phonenumber::parse` *rejects* it. A character the
+/// validator already tolerates just enlarges the over-mask, and that is the widening precision
+/// cares about. `phone_eval`'s `outsidealpha` pool samples characters this array does **not**
+/// contain, so its measured 0.000 is the alphabet's residue published the way the run's already is.
+pub const PHONE_SEPARATORS: &[char] = &[
     // What `phonenumber::parse` strips beside whitespace. **`(` and `)` were in this comment and
     // not in this array for a round (M11-R52)** — `+49 (0)30 12345678` leaked at 0.714 and
     // `(020) 7946 0958` at 0.923, while `+1 (415) 555-2671` was masked because the US arm spells
@@ -1496,13 +1505,16 @@ fn next_char_boundary(input: &str, i: usize) -> usize {
 /// - the **verdict** moves how many units a candidate spends — a rejection pays every enabled
 ///   region because `.any()` short-circuits only on accept — and the count already tracks that;
 /// - the candidate's **shape** moves what a unit costs, and nothing tracks it. `DOS-BUD`'s
-///   verdict-and-shape grid prints µs/unit at three row counts: a valid `3XX XXX XXXX` column
-///   **3.2–4.3**, a rejected `0NNNN NNNN` id column **2.9–3.5**, lowercase `ab12 cd34` groups
-///   **1.3–1.8**, and a three-group `0NNN NNNN NNNN` key column **15.1–21.7**.
+///   verdict-and-shape grid prints µs/unit at three row counts, and the durable form of the answer
+///   is the **ratio** rather than the wall clock (M7-R9): a three-group `0NNN NNNN NNNN` key column
+///   costs **~4–6× per unit** what a valid `3XX XXX XXXX` column, a rejected `0NNNN NNNN` id column
+///   or lowercase `ab12 cd34` groups cost.
 ///
-/// So 500,000 units is **~0.6 s of validation on the cheapest shape and ~8.5 s on the dearest
-/// measured** — where an earlier draft of this comment published `~1.5 s` full stop, read off the
-/// cheapest corner of a grid that never varied the shape. The bound stays a **count** rather than a
+/// So 500,000 units is on the order of **a second** of validation on the cheapest shape and
+/// **~10.6 s** on the dearest measured — where an earlier draft of this comment published `~1.5 s`
+/// full stop, read off the cheapest corner of a grid that never varied the shape. The ceiling
+/// quotes the **slowest** rep of that row (8.3, 8.6 and 10.6 s across runs), because a ceiling may
+/// only ever be wrong toward caution. The bound stays a **count** rather than a
 /// wall clock precisely so a refusal is the same on every box; a time limit would make the same body
 /// pass on an idle machine and fail on a busy one.
 ///
@@ -1516,7 +1528,7 @@ fn next_char_boundary(input: &str, i: usize) -> usize {
 /// | 3.7 MB, same rendering | 50,000 | 59,000 | masked |
 /// | **16 MiB** (`MAX_BODY_BYTES`), same rendering | 221,941 | 230,941 | masked |
 /// | **16 MiB, the same numbers written `3XX XXX XXXX`** | 219,095 | **500,000** | **refused** |
-/// | 3.8 MB, **three-group** `0NNN NNNN NNNN` — the dearest shape | 50,000 | 487,214 | masked, **10.6 s** |
+/// | 3.8 MB, **three-group** `0NNN NNNN NNNN` — the dearest shape | 50,000 | 487,214 | masked, **8.6-10.6 s** |
 ///
 /// **The allowance is a count of numbers, and how many depends on how they are written (M10-R56).**
 /// `national_phone_valid` is `.any()` over the regions whose plans use that candidate's *shape
@@ -1592,9 +1604,8 @@ impl PiiDetector for StructuredRecognizers {
             // and fail identically. Saying what to change is the difference between a task
             // that adapts and a task that wedges.
             //
-            // Value-free, as `DetectError` requires: the two numbers are a byte count and a
-            // constant, never input-derived content — and E2E-05 pins that structurally, by
-            // checking every digit run in this string against the request body.
+            // Value-free, as `DetectError` requires — and the count is stated below, where the
+            // third number is interpolated, rather than twice in one block with one copy stale.
             //
             // **It says "request", and after M10-R28 that is the truth rather than a widening.**
             // The allowance is spent across every field of the request, so the field that trips
@@ -1615,9 +1626,13 @@ impl PiiDetector for StructuredRecognizers {
             // what each kind was charged, so the advice cannot be attached to the wrong term by
             // adding a third spender.
             //
-            // Value-free, as `DetectError` requires: the kind label comes from `PiiKind`, the two
-            // numbers are a byte count and a constant — never input-derived content. E2E-05 pins
-            // that structurally, by checking every digit run in this string against the body.
+            // Value-free, as `DetectError` requires — and it is **three** numbers now, not two
+            // (M11-R64's round). The allowance is a constant, the field length is a byte count,
+            // and the top spender's share is an **aggregate count derived from the request**: the
+            // same class as `input.len()`, which is allowed here on purpose, and never a substring
+            // of the body. The kind label is a `&'static str` from the `PiiKind` macro. E2E-05
+            // pins the property structurally by checking every digit run in this string against
+            // the body, and its allowed list carries all three.
             let top = budget.top_spender();
             let advice = budget_refusal_advice(top.map(|(kind, _)| kind));
             let spender = match top {
@@ -2184,29 +2199,46 @@ fn budget_refusal_advice(top: Option<PiiKind>) -> &'static str {
         // The phone tier is reached by *columns of numbers* — a database result, a CSV export — so
         // the move that works is fewer rows. **Both halves are needed, and the second is a
         // measurement rather than caution:** on a 12 MiB hex dump the top spender is still `Phone`
-        // (293 008 of 500 000), because the digit-heavy remainder of each line feeds it. So the
+        // (293 008 of 500 000 on the `.exe` repro's generator; 295 607 on `DOS-BUD`'s, which is a
+        // different body of the same shape), because the digit-heavy remainder of each line feeds
+        // it. So the
         // tier says which validator ran, not what the payload *is*, and advice that assumed a
         // query would be misdirection on exactly the body M11-R60 is about.
         Some(PiiKind::Phone) => {
-            "for an oversized tool result, add a LIMIT to the query or return fewer rows per call;              if the field is not a query result, send a shorter excerpt of it"
+            concat!(
+                "for an oversized tool result, add a LIMIT to the query or return fewer rows ",
+                "per call; if the field is not a query result, send a shorter excerpt of it"
+            )
         }
         // The IBAN case gate is reached by *alphanumeric groups* — a hex dump, a base32 blob, a
         // register listing — where there are no rows to limit and the move is fewer bytes.
         Some(PiiKind::Iban) => {
-            "for a hex dump or a binary listing, send a shorter excerpt rather than the whole file"
+            concat!(
+                "for a hex dump or a binary listing, send a shorter excerpt rather than the ",
+                "whole file"
+            )
         }
         _ => "send a smaller excerpt of whatever is dense here rather than the whole field",
     }
 }
 
 /// How many `iban_case_gate` arithmetic calls cost one budget unit (M11-R18, re-priced by
-/// M11-R60).
+/// M11-R60, and its derivation repaired by M11-R64).
 ///
-/// **Derived from the measured ratio, at its conservative end.** `DOS-BUD`'s verdict-and-shape
-/// grid prints µs/unit for both: the gate's shape measures **1.1–1.8 µs** and the phone unit the
-/// allowance was sized from **2.9–4.3 µs**. The ratio therefore spans ~2.1 to ~3.6, and this takes
-/// the **smallest** value in that span, so the charge never *under*-prices the work — a
-/// fail-closed bound may be wrong only in the direction of caution.
+/// **The value is bounded by two guards, and that is the derivation** — not a recipe a reader
+/// re-runs. `DOS-11` is red below it (at **1**, the price M11-R60 found: the gate then outspends
+/// the tier the allowance is named after on an ordinary hex dump) and `DOS-10`'s charge floor is
+/// red above it (at **4** and **8** the term all but vanishes from the count again). The admissible
+/// band is therefore **[2, 3]**, and this takes its lower end, so the charge never *under*-prices
+/// the work — a fail-closed bound may be wrong only in the direction of caution.
+///
+/// **What the measurement says, stated so it cannot be re-derived circularly.** `DOS-BUD` prints
+/// **µs per call** beside µs per unit precisely because the unit column is denominated in the units
+/// *this constant defines*: halving the charge doubles a row's µs/unit, so dividing one by the
+/// other feeds the recipe its own output and returns to wherever it started (M11-R64 — that is how
+/// a reader following the previous wording would have landed back on 1). Per **call** the gate
+/// measures ~1.0–1.5 µs against ~2.5–4.8 µs for a phone unit, which puts the honest ratio inside
+/// the guarded band from the other direction.
 ///
 /// **Charging one full unit per call was M10-R29 reopened**, and the measurement that hid it is
 /// worth keeping: the sample layout published beside the decision was `abcd 1234 …`, a pure-letter
@@ -2214,7 +2246,7 @@ fn budget_refusal_advice(top: Option<PiiKind>) -> &'static str {
 /// units**. Real hex output — `xxd`, `od -x`, every debugger — is uniform hex per group, where
 /// ~5.5% of groups do match, and at one unit per call an ordinary 8 MiB dump was **refused**.
 /// *A sample that cannot spell the shape it is a sample of measures the sample.*
-const IBAN_GATE_CALLS_PER_UNIT: usize = 2;
+pub const IBAN_GATE_CALLS_PER_UNIT: usize = 2;
 
 fn iban_case_gate(matched: &str, budget: &Budget) -> bool {
     if !matched.bytes().any(|b| b.is_ascii_lowercase()) {
@@ -2298,6 +2330,13 @@ mod tests {
             assert!(
                 advice.len() > 30 && advice.contains(' '),
                 "{kind:?} gets no usable advice: {advice:?}"
+            );
+            // A `\`-continued string literal keeps the indentation that follows it, which put a
+            // 14-space run inside a 400 body on the wire. `rustfmt` does not look inside literals,
+            // so the guard has to.
+            assert!(
+                !advice.contains("  "),
+                "{kind:?}'s advice carries a run of spaces — it is spliced into an HTTP error body and reaches the client verbatim: {advice:?}"
             );
             assert!(
                 !advice.ends_with('.'),
@@ -5032,7 +5071,7 @@ mod tests {
                 }
                 assert!(
                     answer.detected.contains(&quoted) || answer.not_detected.contains(&quoted),
-                    "{:?}'s `why` quotes the rendering {quoted:?} and neither list names it, so                      nothing asserts what this build does with it. Put it in `detected` or in                      `not_detected` — that is what the fields are for.",
+                    "{:?}'s `why` quotes the rendering {quoted:?} and neither list names it, so nothing asserts what this build does with it. Put it in `detected` or in `not_detected` — that is what the fields are for.",
                     answer.kind
                 );
             }
@@ -5581,14 +5620,14 @@ mod tests {
         assert_eq!(
             kinds(bad_checksum),
             vec![(PiiKind::Iban, bad_checksum.to_string())],
-            "an uppercase IBAN whose mod-97 fails is still masked — that is M4's decision and              folding case must not disturb it"
+            "an uppercase IBAN whose mod-97 fails is still masked — that is M4's decision and folding case must not disturb it"
         );
 
         // The same string in lowercase is NOT masked: it is the shape a hex digest also has, and
         // nothing verifies it. This is the false-positive door staying shut.
         assert!(
             kinds(&bad_checksum.to_lowercase()).is_empty(),
-            "a lowercase IBAN-shaped string that fails mod-97 must not be masked — 341 MB of              real source yields 149 such strings, and masking them is the M10 harm"
+            "a lowercase IBAN-shaped string that fails mod-97 must not be masked — 341 MB of real source yields 149 such strings, and masking them is the M10 harm"
         );
 
         // But a lowercase IBAN that really verifies IS masked — the leak M11-R10 found.

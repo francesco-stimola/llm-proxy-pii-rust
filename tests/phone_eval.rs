@@ -64,7 +64,7 @@ use std::time::Instant;
 use serde::Deserialize;
 
 use llm_proxy_pii_rust::pii::recognizers::{
-    StructuredRecognizers, PHONE_REGIONS, SEPARATOR_RUN_MAX,
+    StructuredRecognizers, PHONE_REGIONS, PHONE_SEPARATORS, SEPARATOR_RUN_MAX,
 };
 use llm_proxy_pii_rust::pii::{PiiDetector, PiiKind};
 
@@ -365,6 +365,42 @@ fn ip_and_alignment_negatives(out: &mut Vec<(&'static str, String)>) {
                 .join(&wide),
         ));
     }
+    // **One pool separated by characters the production alphabet does *not* contain (M11-R62).**
+    //
+    // The candidates are filtered against `PHONE_SEPARATORS` itself, so this pool is derived from
+    // the constant in the same way `alignedwide` is derived from `SEPARATOR_RUN_MAX` — and it fails
+    // in both of the ways that matter. Add `'*'` to the constant and `'*'` drops out of this list,
+    // changing the pool size and the published block; leave it out and the rate moves off 0.000
+    // only if the patterns start accepting it. Either way the assertion is red.
+    //
+    // **Why `SEPARATOR-01` cannot do this job**, which is the whole of M11-R62: it is a *recall*
+    // matrix whose alphabet is `PHONE_SEPARATORS`, so a character added to the constant is added to
+    // the matrix in the same edit and the assertion fails only when `phonenumber::parse` **rejects**
+    // it. `','` and `':'` are red there; `'*'`, which `parse` tolerates, was green across the whole
+    // suite while two shipped renderings changed from forwarded to masked. *A recall matrix can see
+    // a widening that causes a disagreement, never one that only enlarges the over-mask.*
+    let outside: Vec<char> = ['*', '~', '#', '=']
+        .into_iter()
+        .filter(|c| !PHONE_SEPARATORS.contains(c) && !c.is_whitespace())
+        .collect();
+    assert!(
+        !outside.is_empty(),
+        "every candidate separator this pool samples with is now inside PHONE_SEPARATORS — the \
+         pool cannot report on the alphabet's residue any more, and its 0.000 would mean \
+         'unmeasured' rather than 'excluded'"
+    );
+    for sep in &outside {
+        for _ in 0..36 {
+            let cols: Vec<u64> = (0..4).map(|_| 100 + next(&mut state) % 900).collect();
+            out.push((
+                "outsidealpha",
+                cols.iter()
+                    .map(|c| c.to_string())
+                    .collect::<Vec<_>>()
+                    .join(&sep.to_string()),
+            ));
+        }
+    }
 }
 
 /// The category names in the generated pool, in report order.
@@ -383,6 +419,7 @@ const NEGATIVE_CATEGORIES: &[&str] = &[
     "ips172",
     "aligned",
     "alignedwide",
+    "outsidealpha",
 ];
 
 /// One region set's measurement: recall over the positives it owns, the curated false-positive
@@ -519,13 +556,13 @@ fn render_block(
         .map(|c| format!("{c} {}", generated.iter().filter(|(g, _)| g == c).count()))
         .collect();
     out.push_str(&format!("generated: {}\n", sizes.join(" · ")));
-    out.push_str(&format!("{:<11}", "region"));
+    out.push_str(&format!("{:<13}", "region"));
     for (label, _) in columns {
         out.push_str(&format!("{label:>7}"));
     }
     out.push('\n');
     let mut row = |name: &str, values: Vec<f64>| {
-        out.push_str(&format!("{name:<11}"));
+        out.push_str(&format!("{name:<13}"));
         for v in values {
             out.push_str(&format!("{v:>7.3}"));
         }

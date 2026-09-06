@@ -156,25 +156,26 @@ to paste. Before M11-R55 this table was a transcription and the harness that pro
 
 <!-- PHONE-EVAL:BEGIN -->
 ```text
-pool: 35 corpus positives · 20 curated negatives · 945 generated
-generated: dates 200 · ports 16 · sizes 32 · offsets 20 · money 10 · codes 11 · refs 128 · tables 16 · ips 128 · ips10 64 · ips192 64 · ips172 64 · aligned 144 · alignedwide 48
-region          de     es     fr     gb     it     lv     nl     pt     cn  UNION
-recall       1.000  1.000  1.000  1.000  1.000  1.000  1.000  1.000  1.000  1.000
-curatedFP    0.000  0.000  0.000  0.000  0.000  0.000  0.000  0.000  0.000  0.000
-dates        0.000  0.000  0.000  0.000  0.120  0.180  0.000  0.000  0.000  0.270
-ports        0.000  0.000  0.000  0.000  0.000  0.000  0.000  0.000  0.000  0.000
-sizes        0.000  0.000  0.000  0.000  0.000  0.000  0.000  0.000  0.031  0.031
-offsets      0.000  0.000  0.000  0.000  0.000  0.000  0.000  0.050  0.000  0.050
-money        0.000  0.000  0.000  0.000  0.000  0.000  0.000  0.000  0.000  0.000
-codes        0.000  0.000  0.000  0.000  0.000  0.000  0.000  0.091  0.000  0.091
-refs         0.000  0.000  0.000  0.000  0.000  0.000  0.000  0.000  0.000  0.000
-tables       0.000  0.188  0.000  0.000  0.062  0.000  0.000  0.188  0.188  0.375
-ips          0.000  0.047  0.000  0.000  0.039  0.180  0.000  0.117  0.273  0.500
-ips10        0.000  0.000  0.000  0.000  0.016  0.125  0.000  0.078  0.656  0.656
-ips192       0.000  0.000  0.000  0.000  0.000  0.000  0.000  0.000  0.422  0.422
-ips172       0.000  0.000  0.000  0.000  0.000  0.266  0.000  0.000  0.438  0.438
-aligned      0.000  0.590  0.000  0.000  0.194  0.000  0.000  0.243  0.069  0.785
-alignedwide  0.000  0.000  0.000  0.000  0.000  0.000  0.000  0.000  0.000  0.000
+pool: 35 corpus positives · 20 curated negatives · 1089 generated
+generated: dates 200 · ports 16 · sizes 32 · offsets 20 · money 10 · codes 11 · refs 128 · tables 16 · ips 128 · ips10 64 · ips192 64 · ips172 64 · aligned 144 · alignedwide 48 · outsidealpha 144
+region            de     es     fr     gb     it     lv     nl     pt     cn  UNION
+recall         1.000  1.000  1.000  1.000  1.000  1.000  1.000  1.000  1.000  1.000
+curatedFP      0.000  0.000  0.000  0.000  0.000  0.000  0.000  0.000  0.000  0.000
+dates          0.000  0.000  0.000  0.000  0.120  0.180  0.000  0.000  0.000  0.270
+ports          0.000  0.000  0.000  0.000  0.000  0.000  0.000  0.000  0.000  0.000
+sizes          0.000  0.000  0.000  0.000  0.000  0.000  0.000  0.000  0.031  0.031
+offsets        0.000  0.000  0.000  0.000  0.000  0.000  0.000  0.050  0.000  0.050
+money          0.000  0.000  0.000  0.000  0.000  0.000  0.000  0.000  0.000  0.000
+codes          0.000  0.000  0.000  0.000  0.000  0.000  0.000  0.091  0.000  0.091
+refs           0.000  0.000  0.000  0.000  0.000  0.000  0.000  0.000  0.000  0.000
+tables         0.000  0.188  0.000  0.000  0.062  0.000  0.000  0.188  0.188  0.375
+ips            0.000  0.047  0.000  0.000  0.039  0.180  0.000  0.117  0.273  0.500
+ips10          0.000  0.000  0.000  0.000  0.016  0.125  0.000  0.078  0.656  0.656
+ips192         0.000  0.000  0.000  0.000  0.000  0.000  0.000  0.000  0.422  0.422
+ips172         0.000  0.000  0.000  0.000  0.000  0.266  0.000  0.000  0.438  0.438
+aligned        0.000  0.590  0.000  0.000  0.194  0.000  0.000  0.243  0.069  0.785
+alignedwide    0.000  0.000  0.000  0.000  0.000  0.000  0.000  0.000  0.000  0.000
+outsidealpha   0.000  0.000  0.000  0.000  0.000  0.000  0.000  0.000  0.000  0.000
 ```
 <!-- PHONE-EVAL:END -->
 
@@ -400,15 +401,19 @@ exactly the reason above.
 >   rejected candidate is charged once per enabled region (up to nine) because `.any()`
 >   short-circuits only on accept; an accepted one stops at the first region that says yes.
 > - **What moves the *price* of a unit is the candidate's shape**, and nothing tracks that. Printed
->   by `DOS-BUD`'s verdict-and-shape grid, `--release`, three row counts each: a valid
->   `3XX XXX XXXX` column **4.0–4.3 µs/unit**, a rejected `0NNNN NNNN` id column **2.5–3.4**,
->   lowercase `ab12 cd34` groups **1.1–1.6**, and a **three-group** zero-padded key column
->   (`0NNN NNNN NNNN`) **16.1–20.7**. That is a spread of roughly **18×**, and the `~3 µs` this
->   paragraph used to publish was near its bottom.
+>   by `DOS-BUD`'s verdict-and-shape grid, `--release`, three row counts each — and read as a
+>   **ratio**, because wall clock on one box varies rep to rep and the ratio does not (M7-R9): a
+>   three-group `0NNN NNNN NNNN` key column costs **~4–6× per unit** what a valid `3XX XXX XXXX`
+>   column, a rejected `0NNNN NNNN` id column or lowercase `ab12 cd34` groups cost. In absolute
+>   terms across the runs recorded, the cheap shapes sit around **2–5 µs/unit** and the three-group
+>   one around **13–19**. The `~3 µs` this paragraph used to publish was one point of that spread,
+>   and the spread is the finding.
 >
-> **So the ceiling, stated on the worst shape measured rather than the cheapest:** 500,000 units is
-> **~0.6 s** of validation on the cheapest column and **~8.5 s** on the dearest — measured at
-> 487,214 units in 8.3 s on the three-group shape. Fail-closed throughout: nothing is forwarded, the
+> **So the ceiling, stated on the worst shape measured and on the slowest rep of it:** 500,000
+> units is on the order of **a second** of validation on the cheapest column and **~10.6 s** on the
+> dearest. The same three-group row has read 8.3, 8.6 and 10.6 s across runs; the largest is the one
+> published, because a ceiling may only ever be wrong toward caution and quoting the fastest rep of
+> one's own measurement is the opposite of that. Fail-closed throughout: nothing is forwarded, the
 > path stays linear, and a refusal is a refusal on every box because the *count* is deterministic.
 > That determinism is why the bound is a count and not a wall clock: a time limit would make the
 > same body pass on an idle machine and fail on a busy one, which is the one thing a fail-closed
@@ -423,7 +428,8 @@ exactly the reason above.
 > turns it red.
 >
 > **At a fraction of a unit, and the fraction is the correction M11-R60 forced.** Charging one full
-> unit per call priced ~1.1–1.8 µs of arithmetic as the ~2.9–4.3 µs a `parse()` costs, and
+> unit per call priced ~1–1.7 µs of arithmetic (`DOS-BUD`'s **µs/call** column) as the several µs a
+> `parse()` costs, and
 > over-pricing cheap work is not a safe direction — it is how M10-R29 refused legal traffic once
 > already. `IBAN_GATE_CALLS_PER_UNIT = 2` takes the **conservative end** of the measured ratio, so
 > the charge never under-prices the work, and `DOS-11` pins the consequence as a ratio: on an
@@ -476,12 +482,12 @@ meaning "nobody did".
 | 1 × 200 KB field | masked | — | 240 ms |
 | 5 × 200 KB fields (1 MB) | masked | — | 1.15 s |
 | **15.6 MiB across 78 × 200 KB fields** | **refused** | 500,000 | **1.89 s** |
-| 3.8 MB SQL result, 50,000 rows, **three-group** `0NNN NNNN NNNN` | masked | 487,214 | **10.6 s** |
-| 4.3 MB SQL result, 50,000 rows, lowercase `ab12 cd34` groups | masked | 333,609 | 592 ms |
+| 3.8 MB SQL result, 50,000 rows, **three-group** `0NNN NNNN NNNN` | masked | 487,214 | **8.6-10.6 s** |
+| 4.3 MB SQL result, 50,000 rows, lowercase `ab12 cd34` groups | masked | 171,304 | ~510 ms |
 | 16 MiB, phone tier **off** — the unbudgeted floor | masked | 0 | 362 ms |
 
 > **The last two rows are the ones M11-R38 and M11-R18 added, and they are the interesting ones.**
-> The three-group column is the dearest shape measured — 487,214 units for **10.6 s**, where the
+> The three-group column is the dearest shape measured — 487,214 units for **8.6-10.6 s**, where the
 > same unit count on a `3XX XXX XXXX` column costs under two — and it is *masked*, not refused: it
 > is legal traffic, so it is the shape the published ceiling has to be true of. The lowercase
 > alphanumeric column is term 3 arriving inside the count: before M11-R18 it spent **0** units for
@@ -535,9 +541,9 @@ pinned by `PHONE-BUD`.
 > **The budget bounds validation, not the whole request — and saying otherwise would be M10-R30 in a
 > new place.** **Three** terms make up a request's CPU, and the third was found by M11-R18 rather
 > than designed:
-> 1. `units × the measured band`, where the band is **~1.1–21 µs** and the allowance therefore caps
->    validation at **under a second on the cheapest shape and ~8.5 s on the dearest measured**
->    (M11-R38).
+> 1. `units × what a unit costs on that shape`, a spread of **~4–6×** between the cheapest shape and
+>    the dearest, so the allowance caps validation at roughly **a second** on one and **~10.6 s** on
+>    the other (M11-R38).
 >    The verdict moves how many units a candidate spends; the candidate's shape moves what a unit
 >    costs, and only the first is something the count can track.
 > 2. Regex scanning and the mask rewrite, linear in body size and entity count and bounded only by

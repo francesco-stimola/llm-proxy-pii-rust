@@ -183,12 +183,18 @@ fn the_shared_fixture_keeps_its_shape() {
 /// restored byte-identically on the response path, a miss is not. So the honest expectation here
 /// is the set that ships, and the guard is that it cannot **move** silently.
 ///
-/// **What this guard does and does not see, measured rather than claimed (M11-R61).** Narrowing the
-/// separator run to 2 is red here; narrowing it to 3 is **green** here and red in `phone_eval`,
-/// because the runs that matter in this fixture are the `psql` rows' three spaces. Widening the
-/// alphabet is caught by `SEPARATOR-01`, and widening the run by `phone_eval`'s `alignedwide` pool.
-/// *No single guard covers both coordinates in both directions* — the three together do, and
-/// saying which is which is the difference between a guard and a claim about one.
+/// **What this guard does and does not see, measured rather than claimed (M11-R61, corrected by
+/// M11-R62 and M11-R64's round).** Narrowing the separator run to 2 is red here; narrowing it to 3
+/// is **green** here and red in `phone_eval`, because the runs that matter in this fixture are the
+/// `psql` rows' three spaces. **Widening** either coordinate is caught in `phone_eval` and by the
+/// *pool-size* line rather than by a rate: its `aligned`, `alignedwide` and `outsidealpha` pools
+/// are all derived from the production constants, so changing `SEPARATOR_RUN_MAX` or
+/// `PHONE_SEPARATORS` changes what the pools contain and the published block is red before any
+/// rate is consulted. `SEPARATOR-01` catches only a widening the **validator rejects** — it is a
+/// recall matrix, so a character `phonenumber::parse` already tolerates leaves it green while the
+/// over-mask grows (M11-R62).
+/// *No single guard covers both coordinates in both directions* — the four together do, and saying
+/// which is which is the difference between a guard and a claim about one.
 const EXPECTED_TOOL_OUTPUT_PHONE_SPANS: &[(&str, &str)] = &[
     // A `psql` result: six rows, six spans. Five of the six are *truncated* rather than whole —
     // `318   120   3499` stops before the fourth column — which is the same coalescing the

@@ -3,6 +3,84 @@
 Newest first. One entry per meaningful change — note *what* and *why*, not just
 *what*. This is the running history so context is never lost between sessions.
 
+## 2026-09-06 — M11 round 17: nothing in the product, and the loop terminates
+
+**Round 17 found no defect in `src/`'s behaviour**, which under the rule decided this morning is the
+signal to stop rather than to go again. Its three rows are closed in the same commit.
+
+### M11-R62 — the class M11-R61 closed on one coordinate only
+
+`PHONE_SEPARATORS` can gain `'*'` with the **whole suite green at 260/0/4** — and the rebuilt release
+binary then masks `+39*347*1234567` and `415*555*2671`, which it forwarded in clear before. Two
+shipped renderings change and nothing says so.
+
+The reason is structural rather than a missing case. `SEPARATOR-01` is a **recall** matrix whose
+alphabet is `PHONE_SEPARATORS` itself — deliberately, since M11-R56, so the guard cannot drift
+*behind* the constant. That is exactly what makes it unable to see the constant **grow**: a character
+added to the array is added to the matrix in the same edit, so the assertion fails only if
+`phonenumber::parse` *rejects* it. `','` and `':'` are red there; `'*'`, which `parse` tolerates, is
+green while the over-mask enlarges. *A recall matrix can see a widening that causes a disagreement,
+never one that only enlarges the over-mask.*
+
+And round 16 — mine — had generalised the opposite from that single red mutation, writing *"widening
+the alphabet is caught by `SEPARATOR-01`"* into three places as fact. One point of a grid, for the
+fifth time in this file's history.
+
+**Fixed the way R61 was, because it is the same sentence:** `phone_eval` gained an `outsidealpha`
+pool of rows separated by characters filtered **against the production constant**. Add one to
+`PHONE_SEPARATORS` and it drops out of the pool, so the `generated:` line changes and the published
+block is red before any rate is consulted; leave it out and its 0.000 publishes the alphabet's
+residue the way `alignedwide` publishes the run's. Both coordinates of the accepted over-mask now
+have a floor and a ceiling, and there is no third coordinate.
+
+*The rule, promoted next to `SEPARATOR-01`:* **a guard whose fixture is derived from a production
+constant is blind to that constant growing, and must also sample outside it.**
+
+### M11-R63 — attribution had no guard, and the top spender flips with body size
+
+Aiming both `budget.attribute` sites at a constant `PiiKind::Phone` left the suite green — a constant
+wearing a parameter, M10-R13's shape, on the mechanism M11-R60 built to stop the refusal naming the
+wrong tier. `DOS-11` had both terms in hand and asserted only a ratio that `0 <= n` satisfies, so it
+was also blind to attribution recording nothing at all.
+
+One line closes both: `assert!(gate > 0 && phone > 0)`. It is a property of the attribution rather
+than of a kind, so a third spender inherits it. Worth recording alongside: on one and the same `xxd`
+shape the top spender **flips** — `Phone` at 12 MiB, `Iban` at 16 — which is why pinning *that some
+kind was charged* is worth more than pinning a particular one.
+
+### M11-R64 — a derivation denominated in the units it defines
+
+`IBAN_GATE_CALLS_PER_UNIT`'s doc told a reader to re-derive it from `DOS-BUD`'s µs/unit column. That
+column is `ms / spent`, and `spent` is denominated in the units the constant defines — so halving the
+charge doubled it, and following the instruction returned the reader to **1**, the value M11-R60 was.
+*A measurement whose denominator is a function of the thing being measured is not a measurement of
+it.*
+
+The recipe is gone. The doc now states the **band the guards enforce** — `DOS-11` red below the
+value, `DOS-10`'s charge floor red above it, admissible `[2, 3]`, and the constant takes the lower
+end — which a reader can check rather than re-run, and which does not move when a wall clock does.
+`DOS-BUD` also prints a **µs per call** column now, so the quantity the comparison needs is the one
+the grid shows.
+
+**And the wall-clock bands are re-published as a ratio.** Rep-to-rep variance on this box is real —
+the `3XX XXX XXXX` row has read 2.99 through 4.79 µs/unit across runs — so a tight absolute band was
+always going to be re-filed. What is stable is that the three-group shape costs **~4–6× per unit**
+what the others do (M7-R9: the ratio is the claim). The ceiling now quotes the **slowest** rep of its
+own row, because a ceiling may only be wrong toward caution and quoting the fastest rep of one's own
+measurement is the opposite of that.
+
+### Nine low-severity items, fixed here and not in the ledger
+
+The threshold decided this morning says the lowest severity is fixed in the same commit and noted in
+one DEVLOG line, so: a 14-space run inside the 400 body (a `\`-continued literal keeps the following
+indentation; `concat!` instead, plus a `!advice.contains("  ")` arm in `BUDGET-ADVICE`, because the
+body reaches the client verbatim and `rustfmt` does not look inside literals); `spend_fraction`'s
+false safety bound, replaced by the counterexample that breaks it; the refusal's third interpolated
+integer, added to `E2E-05`'s allowed list and named correctly in the one surviving comment of two;
+the two generators behind "a 12 MiB hex dump" named beside their numbers; `DOS-11`'s two disagreeing
+sentences made one; and the coverage table's run row re-attributed from `alignedwide`'s rate to the
+pool-size line that actually fires.
+
 ## 2026-09-06 — M11 round 16: the budget fix priced a cheap check as an expensive one
 
 **Round 16 found a defect in `src/`, so the loop did not terminate on it.** Both findings are

@@ -597,7 +597,7 @@ fn a_field_of_lowercase_alphanumeric_groups_is_charged_for_the_case_gate() {
 /// `DOS-10` asserts that the case-gate term is **charged**. Nothing asserted that charging it
 /// leaves legal traffic alone, and the cost of that gap was a real refusal: at one unit per
 /// arithmetic call an ordinary `xxd` hex dump was blocked with a `400` at **8 MiB**, having been
-/// masked and forwarded at 16 MiB the day before. `PHONE-BUD` is this guard for the M7 turn and
+/// masked and forwarded at 12 MiB by the same build with the charge removed. `PHONE-BUD` is this guard for the M7 turn and
 /// for nothing else — and the M7 turn is instruction prose, which spends zero units and therefore
 /// cannot see a term that only digit-dense text reaches.
 ///
@@ -673,6 +673,20 @@ fn an_ordinary_hex_dump_stays_inside_the_request_allowance_at_max_body_bytes() {
     // it is a ratio rather than a wall clock or an absolute count — so it says the same thing on
     // any box and at any body size. At one full unit per call (M11-R60) the gate outspent the
     // whole phone tier on this fixture; at the measured price it is a minority share.
+    // **Both spenders must actually be charged, and this closes two holes at once (M11-R63).**
+    // The ratio below is satisfied by `0 <= n` — so attribution recording *nothing* passed it, and
+    // so did aiming both call sites at a constant `PiiKind::Phone`, which drives `gate` to zero
+    // while `E2E-05`'s single-spender fixture cannot tell the difference. It is a property of the
+    // **attribution** rather than of a kind, so a third spender inherits it: this fixture reaches
+    // two validators, and the budget has to say so.
+    assert!(
+        gate > 0 && phone > 0,
+        "the hex fixture reaches both the IBAN case gate and the phone tier, but the budget \
+         attributes {gate} to Iban and {phone} to Phone. Either a spender is charging nothing, or \
+         `Budget::attribute` is not following the recognizer that spent — and the refusal message \
+         is generated from exactly this, so it would name the wrong tier with the suite green."
+    );
+
     // **The bar is derived from this fixture, and the bar travels with it.** The gate-to-phone
     // ratio is *not* scale-free — the per-scan memo saturates the two terms differently, so on
     // this 512 KiB body it is **0.349** at the shipped price and **0.697** at the one-full-unit
@@ -685,11 +699,14 @@ fn an_ordinary_hex_dump_stays_inside_the_request_allowance_at_max_body_bytes() {
     assert!(
         gate * 2 <= phone,
         "on an ordinary hex dump the IBAN case gate was charged {gate} units against the phone \
-         tier's {phone}, so the cheap validator now dominates the allowance the expensive one is \
-         named after. Its arithmetic measures ~1.1-1.8 µs against ~2.9-4.3 for a `parse()`, so \
-         this means it is priced above what it costs — and over-pricing cheap work does not make \
-         the bound safer, it refuses legal traffic (M10-R29, M11-R60). Re-derive \
-         `IBAN_GATE_CALLS_PER_UNIT` from `DOS-BUD`'s µs/unit grid, not from what is convenient."
+         tier's {phone} on this {SAMPLE}-byte fixture — over half, where the shipped price \
+         measures a third. Per *call* the gate costs about a third of what a `parse()` does, so a \
+         share this size means it is priced above what it costs, and over-pricing cheap work does \
+         not make the bound safer — it refuses legal traffic (M10-R29, M11-R60). \
+         `IBAN_GATE_CALLS_PER_UNIT` is bounded by two guards, this one below it and `DOS-10`'s \
+         charge floor above it; re-derive it against that band and against `DOS-BUD`'s **µs per \
+         call** column, never its µs/unit, which is denominated in the units the constant itself \
+         defines (M11-R64)."
     );
 }
 
@@ -852,10 +869,17 @@ fn budget_refusal_line_and_cost() {
     // A grid that varies size, rendering and layout but never the verdict cannot see the first;
     // one that varies the verdict but not the group count cannot see the second. That is DOS-05's
     // lesson — *the axis a test never varies is the one it cannot see* — twice on the same grid.
+    // **A µs-per-*call* column beside µs-per-unit, and it is not a convenience (M11-R64).** The
+    // unit column is `ms / spent`, and `spent` is denominated in the very units
+    // `IBAN_GATE_CALLS_PER_UNIT` defines — so halving the gate's charge doubles its µs/unit, and a
+    // reader re-deriving the constant from that column feeds the recipe its own output and lands
+    // back on the value M11-R60 was. The call column divides it back out, so the number the
+    // derivation asks for is the number the grid prints. *A measurement whose denominator is a
+    // function of the thing being measured is not a measurement of it.*
     println!("\n--- the same column, by VERDICT and by SHAPE: what a unit costs (M11-R38/R39) ---");
     println!(
-        "{:>24}  {:>10}  {:>7}  {:>12}  {:>8}  {:>9}  {:>9}",
-        "shape", "bytes", "rows", "verdict", "ms", "spent", "us/unit"
+        "{:>24}  {:>10}  {:>7}  {:>12}  {:>8}  {:>9}  {:>9}  {:>9}",
+        "shape", "bytes", "rows", "verdict", "ms", "spent", "us/unit", "us/call"
     );
     for (label, kind) in [
         ("3XX XXX XXXX (accept)", 0),
@@ -920,18 +944,27 @@ fn budget_refusal_line_and_cost() {
             };
             let ms = started.elapsed().as_secs_f64() * 1000.0;
             let spent = budget.spent();
+            // Only the lowercase row is charged fractionally, so only it has a call price that
+            // differs from its unit price; every other row divides by one.
+            let per_unit = if spent == 0 {
+                0.0
+            } else {
+                ms * 1000.0 / spent as f64
+            };
+            let calls_per_unit = if kind == 3 {
+                llm_proxy_pii_rust::pii::recognizers::IBAN_GATE_CALLS_PER_UNIT as f64
+            } else {
+                1.0
+            };
             println!(
-                "{label:>24}  {:>10}  {:>7}  {:>12}  {:>8.0}  {:>9}  {:>9.2}",
+                "{label:>24}  {:>10}  {:>7}  {:>12}  {:>8.0}  {:>9}  {:>9.2}  {:>9.2}",
                 dump.len(),
                 rows,
                 verdict,
                 ms,
                 spent,
-                if spent == 0 {
-                    0.0
-                } else {
-                    ms * 1000.0 / spent as f64
-                }
+                per_unit,
+                per_unit / calls_per_unit
             );
         }
     }
