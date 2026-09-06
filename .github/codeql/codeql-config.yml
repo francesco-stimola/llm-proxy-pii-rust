@@ -1,0 +1,27 @@
+# CodeQL configuration — the one thing default setup could not express.
+#
+# WHY THIS FILE EXISTS. Nine of the eleven code-scanning alerts open on this repository
+# were `cleartext logging of sensitive information` in TEST code: assertion failure
+# messages quoting a synthesised IBAN, or the fixture password `hunter2` — in tests whose
+# entire purpose is to prove those values do NOT leak. CodeQL classifies test code by
+# PATH, so a file under `tests/` earns a `Test` label while a `#[cfg(test)] mod tests`
+# inside `src/` earns nothing. Neither label closes an alert.
+#
+# WHAT IT REACHES, AND WHAT IT DELIBERATELY DOES NOT. `paths-ignore` is file-granular. It
+# reaches the four alerts that live in `tests/` — and it cannot reach the five inside
+# `src/config.rs` and `src/pii/recognizers.rs`, because those files carry product code in
+# the same file. Excluding them would blind the scanner to `Config::fmt`, which is exactly
+# where the only real leak this repository has ever had actually lived (M11-R65) — and
+# which CodeQL did not find. Those five are dismissed BY HAND in the Security tab, on
+# purpose, so that a human re-reads every new one instead of a filter swallowing it.
+#
+# WHAT IS NOT HERE, AND WHY. No `query-filters`. Excluding `rust/cleartext-logging`
+# outright would close all nine in one line and never come back — but it would also
+# silence the rule on product code, and the maintainer chose to keep reading it. The rule
+# kept is the one that could one day be true here; the noise is paid for by hand.
+#
+# `paths-ignore` is valid for Rust because Rust is analysed WITHOUT building
+# (`build-mode: none` in the workflow): the option applies to interpreted languages and to
+# compiled languages analysed without a build. Change that and this file stops working.
+paths-ignore:
+  - tests/**

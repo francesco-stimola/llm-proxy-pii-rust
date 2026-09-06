@@ -1,0 +1,76 @@
+name: CodeQL
+
+# Advanced setup, and the ONLY reason it exists is `paths-ignore` — see
+# `.github/codeql/codeql-config.yml`, which carries the reasoning. Default setup cannot
+# take a configuration file on a user-owned repository: that route is the
+# `github-codeql-config-file` repository property, and custom repository properties are an
+# organization feature. So excluding `tests/**` costs owning this workflow.
+#
+# THE COST, STATED PLAINLY, because it is the kind that gets forgotten. Default setup was
+# maintained by GitHub — language selection, CodeQL bundle updates, action versions. From
+# here that is ours. `github/codeql-action` publishes a moving `v4`, so the bundle keeps
+# updating itself; what will one day need a deliberate bump is the major version. This is
+# the second piece of CI configuration to move out of a web UI and into the tree, and it
+# has the same shape as the toolchain question in `docs/ROADMAP.md`: a setting that drifts
+# where nobody reads it is a setting that goes red on a day nobody chose.
+#
+# BEFORE THIS FILE CAN RUN, default setup must be turned off:
+#   Settings → Advanced Security → Code scanning → CodeQL analysis → ⋯ → Switch to advanced
+# The two cannot both be enabled — the upload is rejected with "CodeQL default setup is
+# enabled for code scanning" and this job goes red on `main`. That ordering is the entire
+# risk in this change, and it is a human step that no guard here can perform.
+#
+# `build-mode: none` — Rust is analysed WITHOUT building (generally available since
+# 2025-10). That is not an optimisation: it is what makes `paths-ignore` valid for Rust at
+# all. If this ever becomes a building analysis, the config file silently stops excluding
+# anything and the four `tests/` alerts come back.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # A weekly run for the same reason `security.yml` has one: a query can be ADDED to the
+  # CodeQL bundle with no change on our side, and nothing else would trigger a scan.
+  # An hour after that job, so two scheduled runs do not start together.
+  schedule:
+    - cron: "0 7 * * 1" # Mondays 07:00 UTC
+
+# Least privilege by default (CodeQL's own `actions/missing-workflow-permissions`); the
+# analyze job widens it below to the one privilege that uploads alerts.
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write # upload the SARIF — the only extra privilege needed
+      contents: read
+      actions: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: rust
+            build-mode: none
+          # `actions` IS NOT PADDING, and dropping it is the mistake this entry exists to
+          # prevent. Default setup analysed the workflows as well, and this repository
+          # already carries that query's findings: the `permissions:` block at the top of
+          # every workflow here was written because `actions/missing-workflow-permissions`
+          # asked for it. A migration that scanned only `rust` would have removed that
+          # coverage silently — which is the exact failure mode this project spends its
+          # review rounds hunting.
+          - language: actions
+            build-mode: none
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: github/codeql-action/init@v4
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+          config-file: ./.github/codeql/codeql-config.yml
+
+      - uses: github/codeql-action/analyze@v4
+        with:
+          category: "/language:${{ matrix.language }}"
