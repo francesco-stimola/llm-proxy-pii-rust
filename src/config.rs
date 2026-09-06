@@ -1,5 +1,6 @@
 //! Runtime configuration.
 
+use std::borrow::Cow;
 use std::fmt;
 use std::net::SocketAddr;
 
@@ -237,6 +238,51 @@ fn checked_upstream_base_url(raw: &str) -> anyhow::Result<String> {
     Ok(raw.to_string())
 }
 
+/// The base URL **as it may be logged**: `user:password@` replaced by `<redacted>`.
+///
+/// `main` logs the whole `Config` at startup, and a URL is allowed to carry credentials —
+/// `https://alice:hunter2@api.openai.com` is a legal value this proxy accepts and forwards.
+/// So the one secret-bearing field that was **not** handled was printed whole, immediately above
+/// `upstream_api_key: Some("<redacted>")` and in the same struct as extra headers reduced to their
+/// names *because a value may be a secret*. The `Debug` impl's own doc comment said it exists so
+/// secrets never reach the logs; this field was outside it (M11-R65).
+///
+/// **Redacted here, never in the stored value.** `proxy.rs` concatenates the configured path onto
+/// `upstream_base_url`, and the upstream still has to receive those credentials — a redaction in
+/// the value would be an outage, not a fix. This is a display concern and lives only in `Debug`.
+///
+/// The ordinary case — no credentials — returns the operator's own bytes **unchanged**: that is
+/// the path a too-eager redaction breaks, and `CFG-03` pins it. When there *are* credentials the
+/// value is reassembled by the URL parser (so the rest is normalised) and marked, rather than
+/// silently dropped: an operator has to be able to see that a credential is configured, which is
+/// exactly what `Some("<redacted>")` does for the key.
+fn base_url_for_debug(raw: &str) -> Cow<'_, str> {
+    // The raw value is printed only for the shape `CFG-02` admits and can prove credential-free:
+    // an http/https URL with no userinfo. Everything else is withheld rather than guessed at —
+    // and that is not belt-and-braces, it is a case the first draft of this function got wrong.
+    // `alice:hunter2@not-a-url` *parses*: scheme `alice`, path `hunter2@not-a-url`, no authority,
+    // so `username()` is empty and a userinfo-only check hands the password straight to the log.
+    // Anything that is not an http/https URL never came from `from_env` anyway.
+    let Ok(mut url) = reqwest::Url::parse(raw) else {
+        return Cow::Borrowed("<unprintable>");
+    };
+    if !matches!(url.scheme(), "http" | "https") {
+        return Cow::Borrowed("<unprintable>");
+    }
+    if url.username().is_empty() && url.password().is_none() {
+        return Cow::Borrowed(raw);
+    }
+    let _ = url.set_username("");
+    let _ = url.set_password(None);
+    let prefix = format!("{}://", url.scheme());
+    // `replacen` and not an index: if the serialization ever stopped starting with `scheme://`
+    // the marker is lost, never the redaction — the credentials are already gone from `url`.
+    Cow::Owned(
+        url.as_str()
+            .replacen(&prefix, &format!("{prefix}<redacted>@"), 1),
+    )
+}
+
 /// The recognizer locales when `PII_LOCALES` is unset: **every vetted region** (M10).
 ///
 /// It used to be the literal `["it", "us"]` — a placeholder chosen by M4 when the FP-prone
@@ -331,13 +377,18 @@ pub(crate) fn env_flag(key: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Manual `Debug` so the API key is never written to logs — `main` logs the
-/// whole config at startup, and this is a privacy tool.
+/// Manual `Debug` so no secret is ever written to logs — `main` logs the whole config at
+/// startup, and this is a privacy tool. Three fields are handled rather than printed: the API
+/// key, the extra headers (names only — a value may be a token) and, since M11-R65, the
+/// credentials a base URL is allowed to carry.
 impl fmt::Debug for Config {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Config")
             .field("listen", &self.listen)
-            .field("upstream_base_url", &self.upstream_base_url)
+            .field(
+                "upstream_base_url",
+                &base_url_for_debug(&self.upstream_base_url),
+            )
             .field(
                 "upstream_api_key",
                 &self.upstream_api_key.as_ref().map(|_| "<redacted>"),
@@ -428,9 +479,10 @@ mod tests {
             // The parser case-folds scheme and host; what we *store* must still be what was
             // written, which is the assert below.
             "HTTPS://API.OPENAI.COM",
-            // Accepted, and worth stating: credentials in the base URL are legal in a URL and
-            // this does not refuse them. `Config`'s `Debug` prints `upstream_base_url` in full
-            // at startup, so such a value is logged — pre-existing, unchanged by this check.
+            // Accepted, and worth stating twice over: credentials in a URL are legal and this
+            // does not refuse them — the upstream has to receive them. What it must not do is
+            // *log* them, and it did from M1 to here; `CFG-03` below is that half, and this
+            // line is only about the value being allowed through.
             "https://user:secret@gateway.internal:8443",
         ] {
             assert_eq!(
@@ -457,6 +509,89 @@ mod tests {
             assert!(
                 checked_upstream_base_url(bad).is_err(),
                 "must refuse {bad:?} — it names no upstream this proxy can reach"
+            );
+        }
+    }
+
+    /// A `Config` whose every secret-bearing field carries a value this test can look for.
+    fn config_with(base_url: &str) -> Config {
+        Config {
+            listen: "127.0.0.1:8080".parse().expect("a valid listen address"),
+            upstream_base_url: base_url.to_string(),
+            upstream_api_key: Some("api-key-value-CFG03".to_string()),
+            max_body_bytes: DEFAULT_MAX_BODY_BYTES,
+            provider: "openai".to_string(),
+            upstream_chat_path: "/v1/chat/completions".to_string(),
+            upstream_messages_path: "/v1/messages".to_string(),
+            upstream_extra_headers: vec![(
+                "X-Editor-Token".to_string(),
+                "header-value-CFG03".to_string(),
+            )],
+            forward_request_headers: Vec::new(),
+            pii_locales: default_locales(),
+            debug_skip_demask: false,
+            pii_cache_entries: DEFAULT_PII_CACHE_ENTRIES,
+            pii_max_phone_validations: crate::pii::recognizers::MAX_PHONE_VALIDATIONS_PER_REQUEST,
+        }
+    }
+
+    /// **CFG-03 (M11-R65).** `main` logs the whole `Config` at startup, so `Debug` **is** a log
+    /// line — and `upstream_base_url` was printed whole, immediately above
+    /// `upstream_api_key: Some("<redacted>")` and in the same struct as extra headers reduced to
+    /// their names *because a value may be a secret*. A URL may carry `user:password@`, and
+    /// `UPSTREAM_BASE_URL="https://alice:hunter2@api.openai.com"` put the password in the first
+    /// line the proxy writes.
+    ///
+    /// The assertion runs on the **rendered `Debug`**, not on `base_url_for_debug`, because the
+    /// log line is the thing at risk: a redaction that exists but is not wired into the impl
+    /// would satisfy a test of the function and leak anyway.
+    ///
+    /// **The second half is the one that breaks if the redaction is too eager:** a base URL
+    /// without credentials — every real deployment — must appear **verbatim**, including the
+    /// absence of the trailing `/` the URL parser would add. It is what an operator checks the
+    /// startup line for.
+    #[test]
+    fn debug_redacts_every_secret_and_leaves_a_plain_base_url_verbatim() {
+        let printed = format!("{:?}", config_with("https://alice:hunter2@api.openai.com"));
+        for secret in [
+            "hunter2",
+            "alice",
+            "api-key-value-CFG03",
+            "header-value-CFG03",
+        ] {
+            assert!(
+                !printed.contains(secret),
+                "{secret:?} reached the startup log line: {printed}"
+            );
+        }
+        // Marked, not dropped: an operator must still see that a credential is configured and
+        // where the proxy points — the same information `Some("<redacted>")` gives for the key.
+        assert!(
+            printed.contains("<redacted>@api.openai.com"),
+            "the credential must be replaced by a marker, not silently removed: {printed}"
+        );
+
+        let plain = "https://api.openai.com";
+        let printed = format!("{:?}", config_with(plain));
+        assert!(
+            printed.contains(&format!("upstream_base_url: \"{plain}\"")),
+            "a base URL with no credentials must be printed exactly as configured: {printed}"
+        );
+
+        // **Fail-closed arm, and it is not hypothetical — it is where the first draft leaked.**
+        // `alice:hunter2@not-a-url` parses happily as scheme `alice` with no authority, so
+        // `username()` is empty and a userinfo-only check printed the password. The rule is now
+        // that only the shape CFG-02 admits is printed at all. Neither value can come from
+        // `from_env`; both can come from a `Config` built literally, as integration tests do.
+        for outside in [
+            "alice:hunter2@not-a-url",
+            "not a url at all",
+            "ftp://alice:hunter2@h",
+        ] {
+            let printed = format!("{:?}", config_with(outside));
+            assert!(
+                !printed.contains("hunter2") && printed.contains("<unprintable>"),
+                "a value that is not an http/https URL must be withheld, not printed on the                  chance it holds no secret: {printed}"
             );
         }
     }

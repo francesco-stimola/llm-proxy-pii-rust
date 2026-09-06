@@ -614,3 +614,82 @@ async fn an_invalid_upstream_base_url_refuses_to_start() {
         );
     }
 }
+
+/// **CFG-03 (M11-R65) — the runtime half.** The startup line the real binary writes must not
+/// carry the credentials a base URL is allowed to hold.
+///
+/// `main` logs the whole `Config` at startup (`tracing::info!(?config, …)`), so `Config`'s
+/// `Debug` *is* a log line — and `upstream_base_url` was printed whole, two fields above
+/// `upstream_api_key: Some("<redacted>")`. This is the maintainer's own reproduction, kept:
+/// `UPSTREAM_BASE_URL="https://alice:hunter2@api.openai.com"` printed `hunter2` in the first
+/// line the proxy ever writes.
+///
+/// The unit half (`CFG-03` in `src/config.rs`) asserts the rendered `Debug`; it cannot see
+/// *whether `main` logs that `Debug` at all*. Point the startup line at a field-by-field format
+/// and the unit half stays green while the log leaks — so this drives the real `.exe` and reads
+/// what it actually wrote.
+///
+/// **It asserts the line is there before asserting what is not in it.** An absent line contains
+/// no password either, and that is how this guard would go quietly vacuous (M4-R13).
+#[tokio::test]
+async fn credentials_in_the_base_url_never_reach_the_startup_log() {
+    use std::process::Stdio;
+
+    let port = free_port();
+    let child = Command::new(env!("CARGO_BIN_EXE_llm-proxy-pii-rust"))
+        .env("LISTEN_ADDR", format!("127.0.0.1:{port}"))
+        // Never connected to — the proxy binds and logs before it speaks to any upstream.
+        .env("UPSTREAM_BASE_URL", "https://alice:hunter2@api.openai.com")
+        .env("RUST_LOG", "info")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn the proxy binary");
+    let mut guard = ChildGuard(Some(child));
+
+    let client = reqwest::Client::new();
+    let base = format!("http://127.0.0.1:{port}");
+    let mut healthy = false;
+    for _ in 0..100 {
+        if let Ok(resp) = client.get(format!("{base}/healthz")).send().await {
+            if resp.status().is_success() {
+                healthy = true;
+                break;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(healthy, "proxy binary did not become healthy on {base}");
+
+    let _ = guard.child().kill();
+    let out = guard
+        .take()
+        .wait_with_output()
+        .expect("failed to collect output");
+    let ansi = regex::Regex::new(r"\x1b\[[0-9;]*m").unwrap();
+    let logged = ansi
+        .replace_all(
+            &format!(
+                "{}{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            ),
+            "",
+        )
+        .into_owned();
+
+    // Non-vacuity first: the line this guard is about has to be in what we captured.
+    assert!(
+        logged.contains("starting llm-proxy-pii-rust") && logged.contains("upstream_base_url"),
+        "the startup config line was not captured, so nothing below is being tested. Got:\n{logged}"
+    );
+    assert!(
+        !logged.contains("hunter2") && !logged.contains("alice"),
+        "the base URL's credentials reached the startup log. Got:\n{logged}"
+    );
+    assert!(
+        logged.contains("<redacted>@api.openai.com"),
+        "the credential must be marked, not silently dropped — an operator has to see that one \
+         is configured, and where the proxy points. Got:\n{logged}"
+    );
+}
