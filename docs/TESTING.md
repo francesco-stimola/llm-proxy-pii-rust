@@ -46,6 +46,46 @@ reports that is **build-independent** has already been moved into a guard that r
 `DOS-10` asserts that the case-gate term is inside the budget at all (M11-R18). What is left in these
 two commands is only what a wall clock can say.
 
+## The toolchain gap — green here does not mean green in CI
+
+**This repository has now paid twice for the same shape: a gate that only CI runs, going red on
+`main` and staying red.** First [M11-R0](reviews/M11.md#m11-r0) — `cargo fmt --check` red across four
+files, because nobody ran it before pushing. Then, on 2026-09-02, both `test` legs red at the
+**clippy** step for four days, and this one could not have been caught by remembering to run the
+command: *it was already being run, and it passed.*
+
+`ci.yml` pins no toolchain — `dtolnay/rust-toolchain@stable` resolves to whatever stable is **on the
+day the job runs**, while a developer's box has whatever `rustup` last pulled. So the two drift apart
+silently, with nothing to notice until somebody pushes, and a new lint arrives on CI's side of the
+gap as a red `main` rather than as a commit. Measured on this tree, same source, same `Cargo.lock`:
+
+| | rustc 1.97.1 (clippy 0.1.97) | rustc 1.98.1 (clippy 0.1.98, stable 2026-09-03) |
+|---|---|---|
+| `cargo clippy --all-targets -- -D warnings` | exit **0** | exit **101** |
+| sites `result_large_err` inspects (threshold forced to 1 B, to enumerate) | **175** | **286** — a strict superset, none lost |
+| of those, over the default 128 B threshold | 0 | **1** — `run_privacy_stages`, [`src/server.rs`](../src/server.rs) |
+
+The 111 newly-visible sites are the `async fn`s and the `#[test]` harness closures: 0.1.98 looks
+through desugarings 0.1.97 skipped. **Nothing in the code or the dependency graph changed — the
+lint's reach did.** The fix was to decline its remedy, because boxing that `Err` buys nothing (see
+`CI-01` below), not to reshape a signature to satisfy a lint.
+
+**So: `rustup update` before trusting a local clippy run**, and read a green local clippy as "green
+for *my* toolchain", never as "green for CI". Pinning the toolchain in-tree would close the gap
+properly — it is a maintainer decision (it moves new lints into a deliberate commit, at the cost of
+having to go and fetch them) and is recorded as an open question in `docs/ROADMAP.md`.
+
+### CI — lint suppressions that must not outlive their reason (`src/server.rs`)
+
+- **`CI-01`** — `boxing_the_err_variant_would_buy_nothing`: the `#[allow(clippy::result_large_err)]`
+  on `run_privacy_stages` stands on a measurement, not a preference — the `Ok` variant `(ProxyRequest,
+  RequestContext)` is *wider* than the `Err` (`axum::response::Response`), so `Result<Ok, Box<Err>>`
+  is exactly as wide as `Result<Ok, Err>` and boxing would buy only a heap allocation on the
+  fail-closed rejection path. Asserts both halves — `Ok >= Err`, and the two `Result` widths equal —
+  so a dependency bump that inverts them fails here and the `allow` gets re-argued instead of
+  inherited. The sizes are read from the code at run time and printed in the failure message; none is
+  typed into this entry.
+
 ## Reliability guards (lessons from the old proxy)
 
 The old proxy's own checklist recorded these real failures — our tests must

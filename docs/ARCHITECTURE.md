@@ -453,10 +453,19 @@ exactly the reason above.
 > honest reading is that it was never where it looked.** With the gate uncharged a 16 MiB dump
 > measures 492,911 units — 98.6 % of the allowance — so this payload class was always within 1.4 %
 > of the line while a third of its validation work was not being counted at all. Charging it makes
-> the bound true and makes the cost visible; it does not make the body more expensive. **Whether to
-> restore the previous reach by raising the allowance is a threshold with functional consequences,
-> and it is the maintainer's** — [M11-R60](reviews/M11.md#m11-r60) carries the options and the
-> arithmetic (~800,000 units would put a 16 MiB hex dump back inside, at ~3 s of validation).
+> the bound true and makes the cost visible; it does not make the body more expensive.
+>
+> **Decided 2026-09-06 — the allowance stays 500,000, and the reason is that the reach it gives up is
+> not capacity anyone can use.** A 16 MiB hex dump is on the order of **four million tokens**; no
+> provider accepts that body, so whether this proxy masks it or refuses it only changes *who* says no
+> — and this one says no locally, in seconds, without spending an upstream call. Raising to ~800,000
+> would buy that unusable reach for **~2.8 s of validation on a single request** — the shape honestly
+> costs 765,576 units ([M11-R60](reviews/M11.md#m11-r60) carries the arithmetic, against the ~1.5 s
+> the current number was sized for) — and it would **move** the coincidence
+> rather than remove it: the sentence that condemned the old number — *a limit consumed 98.6 % by a
+> legitimate shape was not a limit* — reads identically against the new one. The refusal stays
+> fail-closed, names the tier that actually spent the quota, and ships named in `CHANGELOG.md` as a
+> visible change.
 >
 > **And the refusal now names the spender that actually spent it.** `Budget` records units per
 > `PiiKind` and the 400 body quotes the top one, because the moment there were two spenders the old

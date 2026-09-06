@@ -51,7 +51,7 @@ it, which a first dry run proved was not a hypothetical.
 | [M9 — GPU optimization](#m9) | ✅ complete |
 | [M9.1 — one release binary per backend](#m91) | ✅ complete · tag `v1.2.0` |
 | [M10 — national phone coverage + release hygiene](#m10) | ✅ complete · tag `v1.2.1` |
-| [M11 — deterministic coverage · NER thread base](#m11) | 🔨 code-complete · tag `v1.3.0` (planned) |
+| [M11 — deterministic coverage · NER thread base](#m11) | ✅ complete · tag `v1.3.0` |
 | [M12 — one model for everything not provable](#m12) | 📋 planned |
 
 ---
@@ -2260,7 +2260,7 @@ client, refused bodies never forwarded, the refusal message carrying no input-de
 | [M10-R61](reviews/M10.md#m10-r61) | Two mechanical defects introduced by `e704ce6`: a duplicated sentence in ROADMAP's pre-tag list (already gone — that block was rewritten this round) and seven doubled apostrophes in the review record | low | [x] |
 
 <a id="m11"></a>
-## M11 — deterministic coverage · NER thread base 🔨
+## M11 — deterministic coverage · NER thread base ✅
 
 **Three tracks that share a milestone and nothing else.** [A](#m11-a) is the coverage gap the
 milestone opened on; [B](#m11-b) and [C](#m11-c) were added 2026-09-02 and both touch the ML
@@ -2268,8 +2268,10 @@ layer — B changed *how many threads* one inference gets, C was to change *whic
 were listed apart because they fail apart, and they did: **B shipped, and C closed without work**
 once the search showed there is no newer export to move to. **What remains of M11 is Track A.**
 
-**M11 is heading for `v1.3.0`** (set 2026-09-02, written `(planned)` in the Status table until the
-tag exists). **Minor, not patch, and Track B alone decides that:** the default per-session thread
+**M11 ships as `v1.3.0`** (set 2026-09-02, carried as `(planned)` in the Status table until the
+release was prepared; `(planned)` dropped and `Cargo.toml` bumped 2026-09-06, in the commit the tag
+is cut from — the guard reads the tree at the tag, so the claim has to land one commit *before* the
+tag exists, never after). **Minor, not patch, and Track B alone decides that:** the default per-session thread
 count changes on every SMT machine with no config change — a behaviour change, not a fix — and the
 same is true of Track A's new recognizers. A patch release that
 silently halves a thread count is the kind of version number [M10](#m10) spent a milestone
@@ -2457,14 +2459,15 @@ nothing:
 > the first to find no leak**, and it verified round 14's fix differentially (3 150 renderings: 0 new
 > leaks, 1 270 newly masked); round 16 found none either.
 >
-> **One threshold is open and it is not a defect**, so it carries no ledger row: charging the IBAN
-> case gate honestly costs reach at the top of the body-size range — an `xxd` hex dump is masked to
-> about **11 MiB** and refused above it, where the uncounted build reached the full 16 MiB at 98.6 %
-> of the allowance. Restoring that reach means raising `MAX_PHONE_VALIDATIONS_PER_REQUEST` to
-> ~800,000; keeping 500,000 means publishing the limit. The arithmetic is in
-> [M11-R60](reviews/M11.md#m11-r60)'s closure and in `ARCHITECTURE.md`, and nothing is blocked on it.
->
-> The three decisions the maintainer took, and what each became:
+> The decisions the maintainer took, and what each became:
+> - **The allowance stays 500,000** (2026-09-06). Charging the IBAN case gate honestly costs reach at
+>   the top of the body-size range — an `xxd` hex dump is masked to about **11 MiB** and refused above
+>   it, where the uncounted build reached the full 16 MiB at 98.6 % of the allowance — and the
+>   decision is that *this reach is not capacity anyone can use*: 16 MiB is on the order of four
+>   million tokens, so no provider takes that body either, and raising to ~800,000 would buy it for
+>   ~2.8 s of validation on one request while **moving** the coincidence instead of removing it. The
+>   argument is written where it gets read, in `ARCHITECTURE.md` → *What the budget costs*; the
+>   arithmetic is in [M11-R60](reviews/M11.md#m11-r60)'s closure.
 > - [M11-R55](reviews/M11.md#m11-r55) — **accepted and published.** The over-mask round 14's
 >   leak-fix bought is the trade this tier now makes on purpose: both alternatives cost a leak, and
 >   an over-mask is restored byte-identically where a miss is not. `phone_eval` stopped being
@@ -3139,6 +3142,38 @@ project-wide quality bar set as a side effect of a patch release is a bar nobody
 argument for it is the one this repo already makes about `clippy`: *a warning channel with 14
 standing entries cannot surface the fifteenth*, and these dense doc comments are exactly where this
 codebase's reasoning lives.
+
+### Should the toolchain be pinned in-tree? *(raised 2026-09-06 by four days of red `main`)*
+**The gap is real and it is measured, not argued** — the write-up lives in
+[`TESTING.md`](TESTING.md) → *The toolchain gap*, next to the two commands it governs. `ci.yml` uses
+`dtolnay/rust-toolchain@stable`, so the gate runs on whatever stable is **on the day the job runs**;
+a developer's box runs whatever `rustup` last pulled. On 2026-09-03 stable moved 1.97 → 1.98, clippy
+0.1.98 widened `result_large_err` to `async fn`s, and **both `test` legs went red on `main` and
+stayed red for four days** while a local `cargo clippy --all-targets -- -D warnings` kept exiting 0.
+The developer could not have caught this by remembering to run the command: they were running it.
+
+This is the **second** time this repository has paid for a gate only CI runs — the first was
+[M11-R0](reviews/M11.md#m11-r0), `cargo fmt --check` red on `main`. That one was closed by running
+the command; this one cannot be.
+
+1. **Leave it floating (`@stable`, status quo).** Costs nothing to keep and new lints arrive free —
+   but they arrive as a **red `main`**, on a day nobody chose, discovered by whoever pushes next, and
+   a release cut in that window ships from a commit that fails its own gate. The mitigation is a
+   habit (`rustup update` before trusting a green clippy), and this milestone is the evidence that
+   habits are not a mechanism.
+2. **Pin in-tree — a `rust-toolchain.toml` that CI honours too.** `dtolnay/rust-toolchain@stable`
+   would become `@master` with the version read from the file (the `msrv` job already reads its
+   version out of `Cargo.toml` this way, so the pattern is in the tree). Local and CI then cannot
+   disagree by construction, and a new lint becomes a **deliberate commit that bumps the pin** —
+   reviewed, with the fix beside it, never a surprise on `main`. The cost is that somebody must go
+   and fetch it: an unbumped pin ages silently, and the project stops finding out about new lints for
+   free. Dependabot does not cover this, so it wants a calendar habit or a scheduled job of its own.
+
+**I'd pick 2.** The cost of pinning is a stale pin, which is visible in a file and fixed by editing
+one line; the cost of floating is a red `main` discovered by whoever pushes next, which is what just
+happened. It also matches how this repo already treats the MSRV — a floor that is *checked*, not
+claimed (the M5-R5 lesson). **Not decided here**: it changes the project's build contract, which is
+the maintainer's.
 
 ### Other later items
 Auth & rate-limiting stages · TLS (or running behind a TLS terminator) · config-file support & container

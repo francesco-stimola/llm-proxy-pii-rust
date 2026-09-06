@@ -3,6 +3,92 @@
 Newest first. One entry per meaningful change — note *what* and *why*, not just
 *what*. This is the running history so context is never lost between sessions.
 
+## 2026-09-06 — CI was red on `main` for four days, and running the command would not have found it
+
+**Both `test` legs have failed at the `clippy` step since 2026-09-02**, on a `main` that is pushed and
+green in every local check. `fmt` and `msrv` pass; the last green run was 2026-07-31. This is the
+**second** time a gate only CI runs has sat red on `main` — [M11-R0](reviews/M11.md#m11-r0) was
+`cargo fmt --check`, closed by running the command before pushing. That remedy does not reach this
+one: **the command was being run, and it passed.**
+
+### The cause, measured rather than inferred
+
+The job log needs authentication, so the diagnosis was reproduced locally instead of read. `ci.yml`
+uses `dtolnay/rust-toolchain@stable` — whatever stable is *on the day the job runs* — while the
+developer box had 1.97 from 7 July. Stable moved to **1.98.1 on 2026-09-03**. Same source, same
+`Cargo.lock`, only the toolchain differing:
+
+| | rustc 1.97.1 / clippy 0.1.97 | rustc 1.98.1 / clippy 0.1.98 |
+|---|---|---|
+| `cargo clippy --all-targets -- -D warnings` | exit **0** | exit **101** |
+| sites `result_large_err` inspects (`large-error-threshold = 1`, to enumerate) | **175** | **286**, a strict superset — none lost |
+| of those, over the default 128 B threshold | 0 | **1** |
+
+The lint is not new — 0.1.97 knows the name and fires on 175 sites, including private functions and
+closures. What changed is its **reach**: the 111 sites 0.1.98 adds are the `async fn`s and the
+`#[test]` harness closures, desugarings the older pass walked past. Exactly one of them clears the
+threshold: `run_privacy_stages` in `src/server.rs`, whose `Err` is an `axum` `Response`. **Nothing in
+the code or the dependency graph moved.** Both legs report the same single site, so there is one
+defect here, not two.
+
+### The fix declines the lint's remedy, and says why with a number
+
+`result_large_err` prescribes boxing the `Err`. Measured on this signature: `Ok` is
+**208 B**, `Err` is **128 B**, `Result<Ok, Err>` is **208 B** — and `Result<Ok, Box<Err>>` is
+**208 B** as well. Boxing buys **zero bytes** and costs a heap allocation on the fail-closed
+rejection path, the one path that must stay simple. So: `#[allow(clippy::result_large_err)]` on that
+function, with the reasoning in its doc comment.
+
+An `allow` justified by a measurement rots the moment the measurement changes, so the premise is
+pinned rather than remembered: **`CI-01`** (`boxing_the_err_variant_would_buy_nothing`, in
+`src/server.rs`'s test module) asserts `Ok >= Err` *and* that the two `Result` widths are equal, and
+prints the live sizes when it fails. A dependency bump that inverts them turns the suite red and the
+`allow` gets re-argued instead of inherited. No size is typed into a document — the four above are
+this entry's own reading, and the test is where they are enforced.
+
+### The durable half is not the fix
+
+The lesson is written where it gets read, in [`TESTING.md`](TESTING.md) → *The toolchain gap*, beside
+the two commands that section already declares as run-before-a-tag: **a green local `clippy` means
+green for *your* toolchain, never green for CI**, so `rustup update` before trusting one. That is a
+habit, and this milestone is the evidence that habits are not a mechanism — so the mechanism, an
+in-tree `rust-toolchain.toml` that CI honours too, is written up with both options costed in
+[`ROADMAP.md`](ROADMAP.md) → *Backlog* → *Should the toolchain be pinned in-tree?*. It changes the
+project's build contract, so it is the maintainer's call, not the builder's.
+
+**Verified:** `cargo fmt --check` exit 0; both CI clippy legs exit **0** on 1.98.1 (from 101 and 101);
+`cargo test` **261 passed / 0 failed / 4 ignored**, zero warnings — 260 before, +1 for `CI-01`;
+`cargo test-onnx` **297 / 0 / 21**, zero warnings.
+
+## 2026-09-06 — `v1.3.0` prepared: the allowance stays 500,000
+
+**The one open threshold is decided and the release is marked.**
+`MAX_PHONE_VALIDATIONS_PER_REQUEST` **stays 500,000**, and the argument that closes it is stronger
+than the one [M11-R60](reviews/M11.md#m11-r60) left open: *the reach given up is not capacity anyone
+can use.* A 16 MiB hex dump is on the order of four million tokens — no provider accepts that body,
+so masking it or refusing it only changes **who** says no, and this proxy says no locally without
+spending an upstream call. Raising to ~800,000 would buy that unusable reach for ~3 s of validation
+on a single request, and would **move** the coincidence rather than remove it: *a limit consumed
+98.6 % by a legitimate shape was not a limit* reads identically against the new number. The refusal
+stays fail-closed and names the tier that spent the quota. Written into
+[`ARCHITECTURE.md`](ARCHITECTURE.md) → *What the budget costs*, next to the table it qualifies.
+
+[M11-R38](reviews/M11.md#m11-r38) is **not reopened.** The instruction it contradicted rested on
+*"a rejection costs more per unit"*, which was the prior reading and was never measured; the
+measurement says the rejecting column is cheaper per unit, the ~9× spread is the candidate's shape,
+and a rejection already pays more in aggregate because it pays every enabled region. The intent — the
+budget charges the true cost — is delivered by R18's option 1, and the contradiction stays written
+inside R38's closure note where it happened.
+
+**Release marking, all three checks `release-build-publish.yml` makes at tag push:** `CHANGELOG.md`
+`## [Unreleased]` → `## [1.3.0] — 2026-09-06`; the Status row `🔨 code-complete · tag v1.3.0
+(planned)` → `✅ complete · tag v1.3.0` (and the M11 heading to ✅); **and `Cargo.toml` 1.2.1 →
+1.3.0** with `Cargo.lock`, which the guard checks too and which the tag would otherwise be refused
+for. The claim has to land one commit *before* the tag, because the guard reads the tree at the tag.
+
+**The tag itself is not cut here, and neither commit is pushed** — both are the maintainer's, and the
+tag only after CI is observed green on the pushed fix.
+
 ## 2026-09-06 — M11 round 17: nothing in the product, and the loop terminates
 
 **Round 17 found no defect in `src/`'s behaviour**, which under the rule decided this morning is the

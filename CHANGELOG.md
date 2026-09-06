@@ -31,9 +31,9 @@ All notable changes to this project are documented here. The format follows
 > prefix, so the guard would extract it and publish a section labelled unreleased as the release
 > body. The placeholder goes in the version slot, never beside it.
 
-## [Unreleased]
+## [1.3.0] — 2026-09-06
 
-Milestone [M11](https://github.com/francesco-stimola/llm-proxy-pii-rust/blob/main/docs/ROADMAP.md#m11) — in progress.
+Milestone [M11](https://github.com/francesco-stimola/llm-proxy-pii-rust/blob/main/docs/ROADMAP.md#m11) — complete.
 
 ### Added
 
