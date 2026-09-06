@@ -66,6 +66,12 @@ live only in a comment inside `release-build-publish.yml` plus one line of `ROAD
 shape as the gap described next: a step only CI performs, that no document declared where it gets
 read.
 
+**Three checks, and one gate you do not run but must read.** The list stays at three because these
+are the three *commands*; the `Security` workflow (cargo-deny) and code scanning run on GitHub, and
+before a tag they have to be **looked at** — `Security` especially, because it does not run on
+every push and its latest green tick can be a week older than the tree you are tagging. Where, and
+what a red one has meant here: [*The gates only CI runs*](#ci-only-gates), below.
+
 ## The toolchain gap — green here does not mean green in CI
 
 **This repository has now paid twice for the same shape: a gate that only CI runs, going red on
@@ -116,6 +122,87 @@ having to go and fetch them) and is recorded as an open question in `docs/ROADMA
   Response, found Box<Response>` in the lib test target; with the anchor deleted the same mutation
   leaves the runtime half green. This is the general shape: *a guard that restates what it watches
   measures its own restatement.*
+
+<a id="ci-only-gates"></a>
+
+## The gates only CI runs — and where a red one gets read
+
+**In one week this repository had three red gates nobody was reading**, and all three are the same
+shape: *a check only CI performs, and no document saying where its result is read.* `main` red at
+the **clippy** step for four days (the section above); the **cross-target build** not run since
+2026-07-31, a month before the tag it was supposed to protect (the section above that); and the
+**`Security` workflow red for thirteen days — five failed runs in a row from 2026-08-24 — with
+nobody looking at it**, which is what this section exists to stop repeating.
+
+The rule the three of them bought: **a gate whose reader nobody can name is a gate that is not
+running.** So each one below says where it is read, and when.
+
+### `Security` — cargo-deny over the dependency graph
+
+`.github/workflows/security.yml` runs `cargo deny check advisories bans sources` over
+`Cargo.lock`. It compiles nothing, so it is cheap — and it is the only **workflow in this tree**
+that can see a CVE disclosed against a dependency that has not changed. (Dependabot's security
+alerts do too, but those are a repository setting rather than something the repo can show you.)
+
+- **Where it is read: Actions → *Security*, in the same pass as the three pre-tag commands above.**
+  Look at the latest run on `main` before cutting a `v*` tag; if it predates the commit you are
+  tagging, use **Run workflow** (`workflow_dispatch`) rather than assuming.
+- **It does not run on every push, and that is the trap.** Its `paths` filter is `Cargo.toml`,
+  `Cargo.lock`, `deny.toml` and `security.yml` — deliberately, so a doc-only commit does not spin
+  it up. The consequence is that *a source-only push leaves the last result standing*, however old,
+  and the only unconditional trigger is the **weekly Monday cron**. A green tick on the workflow
+  page can therefore be up to a week older than the tree you are about to release.
+- **Locally, the same thing:** `cargo deny check` (install: `cargo install --locked cargo-deny`).
+  Nothing else in `cargo test` looks at advisories.
+- **What red meant, the one time anybody read it:** `RUSTSEC-2026-0258` — `h2` 0.4.15 queues empty
+  HTTP/2 DATA frames without a bound (unbounded memory, or a panic), reaching this binary through
+  `reqwest`/`hyper` on the upstream connection — and **only** there: `axum`'s default features are
+  HTTP/1 only (checked in its manifest, not assumed), so `axum::serve` never serves an HTTP/2
+  preface and the inbound listener cannot reach `h2`. Fixed in 0.4.16; the lockfile carries 0.4.19.
+  It was the only vulnerability in the graph — the other two findings, `paste` and
+  `atomic-polyfill`, are *unmaintained*, not vulnerable, and `deny.toml`'s `unmaintained =
+  "workspace"` is what keeps a dormant transitive crate from failing the job.
+- **A lockfile change is what restarts it**, by the same `paths` filter — so a dependency fix
+  re-runs the gate that found it, while a fix to *this* repository's source does not.
+
+### Code scanning (CodeQL) — and why eight of its alerts are test code that stays open
+
+Code scanning runs from GitHub's **default setup**, not from a workflow file, so looking for it in
+`.github/workflows/` finds nothing. It is read in the repository's **Security → Code scanning**
+tab.
+
+**As of 2026-09-06 it reports eight `cleartext logging of sensitive information` alerts, and all
+eight are test code.** Four are in `tests/`, which GitHub labels *Test* on its own. The other four
+are inside `src/pii/recognizers.rs`'s `#[cfg(test)] mod tests` and carry **no** such label,
+because CodeQL classifies test code by **file path** and `src/` is never a test path. What they
+flag is an `assert!` message: the IBAN synthesiser's own sanity check, the two non-vacuity
+assertions of the country probe, and — the sharpest one — the assertion that an eight-character
+window of a **synthesised** IBAN did *not* reach the provider. The value in the message exists to
+make a masking failure legible; the module is `#[cfg(test)]`, so none of it is in the shipped
+binary, and no real value is involved.
+
+**Two things follow, and the first is the one that matters.**
+
+1. **CodeQL is not the guard of the never-log-raw-PII invariant — `DBG-02` is** (`tests/log_safety.rs`,
+   `crate_logs_carry_placeholders_never_raw_pii`, catalogued below). That test captures the crate's
+   own `trace` logs during a real round trip and asserts the masked-body line shows `[EMAIL_1]` and
+   never the raw value. It runs in `cargo test`, on every change, over the **product** path. Every
+   alert in that tab today is about a *test* assertion; treating the tab as this invariant's guard
+   would swap a test that runs on every change for a heuristic nobody runs locally.
+2. **The four alerts in `src/` cannot be labelled from the source, and will stay open until
+   dismissed by hand.** No attribute or comment moves a file into CodeQL's test classification —
+   the classification is the path. The two things that *would* change it are leaving default setup
+   for an advanced config, and moving the unit tests out of `src/`; neither is worth doing for a
+   label, and both cost more than the one-click dismissal (*used in tests*), which is a maintainer
+   action in the Security tab. This paragraph is the record of *why* — so the next person to open
+   that tab does not re-derive it, and does not "fix" a test by deleting the value that makes its
+   failure readable.
+
+Two Critical `server-side request forgery` alerts on `src/proxy.rs` are a separate case and were
+**not** dismissed: no request data reaches the upstream URL — it is `env::var` plus a path resolved
+once at startup, so there is nothing an attacker controls — but the environment value really did
+arrive unvalidated. `CFG-02` now validates it at startup, which is the honest response to the
+source the query was pointing at.
 
 ## Reliability guards (lessons from the old proxy)
 
@@ -1153,7 +1240,7 @@ two *other* always-on tiers already claim that shape.
 **CLI surface (`tests/binary_smoke.rs`, spawns the real `.exe`).** M9 gave the binary its first arguments, and unexpected input must refuse rather than serve.
 - CLI-01 — `unknown_cli_argument_is_refused_and_never_binds` (M9-R4): `--bench-provider` (the singular typo) exits **non-zero** *and* the port **never becomes reachable**. Both halves are load-bearing — an exit-code-only assertion would pass for a binary that served for ten seconds first, which is exactly how the defect was found.
 - CLI-02 — `help_prints_usage_and_exits_zero` (M9-R4): `--help` prints usage listing the flags and exits 0, so the natural way to ask "what does this take?" is not itself an error.
-- CLI-04 — `version_prints_the_manifest_version_and_exits_zero` (M10): `--version` prints `CARGO_PKG_VERSION`, the target triple and whether the ML layer is compiled in, and exits 0. It runs with a deliberately useless `UPSTREAM_BASE_URL`, so a `--version` handled *after* `Config::from_env` would fail the test — asking what a binary is must not require a valid upstream. Before M10 there was no such flag *and* unknown arguments are refused (CLI-01), so `--version` did not merely print nothing: it **failed to start**.
+- CLI-04 — `version_prints_the_manifest_version_and_exits_zero` (M10): `--version` prints `CARGO_PKG_VERSION`, the target triple and whether the ML layer is compiled in, and exits 0. It runs with a deliberately useless `UPSTREAM_BASE_URL` — an empty value, which since CFG-02 is *refused* rather than merely unusable, so a `--version` handled *after* `Config::from_env` would now fail this test outright — asking what a binary is must not require a valid upstream. Before M10 there was no such flag *and* unknown arguments are refused (CLI-01), so `--version` did not merely print nothing: it **failed to start**.
 - CLI-05 — `help_names_every_environment_variable_the_code_reads` (M10): extracts every literal `env::var` / `env_var_os` / `env_flag` / `env_or` key from `src/config.rs`, `src/server.rs` and `src/main.rs`, and asserts each is **named** in `--help`. Configuration here is entirely environment variables with no config file, so a help text that defers to `README.md` means you need the repo to run the program — and a hand-written one drifts. **Scope limit, stated so the guard doesn't read stronger than it is:** it proves each key is *named*, not that its description or default is accurate; that is review's job. It also asserts the extractor matched ≥20 keys, so a change in the source's shape fails loudly instead of passing vacuously (M4-R13's lesson).
 - CLI-06 — `default_log_level_is_info_and_timestamps_carry_an_offset` (M10): spawns the binary with `RUST_LOG` **removed** (`env_remove`, never a mutation of the test process's own env) and asserts (a) it still logs `listening on` — the shipped default was ERROR-only, so a released proxy started **completely silent** and looked identical to a broken one, which breaks the one check this project asks operators to make — and (b) every such line's timestamp carries an **explicit** offset (`Z` or `[+-]HH:MM`). (b) is the regression that local timestamps invite: a bare `12:37:04` reads correctly on the author's box and is ambiguous everywhere else. It asserts the *offset*, not the wall-clock value, because the value depends on the machine.
 
@@ -1336,6 +1423,7 @@ two *other* always-on tiers already claim that shape.
 
 **Configuration (`src/config.rs`, unit).**
 - **CFG-01 (M10-R5) — `an_empty_pii_locales_is_off_not_everything`.** Three spellings, three behaviours: unset → all nine regions, `PII_LOCALES=` → **none**, an explicit list → that list. The middle one is why it exists — an empty value used to fall back to the default set, so the value ARCHITECTURE named as the response to a `phonenumber` advisory turned the tier fully **on**. Driven through `parse_header_list` / `default_locales`, never by mutating process env in a parallel run.
+- **CFG-02 (M11) — `upstream_base_url_is_checked_and_stored_unchanged` + `an_invalid_upstream_base_url_refuses_to_start` (`tests/binary_smoke.rs`).** `UPSTREAM_BASE_URL` names *where every masked request is sent*, and it was the one value `from_env` read with no check at all — between `LISTEN_ADDR` and `MAX_BODY_BYTES`, which have always refused a bad value at startup. So `api.openai.com` with the scheme forgotten bound the listener, logged `listening on`, accepted a client's PII, and failed per request inside `reqwest`. **Two halves, and neither is sufficient:** the matrix (`src/config.rs`, over `checked_upstream_base_url`, a pure function over the value — the same reason CFG-01 avoids process env) proves the decision is *right*; the spawned-binary test proves it is *reached* — delete the call from `from_env` and the matrix still passes. The runtime half asserts the refusal exits non-zero, **names the variable**, and that the port never becomes reachable, which is CLI-01's shape for the same reason: an exit code alone would pass for a binary that served first. **Two measured surprises are recorded in the test's own doc comment:** `https:/host` (one slash) and `http:///v1` (three) are *valid* URLs naming `host` and `v1`, so they are accepted; and every rejection lands in the parser rather than in the scheme/host checks after it — the explicit empty-host branch is unreachable for an `http`/`https` value today, and is written down as such rather than left looking load-bearing.
 
 **Log subscriber (`src/logging.rs`, unit).** The two defaults CLI-06 pins end-to-end, tested at the seam so the failure is legible.
 - LOG-01 · LOG-02 · LOG-03 — `an_unset_rust_log_defaults_to_info` · `a_blank_rust_log_is_treated_as_unset` · `a_set_rust_log_still_wins`: `log_filter` takes the `RUST_LOG` **value**, not the environment, so these run in a parallel test binary without a process-env data race. LOG-02 is the one worth keeping: an exported-but-blank `RUST_LOG` parses to *no directives*, which is ERROR-only — the silent binary through a second door.

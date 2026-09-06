@@ -3,6 +3,98 @@
 Newest first. One entry per meaningful change — note *what* and *why*, not just
 *what*. This is the running history so context is never lost between sessions.
 
+## 2026-09-06 — the red `Security` gate: `h2` bumped, `UPSTREAM_BASE_URL` validated, the CodeQL alerts written down
+
+Three items handed over before the `v1.3.0` tag, and one line of method that is worth more than the
+three: **in one week this repository had three red gates nobody was reading** — clippy on `main` for
+four days, the cross-target build unrun since 2026-07-31, and now `cargo-deny` red for thirteen
+days — and all three are the same shape, *a check only CI performs with no document naming where
+its result gets read*. The first two were written up this morning; the third is
+[`TESTING.md`](TESTING.md#ci-only-gates) → *The gates only CI runs*, which is new.
+
+### `h2` 0.4.15 → 0.4.19 — RUSTSEC-2026-0258
+
+The `Security` workflow had failed **five times in a row since 2026-08-24**: `h2` 0.4.15 queues
+empty HTTP/2 DATA frames with no bound (unbounded memory, or a panic), and it reaches this binary
+through `reqwest`/`hyper` on the **upstream** connection — and only there, which is worth knowing
+before judging the severity: `axum`'s default features are HTTP/1 only (read out of its manifest,
+not assumed), so `axum::serve` never serves an HTTP/2 preface and no client of *this* proxy can
+reach `h2`. Fixed in 0.4.16; `cargo update -p h2`
+took the lockfile to 0.4.19 and added no crate — 427 packages before and after. **It is not a
+one-line diff, and that is worth reading before the tag:** re-resolving also moved seven crates
+whose requirement is a *range* (`>=0.52, <0.62` and similar) from `windows-sys 0.61.2` onto the
+`0.52.0` already in the tree — `colored`, `errno`, `quinn-udp`, `rustix`,
+`rustls-platform-verifier`, `tempfile`, `winapi-util`. Both versions stay in the lock, no package
+is added or removed, every moved edge is inside its own declared range, and the whole thing is
+`cfg(windows)` — the platform both green legs above were run on. It is the only
+
+vulnerability in the graph — the other two findings are `paste` and `atomic-polyfill`, both
+*unmaintained* rather than vulnerable, which `deny.toml`'s `unmaintained = "workspace"` correctly
+does not fail on. In `CHANGELOG.md` under a new `### Security` heading for `[1.3.0]`, because a
+security fix a release ships is something the person reading the release page has to find there.
+
+A detail worth keeping: **the workflow had not run on the last push at all.** Its `paths` filter is
+`Cargo.toml` / `Cargo.lock` / `deny.toml` / `security.yml`, so source- and doc-only commits leave
+the last (red) result standing, and the only unconditional trigger is the weekly Monday cron.
+Changing the lockfile is what restarts it.
+
+### `UPSTREAM_BASE_URL` was the one config value read without validation
+
+`LISTEN_ADDR` two lines above and `MAX_BODY_BYTES` two lines below both `.parse().with_context(…)?`
+and refuse to start on a bad value. The variable that names *where every masked request is sent*
+did not: `api.openai.com` with the scheme forgotten, or an exported-but-blank value, bound the
+listener, logged `listening on`, accepted a client's PII and only then failed per request inside
+`reqwest` as `relative URL without a base`. A proxy that starts is a proxy something points at.
+
+It is also the source behind the two **Critical** CodeQL `server-side request forgery` alerts on
+`src/proxy.rs`. There is no exploitable SSRF — no request data reaches that URL, which is the
+process environment plus a path resolved once at startup — but the value did arrive from
+`env::var` with nothing between it and the outbound request, and that is what the query flags.
+
+Now `checked_upstream_base_url`: `reqwest::Url::parse` (a re-export of `url`, and `reqwest` is
+already a direct dependency, so **`DEP-01`/`DEP-02` do not move** — verified, no crate added), an
+`http`/`https` scheme, a non-empty host, and the same `with_context` as its two neighbours. **It
+returns the operator's own bytes**, never the parser's: `Url::parse` normalises, and `proxy.rs`
+concatenates `base.trim_end_matches('/')` with the configured path, so storing the normalised form
+would silently rewrite a configured base.
+
+`CFG-02`, in two halves, because the decision is a pure function and *"it is reached"* is a
+different claim from *"it is right"*: a 20-value matrix over the function, and a spawned-binary
+test asserting the refusal exits non-zero, names the variable, and never binds the port. Delete the
+call from `from_env` and the matrix still passes; the binary test fails.
+
+**Two surprises the matrix produced, both recorded rather than smoothed over.** `https:/host` (one
+slash) and `http:///v1` (three) are *valid* URLs — a special scheme skips any run of slashes before
+the authority — naming `host` and `v1`, so they are accepted, and refusing them would have been
+this check inventing a rule the URL standard does not have. And every rejection lands in the
+**parser**: the scheme-less values as `relative URL without a base`, `https://` and `http://:8080`
+as `empty host`. So the explicit host check never fires for an `http`/`https` value; it is written
+down as unreachable-today rather than left looking load-bearing.
+
+### The eight CodeQL `cleartext logging` alerts are test code — registered, not fixed
+
+Four are in `tests/` and GitHub labels them *Test* by itself. Four are inside
+`src/pii/recognizers.rs`'s `#[cfg(test)] mod tests` and are **not** labelled, because CodeQL
+classifies test code by **file path** and `src/` is never a test path. What they flag is an
+`assert!` message carrying a **synthesised** IBAN — including, sharpest, the assertion that eight
+characters of that IBAN did *not* reach the provider. Nothing real, nothing compiled into the
+shipped binary.
+
+Written into [`TESTING.md`](TESTING.md#ci-only-gates) with the part that actually matters: **CodeQL
+is not the guard of the never-log-raw-PII invariant — `DBG-02` is** (`tests/log_safety.rs`), which
+runs in `cargo test`, over the product path, on every change. There is no in-source annotation that
+moves a `src/` file into CodeQL's test classification, so those four stay open until dismissed by
+hand in the Security tab; the dismissal is the maintainer's, and this is the written *why*.
+
+**Verified:** `cargo test` **263 passed / 0 failed / 4 ignored**, `cargo test-onnx`
+**299 / 0 / 21** — in both legs exactly the two new CFG-02 cases over the counts recorded in the
+entry below, zero warnings, `cargo fmt --check` and `cargo clippy --all-targets -- -D warnings`
+clean on rustc 1.98.1 (the toolchain CI resolves to). Mutations tried: (1) drop the
+`checked_upstream_base_url` call from `from_env` — matrix green, binary test **fails**; (2) accept
+any scheme — matrix **fails** on `file:`/`ftp:`/`data:`/`javascript:`; (3) return
+`url.to_string()` instead of the raw value — matrix **fails** on the normalised trailing slash and
+the case-folded host.
+
 ## 2026-09-06 — the pre-tag commands were run and recorded; `CI-01` stops measuring a copy
 
 **The two measurement commands `TESTING.md` declares before a tag were run on this tree**, on the

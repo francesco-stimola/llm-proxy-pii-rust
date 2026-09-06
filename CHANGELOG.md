@@ -135,6 +135,17 @@ Milestone [M11](https://github.com/francesco-stimola/llm-proxy-pii-rust/blob/mai
     same body pass on an idle machine and fail on a busy one, and a fail-closed layer whose verdict
     depends on load is not one an operator can reason about.
 
+- **A malformed `UPSTREAM_BASE_URL` now refuses the startup instead of failing every request.** It
+  was the one configuration value read with no validation at all, sitting between two
+  (`LISTEN_ADDR`, `MAX_BODY_BYTES`) that have always refused a bad value at startup. So
+  `api.openai.com` with the scheme forgotten, an exported-but-blank value, or `htp://…` bound the
+  listener, logged `listening on`, accepted a client's PII and only then failed per request inside
+  the HTTP client. **What changes for you: those spellings now exit non-zero with
+  `invalid UPSTREAM_BASE_URL: …` and never bind a port.** The rule is an `http`/`https` URL with a
+  host; the value is otherwise used exactly as written, never rewritten or normalised — so a base
+  URL that worked keeps working, including the one-slash `https:/host` spelling the URL standard
+  accepts.
+
 ### Fixed
 
 - **A lower- or mixed-case IBAN or VAT number was forwarded in clear. It is now masked.** This is a
@@ -206,6 +217,25 @@ Milestone [M11](https://github.com/francesco-stimola/llm-proxy-pii-rust/blob/mai
   produced no IBAN candidate at all, and the provider saw the country code, both check digits and
   the final group in clear. A rejected span is now retried one separator shorter instead of being
   discarded.
+
+### Security
+
+- **`h2` is updated to 0.4.19, closing RUSTSEC-2026-0258 — unbounded memory use, or a panic, from a
+  stream of empty HTTP/2 DATA frames.** The advisory is against `h2` 0.4.15, which reaches this
+  binary through `reqwest`/`hyper` on the **upstream** connection, and the fix landed in 0.4.16;
+  the lockfile now carries 0.4.19. **The listener you expose is not the exposed side:** `axum`'s
+  default features are HTTP/1 only, so `axum::serve` refuses an HTTP/2 preface and a client cannot
+  reach `h2` at all — `reqwest`'s `http2` feature, which this project sets deliberately, is what
+  puts it in the graph. Frames from the *provider* were the reachable path. It is the only vulnerability in the dependency graph — all 427
+  locked crates were scanned; the other two findings are `paste` and `atomic-polyfill`, both
+  *unmaintained* rather than vulnerable, and `deny.toml` gates unmaintained crates on this
+  project's own direct dependencies only.
+- **`UPSTREAM_BASE_URL` is validated, which is also what the two Critical CodeQL
+  *server-side request forgery* alerts on `src/proxy.rs` were pointing at.** There is no
+  exploitable SSRF: no request data ever reaches that URL — it is the process environment plus a
+  path resolved once at startup — but the value did arrive from `env::var` with nothing between it
+  and the outbound request, and an unvalidated environment source is what the query flags. The
+  refusal it now performs is described under *Changed*.
 
 ## [1.2.1] — 2026-07-31
 
