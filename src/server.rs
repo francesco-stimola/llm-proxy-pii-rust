@@ -1014,9 +1014,35 @@ mod tests {
     use super::{build_detector, demasking_sse_body, Bytes};
     use crate::pii::anonymizer::Vault;
 
-    /// CI-01 — the `#[allow(clippy::result_large_err)]` on `run_privacy_stages` is
-    /// allowed to stand only while its premise holds: the `Ok` variant is the wider
-    /// one, so boxing the `Err` cannot shrink the `Result` and would only buy a heap
+    /// The exact `Result` that `run_privacy_stages` returns. `CI-01` measures these
+    /// two widths, so they have to be *its* pair rather than a hand-written copy of
+    /// it — which is what the anchor below enforces.
+    type StagesOk = (super::ProxyRequest, super::RequestContext);
+    type StagesErr = axum::response::Response;
+
+    /// CI-01, the compile-time half. Never called: it exists so the two aliases above
+    /// cannot drift from the signature they claim to describe. Reshape
+    /// `run_privacy_stages` — box the `Err`, change the `Ok` pair — and this stops
+    /// compiling. That is the failure the runtime half below cannot see: written out
+    /// by hand, the sizes it compares would go on describing the *old* pair, stay
+    /// green, and let the `allow` outlive the reason it was granted for.
+    ///
+    /// `result_large_err` fires on this wrapper for the same reason it fires on the
+    /// function it wraps, and is declined here for the same reason (see that
+    /// function's doc comment).
+    #[allow(dead_code, clippy::result_large_err)]
+    async fn run_privacy_stages_still_returns_this_pair(
+        state: &super::AppState,
+        body: serde_json::Value,
+        schema: crate::pipeline::WireSchema,
+    ) -> Result<StagesOk, StagesErr> {
+        super::run_privacy_stages(state, body, schema).await
+    }
+
+    /// CI-01, the runtime half — the measurement. The
+    /// `#[allow(clippy::result_large_err)]` on `run_privacy_stages` is allowed to
+    /// stand only while its premise holds: the `Ok` variant is the wider one, so
+    /// boxing the `Err` cannot shrink the `Result` and would only buy a heap
     /// allocation on the fail-closed rejection path. Clippy 0.1.98 widened
     /// `result_large_err` to `async fn`s and turned CI red on this signature; the
     /// answer was to decline the lint's remedy, and this is what makes that decision
@@ -1025,10 +1051,8 @@ mod tests {
     #[test]
     fn boxing_the_err_variant_would_buy_nothing() {
         use std::mem::size_of;
-        type Ok_ = (super::ProxyRequest, super::RequestContext);
-        type Err_ = axum::response::Response;
 
-        let (ok, err) = (size_of::<Ok_>(), size_of::<Err_>());
+        let (ok, err) = (size_of::<StagesOk>(), size_of::<StagesErr>());
         assert!(
             ok >= err,
             "premise of the allow is gone: Ok is {ok} B, Err is {err} B — the Err is now \
@@ -1036,8 +1060,8 @@ mod tests {
              on `run_privacy_stages` (see its doc comment) instead of keeping it."
         );
         assert_eq!(
-            size_of::<Result<Ok_, Err_>>(),
-            size_of::<Result<Ok_, Box<Err_>>>(),
+            size_of::<Result<StagesOk, StagesErr>>(),
+            size_of::<Result<StagesOk, Box<StagesErr>>>(),
             "boxing the Err must be a no-op on the Result's width (Ok {ok} B, Err {err} B)"
         );
     }
