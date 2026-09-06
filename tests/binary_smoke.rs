@@ -541,3 +541,76 @@ async fn default_log_level_is_info_and_timestamps_carry_an_offset() {
         "the offset check must still reject a timestamp with no zone at all"
     );
 }
+
+/// **CFG-02 (M11) — the runtime half.** An unusable `UPSTREAM_BASE_URL` must refuse the
+/// **startup**, not the first request.
+///
+/// `LISTEN_ADDR` and `MAX_BODY_BYTES` are parsed and refused at startup; `UPSTREAM_BASE_URL` —
+/// the value naming *where every masked request is sent* — was read raw. So `api.openai.com`
+/// with the scheme forgotten, or an exported-but-blank value, bound the listener, logged
+/// `listening on`, accepted a client's PII and only then failed per-request inside `reqwest`.
+/// A proxy that starts is a proxy something points at.
+///
+/// This is the half `src/config.rs`'s matrix cannot supply: it proves the check is **reached**
+/// through the real `main` → `Config::from_env` path. Delete the call from `from_env` and the
+/// matrix still passes; this fails.
+///
+/// Both halves of the refusal are asserted, for the same reason CLI-01 asserts both: a non-zero
+/// exit alone would still pass for a binary that served for a while and then gave up.
+#[tokio::test]
+async fn an_invalid_upstream_base_url_refuses_to_start() {
+    for bad in ["api.openai.com", "", "file:///etc/passwd"] {
+        let port = free_port();
+        let child = Command::new(env!("CARGO_BIN_EXE_llm-proxy-pii-rust"))
+            .env("LISTEN_ADDR", format!("127.0.0.1:{port}"))
+            .env("UPSTREAM_BASE_URL", bad)
+            .env("RUST_LOG", "warn")
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("failed to spawn the proxy binary");
+        let mut guard = ChildGuard(Some(child));
+
+        // Polled rather than waited on: a binary that does NOT refuse would serve forever, and
+        // this must fail with a message instead of hanging the suite.
+        let mut exited = false;
+        for _ in 0..100 {
+            if guard.child().try_wait().expect("try_wait failed").is_some() {
+                exited = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert!(
+            exited,
+            "UPSTREAM_BASE_URL={bad:?} did not stop the binary — it is still running, which \
+             means the value was accepted and a live proxy is pointed at nothing usable"
+        );
+
+        let out = guard
+            .take()
+            .wait_with_output()
+            .expect("failed to collect the refusal");
+        assert!(
+            !out.status.success(),
+            "UPSTREAM_BASE_URL={bad:?} must exit non-zero, got {:?}",
+            out.status
+        );
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains("UPSTREAM_BASE_URL"),
+            "the refusal must name the variable at fault — an operator reads this line and \
+             nothing else. Got:\n{stderr}"
+        );
+
+        // And it must never have served on the port it was given.
+        assert!(
+            reqwest::Client::new()
+                .get(format!("http://127.0.0.1:{port}/healthz"))
+                .send()
+                .await
+                .is_err(),
+            "a proxy answered on 127.0.0.1:{port} with UPSTREAM_BASE_URL={bad:?} — it fell \
+             through to serving instead of refusing"
+        );
+    }
+}

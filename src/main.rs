@@ -36,7 +36,9 @@ CONFIGURATION (environment variables — there is no config file):
                                                  also dumps the MASKED upstream body.
 
   Upstream
-    UPSTREAM_BASE_URL           [https://api.openai.com] Provider base URL.
+    UPSTREAM_BASE_URL           [https://api.openai.com] Provider base URL. Must be an
+                                                 http/https URL with a host — the proxy
+                                                 refuses to start otherwise.
     UPSTREAM_API_KEY            [unset]          Sent as `Authorization: Bearer …` only when
                                                  the client sends no credential of its own.
     UPSTREAM_PROVIDER           [openai]         openai | copilot | anthropic. Picks the chat

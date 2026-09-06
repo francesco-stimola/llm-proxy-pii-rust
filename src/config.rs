@@ -11,7 +11,9 @@ pub struct Config {
     /// Address the proxy listens on.
     pub listen: SocketAddr,
     /// Base URL of the upstream OpenAI-compatible provider (no trailing
-    /// `/v1/...` — the proxy appends the path).
+    /// `/v1/...` — the proxy appends the path). Checked at startup by
+    /// [`checked_upstream_base_url`]: http/https with a host, or the proxy refuses to
+    /// start. Stored exactly as the operator wrote it.
     pub upstream_base_url: String,
     /// Optional API key injected as `Authorization: Bearer …` when the client
     /// did not send its own `Authorization` header.
@@ -98,8 +100,10 @@ impl Config {
             .parse()
             .with_context(|| format!("invalid LISTEN_ADDR: {listen_raw:?}"))?;
 
-        let upstream_base_url = std::env::var("UPSTREAM_BASE_URL")
+        let upstream_raw = std::env::var("UPSTREAM_BASE_URL")
             .unwrap_or_else(|_| "https://api.openai.com".to_string());
+        let upstream_base_url = checked_upstream_base_url(&upstream_raw)
+            .with_context(|| format!("invalid UPSTREAM_BASE_URL: {upstream_raw:?}"))?;
 
         // An empty value is treated as "unset" so an exported-but-blank var
         // doesn't send `Authorization: Bearer `.
@@ -190,6 +194,47 @@ impl Config {
             pii_max_phone_validations: crate::pii::recognizers::MAX_PHONE_VALIDATIONS_PER_REQUEST,
         })
     }
+}
+
+/// Check `UPSTREAM_BASE_URL` and return it **byte for byte as written**.
+///
+/// It was the only configuration value read with no validation at all, sitting between two
+/// (`LISTEN_ADDR`, `MAX_BODY_BYTES`) that `.parse().with_context(…)?` and refuse to start on a
+/// bad value — so the one variable naming *where every masked request is sent* was the one
+/// nobody checked. A typo (`htp://…`, `api.openai.com` with no scheme, an exported-but-blank
+/// value) was accepted at startup and only surfaced later, per request, as a
+/// `relative URL without a base` from `reqwest` — after the listener was already up and a
+/// client was already sending it PII.
+///
+/// It is also the source CodeQL points at: the two Critical `server-side request forgery`
+/// alerts on `src/proxy.rs` are not an exploitable SSRF — no request data reaches this URL,
+/// which is the process environment plus a path resolved once at startup — but the value
+/// really did arrive from `env::var` with nothing between it and the outbound request.
+///
+/// **Returns the operator's own bytes, not the parser's.** `Url::parse` normalises (a trailing
+/// `/` appears, the host lower-cases, characters percent-encode), and `proxy.rs` builds the
+/// upstream URL by concatenating `base.trim_end_matches('/')` with the configured path — so
+/// storing the normalised form would silently rewrite a configured base. This validates; it
+/// does not rewrite.
+///
+/// `reqwest::Url` is `url::Url` re-exported, and `reqwest` is already a direct dependency, so
+/// this adds no crate to the graph and `DEP-01`/`DEP-02` are untouched.
+fn checked_upstream_base_url(raw: &str) -> anyhow::Result<String> {
+    let url = reqwest::Url::parse(raw)?;
+    if !matches!(url.scheme(), "http" | "https") {
+        anyhow::bail!(
+            "scheme {:?} is not http or https — the proxy speaks HTTP to its upstream",
+            url.scheme()
+        );
+    }
+    // Defensive, and honestly so: a special scheme always carries a host, and the parser rejects
+    // the spellings that would leave it empty (`https://`, `http://:8080` are `EmptyHost`) — so
+    // no value reaching here has one, and CFG-02 records the measurement. It costs a comparison,
+    // and it is the check that has to hold if that ever stops being true.
+    if url.host_str().is_none_or(str::is_empty) {
+        anyhow::bail!("no host — the proxy would have nowhere to send the request");
+    }
+    Ok(raw.to_string())
 }
 
 /// The recognizer locales when `PII_LOCALES` is unset: **every vetted region** (M10).
@@ -344,5 +389,75 @@ mod tests {
         );
         assert!(parse_header_list(" , ,  ").is_empty());
         assert_eq!(parse_header_list("gb, DE "), vec!["gb", "de"]);
+    }
+
+    /// **CFG-02 (M11) — the matrix half.** `UPSTREAM_BASE_URL` is *where every masked request
+    /// goes*, and it was the one value `from_env` read without checking anything.
+    ///
+    /// The decision lives in `checked_upstream_base_url`, a pure function over the **value**, so
+    /// this runs without mutating process env in a parallel test binary — the same reason CFG-01
+    /// is driven through `parse_header_list`. That the function is *reached* is the other half,
+    /// `an_invalid_upstream_base_url_refuses_to_start` in `tests/binary_smoke.rs`: a matrix alone
+    /// would still pass if `from_env` stopped calling it.
+    ///
+    /// **Measured while writing it, because two of the cases are not what they look like.**
+    /// `https:/api.openai.com` (one slash) and `http:///v1` (three) are *valid* URLs — a special
+    /// scheme skips any run of slashes before the authority — so they name `api.openai.com` and
+    /// `v1` and are accepted, not refused. And every rejection above lands in the parser, not in
+    /// the two checks after it: the four scheme-less values fail as `relative URL without a
+    /// base`, and `https://` / `http://:8080` as `empty host`. So the explicit host check never
+    /// fires for an http/https value today — it is there for the day the scheme allowlist widens,
+    /// and this note is the record that it is currently unreachable rather than load-bearing.
+    #[test]
+    fn upstream_base_url_is_checked_and_stored_unchanged() {
+        for ok in [
+            "https://api.openai.com",
+            "https://api.openai.com/",
+            // Legal, and it works: WHATWG normalises a single slash after a special scheme, and
+            // `reqwest` re-parses the concatenated URL at request time — so this reaches
+            // `api.openai.com` exactly like the two-slash spelling. Refusing it would be this
+            // check inventing a rule the stack does not have.
+            "https:/api.openai.com",
+            // Also legal, and also surprising: for a special scheme the parser skips any run of
+            // slashes before the authority, so this names the host `v1` — not an empty host.
+            // Recorded because it is half of why the empty-host branch is unreachable here.
+            "http:///v1",
+            "http://127.0.0.1:8080",
+            "http://localhost:11434/v1",
+            "https://api.githubcopilot.com",
+            // The parser case-folds scheme and host; what we *store* must still be what was
+            // written, which is the assert below.
+            "HTTPS://API.OPENAI.COM",
+            // Accepted, and worth stating: credentials in the base URL are legal in a URL and
+            // this does not refuse them. `Config`'s `Debug` prints `upstream_base_url` in full
+            // at startup, so such a value is logged — pre-existing, unchanged by this check.
+            "https://user:secret@gateway.internal:8443",
+        ] {
+            assert_eq!(
+                checked_upstream_base_url(ok)
+                    .unwrap_or_else(|e| panic!("must accept {ok:?}, got: {e:#}")),
+                ok,
+                "the configured value must be stored exactly as written, never normalised"
+            );
+        }
+
+        for bad in [
+            "", // exported-but-blank — the shape that reached `reqwest`
+            "   ",
+            "api.openai.com", // no scheme: the commonest way to write it wrong
+            "//api.openai.com",
+            "htp://api.openai.com", // one typo away from correct
+            "file:///etc/passwd",   // schemes that are not HTTP at all
+            "ftp://example.com",
+            "data:text/plain,hello",
+            "javascript:alert(1)",
+            "https://",
+            "http://:8080",
+        ] {
+            assert!(
+                checked_upstream_base_url(bad).is_err(),
+                "must refuse {bad:?} — it names no upstream this proxy can reach"
+            );
+        }
     }
 }
