@@ -26,13 +26,15 @@ scenarios are carried over — the old "headroom"/compression tests are out of s
    goes out masked; a response referencing placeholders comes back
    de-anonymized. Ported from the manual scenarios below.
 
-## The two commands `cargo test` does not run — and both are run before a tag
+## The three checks `cargo test` does not run — and all three run before a tag
 
-`cargo test` (and `cargo test --features onnx`) is the bar for "done": green, no warnings. Two
-measurements sit outside it because they report **milliseconds**, and milliseconds are a fact about
-the box rather than about the product (M7-R12). They are listed here rather than left to memory,
-because *"it exists and nobody runs it"* is how a published number goes stale for four rounds
-([M11-R55](reviews/M11.md#m11-r55)):
+`cargo test` (and `cargo test --features onnx`) is the bar for "done": green, no warnings. Three
+checks sit outside it, and none of them is optional before a `v*` tag. They are listed here rather
+than left to memory, because *"it exists and nobody runs it"* is how a published number goes stale
+for four rounds ([M11-R55](reviews/M11.md#m11-r55)).
+
+**Two are measurements**, outside the suite because they report **milliseconds**, and milliseconds
+are a fact about the box rather than about the product (M7-R12):
 
 ```text
 cargo test --release --test complexity -- --ignored --nocapture --test-threads=1 budget_refusal_line
@@ -45,6 +47,24 @@ reports that is **build-independent** has already been moved into a guard that r
 `phone_eval`'s precision block is asserted against `ARCHITECTURE.md` byte for byte (M11-R55), and
 `DOS-10` asserts that the case-gate term is inside the budget at all (M11-R18). What is left in these
 two commands is only what a wall clock can say.
+
+**The third is not a measurement — it is the cross-target build, and left alone it first runs when
+the tag is already public.** `ci.yml` does not cross-compile: it builds and tests one host target.
+Every released target is compiled by the reusable `release-build.yml`, which has exactly two callers
+— `release-build-publish.yml`, triggered **by the `v*` tag itself**, and `manual-build.yml`, the same
+matrix with **no publish job**. So a target that stopped compiling (a dependency with no prebuilt for
+one arch, a platform-gated `cfg`, a runner image that moved) is otherwise discovered *by the release*
+— after the tag is pushed, and a tag is public the moment it is. The way to know first:
+
+> **Actions → *Manual build* → *Run workflow* → pick the branch you are about to tag**, and wait for
+> every leg of the matrix to go green. Its artifacts are throwaway (30-day retention) and nothing it
+> runs can publish a release.
+
+Not hypothetical at `v1.3.0`: the last green cross-target run was the `v1.2.1` tag build on
+2026-07-31, so nothing had compiled the full matrix for over a month. And this instruction used to
+live only in a comment inside `release-build-publish.yml` plus one line of `ROADMAP.md` — the same
+shape as the gap described next: a step only CI performs, that no document declared where it gets
+read.
 
 ## The toolchain gap — green here does not mean green in CI
 
@@ -85,6 +105,17 @@ having to go and fetch them) and is recorded as an open question in `docs/ROADMA
   so a dependency bump that inverts them fails here and the `allow` gets re-argued instead of
   inherited. The sizes are read from the code at run time and printed in the failure message; none is
   typed into this entry.
+  **It has a second, compile-time half, and the runtime one is useless without it.** The two types
+  were originally written out by hand inside the test, which measured a *copy* of the signature: box
+  that `Err` and the test goes on comparing the old pair, passes, and the `allow` outlives the reason
+  it was granted for — the exact failure this guard exists to prevent. So the pair now lives in the
+  `StagesOk` / `StagesErr` aliases, and an uncalled
+  `run_privacy_stages_still_returns_this_pair(…) -> Result<StagesOk, StagesErr>` forwards to the real
+  function: reshape the signature and the test target **stops compiling**. Verified by mutation —
+  boxing the `Err` and fixing both call sites gives `cargo check --all-targets` exit 101, `expected
+  Response, found Box<Response>` in the lib test target; with the anchor deleted the same mutation
+  leaves the runtime half green. This is the general shape: *a guard that restates what it watches
+  measures its own restatement.*
 
 ## Reliability guards (lessons from the old proxy)
 

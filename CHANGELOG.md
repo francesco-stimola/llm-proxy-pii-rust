@@ -287,6 +287,7 @@ that together removed the fail-closed 400 a real Claude Code session used to hit
 
 Milestone [M5](https://github.com/francesco-stimola/llm-proxy-pii-rust/blob/main/docs/ROADMAP.md#m5) — interim badge release: integration and performance testing.
 
+[1.3.0]: https://github.com/francesco-stimola/llm-proxy-pii-rust/compare/v1.2.1...v1.3.0
 [1.2.1]: https://github.com/francesco-stimola/llm-proxy-pii-rust/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/francesco-stimola/llm-proxy-pii-rust/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/francesco-stimola/llm-proxy-pii-rust/compare/v1.0.0...v1.1.0

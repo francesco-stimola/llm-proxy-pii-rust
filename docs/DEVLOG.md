@@ -3,6 +3,64 @@
 Newest first. One entry per meaningful change — note *what* and *why*, not just
 *what*. This is the running history so context is never lost between sessions.
 
+## 2026-09-06 — the pre-tag commands were run and recorded; `CI-01` stops measuring a copy
+
+**The two measurement commands `TESTING.md` declares before a tag were run on this tree**, on the
+toolchain CI resolves to (rustc 1.98.1 / clippy 0.1.98), and **no figure in `ARCHITECTURE.md`
+changes.** `phone_latency_per_enabled_region` printed **0.50 → 0.43–0.45 ms/turn** across 0…9
+enabled regions — flat in the region count, which is the claim, and inside the band that section
+already publishes (0.30→0.32 on one occasion, 0.43→0.44 on another, 0.55/0.57 on a noisy one).
+`budget_refusal_line` printed **2865 ms** for the economic rendering at 16 MiB — the measurement
+behind the *"~2.8 s of validation on a single request"* the allowance decision had just been written
+on. They are recorded **here** rather than in `ARCHITECTURE.md` precisely because nothing they
+printed moved a published number: [M11-R55](reviews/M11.md#m11-r55)'s lesson is that *a declared
+step nobody records is a step nobody performs*, and a run whose result is "no change" is the one
+most easily left unrecorded and then never done.
+
+### `CI-01` was measuring a copy of the signature it guards
+
+The guard added earlier today asserted the two variant widths of `run_privacy_stages`'s `Result` —
+but it wrote the pair out **by hand** (`type Ok_ = (ProxyRequest, RequestContext)`), and named the
+function it defends only in a comment and a panic string. So the failure it exists to prevent went
+straight through it: box that `Err`, and the test goes on comparing the **old** pair, passes, and the
+`#[allow(clippy::result_large_err)]` outlives the reason it was granted for. A guard that restates
+what it watches measures its own restatement.
+
+Closed at compile time rather than with another runtime assertion. The pair is now `StagesOk` /
+`StagesErr` in the test module, and an uncalled
+`run_privacy_stages_still_returns_this_pair(state, body, schema) -> Result<StagesOk, StagesErr>`
+forwards to the real function — so the aliases cannot drift from the signature without the test
+target failing to build. **Proved by mutation, not by assertion:** boxing the `Err` and fixing both
+call sites gives `cargo check --all-targets` exit **101**, *expected `Response`, found
+`Box<Response>`*, in the lib test target — while the lib itself still compiles; delete the anchor,
+keep the mutation, and `boxing_the_err_variant_would_buy_nothing` passes. Source restored, both legs
+green. Written up in [`TESTING.md`](TESTING.md) → *CI — lint suppressions that must not outlive their
+reason*.
+
+### The pre-tag list was two commands; it is three
+
+The tag does not run `ci.yml` — it runs `release-build-publish.yml`, which cross-compiles the whole
+release matrix and **publishes**, and `ci.yml` never cross-compiles at all. A target that stopped
+building is therefore discovered by the release itself, when the tag is already pushed and public;
+the last green cross-target run before `v1.3.0` was the `v1.2.1` tag build on **2026-07-31**. The way
+to find out first — run `manual-build.yml` (same reusable `release-build.yml`, no publish job) on the
+branch about to be tagged — existed, but lived only in a comment inside a workflow YAML and one line
+of `ROADMAP.md`. It now sits beside the other two in [`TESTING.md`](TESTING.md) → *The three checks
+`cargo test` does not run*, which is where a pre-tag list gets read. Same shape as the toolchain gap
+documented in the entry below: a step only CI performs, that no document declared.
+
+Also: `CHANGELOG.md` had no `[1.3.0]:` link definition — every version from `[1.2.1]` down to
+`[0.4.0]` has one, so the heading of the section the release page will show was the one version
+link in the file resolving to nothing. Added, pointing at `compare/v1.2.1...v1.3.0`. And the phone-latency paragraph in
+`ARCHITECTURE.md` now says *"one of the two **measurement** commands"*, since the list it refers to
+no longer has two entries.
+
+**Verified:** `cargo test` **261 passed / 0 failed / 4 ignored**, `cargo test-onnx` **297 / 0 / 21**,
+both zero warnings — the same counts as before the change, and that is the expected result: the
+anchor is not a test case, its assertion *is* the compile, so it shows up as a build that succeeds
+or a build that does not. `cargo clippy --all-targets -- -D warnings` exit 0 on both legs (default
+and `onnx`), `cargo fmt --check` exit 0.
+
 ## 2026-09-06 — CI was red on `main` for four days, and running the command would not have found it
 
 **Both `test` legs have failed at the `clippy` step since 2026-09-02**, on a `main` that is pushed and

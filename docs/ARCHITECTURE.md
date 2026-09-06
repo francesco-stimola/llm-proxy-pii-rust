@@ -264,13 +264,14 @@ expectation. The `ips` pools are not: they are uniformly-drawn addresses in an o
 **Latency is not the constraint** — over the same 22 KiB turn the cost is **flat in the region
 count**, and the flatness is the claim rather than the milliseconds. Runs recorded on the reference
 box, `--release`, `--test-threads=1`, printed by `phone_eval`'s `phone_latency_per_enabled_region`
-(one of the two commands `TESTING.md` declares as run before every tag): **0.30 → 0.32 ms/turn**
-across 0…9 regions on one occasion, **0.43 → 0.44** on another, and 0.55/0.57 on a noisy one. The
-*slope* is what the dispatch shape buys and it survives every run — one recognizer per shape
-*family*, with the region loop inside the validator, so adding a region costs validations on
-candidates only, never another O(n·L) scan of every field (see `national_phone_recognizers`).
-*Background load raises a flat line without sloping it*, which is why the absolute figure is quoted
-as a range across runs and the decision rests on the shape (M7-R9: the ratio is the claim).
+(one of the two measurement commands `TESTING.md` declares as run before every tag):
+**0.30 → 0.32 ms/turn** across 0…9 regions on one occasion, **0.43 → 0.44** on another,
+and 0.55/0.57 on a noisy one. The *slope* is what the dispatch shape buys and it survives every
+run — one recognizer per shape *family*, with the region loop inside the validator, so adding a
+region costs validations on candidates only, never another O(n·L) scan of every field (see
+`national_phone_recognizers`). *Background load raises a flat line without sloping it*, which is
+why the absolute figure is quoted as a range across runs and the decision rests on the shape
+(M7-R9: the ratio is the claim).
 
 **What keeps a digit-dense field affordable is memoization — and nothing else, which was itself a
 finding.** The candidate rescan probes O(n) start positions, so a field of digit groups asks the
