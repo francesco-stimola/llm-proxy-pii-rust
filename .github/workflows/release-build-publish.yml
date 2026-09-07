@@ -65,11 +65,26 @@ jobs:
           # grep read that sentence as a statement about the release being cut. Prose must never
           # be able to move a guard — so the guard reads the table, which is the artifact the
           # claim actually lives in.
-          rows=$(grep -E '^\| \[M' "$table" || true)
-          if printf '%s\n' "$rows" | grep -qE "tag \`${tag}\`( |\`|$)" && \
-             ! printf '%s\n' "$rows" | grep -qE "tag \`${tag}\`.*\(planned\)"; then
+          # The rows go to a FILE, and every check greps that file. They used to be held in a
+          # variable and replayed through `printf … | grep -q`, and that pipeline refused
+          # `v1.3.0` with the correct row sitting in its own diagnostic output:
+          # `grep -q` exits at the first match, `printf` is still writing the rest, it takes
+          # EPIPE — `printf: write error: Broken pipe` — and `set -o pipefail` turns a
+          # SUCCESSFUL match into a failed pipeline.
+          #
+          # It is a RACE, not a threshold, and the measurement says so: these rows were
+          # already 12.8 KB at v1.0.0 and 32.8 KB at v1.2.1 against a 4 KB stdio buffer, so
+          # every release since M9.1 has been won by luck. At 49.3 KB the luck ran out. The
+          # tempting fix — "the ledger got too big" — would have been the wrong diagnosis of
+          # a guard that was never correct.
+          #
+          # A file has no reader to race: `grep -q` may leave whenever it likes.
+          rows=$(mktemp)
+          grep -E '^\| \[M' "$table" > "$rows" || true
+          if grep -qE "tag \`${tag}\`( |\`|$)" "$rows" && \
+             ! grep -qE "tag \`${tag}\`.*\(planned\)" "$rows"; then
             echo "OK: $table names $tag as a cut release."
-            printf '%s\n' "$rows" | grep -E "tag \`${tag}\`"
+            grep -E "tag \`${tag}\`" "$rows"
           else
             echo "::error::$table does not name $tag as a cut release."
             echo "Add it to the Status table on the milestone it was cut from, e.g."
@@ -77,7 +92,7 @@ jobs:
             echo "If the tag is still only intended, the table may say 'tag \`${tag}\` (planned)' —"
             echo "but then it is not ready to be published."
             echo "--- current tag notations in the Status table ---"
-            printf '%s\n' "$rows" | grep -E "tag \`v[0-9]" || echo "(none at all)"
+            grep -E "tag \`v[0-9]" "$rows" || echo "(none at all)"
             exit 1
           fi
 
@@ -150,6 +165,17 @@ jobs:
           set -euo pipefail
           mkdir -p out
           built=$(find artifacts -type f | wc -l)
+          # The collision check below compares two counts, and `0 -ne 0` is false — so a download
+          # that produced NOTHING would sail through it and publish a release with no binaries at
+          # all, green. The count that must be non-zero is checked first, on its own, because a
+          # guard that passes on the empty case is not guarding the case that matters.
+          if [ "$built" -eq 0 ]; then
+            echo "::error::no artifacts were downloaded — nothing to publish."
+            echo "The build job uploads one artifact per target; if this is empty the two"
+            echo "actions/(up|down)load-artifact majors have diverged, or the build job did not run."
+            ls -laR artifacts || echo "(the artifacts/ directory does not even exist)"
+            exit 1
+          fi
           find artifacts -type f -exec cp -n {} out/ \;
           published=$(find out -type f | wc -l)
           if [ "$built" -ne "$published" ]; then
