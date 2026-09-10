@@ -158,6 +158,25 @@ rounds of the first one.
   fix — and report it beside the other. If it passes half, the thing to change is not how
   many rounds you run: it is how you verify a fix.
 
+- **And "how you verify a fix" has an answer, measured on that same cycle on 2026-09-10.**
+  The verification those five defects walked through asked **one single thing** — *does the
+  mutation that puts the defect back turn red?* — which is a question about the **closed**
+  defect, and none of the five was there: all five were in what the fix **adds**. So, on every
+  new line, three questions instead of one.
+  1. **What if the line I added raises?** Who gives back what was taken, who closes what was
+     opened — and is the error that comes out of there still the real one, or the cleanup's?
+     Asked too late **twice in a row**: the second defect was born inside the fix for the first.
+  2. **What does the predicate I wrote catch *in addition*?** A widened `isinstance`, an
+     `except` on a larger class, a code added to a table: the set you named almost always has a
+     second population, and it must be found before a round finds it.
+  3. **What did the old place guarantee that the new place does not?** Moving a check puts it
+     **after** something that used to come after it.
+
+  And a rule about the cells that prove all this: **a cell that reproduces the symptom by a
+  shortcut measures something else.** `OSError(110)` is not `ETIMEDOUT` on Windows; a `raise`
+  fired before the resource has been taken holds nothing; a double whose `rollback` *always*
+  fails moves the error outside the window you are watching.
+
 ### Findings lifecycle — ledger vs record
 A finding has **one home for its whole life**. It is never copied, and never moved.
 
