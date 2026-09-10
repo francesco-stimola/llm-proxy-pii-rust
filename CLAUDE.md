@@ -145,6 +145,18 @@ rounds of the first one.
   product; the test infrastructure serves it. And at the end of a milestone, count the
   findings **on the guards** and those **on the product**, and report both numbers: it
   is the ratio that says whether the loop is working or feeding itself.
+- **A fix ships with the same three things a milestone report demands**: the mutation that
+  proves it bites, the legitimate paths around the code you touched, and the numbers. A
+  finding born **inside the fix of the previous finding** is not a round that worked: it is
+  a fix delivered without the verification the original code had received. Measured on the
+  sibling repo `python-sql-mcp-server` on 2026-09-10, after twelve rounds: **19 defects in
+  the product — 9 pre-existing and 10 born inside that cycle's own fixes, nine of them
+  inside the fix of the immediately preceding finding**, with each round finding 1-3 in a
+  flat distribution, because every round always had a fresh fix to examine. A loop like
+  that does not terminate, and not for the reason the ratio rule watches: **it feeds
+  itself.** So count the **second** ratio too — pre-existing against born-in-the-previous-
+  fix — and report it beside the other. If it passes half, the thing to change is not how
+  many rounds you run: it is how you verify a fix.
 
 ### Findings lifecycle — ledger vs record
 A finding has **one home for its whole life**. It is never copied, and never moved.
