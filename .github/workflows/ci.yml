@@ -29,8 +29,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      # The version is READ FROM rust-toolchain.toml and never written here — the same reason the
+      # msrv job below reads its floor out of Cargo.toml. Two places that must agree eventually
+      # will not, and the one that drifts is the one nobody looks at.
+      - id: toolchain
+        shell: bash
+        run: echo "value=$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: ${{ steps.toolchain.outputs.value }}
           components: rustfmt
       - run: cargo fmt --check
 
@@ -63,8 +70,14 @@ jobs:
             features: "--features onnx"
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      # Pinned, and read from the file — see the fmt job. This is the gate the pin exists for:
+      # it is the one that went red on `main` for four days when stable moved under it.
+      - id: toolchain
+        shell: bash
+        run: echo "value=$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: ${{ steps.toolchain.outputs.value }}
           components: clippy
       - uses: Swatinem/rust-cache@v2
         with:
@@ -91,4 +104,16 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: msrv
+      # RUSTUP_TOOLCHAIN, and it is the difference between this job checking the floor and this job
+      # quietly checking nothing. Since 2026-09-11 there is a `rust-toolchain.toml` in the tree, and
+      # a directory override BEATS the default toolchain the action above just set: without this
+      # line `cargo check` would run on the pinned channel, the floor would stop being verified, and
+      # the job would stay green while saying something it no longer measures. That is the M5-R5
+      # failure mode — a floor claimed rather than checked — reintroduced by the fix for a different
+      # one. Measured in the repository on 2026-09-11, with the file in place and the floor at
+      # 1.89: `cargo --version` reports **1.98.1** — the pin — while
+      # `RUSTUP_TOOLCHAIN=1.89 cargo --version` reports 1.89.0. The environment variable wins over
+      # a directory override; the action's default toolchain does not.
       - run: cargo check --all-targets --features onnx
+        env:
+          RUSTUP_TOOLCHAIN: ${{ steps.msrv.outputs.value }}

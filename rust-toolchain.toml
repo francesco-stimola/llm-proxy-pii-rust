@@ -1,0 +1,31 @@
+# The toolchain this repository is built and gated with — pinned in-tree, on purpose.
+#
+# WHY (maintainer decision, 2026-09-11; the options and what each costs are in
+# docs/ROADMAP.md → "Should the toolchain be pinned in-tree?"). Until today CI used
+# `dtolnay/rust-toolchain@stable`, so every gate ran on whatever stable existed on the day the job
+# happened to run. On 2026-09-03 stable moved 1.97 → 1.98, clippy 0.1.98 widened
+# `result_large_err` to `async fn`s, and BOTH test legs went red on `main` and stayed red for four
+# days — while a local `cargo clippy --all-targets -- -D warnings` kept exiting 0. The developer
+# could not have caught that by remembering to run the command: they were running it. That is the
+# second gate this repository has paid for that only CI ran (the first was M11-R0, `cargo fmt
+# --check`), and it is the one that running the command cannot close.
+#
+# WHAT IT BUYS: local and CI cannot disagree by construction, and a new lint arrives as a
+# deliberate commit that bumps this line — reviewed, with its fix beside it — instead of as a red
+# `main` on a day nobody chose, found by whoever pushes next.
+#
+# WHAT IT COSTS, and it is not zero: an unbumped pin ages silently, and the project stops finding
+# out about new lints for free. Dependabot does not watch this file. Bumping is a one-line edit
+# plus whatever the newer lints ask for; docs/TESTING.md → "The toolchain gap" carries how to
+# notice the bump is due, because that cost has no mechanism behind it yet.
+#
+# `components` belongs HERE, not only in the workflow steps. The gates run `cargo clippy` and
+# `cargo fmt`, and under a directory override rustup resolves those against THIS channel — not
+# against whatever a CI step happened to install as the default toolchain.
+#
+# AND THE TRAP THIS FILE SETS, handled in ci.yml: a directory override beats the default toolchain
+# an action sets, so the `msrv` job would have started checking the floor on this channel instead
+# of on the floor. It passes `RUSTUP_TOOLCHAIN` explicitly for exactly that reason.
+[toolchain]
+channel = "1.98.1"
+components = ["clippy", "rustfmt"]

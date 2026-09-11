@@ -137,8 +137,17 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: dtolnay/rust-toolchain@stable
+      # Pinned in-tree and read from the file, like the ci.yml gates: a released binary should be
+      # built by the compiler the gates ran on, not by whichever stable existed on tag day. The
+      # `targets` come from the matrix, not from the file — they are per-leg.
+      # `shell: bash` is required and not cosmetic: this matrix runs on windows-latest too, where
+      # the default shell is pwsh and `sed` is not on PATH.
+      - id: toolchain
+        shell: bash
+        run: echo "value=$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: ${{ steps.toolchain.outputs.value }}
           targets: ${{ matrix.target }}
 
       - uses: Swatinem/rust-cache@v2
