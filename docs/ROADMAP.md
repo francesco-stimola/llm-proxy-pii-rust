@@ -3150,7 +3150,22 @@ argument for it is the one this repo already makes about `clippy`: *a warning ch
 standing entries cannot surface the fifteenth*, and these dense doc comments are exactly where this
 codebase's reasoning lives.
 
-### Should the toolchain be pinned in-tree? *(raised 2026-09-06 by four days of red `main`)*
+### Should the toolchain be pinned in-tree? — **decided 2026-09-11: yes, option 2** *(raised 2026-09-06 by four days of red `main`)*
+
+> **Landed.** [`rust-toolchain.toml`](../rust-toolchain.toml) pins `1.98.1` with `clippy` and
+> `rustfmt`, and `ci.yml` (`fmt`, `test`) plus every leg of `release-build.yml` read the version
+> **out of that file** — the pattern the `msrv` job already used for the floor, so there is no
+> second place to keep in sync. What it cost, what it now cannot see, and the habit that replaces
+> the red `main` are in [`TESTING.md`](TESTING.md) → *The toolchain gap*, which is where the
+> question was documented in the first place.
+>
+> **One thing was found while implementing it, and it is the part worth remembering.** The pin is a
+> *directory override*, and an override beats the default toolchain a CI action sets — so the
+> `msrv` job would have quietly started checking the floor **on the pinned channel**: green, and
+> measuring nothing. That is M5-R5's failure mode — a floor claimed instead of checked — walked back
+> in through the fix for a different problem. `RUSTUP_TOOLCHAIN` on that step is what holds it shut,
+> measured in the tree: `cargo --version` → 1.98.1, `RUSTUP_TOOLCHAIN=1.89 cargo --version` → 1.89.0.
+> *A fix that installs a new mechanism has to be asked what the mechanism now shadows.*
 **The gap is real and it is measured, not argued** — the write-up lives in
 [`TESTING.md`](TESTING.md) → *The toolchain gap*, next to the two commands it governs. `ci.yml` uses
 `dtolnay/rust-toolchain@stable`, so the gate runs on whatever stable is **on the day the job runs**;

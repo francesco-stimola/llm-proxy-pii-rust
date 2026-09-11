@@ -96,10 +96,33 @@ through desugarings 0.1.97 skipped. **Nothing in the code or the dependency grap
 lint's reach did.** The fix was to decline its remedy, because boxing that `Err` buys nothing (see
 `CI-01` below), not to reshape a signature to satisfy a lint.
 
-**So: `rustup update` before trusting a local clippy run**, and read a green local clippy as "green
-for *my* toolchain", never as "green for CI". Pinning the toolchain in-tree would close the gap
-properly — it is a maintainer decision (it moves new lints into a deliberate commit, at the cost of
-having to go and fetch them) and is recorded as an open question in `docs/ROADMAP.md`.
+### Closed 2026-09-11 — the gap becomes a pin, and the pin has a different cost
+
+The maintainer took option 2: **[`rust-toolchain.toml`](../rust-toolchain.toml) names the channel,
+and CI reads the version out of that file** instead of resolving `@stable` on the day. `fmt`,
+`test` and every leg of `release-build.yml` now run the compiler this tree names, so local and CI
+cannot drift apart, and a new lint arrives as a commit that bumps one line with its fix beside it.
+
+**The trap the fix set, and how it is held shut.** A `rust-toolchain.toml` is a *directory
+override*, and a directory override beats the default toolchain a CI action installs. The `msrv`
+job would therefore have begun checking the floor **on the pinned channel** — staying green while
+measuring nothing, which is the M5-R5 failure mode reintroduced by the fix for a different one. It
+passes `RUSTUP_TOOLCHAIN` explicitly for that reason. Measured in this directory on 2026-09-11,
+floor at 1.89: `cargo --version` reports **1.98.1**, `RUSTUP_TOOLCHAIN=1.89 cargo --version`
+reports **1.89.0**. The environment variable wins over the file; an action's default does not.
+
+**What this does NOT cover, and it is precisely what the decision bought.** *An unbumped pin ages
+silently.* Nothing here notices that stable has moved: Dependabot does not watch
+`rust-toolchain.toml`, and no job compares the pin against the current release. What used to
+surface as a red `main` on a day nobody chose now surfaces as **nothing at all** — which is better
+only for as long as somebody goes and looks. Until a scheduled check exists, the habit is:
+`rustup update`, then `rustup run stable cargo clippy --all-targets -- -D warnings` when a release
+is being prepared; if it is red, **bump the pin in a commit that carries the fix**, which is the
+shape this option was chosen to produce.
+
+**Still true, for a smaller set of people:** a green local clippy is green for *your* toolchain.
+With the pin, yours is the tree's — unless you ran it outside this directory, with an explicit
+`+toolchain`, or with `RUSTUP_TOOLCHAIN` set.
 
 ### CI — lint suppressions that must not outlive their reason (`src/server.rs`)
 
