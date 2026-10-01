@@ -95,7 +95,7 @@ time = { version = "0.3", default-features = false, features = ["std", "formatti
 # ONNX inference deps (M2), behind the optional `onnx` feature so the default
 # build never reaches them. `ort` 2.x is prerelease-only → pinned exactly.
 # `tokenizers` uses default-features = false to avoid the C/C++ regex backends.
-ort = { version = "=2.0.0-rc.12", optional = true, features = ["download-binaries"] }
+ort = { version = "=2.0.0-rc.13", optional = true, features = ["download-binaries"] }
 tokenizers = { version = "0.23", optional = true, default-features = false, features = ["fancy-regex"] }
 # HuggingFace Hub client (M2.5): opt-in, revision-pinned model fetch into the
 # standard HF cache. Async API. Only pulled with the `onnx` feature — so the
